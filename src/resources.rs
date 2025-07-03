@@ -66,6 +66,10 @@ pub struct InputState {
     pub is_mouse_pressed: bool,
     pub selected_piece: Option<Entity>,
     pub next_z_order: f32,
+    pub is_camera_dragging: bool,
+    pub camera_drag_start_pos: Vec2,
+    pub last_mouse_position: Vec2,
+    pub last_cursor_position: Option<Vec2>,
 }
 
 impl Default for InputState {
@@ -75,6 +79,10 @@ impl Default for InputState {
             is_mouse_pressed: false,
             selected_piece: None,
             next_z_order: 1.0, // 1.0から開始
+            is_camera_dragging: false,
+            camera_drag_start_pos: Vec2::ZERO,
+            last_mouse_position: Vec2::ZERO,
+            last_cursor_position: None,
         }
     }
 }

@@ -15,6 +15,9 @@ pub fn update_input_state(
     let window = windows.single();
     let (camera, camera_transform) = camera_q.single();
     
+    // 前のマウス位置を保存
+    input_state.last_mouse_position = input_state.mouse_position;
+    
     if let Some(cursor_pos) = window.cursor_position() {
         if let Some(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
             input_state.mouse_position = world_pos;
@@ -44,8 +47,8 @@ pub fn handle_piece_dragging(
         }
     }
     
-    // マウスがクリックされた瞬間かつ、他にドラッグ中のピースがない場合のみ新しい選択を行う
-    if mouse_just_pressed && current_dragging_piece.is_none() {
+    // マウスがクリックされた瞬間かつ、他にドラッグ中のピースがない場合、かつカメラがドラッグ中でない場合のみ新しい選択を行う
+    if mouse_just_pressed && current_dragging_piece.is_none() && !input_state.is_camera_dragging {
         let mut closest_piece: Option<(Entity, f32, f32)> = None;
         
         for (entity, transform, draggable, _piece, sprite) in piece_query.iter() {
@@ -259,5 +262,54 @@ pub fn handle_camera_zoom(
             
             println!("Camera zoom: {:.2}", new_scale);
         }
+    }
+}
+
+pub fn handle_camera_drag(
+    mut input_state: ResMut<InputState>,
+    mut camera_query: Query<&mut Transform, With<MainCamera>>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+) {
+    let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Right);
+    let mouse_pressed = mouse_input.pressed(MouseButton::Right);
+    let mouse_just_released = mouse_input.just_released(MouseButton::Right);
+    
+    let window = windows.single();
+    
+    // 右クリックでカメラドラッグ開始
+    if mouse_just_pressed {
+        input_state.is_camera_dragging = true;
+        input_state.last_cursor_position = window.cursor_position();
+    }
+    
+    // カメラドラッグ中の処理
+    if input_state.is_camera_dragging && mouse_pressed {
+        if let (Some(current_cursor), Some(last_cursor)) = (window.cursor_position(), input_state.last_cursor_position) {
+            // スクリーン座標での移動量を計算
+            let cursor_movement = current_cursor - last_cursor;
+            
+            // 移動量が0でない場合のみカメラを移動
+            if cursor_movement.length() > 0.5 {
+                for mut transform in camera_query.iter_mut() {
+                    // カメラスケールを考慮した移動量
+                    let scale_factor = transform.scale.x;
+                    let movement = cursor_movement * scale_factor;
+                    
+                    // カメラの移動（マウスの動きと逆方向に移動、Y軸は反転）
+                    transform.translation.x -= movement.x;
+                    transform.translation.y += movement.y; // スクリーン座標系ではY軸が反転
+                }
+                
+                // カーソル位置を更新
+                input_state.last_cursor_position = Some(current_cursor);
+            }
+        }
+    }
+    
+    // 右クリックリリースでカメラドラッグ終了
+    if mouse_just_released {
+        input_state.is_camera_dragging = false;
+        input_state.last_cursor_position = None;
     }
 }

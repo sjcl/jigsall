@@ -23,6 +23,7 @@ impl Plugin for GamePlugin {
                     update_game_state,
                     spawn_puzzle_pieces,
                     handle_camera_zoom,
+                    handle_camera_drag,
                 ),
             );
     }
