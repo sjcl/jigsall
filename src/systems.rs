@@ -180,101 +180,67 @@ pub fn spawn_puzzle_pieces(
     puzzle_image: Option<Res<PuzzleImage>>,
     game_state: Res<GameState>,
     existing_pieces: Query<&PuzzlePiece>,
+    images: Res<Assets<Image>>,
 ) {
     if game_state.current_screen == GameScreen::InGame && existing_pieces.is_empty() {
-        if let Some(puzzle_image) = puzzle_image {
-            create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, &puzzle_image);
+        // 画像パスが設定されている場合
+        if !puzzle_config.image_path.is_empty() {
+            // PuzzleImageリソースがまだない場合は作成
+            if puzzle_image.is_none() {
+                let image_handle = asset_server.load(&puzzle_config.image_path);
+                
+                println!("Loading image: {}", puzzle_config.image_path);
+                commands.insert_resource(PuzzleImage {
+                    handle: image_handle,
+                    size: Vec2::new(1.0, 1.0), // 初期値として1x1を設定（update_puzzle_image_sizeで更新される）
+                });
+                return; // 次フレームで再実行
+            }
+            
+            if let Some(puzzle_image) = puzzle_image {
+                // 画像サイズが正しく更新されている場合のみピースを作成
+                if puzzle_image.size.x > 1.0 && puzzle_image.size.y > 1.0 {
+                    println!("Creating pieces with image size: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
+                    create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, &puzzle_image);
+                } else {
+                    println!("Waiting for image size update: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
+                    return; // 画像サイズがまだ更新されていない
+                }
+            }
         } else {
-            // パズル画像がない場合はデフォルトの色つき四角形を作成
-            create_default_puzzle_pieces(&mut commands, &puzzle_config);
+            // 画像が選択されていない場合はエラーメッセージ
+            println!("No image selected for puzzle creation!");
+            return;
         }
         
         // 半透明の元画像をグリッドの正しい位置に表示
-        spawn_grid_reference(&mut commands, &asset_server);
-    }
-}
-
-fn create_default_puzzle_pieces(
-    commands: &mut Commands,
-    puzzle_config: &PuzzleConfig,
-) {
-    let (grid_width, grid_height) = puzzle_config.grid_size;
-    let piece_size = 80.0;
-    
-    for y in 0..grid_height {
-        for x in 0..grid_width {
-            let piece_id = Uuid::new_v4();
-            
-            let correct_x = (x as f32 - (grid_width as f32 - 1.0) / 2.0) * piece_size;
-            let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_size;
-            let correct_position = Vec2::new(correct_x, correct_y);
-            
-            let mut rng = rand::thread_rng();
-            let random_x = rng.gen_range(-300.0..300.0);
-            let random_y = rng.gen_range(-200.0..200.0);
-            let start_position = Vec2::new(random_x, random_y);
-            
-            let color = Color::hsla(
-                (x + y) as f32 * 40.0,
-                0.7,
-                0.5,
-                1.0
-            );
-            
-            let piece = PuzzlePiece {
-                id: piece_id,
-                original_position: start_position,
-                current_position: start_position,
-                correct_position,
-                texture_coords: Vec4::new(0.0, 0.0, 1.0, 1.0),
-                is_placed: false,
-                grid_x: x,
-                grid_y: y,
-            };
-            
-            // 各ピースに一意のZ値を設定
-            let z_offset = (y * grid_width + x) as f32 * 0.001;
-            
-            commands.spawn((
-                SpriteBundle {
-                    sprite: Sprite {
-                        color,
-                        custom_size: Some(Vec2::splat(piece_size - 2.0)),
-                        ..default()
-                    },
-                    transform: Transform::from_translation(start_position.extend(z_offset)),
-                    ..default()
-                },
-                piece,
-                Draggable {
-                    is_dragging: false,
-                    drag_offset: Vec2::ZERO,
-                },
-            ));
-        }
+        spawn_grid_reference(&mut commands, &asset_server, &puzzle_config);
     }
 }
 
 fn spawn_grid_reference(
     commands: &mut Commands,
     asset_server: &Res<AssetServer>,
+    puzzle_config: &PuzzleConfig,
 ) {
-    // 元画像を半透明で表示
-    let texture_handle = asset_server.load("puzzle_image.png");
-    
-    commands.spawn((
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::rgba(1.0, 1.0, 1.0, 0.3), // 半透明
+    // 選択された画像を半透明で表示
+    if !puzzle_config.image_path.is_empty() {
+        let texture_handle = asset_server.load(&puzzle_config.image_path);
+        
+        commands.spawn((
+            SpriteBundle {
+                sprite: Sprite {
+                    color: Color::rgba(1.0, 1.0, 1.0, 0.3), // 半透明
+                    ..default()
+                },
+                texture: texture_handle,
+                transform: Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
                 ..default()
             },
-            texture: texture_handle,
-            transform: Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
-            ..default()
-        },
-        // 参照画像としてマーク
-        GridReference,
-    ));
+            // 参照画像としてマーク
+            GridReference,
+        ));
+    }
 }
 
 pub fn handle_camera_zoom(

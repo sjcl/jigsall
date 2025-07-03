@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use crate::resources::*;
 use crate::networking::{start_server, start_client};
+use std::path::PathBuf;
 
 pub struct UiPlugin;
 
@@ -100,8 +101,8 @@ fn draw_host_setup_ui(
         
         ui.horizontal(|ui| {
             ui.label("Grid Size:");
-            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.0, 2..=100).text("Width"));
-            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.1, 2..=100).text("Height"));
+            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.0, 2..=20).text("Width"));
+            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.1, 2..=20).text("Height"));
         });
         
         ui.horizontal(|ui| {
@@ -116,13 +117,36 @@ fn draw_host_setup_ui(
         
         ui.separator();
         
-        if ui.button("Start Game").clicked() {
-            if let Err(e) = start_server(&mut commands, &network_info) {
-                eprintln!("Server start error: {}", e);
+        ui.horizontal(|ui| {
+            ui.label("Selected Image:");
+            if puzzle_config.image_path.is_empty() {
+                ui.colored_label(egui::Color32::RED, "No image selected");
             } else {
-                game_state.current_screen = GameScreen::InGame;
+                ui.label(&puzzle_config.image_path);
+            }
+        });
+        
+        if ui.button("Select Puzzle Image").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif"])
+                .pick_file()
+            {
+                puzzle_config.image_path = path.to_string_lossy().to_string();
+                println!("Selected image: {}", puzzle_config.image_path);
             }
         }
+        
+        ui.separator();
+        
+        ui.add_enabled_ui(!puzzle_config.image_path.is_empty(), |ui| {
+            if ui.button("Start Game").clicked() {
+                if let Err(e) = start_server(&mut commands, &network_info) {
+                    eprintln!("Server start error: {}", e);
+                } else {
+                    game_state.current_screen = GameScreen::InGame;
+                }
+            }
+        });
         
         if ui.button("Back").clicked() {
             game_state.current_screen = GameScreen::Menu;

@@ -24,9 +24,39 @@ pub fn create_puzzle_pieces(
             let correct_position = Vec2::new(correct_x, correct_y);
             
             let mut rng = rand::thread_rng();
-            let random_x = rng.gen_range(-400.0..400.0);
-            let random_y = rng.gen_range(-300.0..300.0);
+            
+            // シンプルで安全な配置ロジック
+            let area = rng.gen_range(0..4);
+            let random_x;
+            let random_y;
+            
+            match area {
+                0 => {
+                    // 左側
+                    random_x = rng.gen_range(-800.0..-400.0);
+                    random_y = rng.gen_range(-400.0..400.0);
+                },
+                1 => {
+                    // 右側
+                    random_x = rng.gen_range(400.0..800.0);
+                    random_y = rng.gen_range(-400.0..400.0);
+                },
+                2 => {
+                    // 上側
+                    random_x = rng.gen_range(-400.0..400.0);
+                    random_y = rng.gen_range(200.0..500.0);
+                },
+                _ => {
+                    // 下側
+                    random_x = rng.gen_range(-400.0..400.0);
+                    random_y = rng.gen_range(-500.0..-200.0);
+                }
+            }
+            
             let start_position = Vec2::new(random_x, random_y);
+            
+            println!("Image piece ({},{}) placed at ({:.1}, {:.1}), grid size: {}x{}", 
+                x, y, random_x, random_y, grid_width, grid_height);
             
             let texture_coords = Vec4::new(
                 x as f32 / grid_width as f32,
@@ -88,21 +118,33 @@ pub fn setup_puzzle_from_image(
     puzzle_config: Res<PuzzleConfig>,
     mut images: ResMut<Assets<Image>>,
 ) {
-    let image_handle = load_puzzle_image(&asset_server, &puzzle_config);
-    
-    // デフォルトサイズを設定（実際の画像サイズは後で更新）
-    commands.insert_resource(PuzzleImage {
-        handle: image_handle.clone(),
-        size: Vec2::new(800.0, 600.0),
-    });
+    // 画像パスが設定されている場合のみ画像を読み込み
+    if !puzzle_config.image_path.is_empty() {
+        let image_handle = load_puzzle_image(&asset_server, &puzzle_config);
+        
+        // デフォルトサイズを設定（実際の画像サイズは後で更新）
+        commands.insert_resource(PuzzleImage {
+            handle: image_handle.clone(),
+            size: Vec2::new(800.0, 600.0),
+        });
+    }
 }
 
 pub fn update_puzzle_image_size(
-    mut puzzle_image: ResMut<PuzzleImage>,
+    mut puzzle_image: Option<ResMut<PuzzleImage>>,
     images: Res<Assets<Image>>,
 ) {
-    if let Some(image) = images.get(&puzzle_image.handle) {
-        let actual_size = image.texture_descriptor.size;
-        puzzle_image.size = Vec2::new(actual_size.width as f32, actual_size.height as f32);
+    if let Some(mut puzzle_image) = puzzle_image {
+        if let Some(image) = images.get(&puzzle_image.handle) {
+            let actual_size = image.texture_descriptor.size;
+            let new_size = Vec2::new(actual_size.width as f32, actual_size.height as f32);
+            
+            // サイズが変更された場合のみ更新
+            if puzzle_image.size != new_size {
+                println!("Updating image size from {}x{} to {}x{}", 
+                    puzzle_image.size.x, puzzle_image.size.y, new_size.x, new_size.y);
+                puzzle_image.size = new_size;
+            }
+        }
     }
 }

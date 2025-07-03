@@ -42,7 +42,7 @@ impl Default for PuzzleConfig {
             grid_size: (4, 4),
             piece_size: 100.0,
             snap_distance: 30.0,
-            image_path: "puzzle_image.png".to_string(),
+            image_path: String::new(), // 空の文字列から開始
         }
     }
 }
