@@ -1,6 +1,8 @@
 use bevy::prelude::*;
+// use bevy_prototype_lyon::prelude::*; // 一時的にコメントアウト
 use crate::components::*;
 use crate::resources::*;
+// use crate::jigsaw_shapes::JigsawShapeGenerator; // 一時的にコメントアウト
 use uuid::Uuid;
 use rand::Rng;
 
@@ -11,8 +13,33 @@ pub fn create_puzzle_pieces(
     puzzle_image: &PuzzleImage,
 ) {
     let (grid_width, grid_height) = puzzle_config.grid_size;
-    let piece_width = puzzle_image.size.x / grid_width as f32;
-    let piece_height = puzzle_image.size.y / grid_height as f32;
+    
+    // 画像サイズを適切なスケールに正規化（最大800pxまで）
+    let max_display_size = 800.0;
+    let aspect_ratio = puzzle_image.size.x / puzzle_image.size.y;
+    let (display_width, display_height) = if puzzle_image.size.x > puzzle_image.size.y {
+        (max_display_size, max_display_size / aspect_ratio)
+    } else {
+        (max_display_size * aspect_ratio, max_display_size)
+    };
+    
+    let piece_width = display_width / grid_width as f32;
+    let piece_height = display_height / grid_height as f32;
+    
+    println!("Original image size: {}x{}, Display size: {}x{}, Piece size: {}x{}", 
+        puzzle_image.size.x, puzzle_image.size.y, display_width, display_height, piece_width, piece_height);
+    
+    // TODO: ジグソー形状ジェネレータを後で実装
+    // let mut shape_generator = JigsawShapeGenerator::new(
+    //     (piece_width, piece_height),
+    //     (grid_width, grid_height),
+    // );
+    // 
+    // // 全ての形状を事前生成
+    // if let Err(e) = shape_generator.generate_all_shapes() {
+    //     println!("Failed to generate jigsaw shapes: {}", e);
+    //     return;
+    // }
     
     // 配置済みピース位置を記録
     let mut placed_positions: Vec<Vec2> = Vec::new();
@@ -28,9 +55,9 @@ pub fn create_puzzle_pieces(
             
             let mut rng = rand::thread_rng();
             
-            // 画像サイズに基づいたグリッド外への配置
-            let grid_half_width = puzzle_image.size.x / 2.0;
-            let grid_half_height = puzzle_image.size.y / 2.0;
+            // 表示サイズに基づいたグリッド外への配置
+            let grid_half_width = display_width / 2.0;
+            let grid_half_height = display_height / 2.0;
             
             // ピースサイズに基づいてマージンを計算（ピースサイズの半分 + 固定値）
             let margin = piece_width.max(piece_height) / 2.0 + 50.0;
@@ -149,16 +176,19 @@ pub fn create_puzzle_pieces(
             // 各ピースに一意のZ値を設定（重なり順制御）
             let z_offset = (y * grid_width + x) as f32 * 0.001;
             
+            println!("Spawning piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
+            
+            // 現在はシンプルなスプライトとして実装、後でジグソー形状に拡張
             commands.spawn((
                 SpriteBundle {
                     texture: puzzle_image.handle.clone(),
                     transform: Transform::from_translation(start_position.extend(z_offset)),
                     sprite: Sprite {
                         rect: Some(Rect::new(
-                            x as f32 * piece_width,
-                            y as f32 * piece_height,
-                            (x + 1) as f32 * piece_width,
-                            (y + 1) as f32 * piece_height,
+                            x as f32 * (puzzle_image.size.x / grid_width as f32),
+                            y as f32 * (puzzle_image.size.y / grid_height as f32),
+                            (x + 1) as f32 * (puzzle_image.size.x / grid_width as f32),
+                            (y + 1) as f32 * (puzzle_image.size.y / grid_height as f32),
                         )),
                         custom_size: Some(Vec2::new(piece_width, piece_height)),
                         ..default()

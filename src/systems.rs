@@ -233,7 +233,7 @@ fn spawn_grid_reference(
         commands.spawn((
             SpriteBundle {
                 sprite: Sprite {
-                    color: Color::rgba(1.0, 1.0, 1.0, 0.3), // 半透明
+                    color: Color::srgba(1.0, 1.0, 1.0, 0.3), // 半透明
                     ..default()
                 },
                 texture: texture_handle,
