@@ -101,8 +101,8 @@ fn draw_host_setup_ui(
         
         ui.horizontal(|ui| {
             ui.label("Grid Size:");
-            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.0, 2..=20).text("Width"));
-            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.1, 2..=20).text("Height"));
+            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.0, 2..=100).text("Width"));
+            ui.add(egui::Slider::new(&mut puzzle_config.grid_size.1, 2..=100).text("Height"));
         });
         
         ui.horizontal(|ui| {
