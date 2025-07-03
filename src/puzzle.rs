@@ -14,6 +14,9 @@ pub fn create_puzzle_pieces(
     let piece_width = puzzle_image.size.x / grid_width as f32;
     let piece_height = puzzle_image.size.y / grid_height as f32;
     
+    // 配置済みピース位置を記録
+    let mut placed_positions: Vec<Vec2> = Vec::new();
+    
     for y in 0..grid_height {
         for x in 0..grid_width {
             let piece_id = Uuid::new_v4();
@@ -29,42 +32,98 @@ pub fn create_puzzle_pieces(
             let grid_half_width = puzzle_image.size.x / 2.0;
             let grid_half_height = puzzle_image.size.y / 2.0;
             
-            // ピースサイズに基づいてマージンを計算（ピースサイズの2倍 + 固定値）
-            let margin = (piece_width.max(piece_height) / 2.0 + 50.0);
+            // ピースサイズに基づいてマージンを計算（ピースサイズの半分 + 固定値）
+            let margin = piece_width.max(piece_height) / 2.0 + 50.0;
             
-            // 配置可能な画面範囲を動的に計算
-            let screen_margin = 100.0;
-            let max_x = grid_half_width + margin + 400.0; // グリッド外 + 余裕
-            let max_y = grid_half_height + margin + 300.0; // グリッド外 + 余裕
+            // ピース数に応じて配置範囲を動的に計算
+            let total_pieces = (grid_width * grid_height) as f32;
+            let density_factor = (total_pieces / 16.0).sqrt().max(1.0); // 4x4を基準とした密度係数
             
-            let area = rng.gen_range(0..4);
-            let random_x;
-            let random_y;
+            let base_extension = 200.0; // 基本の拡張距離
+            let extension_x = base_extension * density_factor;
+            let extension_y = base_extension * density_factor * 0.75; // Y方向は少し小さく
             
-            match area {
-                0 => {
-                    // 左側（グリッドの左端より左に配置）
-                    random_x = rng.gen_range(-max_x..-grid_half_width - margin);
-                    random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
-                },
-                1 => {
-                    // 右側（グリッドの右端より右に配置）
-                    random_x = rng.gen_range(grid_half_width + margin..max_x);
-                    random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
-                },
-                2 => {
-                    // 上側（グリッドの上端より上に配置）
-                    random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
-                    random_y = rng.gen_range(grid_half_height + margin..max_y);
-                },
-                _ => {
-                    // 下側（グリッドの下端より下に配置）
-                    random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
-                    random_y = rng.gen_range(-max_y..-grid_half_height - margin);
+            let max_x = grid_half_width + margin + extension_x;
+            let max_y = grid_half_height + margin + extension_y;
+            
+            let mut area = rng.gen_range(0..8); // 8方向に拡張
+            let mut random_x;
+            let mut random_y;
+            
+            // 重ならない位置を見つける（最大50回試行）
+            let mut attempts = 0;
+            let piece_spacing = piece_width.max(piece_height) * 1.2; // ピース間の最小距離
+            
+            loop {
+                match area {
+                    0 => {
+                        // 左側
+                        random_x = rng.gen_range(-max_x..-grid_half_width - margin);
+                        random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
+                    },
+                    1 => {
+                        // 右側
+                        random_x = rng.gen_range(grid_half_width + margin..max_x);
+                        random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
+                    },
+                    2 => {
+                        // 上側
+                        random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
+                        random_y = rng.gen_range(grid_half_height + margin..max_y);
+                    },
+                    3 => {
+                        // 下側
+                        random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
+                        random_y = rng.gen_range(-max_y..-grid_half_height - margin);
+                    },
+                    4 => {
+                        // 左上（斜め）
+                        random_x = rng.gen_range(-max_x..-grid_half_width - margin);
+                        random_y = rng.gen_range(grid_half_height + margin..max_y);
+                    },
+                    5 => {
+                        // 右上（斜め）
+                        random_x = rng.gen_range(grid_half_width + margin..max_x);
+                        random_y = rng.gen_range(grid_half_height + margin..max_y);
+                    },
+                    6 => {
+                        // 左下（斜め）
+                        random_x = rng.gen_range(-max_x..-grid_half_width - margin);
+                        random_y = rng.gen_range(-max_y..-grid_half_height - margin);
+                    },
+                    _ => {
+                        // 右下（斜め）
+                        random_x = rng.gen_range(grid_half_width + margin..max_x);
+                        random_y = rng.gen_range(-max_y..-grid_half_height - margin);
+                    }
+                }
+                
+                let candidate_position = Vec2::new(random_x, random_y);
+                
+                // 他のピースとの重なりをチェック
+                let mut overlaps = false;
+                for placed_pos in &placed_positions {
+                    if candidate_position.distance(*placed_pos) < piece_spacing {
+                        overlaps = true;
+                        break;
+                    }
+                }
+                
+                // 重ならない位置が見つかったか、試行回数上限に達した場合は終了
+                if !overlaps || attempts >= 50 {
+                    break;
+                }
+                
+                attempts += 1;
+                
+                // 試行回数が多くなったら別のエリアに変更
+                if attempts % 10 == 0 {
+                    area = rng.gen_range(0..8);
                 }
             }
             
             let start_position = Vec2::new(random_x, random_y);
+            placed_positions.push(start_position);
             
             println!("Image piece ({},{}) placed at ({:.1}, {:.1}), grid size: {}x{}", 
                 x, y, random_x, random_y, grid_width, grid_height);
