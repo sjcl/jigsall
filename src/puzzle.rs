@@ -25,31 +25,42 @@ pub fn create_puzzle_pieces(
             
             let mut rng = rand::thread_rng();
             
-            // シンプルで安全な配置ロジック
+            // 画像サイズに基づいたグリッド外への配置
+            let grid_half_width = puzzle_image.size.x / 2.0;
+            let grid_half_height = puzzle_image.size.y / 2.0;
+            
+            // ピースサイズに基づいてマージンを計算（ピースサイズの2倍 + 固定値）
+            let margin = (piece_width.max(piece_height) / 2.0 + 50.0);
+            
+            // 配置可能な画面範囲を動的に計算
+            let screen_margin = 100.0;
+            let max_x = grid_half_width + margin + 400.0; // グリッド外 + 余裕
+            let max_y = grid_half_height + margin + 300.0; // グリッド外 + 余裕
+            
             let area = rng.gen_range(0..4);
             let random_x;
             let random_y;
             
             match area {
                 0 => {
-                    // 左側
-                    random_x = rng.gen_range(-800.0..-400.0);
-                    random_y = rng.gen_range(-400.0..400.0);
+                    // 左側（グリッドの左端より左に配置）
+                    random_x = rng.gen_range(-max_x..-grid_half_width - margin);
+                    random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
                 },
                 1 => {
-                    // 右側
-                    random_x = rng.gen_range(400.0..800.0);
-                    random_y = rng.gen_range(-400.0..400.0);
+                    // 右側（グリッドの右端より右に配置）
+                    random_x = rng.gen_range(grid_half_width + margin..max_x);
+                    random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
                 },
                 2 => {
-                    // 上側
-                    random_x = rng.gen_range(-400.0..400.0);
-                    random_y = rng.gen_range(200.0..500.0);
+                    // 上側（グリッドの上端より上に配置）
+                    random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
+                    random_y = rng.gen_range(grid_half_height + margin..max_y);
                 },
                 _ => {
-                    // 下側
-                    random_x = rng.gen_range(-400.0..400.0);
-                    random_y = rng.gen_range(-500.0..-200.0);
+                    // 下側（グリッドの下端より下に配置）
+                    random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
+                    random_y = rng.gen_range(-max_y..-grid_half_height - margin);
                 }
             }
             
