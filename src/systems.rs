@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::input::mouse::MouseWheel;
 use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
@@ -274,4 +275,23 @@ fn spawn_grid_reference(
         // 参照画像としてマーク
         GridReference,
     ));
+}
+
+pub fn handle_camera_zoom(
+    mut scroll_evr: EventReader<MouseWheel>,
+    mut camera_query: Query<&mut Transform, With<MainCamera>>,
+) {
+    for ev in scroll_evr.read() {
+        for mut transform in camera_query.iter_mut() {
+            let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
+            
+            // ズーム制限 (0.5倍から3.0倍まで)
+            let current_scale = transform.scale.x;
+            let new_scale = (current_scale * zoom_factor).clamp(0.5, 3.0);
+            
+            transform.scale = Vec3::splat(new_scale);
+            
+            println!("Camera zoom: {:.2}", new_scale);
+        }
+    }
 }

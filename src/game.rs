@@ -22,6 +22,7 @@ impl Plugin for GamePlugin {
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,
+                    handle_camera_zoom,
                 ),
             );
     }
