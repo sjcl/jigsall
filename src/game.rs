@@ -16,6 +16,7 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 (
+                    // simple_game_start, // 無効化
                     update_puzzle_image_size,
                     auto_adjust_camera_zoom,
                     update_input_state,

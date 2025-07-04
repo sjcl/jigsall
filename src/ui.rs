@@ -1,26 +1,11 @@
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use bevy_egui::{egui, EguiContexts};
 use crate::resources::*;
-use crate::networking::{start_server, start_client};
+// use crate::networking::{start_server, start_client}; // ネットワーキング無効化
 use std::path::PathBuf;
 
-pub struct UiPlugin;
-
-impl Plugin for UiPlugin {
-    fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_fonts)
-            .add_systems(Update, (
-                draw_menu_ui,
-                draw_game_ui,
-                draw_host_setup_ui,
-                draw_join_game_ui,
-                draw_completion_ui,
-            ));
-    }
-}
-
 fn setup_fonts(mut contexts: EguiContexts) {
-    let ctx = contexts.ctx_mut();
+    let Ok(ctx) = contexts.ctx_mut() else { return; };
     
     // デフォルトの日本語フォント設定
     let mut fonts = egui::FontDefinitions::default();
@@ -32,7 +17,7 @@ fn setup_fonts(mut contexts: EguiContexts) {
         if let Ok(font_data) = std::fs::read("C:/Windows/Fonts/msgothic.ttc") {
             fonts.font_data.insert(
                 "msgothic".to_owned(),
-                egui::FontData::from_owned(font_data),
+                egui::FontData::from_owned(font_data).into(),
             );
             
             fonts.families.entry(egui::FontFamily::Proportional).or_default()
@@ -40,7 +25,7 @@ fn setup_fonts(mut contexts: EguiContexts) {
         } else if let Ok(font_data) = std::fs::read("C:/Windows/Fonts/meiryo.ttc") {
             fonts.font_data.insert(
                 "meiryo".to_owned(),
-                egui::FontData::from_owned(font_data),
+                egui::FontData::from_owned(font_data).into(),
             );
             
             fonts.families.entry(egui::FontFamily::Proportional).or_default()
@@ -52,7 +37,7 @@ fn setup_fonts(mut contexts: EguiContexts) {
     ctx.set_fonts(fonts);
 }
 
-fn draw_menu_ui(
+pub fn draw_menu_ui(
     mut contexts: EguiContexts,
     mut game_state: ResMut<GameState>,
 ) {
@@ -60,7 +45,8 @@ fn draw_menu_ui(
         return;
     }
     
-    egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
+    if let Ok(ctx) = contexts.ctx_mut() {
+        egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("Puzzella - Multiplayer Jigsaw Puzzle");
         
         ui.separator();
@@ -81,9 +67,10 @@ fn draw_menu_ui(
             std::process::exit(0);
         }
     });
+    }
 }
 
-fn draw_host_setup_ui(
+pub fn draw_host_setup_ui(
     mut contexts: EguiContexts,
     mut game_state: ResMut<GameState>,
     mut puzzle_config: ResMut<PuzzleConfig>,
@@ -94,7 +81,8 @@ fn draw_host_setup_ui(
         return;
     }
     
-    egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
+    if let Ok(ctx) = contexts.ctx_mut() {
+        egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("Host Game Setup");
         
         ui.separator();
@@ -127,12 +115,22 @@ fn draw_host_setup_ui(
         });
         
         if ui.button("Select Puzzle Image").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif"])
-                .pick_file()
+            // WSL環境でのGTK問題回避のため、テスト用画像パスを使用
+            #[cfg(target_os = "windows")]
             {
-                puzzle_config.image_path = path.to_string_lossy().to_string();
-                println!("Selected image: {}", puzzle_config.image_path);
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif"])
+                    .pick_file()
+                {
+                    puzzle_config.image_path = path.to_string_lossy().to_string();
+                    println!("Selected image: {}", puzzle_config.image_path);
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                // テスト用の固定パス（実際のプロジェクトでは適切な画像ファイルを指定）
+                puzzle_config.image_path = "test_image.png".to_string();
+                println!("Using test image: {}", puzzle_config.image_path);
             }
         }
         
@@ -140,11 +138,8 @@ fn draw_host_setup_ui(
         
         ui.add_enabled_ui(!puzzle_config.image_path.is_empty(), |ui| {
             if ui.button("Start Game").clicked() {
-                if let Err(e) = start_server(&mut commands, &network_info) {
-                    eprintln!("Server start error: {}", e);
-                } else {
-                    game_state.current_screen = GameScreen::InGame;
-                }
+                // ローカルゲーム開始（ネットワーキング無効のため）
+                game_state.current_screen = GameScreen::InGame;
             }
         });
         
@@ -152,9 +147,10 @@ fn draw_host_setup_ui(
             game_state.current_screen = GameScreen::Menu;
         }
     });
+    }
 }
 
-fn draw_join_game_ui(
+pub fn draw_join_game_ui(
     mut contexts: EguiContexts,
     mut game_state: ResMut<GameState>,
     mut network_info: ResMut<NetworkInfo>,
@@ -164,7 +160,8 @@ fn draw_join_game_ui(
         return;
     }
     
-    egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
+    if let Ok(ctx) = contexts.ctx_mut() {
+        egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("Join Game");
         
         ui.separator();
@@ -187,20 +184,18 @@ fn draw_join_game_ui(
         ui.separator();
         
         if ui.button("Connect").clicked() {
-            if let Err(e) = start_client(&mut commands, &network_info) {
-                eprintln!("Client connection error: {}", e);
-            } else {
-                game_state.current_screen = GameScreen::InGame;
-            }
+            // ネットワーキング無効のため、一時的に無効化
+            // game_state.current_screen = GameScreen::InGame;
         }
         
         if ui.button("Back").clicked() {
             game_state.current_screen = GameScreen::Menu;
         }
     });
+    }
 }
 
-fn draw_game_ui(
+pub fn draw_game_ui(
     mut contexts: EguiContexts,
     game_state: Res<GameState>,
 ) {
@@ -208,7 +203,8 @@ fn draw_game_ui(
         return;
     }
     
-    egui::TopBottomPanel::top("game_info").show(contexts.ctx_mut(), |ui| {
+    let Ok(ctx) = contexts.ctx_mut() else { return; };
+    egui::TopBottomPanel::top("game_info").show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.label(format!("Progress: {:.1}%", game_state.puzzle_progress * 100.0));
             ui.separator();
@@ -224,7 +220,7 @@ fn draw_game_ui(
         });
     });
     
-    egui::SidePanel::right("players").show(contexts.ctx_mut(), |ui| {
+    egui::SidePanel::right("players").show(ctx, |ui| {
         ui.heading("Players");
         ui.separator();
         
@@ -239,7 +235,7 @@ fn draw_game_ui(
     });
 }
 
-fn draw_completion_ui(
+pub fn draw_completion_ui(
     mut contexts: EguiContexts,
     mut game_state: ResMut<GameState>,
 ) {
@@ -247,7 +243,8 @@ fn draw_completion_ui(
         return;
     }
     
-    egui::CentralPanel::default().show(contexts.ctx_mut(), |ui| {
+    let Ok(ctx) = contexts.ctx_mut() else { return; };
+    egui::CentralPanel::default().show(ctx, |ui| {
         ui.heading("🎉 Puzzle Complete!");
         
         ui.separator();
