@@ -1,8 +1,10 @@
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
+use bevy::sprite::ColorMaterial;
 use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
+use crate::jigsaw_shapes::JigsawShapeGenerator;
 use rand::Rng;
 use uuid::Uuid;
 
@@ -21,6 +23,11 @@ pub fn update_input_state(
     if let Some(cursor_pos) = window.cursor_position() {
         if let Some(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
             input_state.mouse_position = world_pos;
+            // デバッグ: マウス座標変換を確認（頻繁すぎるので制限）
+            if mouse_input.just_pressed(MouseButton::Left) {
+                println!("Cursor: ({:.1}, {:.1}) -> World: ({:.1}, {:.1})", 
+                    cursor_pos.x, cursor_pos.y, world_pos.x, world_pos.y);
+            }
         }
     }
     
@@ -29,54 +36,111 @@ pub fn update_input_state(
 
 pub fn handle_piece_dragging(
     _commands: Commands,
-    mut piece_query: Query<(Entity, &mut Transform, &mut Draggable, &PuzzlePiece, &Sprite)>,
+    mut piece_query: Query<(Entity, &mut Transform, &mut Draggable, &PuzzlePiece)>,
     mut input_state: ResMut<InputState>,
     mut game_state: ResMut<GameState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
+    puzzle_config: Res<PuzzleConfig>,
+    puzzle_image: Option<Res<PuzzleImage>>,
+    camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
 ) {
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Left);
     let mouse_pressed = mouse_input.pressed(MouseButton::Left);
     let mouse_just_released = mouse_input.just_released(MouseButton::Left);
     
+    // カメラのスケールを取得
+    let camera_scale = if let Ok(camera_transform) = camera_query.get_single() {
+        camera_transform.scale.x
+    } else {
+        1.0
+    };
+    
     // 現在ドラッグ中のピースがあるかチェック
     let mut current_dragging_piece: Option<Entity> = None;
-    for (entity, _transform, draggable, _piece, _sprite) in piece_query.iter() {
+    for (entity, _transform, draggable, _piece) in piece_query.iter() {
         if draggable.is_dragging {
             current_dragging_piece = Some(entity);
             break;
         }
     }
     
+    // ピースサイズを計算（オリジナル画像サイズを使用）
+    let (piece_width, piece_height) = if let Some(puzzle_image) = puzzle_image.as_ref() {
+        let (grid_width, grid_height) = puzzle_config.grid_size;
+        // オリジナル画像サイズを使用
+        let display_width = puzzle_image.size.x;
+        let display_height = puzzle_image.size.y;
+        let piece_size = (display_width / grid_width as f32, display_height / grid_height as f32);
+        
+        // デバッグ: ピースサイズ情報を出力（一度だけ）
+        if mouse_just_pressed {
+            println!("Debug: Grid {}x{}, Original {}x{}, Piece size {}x{}, Camera scale {:.2}", 
+                grid_width, grid_height, display_width, display_height, 
+                piece_size.0, piece_size.1, camera_scale);
+        }
+        
+        piece_size
+    } else {
+        (80.0, 80.0) // デフォルト値
+    };
+    
     // マウスがクリックされた瞬間かつ、他にドラッグ中のピースがない場合、かつカメラがドラッグ中でない場合のみ新しい選択を行う
     if mouse_just_pressed && current_dragging_piece.is_none() && !input_state.is_camera_dragging {
         let mut closest_piece: Option<(Entity, f32, f32)> = None;
         
-        for (entity, transform, draggable, _piece, sprite) in piece_query.iter() {
+        // デバッグ: 最初の数個のピースの距離を出力
+        let mut piece_count = 0;
+        
+        for (entity, transform, draggable, piece) in piece_query.iter() {
             if draggable.is_dragging {
                 continue;
             }
             
             let piece_pos = transform.translation.truncate();
+            let distance_to_mouse = piece_pos.distance(input_state.mouse_position);
             
-            // ピースサイズを動的に取得（Spriteのcustom_sizeから）
-            let (piece_width, piece_height) = if let Some(custom_size) = sprite.custom_size {
-                (custom_size.x, custom_size.y)
-            } else {
-                (80.0, 80.0) // デフォルト値
-            };
+            // 最初の3個のピースの位置情報をデバッグ出力
+            if piece_count < 3 {
+                println!("Piece {} at ({:.1}, {:.1}), distance to mouse: {:.1}, bounds: {:.1}x{:.1}", 
+                    piece_count, piece_pos.x, piece_pos.y, distance_to_mouse, piece_width, piece_height);
+                piece_count += 1;
+            }
             
-            // 矩形範囲での当たり判定（ピースサイズぴったり）
-            let half_width = piece_width / 2.0;
-            let half_height = piece_height / 2.0;
+            // ジグソー形状での当たり判定（ワールド座標系で計算）
+            // マウス位置をピース座標系に変換
+            let relative_mouse_pos = input_state.mouse_position - piece_pos;
             
-            let mouse_in_bounds = 
-                input_state.mouse_position.x >= piece_pos.x - half_width &&
-                input_state.mouse_position.x <= piece_pos.x + half_width &&
-                input_state.mouse_position.y >= piece_pos.y - half_height &&
-                input_state.mouse_position.y <= piece_pos.y + half_height;
+            // 実際のジグソー形状のバウンディングボックスを使用
+            let bounds = piece.bounds;
+            let margin_factor = 1.1; // 10%マージンを追加
+            
+            // マージンを加えて拡大したバウンディングボックス
+            let margin_x = bounds.width() * (margin_factor - 1.0) / 2.0;
+            let margin_y = bounds.height() * (margin_factor - 1.0) / 2.0;
+            let expanded_bounds = Rect::new(
+                bounds.min.x - margin_x,
+                bounds.min.y - margin_y,
+                bounds.width() + margin_x * 2.0,
+                bounds.height() + margin_y * 2.0,
+            );
+            
+            let mouse_in_bounds = expanded_bounds.contains(relative_mouse_pos);
+            
+            // デバッグ: 距離が近い（1500以下）のピースの詳細を出力
+            if distance_to_mouse < 1500.0 {
+                println!("  Piece {} (close): relative ({:.1}, {:.1}), bounds {}x{}, in_bounds: {}", 
+                    piece_count-1, relative_mouse_pos.x, relative_mouse_pos.y, 
+                    bounds.width(), bounds.height(), mouse_in_bounds);
+            }
             
             if mouse_in_bounds {
                 let distance = piece_pos.distance(input_state.mouse_position);
+                println!("Hit piece at ({:.1}, {:.1}), mouse at ({:.1}, {:.1}), relative ({:.1}, {:.1}), bounds {:.1}x{:.1}", 
+                    piece_pos.x, piece_pos.y, 
+                    input_state.mouse_position.x, input_state.mouse_position.y,
+                    relative_mouse_pos.x, relative_mouse_pos.y,
+                    bounds.width(), bounds.height());
+                
                 // Z値が高い（より前面）ピースを優先、同じZ値なら距離が近いピースを選択
                 match closest_piece {
                     None => closest_piece = Some((entity, distance, transform.translation.z)),
@@ -94,7 +158,7 @@ pub fn handle_piece_dragging(
         if let Some((selected_entity, _, _)) = closest_piece {
             input_state.selected_piece = Some(selected_entity);
             
-            for (entity, mut transform, mut draggable, _piece, _sprite) in piece_query.iter_mut() {
+            for (entity, mut transform, mut draggable, piece) in piece_query.iter_mut() {
                 if entity == selected_entity {
                     draggable.is_dragging = true;
                     let piece_pos = transform.translation.truncate();
@@ -108,7 +172,7 @@ pub fn handle_piece_dragging(
     }
     
     // ドラッグ中の処理
-    for (entity, mut transform, mut draggable, _piece, _sprite) in piece_query.iter_mut() {
+    for (entity, mut transform, mut draggable, piece) in piece_query.iter_mut() {
         if draggable.is_dragging {
             if mouse_pressed {
                 let old_pos = transform.translation.truncate();
@@ -184,6 +248,8 @@ pub fn spawn_puzzle_pieces(
     game_state: Res<GameState>,
     existing_pieces: Query<&PuzzlePiece>,
     images: Res<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     if game_state.current_screen == GameScreen::InGame && existing_pieces.is_empty() {
         // 画像パスが設定されている場合
@@ -204,7 +270,7 @@ pub fn spawn_puzzle_pieces(
                 // 画像サイズが正しく更新されている場合のみピースを作成
                 if puzzle_image.size.x > 1.0 && puzzle_image.size.y > 1.0 {
                     println!("Creating pieces with image size: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
-                    create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, &puzzle_image);
+                    create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, &puzzle_image, &mut meshes, &mut materials);
                 } else {
                     println!("Waiting for image size update: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
                     return; // 画像サイズがまだ更新されていない
@@ -246,6 +312,33 @@ fn spawn_grid_reference(
     }
 }
 
+pub fn auto_adjust_camera_zoom(
+    mut camera_query: Query<&mut Transform, With<MainCamera>>,
+    puzzle_image: Option<Res<PuzzleImage>>,
+    windows: Query<&Window>,
+) {
+    if let Some(puzzle_image) = puzzle_image.as_ref() {
+        if let Ok(window) = windows.get_single() {
+            for mut transform in camera_query.iter_mut() {
+                // 現在のスケールが1.0（初期状態）の場合のみ自動調整
+                if (transform.scale.x - 1.0).abs() < 0.01 {
+                    let window_width = window.width();
+                    let window_height = window.height();
+                    
+                    // 画像がウィンドウに収まるように初期ズームを計算
+                    let scale_x = window_width / puzzle_image.size.x * 0.8; // 80%のマージン
+                    let scale_y = window_height / puzzle_image.size.y * 0.8;
+                    let initial_scale = scale_x.min(scale_y).clamp(0.1, 5.0);
+                    
+                    transform.scale = Vec3::splat(initial_scale);
+                    println!("Auto-adjusted camera zoom to {:.2} for image {}x{}", 
+                        initial_scale, puzzle_image.size.x, puzzle_image.size.y);
+                }
+            }
+        }
+    }
+}
+
 pub fn handle_camera_zoom(
     mut scroll_evr: EventReader<MouseWheel>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
@@ -254,9 +347,9 @@ pub fn handle_camera_zoom(
         for mut transform in camera_query.iter_mut() {
             let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
             
-            // ズーム制限 (0.5倍から3.0倍まで)
+            // ズーム制限 (0.1倍から5.0倍まで - 大きな画像に対応)
             let current_scale = transform.scale.x;
-            let new_scale = (current_scale * zoom_factor).clamp(0.5, 3.0);
+            let new_scale = (current_scale * zoom_factor).clamp(0.1, 5.0);
             
             transform.scale = Vec3::splat(new_scale);
             

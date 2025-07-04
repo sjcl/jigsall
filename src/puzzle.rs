@@ -1,8 +1,8 @@
 use bevy::prelude::*;
-// use bevy_prototype_lyon::prelude::*; // 一時的にコメントアウト
+use bevy::sprite::{ColorMaterial, MaterialMesh2dBundle};
 use crate::components::*;
 use crate::resources::*;
-// use crate::jigsaw_shapes::JigsawShapeGenerator; // 一時的にコメントアウト
+use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
 use rand::Rng;
 
@@ -11,17 +11,14 @@ pub fn create_puzzle_pieces(
     _asset_server: &AssetServer,
     puzzle_config: &PuzzleConfig,
     puzzle_image: &PuzzleImage,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
 ) {
     let (grid_width, grid_height) = puzzle_config.grid_size;
     
-    // 画像サイズを適切なスケールに正規化（最大800pxまで）
-    let max_display_size = 800.0;
-    let aspect_ratio = puzzle_image.size.x / puzzle_image.size.y;
-    let (display_width, display_height) = if puzzle_image.size.x > puzzle_image.size.y {
-        (max_display_size, max_display_size / aspect_ratio)
-    } else {
-        (max_display_size * aspect_ratio, max_display_size)
-    };
+    // オリジナル画像サイズを使用（正規化なし）
+    let display_width = puzzle_image.size.x;
+    let display_height = puzzle_image.size.y;
     
     let piece_width = display_width / grid_width as f32;
     let piece_height = display_height / grid_height as f32;
@@ -29,17 +26,17 @@ pub fn create_puzzle_pieces(
     println!("Original image size: {}x{}, Display size: {}x{}, Piece size: {}x{}", 
         puzzle_image.size.x, puzzle_image.size.y, display_width, display_height, piece_width, piece_height);
     
-    // TODO: ジグソー形状ジェネレータを後で実装
-    // let mut shape_generator = JigsawShapeGenerator::new(
-    //     (piece_width, piece_height),
-    //     (grid_width, grid_height),
-    // );
-    // 
-    // // 全ての形状を事前生成
-    // if let Err(e) = shape_generator.generate_all_shapes() {
-    //     println!("Failed to generate jigsaw shapes: {}", e);
-    //     return;
-    // }
+    // ジグソー形状ジェネレータを初期化
+    let mut shape_generator = JigsawShapeGenerator::new(
+        (piece_width, piece_height),
+        (grid_width, grid_height),
+    );
+    
+    // 全ての形状を事前生成
+    if let Err(e) = shape_generator.generate_all_shapes() {
+        println!("Failed to generate jigsaw shapes: {}", e);
+        return;
+    }
     
     // 配置済みピース位置を記録
     let mut placed_positions: Vec<Vec2> = Vec::new();
@@ -155,6 +152,14 @@ pub fn create_puzzle_pieces(
             println!("Image piece ({},{}) placed at ({:.1}, {:.1}), grid size: {}x{}", 
                 x, y, random_x, random_y, grid_width, grid_height);
             
+            // ジグソー形状を取得
+            let shape = if let Some(shape_data) = shape_generator.get_shape(x, y) {
+                shape_data
+            } else {
+                println!("Failed to get shape for piece ({}, {})", x, y);
+                continue;
+            };
+            
             let texture_coords = Vec4::new(
                 x as f32 / grid_width as f32,
                 y as f32 / grid_height as f32,
@@ -171,28 +176,31 @@ pub fn create_puzzle_pieces(
                 is_placed: false,
                 grid_x: x,
                 grid_y: y,
+                bounds: shape.bounds,
             };
             
             // 各ピースに一意のZ値を設定（重なり順制御）
             let z_offset = (y * grid_width + x) as f32 * 0.001;
             
-            println!("Spawning piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
+            // メッシュをクローンしてアセットに追加
+            let mesh = clone_mesh_from_shape(shape);
+            let mesh_handle = meshes.add(mesh);
             
-            // 現在はシンプルなスプライトとして実装、後でジグソー形状に拡張
+            // ColorMaterialを作成（画像のテクスチャを使用）
+            let material = ColorMaterial {
+                texture: Some(puzzle_image.handle.clone()),
+                ..default()
+            };
+            let material_handle = materials.add(material);
+            
+            println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
+            
+            // 2D MaterialMesh2dBundleを使用してピースを生成
             commands.spawn((
-                SpriteBundle {
-                    texture: puzzle_image.handle.clone(),
+                MaterialMesh2dBundle::<ColorMaterial> {
+                    mesh: mesh_handle.into(),
+                    material: material_handle,
                     transform: Transform::from_translation(start_position.extend(z_offset)),
-                    sprite: Sprite {
-                        rect: Some(Rect::new(
-                            x as f32 * (puzzle_image.size.x / grid_width as f32),
-                            y as f32 * (puzzle_image.size.y / grid_height as f32),
-                            (x + 1) as f32 * (puzzle_image.size.x / grid_width as f32),
-                            (y + 1) as f32 * (puzzle_image.size.y / grid_height as f32),
-                        )),
-                        custom_size: Some(Vec2::new(piece_width, piece_height)),
-                        ..default()
-                    },
                     ..default()
                 },
                 piece,

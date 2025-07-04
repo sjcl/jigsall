@@ -1,11 +1,26 @@
 use bevy::prelude::*;
-use bevy_prototype_lyon::prelude::*;
+use bevy::render::mesh::Indices;
+use bevy::render::render_resource::PrimitiveTopology;
+use bevy::render::render_asset::RenderAssetUsages;
+use lyon::path::{Path, Builder};
+use lyon::math;
+use lyon_tessellation::{
+    VertexBuffers, FillTessellator, FillOptions, FillVertex,
+    geometry_builder::BuffersBuilder, VertexId
+};
 use puzzle_paths::{build_jigsaw_template, JigsawTemplate};
 use std::collections::HashMap;
+use svgtypes::{PathParser, PathSegment};
+
+/// シンプルな頂点タイプ
+#[derive(Copy, Clone, Debug)]
+pub struct SimpleVertex {
+    pub position: [f32; 2],
+}
 
 /// ジグソーピースの形状データを管理する構造体
 pub struct JigsawPieceShape {
-    pub path: Path,
+    pub mesh: Mesh,
     pub bounds: Rect,
     pub texture_coords: Vec4,
 }
@@ -44,8 +59,13 @@ impl JigsawShapeGenerator {
             Some(42),                        // 固定シード
         );
         
-        self.jigsaw_template = Some(template);
+        // デバッグ: 最初のいくつかのSVGパスを出力
         println!("Generated jigsaw template for {}x{} grid", grid_width, grid_height);
+        for (i, path) in template.svg_paths.iter().take(3).enumerate() {
+            println!("SVG path {}: {}", i, path);
+        }
+        
+        self.jigsaw_template = Some(template);
         Ok(())
     }
 
@@ -76,8 +96,8 @@ impl JigsawShapeGenerator {
             return Err(format!("Piece index {} out of bounds", piece_index).into());
         };
 
-        // SVGパスをbevy_prototype_lyonのPathに変換
-        let lyon_path = self.parse_svg_path_to_lyon(svg_path)?;
+        // SVGパスをlyonのPathに変換してメッシュ生成
+        let mesh = self.parse_svg_path_to_mesh(svg_path, x, y)?;
         
         // テクスチャ座標を計算
         let texture_coords = Vec4::new(
@@ -87,17 +107,11 @@ impl JigsawShapeGenerator {
             (y + 1) as f32 / grid_height as f32,
         );
 
-        // バウンディングボックスを計算
-        let (piece_width, piece_height) = self.piece_size;
-        let bounds = Rect::new(
-            -piece_width / 2.0,
-            -piece_height / 2.0,
-            piece_width,
-            piece_height,
-        );
+        // バウンディングボックスをメッシュから計算
+        let bounds = self.calculate_mesh_bounds(&mesh);
 
         let shape = JigsawPieceShape {
-            path: lyon_path,
+            mesh,
             bounds,
             texture_coords,
         };
@@ -109,24 +123,215 @@ impl JigsawShapeGenerator {
         Ok(self.shape_cache.get(&(x, y)).unwrap())
     }
 
-    /// SVGパス文字列をbevy_prototype_lyonのPathに変換
+    /// SVGパス文字列をlyonで解析してBevyメッシュに変換
+    fn parse_svg_path_to_mesh(&self, svg_path: &str, x: usize, y: usize) -> Result<Mesh, Box<dyn std::error::Error>> {
+        // SVGパス文字列をlyonのPathオブジェクトに変換
+        let lyon_path = match self.parse_svg_path_to_lyon(svg_path) {
+            Ok(path) => path,
+            Err(err) => {
+                println!("Failed to parse SVG path for piece ({}, {}): {}. Using fallback rectangle.", x, y, err);
+                // フォールバック: 矩形パスを作成
+                let (piece_width, piece_height) = self.piece_size;
+                let half_width = piece_width / 2.0;
+                let half_height = piece_height / 2.0;
+                
+                {
+                    let mut builder = Path::builder();
+                    builder.begin(math::point(-half_width, -half_height));
+                    builder.line_to(math::point(half_width, -half_height));
+                    builder.line_to(math::point(half_width, half_height));
+                    builder.line_to(math::point(-half_width, half_height));
+                    builder.close();
+                    builder.build()
+                }
+            }
+        };
+        
+        println!("Parsed SVG path for piece ({}, {}) - Path length: {} chars", x, y, svg_path.len());
+        
+        // SimpleVertexを使用してテセレーション
+        let mut vb: VertexBuffers<SimpleVertex, u16> = VertexBuffers::new();
+        FillTessellator::new()
+            .tessellate_path(
+                &lyon_path,
+                &FillOptions::default(),
+                &mut BuffersBuilder::new(&mut vb, |v: FillVertex| SimpleVertex {
+                    position: [v.position().x, v.position().y],
+                }),
+            )?;
+        
+        // バウンディングボックスを実際の頂点から計算
+        let (min_x, max_x, min_y, max_y) = if vb.vertices.is_empty() {
+            // フォールバック: 頂点がない場合は piece_size を使用
+            let (piece_width, piece_height) = self.piece_size;
+            (-piece_width / 2.0, piece_width / 2.0, -piece_height / 2.0, piece_height / 2.0)
+        } else {
+            vb.vertices.iter().fold(
+                (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY),
+                |(min_x, max_x, min_y, max_y), v| {
+                    let x = v.position[0];
+                    let y = v.position[1];
+                    (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y))
+                }
+            )
+        };
+        let width = max_x - min_x;
+        let height = max_y - min_y;
+        
+        // Bevyメッシュを作成
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        
+        // 頂点位置を変換
+        let positions: Vec<[f32; 3]> = vb.vertices
+            .iter()
+            .map(|v| [v.position[0], v.position[1], 0.0])
+            .collect();
+        
+        // UV座標を計算（バウンディングボックスで正規化 + テクスチャ領域マッピング）
+        let (grid_width, grid_height) = self.grid_size;
+        let texture_u_start = x as f32 / grid_width as f32;
+        let texture_v_start = y as f32 / grid_height as f32;
+        let texture_u_end = (x + 1) as f32 / grid_width as f32;
+        let texture_v_end = (y + 1) as f32 / grid_height as f32;
+        
+        let uvs: Vec<[f32; 2]> = vb.vertices
+            .iter()
+            .map(|v| {
+                let x = v.position[0];
+                let y = v.position[1];
+                // バウンディングボックスで正規化
+                let norm_u = (x - min_x) / width;
+                let norm_v = (max_y - y) / height; // Y軸を反転
+                
+                // テクスチャ領域にマッピング
+                let u = texture_u_start + norm_u * (texture_u_end - texture_u_start);
+                let v = texture_v_start + norm_v * (texture_v_end - texture_v_start);
+                [u, v]
+            })
+            .collect();
+        
+        // インデックスを変換
+        let indices: Vec<u32> = vb.indices
+            .iter()
+            .map(|&i| i as u32)
+            .collect();
+        
+        // メッシュにデータを設定
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        mesh.insert_indices(Indices::U32(indices));
+        
+        println!("Generated 2D mesh for piece ({}, {}) with {} vertices", x, y, vb.vertices.len());
+        Ok(mesh)
+    }
+
+    /// メッシュからバウンディングボックスを計算
+    fn calculate_mesh_bounds(&self, mesh: &Mesh) -> Rect {
+        if let Some(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            match positions {
+                bevy::render::mesh::VertexAttributeValues::Float32x3(positions) => {
+                    let (min_x, max_x, min_y, max_y) = positions.iter().fold(
+                        (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY),
+                        |(min_x, max_x, min_y, max_y), pos| {
+                            (min_x.min(pos[0]), max_x.max(pos[0]), min_y.min(pos[1]), max_y.max(pos[1]))
+                        }
+                    );
+                    Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+                }
+                _ => {
+                    // フォールバック: 期待される形式でない場合は piece_size を使用
+                    let (piece_width, piece_height) = self.piece_size;
+                    Rect::new(-piece_width / 2.0, -piece_height / 2.0, piece_width, piece_height)
+                }
+            }
+        } else {
+            // フォールバック: 位置属性がない場合は piece_size を使用
+            let (piece_width, piece_height) = self.piece_size;
+            Rect::new(-piece_width / 2.0, -piece_height / 2.0, piece_width, piece_height)
+        }
+    }
+
+    /// SVGパス文字列をlyonのPathオブジェクトに変換
     fn parse_svg_path_to_lyon(&self, svg_path: &str) -> Result<Path, Box<dyn std::error::Error>> {
-        // TODO: 実際のSVGパス解析を実装
-        // 現在は簡単な矩形パスを作成
+        println!("Parsing SVG path: {}", svg_path);
+        
+        let mut builder = Path::builder();
+        let mut path_started = false;
+        
+        // SVG解析を実装
+        for segment in PathParser::from(svg_path) {
+            match segment {
+                Ok(seg) => {
+                    match seg {
+                        PathSegment::MoveTo { abs, x, y } => {
+                            if path_started {
+                                builder.end(false);
+                            }
+                            builder.begin(math::point(x as f32, y as f32));
+                            path_started = true;
+                        }
+                        PathSegment::LineTo { abs, x, y } => {
+                            if !path_started {
+                                builder.begin(math::point(0.0, 0.0));
+                                path_started = true;
+                            }
+                            builder.line_to(math::point(x as f32, y as f32));
+                        }
+                        PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
+                            if !path_started {
+                                builder.begin(math::point(0.0, 0.0));
+                                path_started = true;
+                            }
+                            builder.cubic_bezier_to(
+                                math::point(x1 as f32, y1 as f32),
+                                math::point(x2 as f32, y2 as f32),
+                                math::point(x as f32, y as f32)
+                            );
+                        }
+                        PathSegment::ClosePath { abs: _ } => {
+                            // For ClosePath, we just end with closed=true
+                            if path_started {
+                                path_started = false;
+                                builder.end(true);
+                            }
+                        }
+                        _ => {
+                            println!("Unsupported SVG command: {:?}", seg);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Error parsing SVG: {}, falling back to rectangle", e);
+                    return self.create_fallback_rectangle();
+                }
+            }
+        }
+        
+        // If path is still open, close it
+        if path_started {
+            builder.end(false);
+        }
+        
+        Ok(builder.build())
+    }
+    
+    /// フォールバック用の矩形パスを作成
+    fn create_fallback_rectangle(&self) -> Result<Path, Box<dyn std::error::Error>> {
         let (piece_width, piece_height) = self.piece_size;
         let half_width = piece_width / 2.0;
         let half_height = piece_height / 2.0;
-
-        let mut path_builder = PathBuilder::new();
         
-        // 基本的な矩形パス（後でジグソー形状に変更）
-        path_builder.move_to(Vec2::new(-half_width, -half_height));
-        path_builder.line_to(Vec2::new(half_width, -half_height));
-        path_builder.line_to(Vec2::new(half_width, half_height));
-        path_builder.line_to(Vec2::new(-half_width, half_height));
-        path_builder.close();
+        let mut builder = Path::builder();
+        builder.begin(math::point(-half_width, -half_height));
+        builder.line_to(math::point(half_width, -half_height));
+        builder.line_to(math::point(half_width, half_height));
+        builder.line_to(math::point(-half_width, half_height));
+        builder.end(true); // end(true) for closed path
         
-        Ok(path_builder.build())
+        Ok(builder.build())
     }
 
     /// 全てのピース形状を事前生成
@@ -156,6 +361,27 @@ impl JigsawShapeGenerator {
             false
         }
     }
+}
+
+/// メッシュデータをクローンするヘルパー関数
+pub fn clone_mesh_from_shape(shape: &JigsawPieceShape) -> Mesh {
+    let positions = shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+    let uvs = shape.mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap();
+    let indices = shape.mesh.indices().unwrap();
+    
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs.clone());
+    match indices {
+        Indices::U16(data) => mesh.insert_indices(Indices::U16(data.clone())),
+        Indices::U32(data) => mesh.insert_indices(Indices::U32(data.clone())),
+    }
+    
+    mesh
 }
 
 // TODO: 後でカスタムマテリアルを実装してテクスチャマッピングを行う

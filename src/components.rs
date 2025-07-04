@@ -12,6 +12,7 @@ pub struct PuzzlePiece {
     pub is_placed: bool,
     pub grid_x: usize,
     pub grid_y: usize,
+    pub bounds: Rect,  // 実際のジグソー形状のバウンディングボックス
 }
 
 #[derive(Component)]

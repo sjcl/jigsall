@@ -17,6 +17,7 @@ impl Plugin for GamePlugin {
                 Update,
                 (
                     update_puzzle_image_size,
+                    auto_adjust_camera_zoom,
                     update_input_state,
                     handle_piece_dragging,
                     check_piece_placement,
@@ -30,6 +31,7 @@ impl Plugin for GamePlugin {
 }
 
 fn setup_game(mut commands: Commands) {
+    // 2Dカメラを設定
     commands.spawn((
         Camera2dBundle::default(),
         MainCamera,
