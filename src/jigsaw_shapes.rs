@@ -137,10 +137,10 @@ impl JigsawShapeGenerator {
                 
                 {
                     let mut builder = Path::builder();
-                    builder.begin(math::point(-half_width, -half_height));
-                    builder.line_to(math::point(half_width, -half_height));
+                    builder.begin(math::point(-half_width, half_height));
                     builder.line_to(math::point(half_width, half_height));
-                    builder.line_to(math::point(-half_width, half_height));
+                    builder.line_to(math::point(half_width, -half_height));
+                    builder.line_to(math::point(-half_width, -half_height));
                     builder.close();
                     builder.build()
                 }
@@ -204,7 +204,8 @@ impl JigsawShapeGenerator {
                 let y = v.position[1];
                 // バウンディングボックスで正規化
                 let norm_u = (x - min_x) / width;
-                let norm_v = (max_y - y) / height; // Y軸を反転
+                // テクスチャ座標は反転させない（パス座標の反転とは独立）
+                let norm_v = (max_y - y) / height; // Y軸を反転してテクスチャが正しく表示されるようにする
                 
                 // テクスチャ領域にマッピング
                 let u = texture_u_start + norm_u * (texture_u_end - texture_u_start);
@@ -270,7 +271,8 @@ impl JigsawShapeGenerator {
                             if path_started {
                                 builder.end(false);
                             }
-                            builder.begin(math::point(x as f32, y as f32));
+                            // Y座標を反転してBevyの座標系に合わせる
+                            builder.begin(math::point(x as f32, -y as f32));
                             path_started = true;
                         }
                         PathSegment::LineTo { abs, x, y } => {
@@ -278,17 +280,19 @@ impl JigsawShapeGenerator {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
                             }
-                            builder.line_to(math::point(x as f32, y as f32));
+                            // Y座標を反転してBevyの座標系に合わせる
+                            builder.line_to(math::point(x as f32, -y as f32));
                         }
                         PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
                             if !path_started {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
                             }
+                            // Y座標を反転してBevyの座標系に合わせる
                             builder.cubic_bezier_to(
-                                math::point(x1 as f32, y1 as f32),
-                                math::point(x2 as f32, y2 as f32),
-                                math::point(x as f32, y as f32)
+                                math::point(x1 as f32, -y1 as f32),
+                                math::point(x2 as f32, -y2 as f32),
+                                math::point(x as f32, -y as f32)
                             );
                         }
                         PathSegment::ClosePath { abs: _ } => {
@@ -325,10 +329,10 @@ impl JigsawShapeGenerator {
         let half_height = piece_height / 2.0;
         
         let mut builder = Path::builder();
-        builder.begin(math::point(-half_width, -half_height));
-        builder.line_to(math::point(half_width, -half_height));
+        builder.begin(math::point(-half_width, half_height));
         builder.line_to(math::point(half_width, half_height));
-        builder.line_to(math::point(-half_width, half_height));
+        builder.line_to(math::point(half_width, -half_height));
+        builder.line_to(math::point(-half_width, -half_height));
         builder.end(true); // end(true) for closed path
         
         Ok(builder.build())
