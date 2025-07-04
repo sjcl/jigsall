@@ -124,6 +124,8 @@ pub fn draw_host_setup_ui(
                 {
                     puzzle_config.image_path = path.to_string_lossy().to_string();
                     println!("Selected image: {}", puzzle_config.image_path);
+                    println!("File exists: {}", std::path::Path::new(&puzzle_config.image_path).exists());
+                    println!("File metadata: {:?}", std::fs::metadata(&puzzle_config.image_path));
                 }
             }
             #[cfg(not(target_os = "windows"))]

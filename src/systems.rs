@@ -7,6 +7,7 @@ use crate::puzzle::*;
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use rand::Rng;
 use uuid::Uuid;
+use std::path::Path;
 
 pub fn update_input_state(
     mut input_state: ResMut<InputState>,
@@ -247,6 +248,7 @@ pub fn spawn_puzzle_pieces(
     puzzle_image: Option<Res<PuzzleImage>>,
     game_state: Res<GameState>,
     existing_pieces: Query<&PuzzlePiece>,
+    existing_grid_ref: Query<&GridReference>,
     images: Res<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
@@ -256,9 +258,54 @@ pub fn spawn_puzzle_pieces(
         if !puzzle_config.image_path.is_empty() {
             // PuzzleImageリソースがまだない場合は作成
             if puzzle_image.is_none() {
-                let image_handle = asset_server.load(&puzzle_config.image_path);
+                // ファイルの存在確認
+                if !std::path::Path::new(&puzzle_config.image_path).exists() {
+                    println!("Error: Image file does not exist: {}", puzzle_config.image_path);
+                    return;
+                }
                 
-                println!("Loading image: {}", puzzle_config.image_path);
+                // Bevyアセットシステム用のパス変換
+                let asset_path = if Path::new(&puzzle_config.image_path).is_absolute() {
+                    // 絶対パスの場合は、assetsフォルダにコピーして相対パスを使用
+                    let source_path = Path::new(&puzzle_config.image_path);
+                    let file_name = source_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("puzzle_image.png");
+                    
+                    let assets_dir = Path::new("assets");
+                    let dest_path = assets_dir.join(file_name);
+                    
+                    // assetsディレクトリが存在しない場合は作成
+                    if !assets_dir.exists() {
+                        if let Err(e) = std::fs::create_dir_all(assets_dir) {
+                            println!("Failed to create assets directory: {}", e);
+                            return;
+                        }
+                    }
+                    
+                    // ファイルをassetsフォルダにコピー
+                    if let Err(e) = std::fs::copy(source_path, &dest_path) {
+                        println!("Failed to copy image to assets folder: {}", e);
+                        return;
+                    }
+                    
+                    println!("Copied image to: {:?}", dest_path);
+                    file_name.to_string()
+                } else {
+                    puzzle_config.image_path.clone()
+                };
+                
+                println!("Original path: {}", puzzle_config.image_path);
+                println!("Asset path: {}", asset_path);
+                
+                let image_handle = asset_server.load(&asset_path);
+                println!("Loading image with handle: {:?}", image_handle);
+                
+                // 読み込み直後の状態もチェック
+                let initial_state = asset_server.load_state(&image_handle);
+                println!("Initial load state: {:?}", initial_state);
+                
                 commands.insert_resource(PuzzleImage {
                     handle: image_handle,
                     size: Vec2::new(1.0, 1.0), // 初期値として1x1を設定（update_puzzle_image_sizeで更新される）
@@ -282,8 +329,10 @@ pub fn spawn_puzzle_pieces(
             return;
         }
         
-        // 半透明の元画像をグリッドの正しい位置に表示
-        spawn_grid_reference(&mut commands, &asset_server, &puzzle_config);
+        // 半透明の元画像をグリッドの正しい位置に表示（まだ存在しない場合のみ）
+        if existing_grid_ref.is_empty() {
+            spawn_grid_reference(&mut commands, &asset_server, &puzzle_config);
+        }
     }
 }
 
@@ -294,7 +343,20 @@ fn spawn_grid_reference(
 ) {
     // 選択された画像を半透明で表示
     if !puzzle_config.image_path.is_empty() {
-        let texture_handle = asset_server.load(&puzzle_config.image_path);
+        // メインの画像読み込みと同じパス変換処理を適用
+        let asset_path = if Path::new(&puzzle_config.image_path).is_absolute() {
+            // 絶対パスの場合は、ファイル名のみを使用（既にassetsフォルダにコピー済み）
+            Path::new(&puzzle_config.image_path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("puzzle_image.png")
+                .to_string()
+        } else {
+            puzzle_config.image_path.clone()
+        };
+        
+        println!("Loading grid reference image: {}", asset_path);
+        let texture_handle = asset_server.load(&asset_path);
         
         commands.spawn((
             Sprite {

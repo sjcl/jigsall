@@ -238,17 +238,56 @@ pub fn setup_puzzle_from_image(
 pub fn update_puzzle_image_size(
     mut puzzle_image: Option<ResMut<PuzzleImage>>,
     images: Res<Assets<Image>>,
+    asset_server: Res<AssetServer>,
 ) {
     if let Some(mut puzzle_image) = puzzle_image {
-        if let Some(image) = images.get(&puzzle_image.handle) {
-            let actual_size = image.texture_descriptor.size;
-            let new_size = Vec2::new(actual_size.width as f32, actual_size.height as f32);
-            
-            // サイズが変更された場合のみ更新
-            if puzzle_image.size != new_size {
-                println!("Updating image size from {}x{} to {}x{}", 
-                    puzzle_image.size.x, puzzle_image.size.y, new_size.x, new_size.y);
-                puzzle_image.size = new_size;
+        // Asset loading状態をチェック
+        let load_state = asset_server.load_state(&puzzle_image.handle);
+        
+        // デバッグ用に毎回状態を出力（頻度を制限）
+        static mut DEBUG_COUNTER: usize = 0;
+        unsafe {
+            DEBUG_COUNTER += 1;
+            if DEBUG_COUNTER % 60 == 0 { // 60フレームに1回
+                println!("Image handle: {:?}, Load state: {:?}", puzzle_image.handle, load_state);
+            }
+        }
+        
+        match load_state {
+            bevy::asset::LoadState::Loaded => {
+                if let Some(image) = images.get(&puzzle_image.handle) {
+                    // Bevy 0.16では image.size() メソッドを使用
+                    let actual_size = image.size();
+                    let new_size = Vec2::new(actual_size.x as f32, actual_size.y as f32);
+                    
+                    // サイズが変更された場合のみ更新
+                    if puzzle_image.size != new_size {
+                        println!("Updating image size from {}x{} to {}x{}", 
+                            puzzle_image.size.x, puzzle_image.size.y, new_size.x, new_size.y);
+                        puzzle_image.size = new_size;
+                    }
+                } else {
+                    println!("Image is loaded but not found in Assets<Image>");
+                }
+            }
+            bevy::asset::LoadState::Loading => {
+                // 頻度を制限してログ出力
+                unsafe {
+                    if DEBUG_COUNTER % 120 == 0 {
+                        println!("Image is still loading...");
+                    }
+                }
+            }
+            bevy::asset::LoadState::Failed(_) => {
+                println!("Failed to load image!");
+            }
+            bevy::asset::LoadState::NotLoaded => {
+                // NotLoadedの場合は、再度読み込みを試行
+                unsafe {
+                    if DEBUG_COUNTER % 120 == 0 {
+                        println!("Image not loaded - this may indicate the image was not properly loaded by AssetServer");
+                    }
+                }
             }
         }
     }
