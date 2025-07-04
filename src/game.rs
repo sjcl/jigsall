@@ -33,7 +33,7 @@ impl Plugin for GamePlugin {
 fn setup_game(mut commands: Commands) {
     // 2Dカメラを設定
     commands.spawn((
-        Camera2dBundle::default(),
+        Camera2d,
         MainCamera,
     ));
 }

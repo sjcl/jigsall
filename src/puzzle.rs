@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use bevy::sprite::{ColorMaterial, MaterialMesh2dBundle};
+use bevy::sprite::ColorMaterial;
 use crate::components::*;
 use crate::resources::*;
 use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
@@ -195,14 +195,11 @@ pub fn create_puzzle_pieces(
             
             println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
             
-            // 2D MaterialMesh2dBundleを使用してピースを生成
+            // 2D メッシュコンポーネントを使用してピースを生成
             commands.spawn((
-                MaterialMesh2dBundle::<ColorMaterial> {
-                    mesh: mesh_handle.into(),
-                    material: material_handle,
-                    transform: Transform::from_translation(start_position.extend(z_offset)),
-                    ..default()
-                },
+                Mesh2d(mesh_handle),
+                MeshMaterial2d(material_handle),
+                Transform::from_translation(start_position.extend(z_offset)),
                 piece,
                 Draggable {
                     is_dragging: false,

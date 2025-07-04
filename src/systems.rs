@@ -14,14 +14,14 @@ pub fn update_input_state(
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
 ) {
-    let window = windows.single();
-    let (camera, camera_transform) = camera_q.single();
+    let Ok(window) = windows.get_single() else { return; };
+    let Ok((camera, camera_transform)) = camera_q.get_single() else { return; };
     
     // 前のマウス位置を保存
     input_state.last_mouse_position = input_state.mouse_position;
     
     if let Some(cursor_pos) = window.cursor_position() {
-        if let Some(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
+        if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
             input_state.mouse_position = world_pos;
             // デバッグ: マウス座標変換を確認（頻繁すぎるので制限）
             if mouse_input.just_pressed(MouseButton::Left) {
@@ -297,15 +297,12 @@ fn spawn_grid_reference(
         let texture_handle = asset_server.load(&puzzle_config.image_path);
         
         commands.spawn((
-            SpriteBundle {
-                sprite: Sprite {
-                    color: Color::srgba(1.0, 1.0, 1.0, 0.3), // 半透明
-                    ..default()
-                },
-                texture: texture_handle,
-                transform: Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
+            Sprite {
+                color: Color::srgb(1.0, 1.0, 1.0).with_alpha(0.3), // 半透明
+                image: texture_handle,
                 ..default()
             },
+            Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
             // 参照画像としてマーク
             GridReference,
         ));
@@ -368,7 +365,7 @@ pub fn handle_camera_drag(
     let mouse_pressed = mouse_input.pressed(MouseButton::Right);
     let mouse_just_released = mouse_input.just_released(MouseButton::Right);
     
-    let window = windows.single();
+    let Ok(window) = windows.get_single() else { return; };
     
     // 右クリックでカメラドラッグ開始
     if mouse_just_pressed {

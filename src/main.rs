@@ -1,24 +1,24 @@
 mod game;
-mod networking;
+// mod networking; // 一時的に無効化
 mod puzzle;
-mod ui;
+// mod ui; // 一時的に無効化
 mod components;
 mod resources;
 mod systems;
 mod jigsaw_shapes;
 
 use bevy::prelude::*;
-use bevy_egui::EguiPlugin;
+// use bevy_egui;
 use game::GamePlugin;
-use networking::NetworkingPlugin;
-use ui::UiPlugin;
+// use networking::NetworkingPlugin;
+// use ui::UiPlugin;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(EguiPlugin)
+        // .add_plugins(bevy_egui::EguiPlugin) // 一時的に無効化
         .add_plugins(GamePlugin)
-        .add_plugins(NetworkingPlugin)
-        .add_plugins(UiPlugin)
+        // .add_plugins(NetworkingPlugin) // 一時的に無効化
+        // .add_plugins(UiPlugin) // 一時的に無効化
         .run();
 }
