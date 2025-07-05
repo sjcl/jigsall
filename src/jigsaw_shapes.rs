@@ -524,12 +524,111 @@ impl JigsawShapeGenerator {
         self.shape_cache.get(&(x, y))
     }
 
-    /// 形状内での当たり判定用
+    /// 形状内での当たり判定用（実際のメッシュ形状を使用）
     pub fn point_in_shape(&self, x: usize, y: usize, point: Vec2) -> bool {
         if let Some(shape) = self.get_shape(x, y) {
-            shape.bounds.contains(point)
+            // まず境界チェックで高速に除外
+            if !shape.bounds.contains(point) {
+                return false;
+            }
+            
+            // 実際のメッシュ形状での精密判定
+            self.point_in_mesh(&shape.mesh, point)
         } else {
             false
+        }
+    }
+    
+    /// メッシュの三角形を使った点内判定（Ray-casting アルゴリズム）
+    fn point_in_mesh(&self, mesh: &Mesh, point: Vec2) -> bool {
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::render::mesh::VertexAttributeValues::Float32x3(pos)) => pos,
+            _ => return false,
+        };
+        
+        let indices = match mesh.indices() {
+            Some(Indices::U32(idx)) => idx,
+            Some(Indices::U16(idx)) => {
+                // U16をU32に変換
+                return self.point_in_mesh_u16(mesh, point);
+            },
+            _ => return false,
+        };
+        
+        // Ray-casting: 点から右方向に水平線を引いて、メッシュの辺との交点数を数える
+        let mut intersections = 0;
+        let ray_y = point.y;
+        
+        // 全ての三角形の辺をチェック
+        for triangle in indices.chunks(3) {
+            let v0 = &positions[triangle[0] as usize];
+            let v1 = &positions[triangle[1] as usize];
+            let v2 = &positions[triangle[2] as usize];
+            
+            // 三角形の各辺について交点チェック
+            intersections += self.count_ray_edge_intersections(point, ray_y, 
+                [v0[0], v0[1]], [v1[0], v1[1]]);
+            intersections += self.count_ray_edge_intersections(point, ray_y, 
+                [v1[0], v1[1]], [v2[0], v2[1]]);
+            intersections += self.count_ray_edge_intersections(point, ray_y, 
+                [v2[0], v2[1]], [v0[0], v0[1]]);
+        }
+        
+        // 奇数個の交点 = 点が内部にある
+        intersections % 2 == 1
+    }
+    
+    /// U16インデックス用の点内判定
+    fn point_in_mesh_u16(&self, mesh: &Mesh, point: Vec2) -> bool {
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::render::mesh::VertexAttributeValues::Float32x3(pos)) => pos,
+            _ => return false,
+        };
+        
+        let indices = match mesh.indices() {
+            Some(Indices::U16(idx)) => idx,
+            _ => return false,
+        };
+        
+        let mut intersections = 0;
+        let ray_y = point.y;
+        
+        for triangle in indices.chunks(3) {
+            let v0 = &positions[triangle[0] as usize];
+            let v1 = &positions[triangle[1] as usize];
+            let v2 = &positions[triangle[2] as usize];
+            
+            intersections += self.count_ray_edge_intersections(point, ray_y, 
+                [v0[0], v0[1]], [v1[0], v1[1]]);
+            intersections += self.count_ray_edge_intersections(point, ray_y, 
+                [v1[0], v1[1]], [v2[0], v2[1]]);
+            intersections += self.count_ray_edge_intersections(point, ray_y, 
+                [v2[0], v2[1]], [v0[0], v0[1]]);
+        }
+        
+        intersections % 2 == 1
+    }
+    
+    /// 水平線と線分の交点数を計算
+    fn count_ray_edge_intersections(&self, point: Vec2, ray_y: f32, edge_start: [f32; 2], edge_end: [f32; 2]) -> usize {
+        let y1 = edge_start[1];
+        let y2 = edge_end[1];
+        
+        // 水平線が線分のY範囲内にない場合は交点なし
+        if (y1 > ray_y) == (y2 > ray_y) {
+            return 0;
+        }
+        
+        // 水平線と線分の交点のX座標を計算
+        let x1 = edge_start[0];
+        let x2 = edge_end[0];
+        let intersection_x = x1 + (ray_y - y1) * (x2 - x1) / (y2 - y1);
+        
+        // 交点が点より右側にある場合のみカウント
+        if intersection_x > point.x {
+            1
+        } else {
+            0
         }
     }
 }

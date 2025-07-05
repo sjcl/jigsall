@@ -10,6 +10,52 @@ use rand::Rng;
 use uuid::Uuid;
 use std::path::Path;
 
+/// Ray-casting アルゴリズムを使った点内判定
+fn point_in_mesh(vertices: &[[f32; 2]], indices: &[u32], point: Vec2) -> bool {
+    let mut intersections = 0;
+    let ray_y = point.y;
+    
+    // 全ての三角形の辺をチェック
+    for triangle in indices.chunks(3) {
+        if triangle.len() < 3 { continue; }
+        
+        let v0 = vertices[triangle[0] as usize];
+        let v1 = vertices[triangle[1] as usize];
+        let v2 = vertices[triangle[2] as usize];
+        
+        // 三角形の各辺について交点チェック
+        intersections += count_ray_edge_intersections(point, ray_y, v0, v1);
+        intersections += count_ray_edge_intersections(point, ray_y, v1, v2);
+        intersections += count_ray_edge_intersections(point, ray_y, v2, v0);
+    }
+    
+    // 奇数個の交点 = 点が内部にある
+    intersections % 2 == 1
+}
+
+/// 水平線と線分の交点数を計算
+fn count_ray_edge_intersections(point: Vec2, ray_y: f32, edge_start: [f32; 2], edge_end: [f32; 2]) -> usize {
+    let y1 = edge_start[1];
+    let y2 = edge_end[1];
+    
+    // 水平線が線分のY範囲内にない場合は交点なし
+    if (y1 > ray_y) == (y2 > ray_y) {
+        return 0;
+    }
+    
+    // 水平線と線分の交点のX座標を計算
+    let x1 = edge_start[0];
+    let x2 = edge_end[0];
+    let intersection_x = x1 + (ray_y - y1) * (x2 - x1) / (y2 - y1);
+    
+    // 交点が点より右側にある場合のみカウント
+    if intersection_x > point.x {
+        1
+    } else {
+        0
+    }
+}
+
 pub fn update_input_state(
     mut input_state: ResMut<InputState>,
     windows: Query<&Window>,
@@ -166,7 +212,7 @@ pub fn handle_piece_dragging(
 
 // ハイブリッドアプローチ: 手動当たり判定 + picking eventの合成
 pub fn handle_piece_dragging_hybrid(
-    mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece)>,
+    mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     puzzle_config: Res<PuzzleConfig>,
@@ -186,7 +232,7 @@ pub fn handle_piece_dragging_hybrid(
     
     // 現在ドラッグ中のピースがあるかチェック
     let mut current_dragging_piece: Option<Entity> = None;
-    for (entity, _transform, pickable, _piece) in piece_query.iter() {
+    for (entity, _transform, pickable, _piece, _shape) in piece_query.iter() {
         if input_state.selected_piece == Some(entity) {
             current_dragging_piece = Some(entity);
             break;
@@ -210,7 +256,7 @@ pub fn handle_piece_dragging_hybrid(
         // println!("🔍 Mouse click at world position: ({:.1}, {:.1})", 
         //     input_state.mouse_position.x, input_state.mouse_position.y);
         
-        for (entity, transform, _pickable, piece) in piece_query.iter() {
+        for (entity, transform, _pickable, piece, shape) in piece_query.iter() {
             if input_state.selected_piece == Some(entity) {
                 continue;
             }
@@ -218,16 +264,23 @@ pub fn handle_piece_dragging_hybrid(
             let piece_pos = transform.translation.truncate();
             let distance_to_mouse = piece_pos.distance(input_state.mouse_position);
             
-            // Debug: Show bounds info for first few pieces to verify calculations
+            // Debug: Show bounds info for first few pieces to verify calculations  
             static mut DEBUG_PIECE_COUNT: usize = 0;
             unsafe {
                 if DEBUG_PIECE_COUNT < 2 && mouse_just_pressed {
                     let bounds_width = piece.bounds.max.x - piece.bounds.min.x;
                     let bounds_height = piece.bounds.max.y - piece.bounds.min.y;
-                    println!("🧩 Debug piece({},{}) at pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} distance:{:.1}", 
+                    let expected_width = if let Some(puzzle_image) = puzzle_image.as_ref() {
+                        puzzle_image.size.x / puzzle_config.grid_size.0 as f32
+                    } else { 1920.0 };
+                    let expected_height = if let Some(puzzle_image) = puzzle_image.as_ref() {
+                        puzzle_image.size.y / puzzle_config.grid_size.1 as f32  
+                    } else { 1080.0 };
+                    
+                    println!("🧩 Debug piece({},{}) at pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) actual_size:{:.1}x{:.1} expected:{:.1}x{:.1} distance:{:.1}", 
                         piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y,
                         piece.bounds.min.x, piece.bounds.min.y, piece.bounds.max.x, piece.bounds.max.y,
-                        bounds_width, bounds_height, distance_to_mouse);
+                        bounds_width, bounds_height, expected_width, expected_height, distance_to_mouse);
                     DEBUG_PIECE_COUNT += 1;
                 }
                 if DEBUG_PIECE_COUNT >= 2 && mouse_just_pressed {
@@ -235,37 +288,51 @@ pub fn handle_piece_dragging_hybrid(
                 }
             }
             
-            // 実際のジグソー形状のバウンディングボックスを使用した当たり判定
-            let piece_bounds = piece.bounds;
-            
-            // ピースの実際の位置に基づいてバウンディングボックスを調整
+            // 精密なジグソー形状当たり判定を試行、フォールバックで境界判定
             let mouse_x = input_state.mouse_position.x;
             let mouse_y = input_state.mouse_position.y;
-            let piece_left = piece_pos.x + piece_bounds.min.x;
-            let piece_right = piece_pos.x + piece_bounds.max.x;
-            let piece_bottom = piece_pos.y + piece_bounds.min.y;
-            let piece_top = piece_pos.y + piece_bounds.max.y;
             
-            let mouse_in_bounds = mouse_x >= piece_left 
-                && mouse_x <= piece_right 
-                && mouse_y >= piece_bottom 
-                && mouse_y <= piece_top;
+            // マウス座標をピース座標系に変換
+            let piece_relative_point = Vec2::new(mouse_x - piece_pos.x, mouse_y - piece_pos.y);
+            
+            // まず境界チェックで高速に除外
+            let piece_bounds = piece.bounds;
+            let in_bounds = piece_bounds.contains(piece_relative_point);
+            
+            // 精密メッシュ形状判定
+            let mouse_in_bounds = if in_bounds {
+                // 境界内の場合、実際のメッシュ形状で精密判定
+                point_in_mesh(&shape.vertices, &shape.indices, piece_relative_point)
+            } else {
+                false
+            };
+            
+            // デバッグ: 境界判定と精密判定の詳細をログ出力
+            if in_bounds || mouse_in_bounds {
+                static mut HIT_DEBUG_COUNT: usize = 0;
+                unsafe {
+                    if HIT_DEBUG_COUNT < 3 {
+                        println!("🎯 Hit detection! piece({},{}) mouse_rel:({:.1},{:.1}) bounds_check:{} mesh_check:{} vertices:{}", 
+                            piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y,
+                            in_bounds, mouse_in_bounds, shape.vertices.len());
+                        HIT_DEBUG_COUNT += 1;
+                    }
+                }
+            }
             
             if mouse_in_bounds {
                 let bounds_width = piece_bounds.max.x - piece_bounds.min.x;
                 let bounds_height = piece_bounds.max.y - piece_bounds.min.y;
                 if let Some((cam_scale, cam_pos)) = camera_info {
-                    println!("🎯 HIT! piece({},{}) pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} -> hit_area: left={:.1} right={:.1} top={:.1} bottom={:.1}, mouse: ({:.1},{:.1}), cam_scale: {:.2}", 
+                    println!("✅ SHAPE HIT! piece({},{}) pos:({:.1},{:.1}) rel_mouse:({:.1},{:.1}) bounds_size:{:.1}x{:.1}, cam_scale: {:.2}", 
                         piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y, 
-                        piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
-                        bounds_width, bounds_height,
-                        piece_left, piece_right, piece_top, piece_bottom, mouse_x, mouse_y, cam_scale);
+                        piece_relative_point.x, piece_relative_point.y,
+                        bounds_width, bounds_height, cam_scale);
                 } else {
-                    println!("🎯 HIT! piece({},{}) pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} -> hit_area: left={:.1} right={:.1} top={:.1} bottom={:.1}, mouse: ({:.1},{:.1})", 
+                    println!("✅ SHAPE HIT! piece({},{}) pos:({:.1},{:.1}) rel_mouse:({:.1},{:.1}) bounds_size:{:.1}x{:.1}", 
                         piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y,
-                        piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
-                        bounds_width, bounds_height,
-                        piece_left, piece_right, piece_top, piece_bottom, mouse_x, mouse_y);
+                        piece_relative_point.x, piece_relative_point.y,
+                        bounds_width, bounds_height);
                 }
                 
                 // Z値が高い（より前面）ピースを優先、同じZ値なら距離が近いピースを選択
@@ -286,7 +353,7 @@ pub fn handle_piece_dragging_hybrid(
             println!("✅ Starting manual drag for entity: {:?}", selected_entity);
             input_state.selected_piece = Some(selected_entity);
             
-            for (entity, mut transform, mut pickable, piece) in piece_query.iter_mut() {
+            for (entity, mut transform, mut pickable, piece, _shape) in piece_query.iter_mut() {
                 if entity == selected_entity {
                     let piece_pos = transform.translation.truncate();
                     pickable.drag_offset = piece_pos - input_state.mouse_position;
@@ -306,7 +373,7 @@ pub fn handle_piece_dragging_hybrid(
     
     // ドラッグ中の処理
     if let Some(dragging_entity) = input_state.selected_piece {
-        for (entity, mut transform, pickable, piece) in piece_query.iter_mut() {
+        for (entity, mut transform, pickable, piece, _shape) in piece_query.iter_mut() {
             if entity == dragging_entity {
                 if mouse_pressed {
                     let new_pos = input_state.mouse_position + pickable.drag_offset;

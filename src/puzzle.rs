@@ -1,11 +1,36 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
 use bevy::picking::Pickable;
+use bevy::render::mesh::{Indices, VertexAttributeValues};
 use crate::components::*;
 use crate::resources::*;
 use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
 use rand::Rng;
+
+/// メッシュから精密当たり判定用の形状データを抽出
+fn extract_shape_data(mesh: &Mesh) -> PieceShape {
+    let vertices = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(VertexAttributeValues::Float32x3(positions)) => {
+            positions.iter().map(|pos| [pos[0], pos[1]]).collect()
+        }
+        _ => {
+            println!("Warning: Could not extract vertices from mesh, using fallback");
+            vec![[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
+        }
+    };
+    
+    let indices = match mesh.indices() {
+        Some(Indices::U32(idx)) => idx.clone(),
+        Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
+        None => {
+            println!("Warning: Could not extract indices from mesh, using fallback");
+            vec![0, 1, 2, 1, 2, 3]
+        }
+    };
+    
+    PieceShape { vertices, indices }
+}
 
 pub fn create_puzzle_pieces(
     commands: &mut Commands,
@@ -198,6 +223,10 @@ pub fn create_puzzle_pieces(
             
             // メッシュをクローンしてアセットに追加
             let mesh = clone_mesh_from_shape(shape);
+            
+            // メッシュから形状データを抽出してPieceShapeコンポーネント用に準備
+            let piece_shape = extract_shape_data(&mesh);
+            
             let mesh_handle = meshes.add(mesh);
             
             // ColorMaterialを作成（画像のテクスチャを使用）
@@ -216,6 +245,7 @@ pub fn create_puzzle_pieces(
                 MeshMaterial2d(material_handle),
                 Transform::from_translation(start_position.extend(z_offset)),
                 piece,
+                piece_shape, // 精密当たり判定用の形状データ
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
                 },

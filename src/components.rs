@@ -28,6 +28,12 @@ pub struct PickablePiece {
 }
 
 #[derive(Component)]
+pub struct PieceShape {
+    pub vertices: Vec<[f32; 2]>,  // メッシュの頂点（2D）
+    pub indices: Vec<u32>,        // 三角形インデックス
+}
+
+#[derive(Component)]
 pub struct Player {
     pub id: Uuid,
     pub name: String,
