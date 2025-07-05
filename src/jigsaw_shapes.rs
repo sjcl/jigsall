@@ -95,6 +95,18 @@ impl JigsawShapeGenerator {
         } else {
             return Err(format!("Piece index {} out of bounds", piece_index).into());
         };
+        
+        // Debug: Log SVG path for first few pieces to understand coordinate system
+        static mut SVG_LOG_COUNT: usize = 0;
+        unsafe {
+            if SVG_LOG_COUNT < 4 {
+                println!("🔍 SVG path for piece({},{}): {}", x, y, &svg_path[..svg_path.len().min(200)]);
+                if svg_path.len() > 200 {
+                    println!("    ... (truncated {} chars)", svg_path.len() - 200);
+                }
+                SVG_LOG_COUNT += 1;
+            }
+        }
 
         // SVGパスをlyonのPathに変換してメッシュ生成
         let mesh = self.parse_svg_path_to_mesh(svg_path, x, y)?;
@@ -125,8 +137,15 @@ impl JigsawShapeGenerator {
 
     /// SVGパス文字列をlyonで解析してBevyメッシュに変換
     fn parse_svg_path_to_mesh(&self, svg_path: &str, x: usize, y: usize) -> Result<Mesh, Box<dyn std::error::Error>> {
-        // SVGパス文字列をlyonのPathオブジェクトに変換
-        let lyon_path = match self.parse_svg_path_to_lyon(svg_path) {
+        // ピースの絶対位置を中心基準の相対位置に変換するためのオフセットを計算
+        let (piece_width, piece_height) = self.piece_size;
+        let offset_x = x as f32 * piece_width + piece_width / 2.0;  // ピース中心へのオフセット
+        let offset_y = y as f32 * piece_height + piece_height / 2.0; // ピース中心へのオフセット
+        
+        println!("Piece({},{}) converting coordinates: offset to center ({:.1}, {:.1})", x, y, offset_x, offset_y);
+        
+        // SVGパス文字列をlyonのPathオブジェクトに変換（座標オフセット付き）
+        let lyon_path = match self.parse_svg_path_to_lyon_with_offset(svg_path, offset_x, offset_y) {
             Ok(path) => path,
             Err(err) => {
                 println!("Failed to parse SVG path for piece ({}, {}): {}. Using fallback rectangle.", x, y, err);
@@ -177,6 +196,9 @@ impl JigsawShapeGenerator {
         };
         let width = max_x - min_x;
         let height = max_y - min_y;
+        
+        println!("Shape({},{}) vertex bounds: ({:.1},{:.1}) to ({:.1},{:.1}) size: {:.1}x{:.1}", 
+            x, y, min_x, min_y, max_x, max_y, width, height);
         
         // Bevyメッシュを作成
         let mut mesh = Mesh::new(
@@ -229,7 +251,7 @@ impl JigsawShapeGenerator {
         Ok(mesh)
     }
 
-    /// メッシュからバウンディングボックスを計算
+    /// メッシュからバウンディングボックスを計算（ピース中心を原点とした相対座標）
     fn calculate_mesh_bounds(&self, mesh: &Mesh) -> Rect {
         if let Some(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
             match positions {
@@ -240,7 +262,32 @@ impl JigsawShapeGenerator {
                             (min_x.min(pos[0]), max_x.max(pos[0]), min_y.min(pos[1]), max_y.max(pos[1]))
                         }
                     );
-                    Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+                    
+                    // メッシュの中心を計算
+                    let center_x = (min_x + max_x) / 2.0;
+                    let center_y = (min_y + max_y) / 2.0;
+                    
+                    // 中心を原点とした相対座標に変換
+                    let relative_min_x = min_x - center_x;
+                    let relative_min_y = min_y - center_y;
+                    let relative_max_x = max_x - center_x;
+                    let relative_max_y = max_y - center_y;
+                    let width = max_x - min_x;
+                    let height = max_y - min_y;
+                    
+                    // Only log for first few pieces to avoid spam
+                    static mut BOUNDS_LOG_COUNT: usize = 0;
+                    unsafe {
+                        if BOUNDS_LOG_COUNT < 4 {
+                            println!("Mesh bounds: abs({:.1},{:.1} to {:.1},{:.1}) center:({:.1},{:.1}) -> relative({:.1},{:.1} to {:.1},{:.1}) size:{}x{}", 
+                                min_x, min_y, max_x, max_y, center_x, center_y, 
+                                relative_min_x, relative_min_y, relative_max_x, relative_max_y, width, height);
+                            BOUNDS_LOG_COUNT += 1;
+                        }
+                    }
+                    
+                    // Rect::new は (min_x, min_y, max_x, max_y) の順序
+                    Rect::new(relative_min_x, relative_min_y, relative_max_x, relative_max_y)
                 }
                 _ => {
                     // フォールバック: 期待される形式でない場合は piece_size を使用
@@ -255,12 +302,11 @@ impl JigsawShapeGenerator {
         }
     }
 
-    /// SVGパス文字列をlyonのPathオブジェクトに変換
-    fn parse_svg_path_to_lyon(&self, svg_path: &str) -> Result<Path, Box<dyn std::error::Error>> {
-        println!("Parsing SVG path: {}", svg_path);
-        
+    /// SVGパス文字列をlyonのPathオブジェクトに変換（座標オフセット付き）
+    fn parse_svg_path_to_lyon_with_offset(&self, svg_path: &str, offset_x: f32, offset_y: f32) -> Result<Path, Box<dyn std::error::Error>> {
         let mut builder = Path::builder();
         let mut path_started = false;
+        let mut coord_count = 0;
         
         // SVG解析を実装
         for segment in PathParser::from(svg_path) {
@@ -271,6 +317,99 @@ impl JigsawShapeGenerator {
                             if path_started {
                                 builder.end(false);
                             }
+                            // 絶対座標から相対座標に変換してからBevyの座標系に合わせる
+                            let relative_x = x as f32 - offset_x;
+                            let relative_y = y as f32 - offset_y;
+                            // Debug: Log first few coordinates
+                            if coord_count < 3 {
+                                println!("MoveTo: abs({:.1}, {:.1}) - offset({:.1}, {:.1}) = rel({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})", 
+                                    x, y, offset_x, offset_y, relative_x, relative_y, relative_x, -relative_y);
+                                coord_count += 1;
+                            }
+                            builder.begin(math::point(relative_x, -relative_y));
+                            path_started = true;
+                        }
+                        PathSegment::LineTo { abs, x, y } => {
+                            if !path_started {
+                                builder.begin(math::point(0.0, 0.0));
+                                path_started = true;
+                            }
+                            // 絶対座標から相対座標に変換してからBevyの座標系に合わせる
+                            let relative_x = x as f32 - offset_x;
+                            let relative_y = y as f32 - offset_y;
+                            // Debug: Log first few coordinates
+                            if coord_count < 3 {
+                                println!("LineTo: abs({:.1}, {:.1}) - offset({:.1}, {:.1}) = rel({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})", 
+                                    x, y, offset_x, offset_y, relative_x, relative_y, relative_x, -relative_y);
+                                coord_count += 1;
+                            }
+                            builder.line_to(math::point(relative_x, -relative_y));
+                        }
+                        PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
+                            if !path_started {
+                                builder.begin(math::point(0.0, 0.0));
+                                path_started = true;
+                            }
+                            // 全ての制御点も相対座標に変換
+                            let rel_x1 = x1 as f32 - offset_x;
+                            let rel_y1 = y1 as f32 - offset_y;
+                            let rel_x2 = x2 as f32 - offset_x;
+                            let rel_y2 = y2 as f32 - offset_y;
+                            let rel_x = x as f32 - offset_x;
+                            let rel_y = y as f32 - offset_y;
+                            
+                            builder.cubic_bezier_to(
+                                math::point(rel_x1, -rel_y1),
+                                math::point(rel_x2, -rel_y2),
+                                math::point(rel_x, -rel_y)
+                            );
+                        }
+                        PathSegment::ClosePath { abs: _ } => {
+                            if path_started {
+                                builder.end(true);
+                                path_started = false;
+                            }
+                        }
+                        _ => {
+                            println!("Unsupported SVG path segment");
+                        }
+                    }
+                }
+                Err(err) => {
+                    println!("Error parsing SVG segment: {}", err);
+                }
+            }
+        }
+        
+        if path_started {
+            builder.end(true);
+        }
+        
+        Ok(builder.build())
+    }
+
+    /// SVGパス文字列をlyonのPathオブジェクトに変換（旧バージョン - 使用しない）
+    fn parse_svg_path_to_lyon(&self, svg_path: &str) -> Result<Path, Box<dyn std::error::Error>> {
+        // println!("Parsing SVG path: {}", svg_path);
+        
+        let mut builder = Path::builder();
+        let mut path_started = false;
+        let mut coord_count = 0;
+        
+        // SVG解析を実装
+        for segment in PathParser::from(svg_path) {
+            match segment {
+                Ok(seg) => {
+                    match seg {
+                        PathSegment::MoveTo { abs, x, y } => {
+                            if path_started {
+                                builder.end(false);
+                            }
+                            // Debug: Log first few coordinates to understand coordinate system
+                            if coord_count < 5 {
+                                println!("MoveTo: ({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})", x, y, x as f32, -y as f32);
+                                coord_count += 1;
+                            }
                             // Y座標を反転してBevyの座標系に合わせる
                             builder.begin(math::point(x as f32, -y as f32));
                             path_started = true;
@@ -279,6 +418,11 @@ impl JigsawShapeGenerator {
                             if !path_started {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
+                            }
+                            // Debug: Log first few coordinates
+                            if coord_count < 5 {
+                                println!("LineTo: ({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})", x, y, x as f32, -y as f32);
+                                coord_count += 1;
                             }
                             // Y座標を反転してBevyの座標系に合わせる
                             builder.line_to(math::point(x as f32, -y as f32));
