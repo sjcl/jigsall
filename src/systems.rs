@@ -15,13 +15,54 @@ fn point_in_mesh(vertices: &[[f32; 2]], indices: &[u32], point: Vec2) -> bool {
     let mut intersections = 0;
     let ray_y = point.y;
     
+    // デバッグ用: 境界チェックをパスした全ての点を調査（メッシュ判定失敗を特定）
+    static mut DEBUG_COUNT: usize = 0;
+    let is_debug_point = unsafe {
+        if DEBUG_COUNT < 10 { // 最初の10回のメッシュ判定のみデバッグ
+            DEBUG_COUNT += 1;
+            true
+        } else {
+            false
+        }
+    };
+    
+    if is_debug_point {
+        println!("🔍 Debug ray-casting at point ({:.1}, {:.1}) with {} triangles", 
+            point.x, point.y, indices.len() / 3);
+    }
+    
+    // デバッグ用: 問題の点の周辺の三角形を詳しく調査
+    let mut nearby_triangles = 0;
+    let search_radius = 50.0; // 検索半径
+    
     // 全ての三角形の辺をチェック
-    for triangle in indices.chunks(3) {
+    for (tri_idx, triangle) in indices.chunks(3).enumerate() {
         if triangle.len() < 3 { continue; }
         
         let v0 = vertices[triangle[0] as usize];
         let v1 = vertices[triangle[1] as usize];
         let v2 = vertices[triangle[2] as usize];
+        
+        // デバッグ用: 点の近くにある三角形をカウント
+        let center_x = (v0[0] + v1[0] + v2[0]) / 3.0;
+        let center_y = (v0[1] + v1[1] + v2[1]) / 3.0;
+        let distance_to_tri = ((center_x - point.x).powi(2) + (center_y - point.y).powi(2)).sqrt();
+        
+        if distance_to_tri < search_radius {
+            nearby_triangles += 1;
+            if is_debug_point {
+                println!("📐 Triangle {} near point: center({:.1},{:.1}) dist:{:.1} vertices:({:.1},{:.1}),({:.1},{:.1}),({:.1},{:.1})", 
+                    tri_idx, center_x, center_y, distance_to_tri, v0[0], v0[1], v1[0], v1[1], v2[0], v2[1]);
+            }
+        }
+        
+        // 点が三角形内にあるかの直接チェック（より確実）
+        if point_in_triangle(point, v0, v1, v2) {
+            if is_debug_point {
+                println!("✅ Point directly inside triangle {}", tri_idx);
+            }
+            return true;
+        }
         
         // 三角形の各辺について交点チェック
         intersections += count_ray_edge_intersections(point, ray_y, v0, v1);
@@ -29,27 +70,157 @@ fn point_in_mesh(vertices: &[[f32; 2]], indices: &[u32], point: Vec2) -> bool {
         intersections += count_ray_edge_intersections(point, ray_y, v2, v0);
     }
     
-    // 奇数個の交点 = 点が内部にある
-    intersections % 2 == 1
+    if is_debug_point {
+        println!("🔍 Found {} triangles within radius {:.1} of point ({:.1}, {:.1})", 
+            nearby_triangles, search_radius, point.x, point.y);
+    }
+    
+    let result = intersections % 2 == 1;
+    if is_debug_point {
+        println!("🎯 Ray-casting result: {} intersections -> {}", intersections, result);
+    }
+    
+    // フォールバック: Ray-castingが失敗したが近くに三角形がある場合は距離ベース判定
+    if !result && nearby_triangles > 0 {
+        // 最も近い三角形までの距離を計算
+        let mut min_distance = f32::INFINITY;
+        for triangle in indices.chunks(3) {
+            if triangle.len() < 3 { continue; }
+            
+            let v0 = vertices[triangle[0] as usize];
+            let v1 = vertices[triangle[1] as usize];
+            let v2 = vertices[triangle[2] as usize];
+            
+            // 点と三角形の最短距離を計算
+            let dist = point_to_triangle_distance(point, v0, v1, v2);
+            min_distance = min_distance.min(dist);
+        }
+        
+        // 非常に近い場合（5ピクセル以内）は形状内として扱う
+        let tolerance = 5.0;
+        if min_distance < tolerance {
+            if is_debug_point {
+                println!("🔧 Fallback: Point within {:.1} pixels of mesh (distance: {:.1})", tolerance, min_distance);
+            }
+            return true;
+        }
+    }
+    
+    result
 }
 
-/// 水平線と線分の交点数を計算
+/// 点から三角形までの最短距離を計算
+fn point_to_triangle_distance(point: Vec2, v0: [f32; 2], v1: [f32; 2], v2: [f32; 2]) -> f32 {
+    // 点から各辺への距離を計算
+    let dist_to_edge1 = point_to_line_distance(point, v0, v1);
+    let dist_to_edge2 = point_to_line_distance(point, v1, v2);
+    let dist_to_edge3 = point_to_line_distance(point, v2, v0);
+    
+    dist_to_edge1.min(dist_to_edge2).min(dist_to_edge3)
+}
+
+/// 点から線分までの最短距離を計算
+fn point_to_line_distance(point: Vec2, line_start: [f32; 2], line_end: [f32; 2]) -> f32 {
+    let px = point.x;
+    let py = point.y;
+    let x1 = line_start[0];
+    let y1 = line_start[1];
+    let x2 = line_end[0];
+    let y2 = line_end[1];
+    
+    // 線分の長さの二乗
+    let line_length_sq = (x2 - x1).powi(2) + (y2 - y1).powi(2);
+    if line_length_sq < 1e-10 {
+        // 線分が点の場合
+        return ((px - x1).powi(2) + (py - y1).powi(2)).sqrt();
+    }
+    
+    // 線分上の最近点を見つける
+    let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / line_length_sq;
+    let t = t.clamp(0.0, 1.0);
+    
+    // 最近点の座標
+    let closest_x = x1 + t * (x2 - x1);
+    let closest_y = y1 + t * (y2 - y1);
+    
+    // 距離を計算
+    ((px - closest_x).powi(2) + (py - closest_y).powi(2)).sqrt()
+}
+
+/// 点が三角形内にあるかを重心座標で判定（より正確）
+fn point_in_triangle(point: Vec2, v0: [f32; 2], v1: [f32; 2], v2: [f32; 2]) -> bool {
+    let px = point.x;
+    let py = point.y;
+    
+    let x0 = v0[0];
+    let y0 = v0[1];
+    let x1 = v1[0];
+    let y1 = v1[1];
+    let x2 = v2[0];
+    let y2 = v2[1];
+    
+    // 重心座標による判定
+    let denom = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2);
+    if denom.abs() < 1e-10 { return false; } // 三角形が縮退している
+    
+    let a = ((y1 - y2) * (px - x2) + (x2 - x1) * (py - y2)) / denom;
+    let b = ((y2 - y0) * (px - x2) + (x0 - x2) * (py - y2)) / denom;
+    let c = 1.0 - a - b;
+    
+    // 重心座標がすべて非負なら三角形内
+    a >= -1e-6 && b >= -1e-6 && c >= -1e-6
+}
+
+/// 点から矩形までの最短距離を計算
+fn distance_to_rect(point: Vec2, rect: Rect) -> f32 {
+    let dx = if point.x < rect.min.x {
+        rect.min.x - point.x
+    } else if point.x > rect.max.x {
+        point.x - rect.max.x
+    } else {
+        0.0
+    };
+    
+    let dy = if point.y < rect.min.y {
+        rect.min.y - point.y
+    } else if point.y > rect.max.y {
+        point.y - rect.max.y
+    } else {
+        0.0
+    };
+    
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// 水平線と線分の交点数を計算（改善版）
 fn count_ray_edge_intersections(point: Vec2, ray_y: f32, edge_start: [f32; 2], edge_end: [f32; 2]) -> usize {
     let y1 = edge_start[1];
     let y2 = edge_end[1];
     
+    // 微小な誤差を考慮した範囲チェック
+    let epsilon = 1e-8;
+    
     // 水平線が線分のY範囲内にない場合は交点なし
-    if (y1 > ray_y) == (y2 > ray_y) {
+    let min_y = y1.min(y2);
+    let max_y = y1.max(y2);
+    
+    if ray_y < min_y - epsilon || ray_y > max_y + epsilon {
+        return 0;
+    }
+    
+    // 線分が水平の場合（Y座標が同じ）は特別処理
+    if (y2 - y1).abs() < epsilon {
         return 0;
     }
     
     // 水平線と線分の交点のX座標を計算
     let x1 = edge_start[0];
     let x2 = edge_end[0];
-    let intersection_x = x1 + (ray_y - y1) * (x2 - x1) / (y2 - y1);
+    let t = (ray_y - y1) / (y2 - y1);
+    let intersection_x = x1 + t * (x2 - x1);
     
-    // 交点が点より右側にある場合のみカウント
-    if intersection_x > point.x {
+    // 交点が点より右側にある場合のみカウント（微小な誤差を考慮）
+    if intersection_x > point.x + epsilon {
         1
     } else {
         0
@@ -295,27 +466,88 @@ pub fn handle_piece_dragging_hybrid(
             // マウス座標をピース座標系に変換
             let piece_relative_point = Vec2::new(mouse_x - piece_pos.x, mouse_y - piece_pos.y);
             
-            // まず境界チェックで高速に除外
+            // まず境界チェックで高速に除外（マージン付き）
             let piece_bounds = piece.bounds;
-            let in_bounds = piece_bounds.contains(piece_relative_point);
+            
+            // 境界を動的に拡張してジグソー形状の凸部分を完全にカバー
+            let piece_size = if let Some(puzzle_image) = puzzle_image.as_ref() {
+                let (grid_width, grid_height) = puzzle_config.grid_size;
+                Vec2::new(
+                    puzzle_image.size.x / grid_width as f32,
+                    puzzle_image.size.y / grid_height as f32
+                )
+            } else {
+                Vec2::new(1920.0, 1080.0)
+            };
+            
+            // ピースサイズに比例したマージン（ジグソー突起は通常ピースサイズの10-15%程度）
+            // より大きなマージンで凸部分の先端も確実にカバー
+            let margin = (piece_size.x.max(piece_size.y) * 0.35).max(100.0); // 35%マージン、最低100ピクセル
+            let expanded_bounds = Rect::new(
+                piece_bounds.min.x - margin,
+                piece_bounds.min.y - margin, 
+                piece_bounds.max.x + margin,
+                piece_bounds.max.y + margin
+            );
+            
+            let in_bounds = expanded_bounds.contains(piece_relative_point);
+            
+            // デバッグ: 境界拡張の効果を確認
+            let original_in_bounds = piece_bounds.contains(piece_relative_point);
+            if in_bounds != original_in_bounds {
+                println!("🔧 Bounds expansion helped! Original: {} Expanded: {} Point: ({:.1},{:.1}) Margin: {:.1} PieceSize: {:.1}x{:.1}", 
+                    original_in_bounds, in_bounds, piece_relative_point.x, piece_relative_point.y, margin, piece_size.x, piece_size.y);
+            }
+            
+            // デバッグ: 境界チェックが失敗した場合の詳細情報
+            if !in_bounds {
+                static mut MISS_DEBUG_COUNT: usize = 0;
+                unsafe {
+                    if MISS_DEBUG_COUNT < 3 {
+                        // 境界からの距離を計算
+                        let distance_to_bounds = distance_to_rect(piece_relative_point, expanded_bounds);
+                        println!("❌ Bounds check failed! piece({},{}) point:({:.1},{:.1}) distance_to_bounds:{:.1} orig_bounds:({:.1},{:.1} to {:.1},{:.1}) expanded_bounds:({:.1},{:.1} to {:.1},{:.1}) margin:{:.1}", 
+                            piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y, distance_to_bounds,
+                            piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
+                            expanded_bounds.min.x, expanded_bounds.min.y, expanded_bounds.max.x, expanded_bounds.max.y,
+                            margin);
+                        MISS_DEBUG_COUNT += 1;
+                    }
+                }
+            }
             
             // 精密メッシュ形状判定
             let mouse_in_bounds = if in_bounds {
                 // 境界内の場合、実際のメッシュ形状で精密判定
                 point_in_mesh(&shape.vertices, &shape.indices, piece_relative_point)
             } else {
-                false
+                // 境界から少し外れていても、非常に近い場合は念のためメッシュ判定を実行
+                let distance_to_bounds = distance_to_rect(piece_relative_point, expanded_bounds);
+                if distance_to_bounds < 30.0 { // 30ピクセル以内なら念のためチェック
+                    println!("🔍 Close miss - checking mesh anyway. Distance: {:.1}", distance_to_bounds);
+                    point_in_mesh(&shape.vertices, &shape.indices, piece_relative_point)
+                } else {
+                    false
+                }
             };
             
-            // デバッグ: 境界判定と精密判定の詳細をログ出力
-            if in_bounds || mouse_in_bounds {
-                static mut HIT_DEBUG_COUNT: usize = 0;
-                unsafe {
-                    if HIT_DEBUG_COUNT < 3 {
-                        println!("🎯 Hit detection! piece({},{}) mouse_rel:({:.1},{:.1}) bounds_check:{} mesh_check:{} vertices:{}", 
-                            piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y,
-                            in_bounds, mouse_in_bounds, shape.vertices.len());
+            // デバッグ: 境界判定とメッシュ判定の不一致を特定
+            static mut HIT_DEBUG_COUNT: usize = 0;
+            unsafe {
+                if HIT_DEBUG_COUNT < 20 {
+                    if in_bounds && !mouse_in_bounds {
+                        // 境界チェックOKだがメッシュチェックNG = 問題のケース
+                        println!("❌ BOUNDARY OK but MESH FAIL! piece({},{}) mouse_rel:({:.1},{:.1}) vertices:{}", 
+                            piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y, shape.vertices.len());
                         HIT_DEBUG_COUNT += 1;
+                    } else if in_bounds || mouse_in_bounds {
+                        // 通常の成功ケース
+                        if HIT_DEBUG_COUNT < 3 {
+                            println!("🎯 Hit detection! piece({},{}) mouse_rel:({:.1},{:.1}) bounds_check:{} mesh_check:{} vertices:{}", 
+                                piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y,
+                                in_bounds, mouse_in_bounds, shape.vertices.len());
+                            HIT_DEBUG_COUNT += 1;
+                        }
                     }
                 }
             }

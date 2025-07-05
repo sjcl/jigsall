@@ -5,7 +5,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use lyon::path::{Path, Builder};
 use lyon::math;
 use lyon_tessellation::{
-    VertexBuffers, FillTessellator, FillOptions, FillVertex,
+    VertexBuffers, FillTessellator, FillOptions, FillRule, FillVertex,
     geometry_builder::BuffersBuilder, VertexId
 };
 use puzzle_paths::{build_jigsaw_template, JigsawTemplate};
@@ -168,12 +168,15 @@ impl JigsawShapeGenerator {
         
         println!("Parsed SVG path for piece ({}, {}) - Path length: {} chars", x, y, svg_path.len());
         
-        // SimpleVertexを使用してテセレーション
+        // SimpleVertexを使用してテセレーション（より高精度設定）
         let mut vb: VertexBuffers<SimpleVertex, u16> = VertexBuffers::new();
+        let fill_options = FillOptions::tolerance(0.1) // より細かいテッセレーション（デフォルトは0.25）
+            .with_fill_rule(FillRule::NonZero);
+        
         FillTessellator::new()
             .tessellate_path(
                 &lyon_path,
-                &FillOptions::default(),
+                &fill_options,
                 &mut BuffersBuilder::new(&mut vb, |v: FillVertex| SimpleVertex {
                     position: [v.position().x, v.position().y],
                 }),
@@ -197,8 +200,8 @@ impl JigsawShapeGenerator {
         let width = max_x - min_x;
         let height = max_y - min_y;
         
-        println!("Shape({},{}) vertex bounds: ({:.1},{:.1}) to ({:.1},{:.1}) size: {:.1}x{:.1}", 
-            x, y, min_x, min_y, max_x, max_y, width, height);
+        println!("Shape({},{}) vertex bounds: ({:.1},{:.1}) to ({:.1},{:.1}) size: {:.1}x{:.1} vertices: {}", 
+            x, y, min_x, min_y, max_x, max_y, width, height, vb.vertices.len());
         
         // Bevyメッシュを作成
         let mut mesh = Mesh::new(
