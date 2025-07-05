@@ -212,8 +212,17 @@ impl JigsawShapeGenerator {
             .map(|v| [v.position[0], v.position[1], 0.0])
             .collect();
         
-        // UV座標を計算（バウンディングボックスで正規化 + テクスチャ領域マッピング）
+        // UV座標を計算（座標変換前の絶対座標を使用してテクスチャマッピング）
         let (grid_width, grid_height) = self.grid_size;
+        let (piece_width, piece_height) = self.piece_size;
+        
+        // ピースの絶対座標範囲（変換前）
+        let piece_abs_min_x = x as f32 * piece_width;
+        let piece_abs_max_x = (x + 1) as f32 * piece_width;
+        let piece_abs_min_y = y as f32 * piece_height;
+        let piece_abs_max_y = (y + 1) as f32 * piece_height;
+        
+        // テクスチャ座標範囲
         let texture_u_start = x as f32 / grid_width as f32;
         let texture_v_start = y as f32 / grid_height as f32;
         let texture_u_end = (x + 1) as f32 / grid_width as f32;
@@ -222,19 +231,33 @@ impl JigsawShapeGenerator {
         let uvs: Vec<[f32; 2]> = vb.vertices
             .iter()
             .map(|v| {
-                let x = v.position[0];
-                let y = v.position[1];
-                // バウンディングボックスで正規化
-                let norm_u = (x - min_x) / width;
-                // テクスチャ座標は反転させない（パス座標の反転とは独立）
-                let norm_v = (max_y - y) / height; // Y軸を反転してテクスチャが正しく表示されるようにする
+                // 変換前の絶対座標に戻す（座標変換の逆計算）
+                let center_offset_x = x as f32 * piece_width + piece_width / 2.0;
+                let center_offset_y = y as f32 * piece_height + piece_height / 2.0;
+                let abs_x = v.position[0] + center_offset_x;
+                let abs_y = -v.position[1] + center_offset_y; // Y軸の反転を考慮
+                
+                // 絶対座標をピース内の相対座標に正規化
+                let norm_u = (abs_x - piece_abs_min_x) / piece_width;
+                let norm_v = (abs_y - piece_abs_min_y) / piece_height;
                 
                 // テクスチャ領域にマッピング
                 let u = texture_u_start + norm_u * (texture_u_end - texture_u_start);
                 let v = texture_v_start + norm_v * (texture_v_end - texture_v_start);
+                
                 [u, v]
             })
             .collect();
+            
+        // Debug: Log UV coordinates for first few vertices of first piece
+        if x == 0 && y == 0 && uvs.len() > 0 {
+            println!("First piece UV mapping: vertex[0]: pos[{:.1},{:.1}] -> uv[{:.3},{:.3}]", 
+                vb.vertices[0].position[0], vb.vertices[0].position[1], uvs[0][0], uvs[0][1]);
+            if uvs.len() > 1 {
+                println!("First piece UV mapping: vertex[1]: pos[{:.1},{:.1}] -> uv[{:.3},{:.3}]", 
+                    vb.vertices[1].position[0], vb.vertices[1].position[1], uvs[1][0], uvs[1][1]);
+            }
+        }
         
         // インデックスを変換
         let indices: Vec<u32> = vb.indices
