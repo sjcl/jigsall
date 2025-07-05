@@ -171,26 +171,6 @@ fn point_in_triangle(point: Vec2, v0: [f32; 2], v1: [f32; 2], v2: [f32; 2]) -> b
     a >= -1e-6 && b >= -1e-6 && c >= -1e-6
 }
 
-/// 点から矩形までの最短距離を計算
-fn distance_to_rect(point: Vec2, rect: Rect) -> f32 {
-    let dx = if point.x < rect.min.x {
-        rect.min.x - point.x
-    } else if point.x > rect.max.x {
-        point.x - rect.max.x
-    } else {
-        0.0
-    };
-    
-    let dy = if point.y < rect.min.y {
-        rect.min.y - point.y
-    } else if point.y > rect.max.y {
-        point.y - rect.max.y
-    } else {
-        0.0
-    };
-    
-    (dx * dx + dy * dy).sqrt()
-}
 
 /// 水平線と線分の交点数を計算（改善版）
 fn count_ray_edge_intersections(point: Vec2, ray_y: f32, edge_start: [f32; 2], edge_end: [f32; 2]) -> usize {
@@ -504,10 +484,8 @@ pub fn handle_piece_dragging_hybrid(
                 static mut MISS_DEBUG_COUNT: usize = 0;
                 unsafe {
                     if MISS_DEBUG_COUNT < 3 {
-                        // 境界からの距離を計算
-                        let distance_to_bounds = distance_to_rect(piece_relative_point, expanded_bounds);
-                        println!("❌ Bounds check failed! piece({},{}) point:({:.1},{:.1}) distance_to_bounds:{:.1} orig_bounds:({:.1},{:.1} to {:.1},{:.1}) expanded_bounds:({:.1},{:.1} to {:.1},{:.1}) margin:{:.1}", 
-                            piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y, distance_to_bounds,
+                        println!("❌ Bounds check failed! piece({},{}) point:({:.1},{:.1}) orig_bounds:({:.1},{:.1} to {:.1},{:.1}) expanded_bounds:({:.1},{:.1} to {:.1},{:.1}) margin:{:.1}", 
+                            piece.grid_x, piece.grid_y, piece_relative_point.x, piece_relative_point.y,
                             piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
                             expanded_bounds.min.x, expanded_bounds.min.y, expanded_bounds.max.x, expanded_bounds.max.y,
                             margin);
@@ -521,14 +499,7 @@ pub fn handle_piece_dragging_hybrid(
                 // 境界内の場合、実際のメッシュ形状で精密判定
                 point_in_mesh(&shape.vertices, &shape.indices, piece_relative_point)
             } else {
-                // 境界から少し外れていても、非常に近い場合は念のためメッシュ判定を実行
-                let distance_to_bounds = distance_to_rect(piece_relative_point, expanded_bounds);
-                if distance_to_bounds < 30.0 { // 30ピクセル以内なら念のためチェック
-                    println!("🔍 Close miss - checking mesh anyway. Distance: {:.1}", distance_to_bounds);
-                    point_in_mesh(&shape.vertices, &shape.indices, piece_relative_point)
-                } else {
-                    false
-                }
+                false
             };
             
             // デバッグ: 境界判定とメッシュ判定の不一致を特定
