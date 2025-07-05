@@ -196,16 +196,24 @@ pub fn create_puzzle_pieces(
             println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
             
             // 2D メッシュコンポーネントを使用してピースを生成
+            // Picking systemを使用する場合
             commands.spawn((
                 Mesh2d(mesh_handle),
                 MeshMaterial2d(material_handle),
                 Transform::from_translation(start_position.extend(z_offset)),
                 piece,
+                PickablePiece {
+                    drag_offset: Vec2::ZERO,
+                },
+                // 旧システムとの互換性のため残す
                 Draggable {
                     is_dragging: false,
                     drag_offset: Vec2::ZERO,
                 },
-            ));
+            ))
+            .observe(crate::systems::on_piece_drag_start)
+            .observe(crate::systems::on_piece_drag)
+            .observe(crate::systems::on_piece_drag_end);
         }
     }
 }

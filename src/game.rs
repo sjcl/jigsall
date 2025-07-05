@@ -20,7 +20,7 @@ impl Plugin for GamePlugin {
                     update_puzzle_image_size,
                     auto_adjust_camera_zoom,
                     update_input_state,
-                    handle_piece_dragging,
+                    // handle_piece_dragging, // Picking systemに置き換え
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,

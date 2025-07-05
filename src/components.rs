@@ -21,6 +21,12 @@ pub struct Draggable {
     pub drag_offset: Vec2,
 }
 
+// Picking system用の新しいコンポーネント
+#[derive(Component)]
+pub struct PickablePiece {
+    pub drag_offset: Vec2,
+}
+
 #[derive(Component)]
 pub struct Player {
     pub id: Uuid,
