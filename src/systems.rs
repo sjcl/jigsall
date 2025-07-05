@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
 use bevy::sprite::ColorMaterial;
-use bevy::picking::events::{Pointer, Click, Drag, DragStart, DragEnd};
+use bevy::picking::events::{Pointer, Click, Drag, DragStart, DragEnd, Over};
 use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
@@ -44,6 +44,8 @@ pub fn on_piece_drag_start(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
+    println!("🎯 DragStart event triggered for entity: {:?}", trigger.target());
+    
     let Ok(window) = windows.single() else { return; };
     let Ok((camera, camera_transform)) = camera_q.single() else { return; };
     
@@ -53,7 +55,7 @@ pub fn on_piece_drag_start(
             input_state.mouse_position = world_pos;
             
             // ピースが選択された場合
-            if let Ok((mut transform, mut pickable, piece)) = piece_query.get_mut(trigger.target()) {
+            if let Ok((mut transform, mut pickable, _piece)) = piece_query.get_mut(trigger.target()) {
                 // ドラッグオフセットを計算
                 let piece_pos = transform.translation.truncate();
                 pickable.drag_offset = piece_pos - world_pos;
@@ -64,7 +66,9 @@ pub fn on_piece_drag_start(
                 // 選択されたピースを記録
                 input_state.selected_piece = Some(trigger.target());
                 
-                println!("Piece drag started at: ({:.2}, {:.2})", world_pos.x, world_pos.y);
+                println!("✅ Piece drag started at: ({:.2}, {:.2})", world_pos.x, world_pos.y);
+            } else {
+                println!("❌ Failed to get piece components for entity: {:?}", trigger.target());
             }
         }
     }
@@ -77,6 +81,8 @@ pub fn on_piece_drag(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
+    println!("🔄 Drag event triggered for entity: {:?}", trigger.target());
+    
     let Ok(window) = windows.single() else { return; };
     let Ok((camera, camera_transform)) = camera_q.single() else { return; };
     
@@ -86,7 +92,7 @@ pub fn on_piece_drag(
             input_state.mouse_position = world_pos;
             
             // ピースを移動
-            if let Ok((mut transform, pickable, piece)) = piece_query.get_mut(trigger.target()) {
+            if let Ok((mut transform, pickable, _piece)) = piece_query.get_mut(trigger.target()) {
                 let new_pos = world_pos + pickable.drag_offset;
                 transform.translation.x = new_pos.x;
                 transform.translation.y = new_pos.y;
@@ -101,7 +107,9 @@ pub fn on_piece_drag_end(
     mut piece_query: Query<(&mut Transform, &PickablePiece, &PuzzlePiece)>,
     mut input_state: ResMut<InputState>,
 ) {
-    if let Ok((mut transform, pickable, piece)) = piece_query.get_mut(trigger.target()) {
+    println!("🏁 DragEnd event triggered for entity: {:?}", trigger.target());
+    
+    if let Ok((mut transform, _pickable, _piece)) = piece_query.get_mut(trigger.target()) {
         // ドロップ時に新しいZ値を割り当て
         input_state.next_z_order += 1.0;
         transform.translation.z = input_state.next_z_order;
@@ -109,7 +117,35 @@ pub fn on_piece_drag_end(
         // 選択解除
         input_state.selected_piece = None;
         
-        println!("Piece dropped at: ({:.2}, {:.2})", transform.translation.x, transform.translation.y);
+        println!("✅ Piece dropped at: ({:.2}, {:.2})", transform.translation.x, transform.translation.y);
+    } else {
+        println!("❌ Failed to get piece components for DragEnd: {:?}", trigger.target());
+    }
+}
+
+// デバッグ用のOverイベントハンドラ
+pub fn on_piece_over(
+    trigger: Trigger<Pointer<Over>>,
+    piece_query: Query<&PuzzlePiece>,
+) {
+    println!("🎯 Mouse over entity: {:?}", trigger.target());
+    
+    if let Ok(piece) = piece_query.get(trigger.target()) {
+        println!("✅ Hovering over piece at grid ({}, {})", piece.grid_x, piece.grid_y);
+    }
+}
+
+// デバッグ用のClickイベントハンドラ
+pub fn on_piece_click(
+    trigger: Trigger<Pointer<Click>>,
+    piece_query: Query<&PuzzlePiece>,
+) {
+    println!("👆 Click event triggered for entity: {:?}", trigger.target());
+    
+    if let Ok(piece) = piece_query.get(trigger.target()) {
+        println!("✅ Clicked on piece at grid ({}, {})", piece.grid_x, piece.grid_y);
+    } else {
+        println!("❌ Failed to get piece for clicked entity: {:?}", trigger.target());
     }
 }
 
@@ -128,6 +164,171 @@ pub fn handle_piece_dragging(
     return;
 }
 
+// ハイブリッドアプローチ: 手動当たり判定 + picking eventの合成
+pub fn handle_piece_dragging_hybrid(
+    mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece)>,
+    mut input_state: ResMut<InputState>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    puzzle_config: Res<PuzzleConfig>,
+    puzzle_image: Option<Res<PuzzleImage>>,
+    camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
+) {
+    let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Left);
+    let mouse_pressed = mouse_input.pressed(MouseButton::Left);
+    let mouse_just_released = mouse_input.just_released(MouseButton::Left);
+    
+    // Camera transform for debugging
+    let camera_info = if let Ok(camera_transform) = camera_query.single() {
+        Some((camera_transform.scale.x, camera_transform.translation.truncate()))
+    } else {
+        None
+    };
+    
+    // 現在ドラッグ中のピースがあるかチェック
+    let mut current_dragging_piece: Option<Entity> = None;
+    for (entity, _transform, pickable, _piece) in piece_query.iter() {
+        if input_state.selected_piece == Some(entity) {
+            current_dragging_piece = Some(entity);
+            break;
+        }
+    }
+    
+    // ピースサイズを計算（オリジナル画像サイズを使用）
+    let (piece_width, piece_height) = if let Some(puzzle_image) = puzzle_image.as_ref() {
+        let (grid_width, grid_height) = puzzle_config.grid_size;
+        let display_width = puzzle_image.size.x;
+        let display_height = puzzle_image.size.y;
+        (display_width / grid_width as f32, display_height / grid_height as f32)
+    } else {
+        (80.0, 80.0) // デフォルト値
+    };
+    
+    // マウスがクリックされた瞬間かつ、他にドラッグ中のピースがない場合のみ新しい選択を行う
+    if mouse_just_pressed && current_dragging_piece.is_none() && !input_state.is_camera_dragging {
+        let mut closest_piece: Option<(Entity, f32, f32)> = None;
+        
+        // println!("🔍 Mouse click at world position: ({:.1}, {:.1})", 
+        //     input_state.mouse_position.x, input_state.mouse_position.y);
+        
+        for (entity, transform, _pickable, piece) in piece_query.iter() {
+            if input_state.selected_piece == Some(entity) {
+                continue;
+            }
+            
+            let piece_pos = transform.translation.truncate();
+            let distance_to_mouse = piece_pos.distance(input_state.mouse_position);
+            
+            // Debug: Show bounds info for first few pieces to verify calculations
+            static mut DEBUG_PIECE_COUNT: usize = 0;
+            unsafe {
+                if DEBUG_PIECE_COUNT < 2 && mouse_just_pressed {
+                    let bounds_width = piece.bounds.max.x - piece.bounds.min.x;
+                    let bounds_height = piece.bounds.max.y - piece.bounds.min.y;
+                    println!("🧩 Debug piece({},{}) at pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} distance:{:.1}", 
+                        piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y,
+                        piece.bounds.min.x, piece.bounds.min.y, piece.bounds.max.x, piece.bounds.max.y,
+                        bounds_width, bounds_height, distance_to_mouse);
+                    DEBUG_PIECE_COUNT += 1;
+                }
+                if DEBUG_PIECE_COUNT >= 2 && mouse_just_pressed {
+                    DEBUG_PIECE_COUNT = 0; // Reset for next click
+                }
+            }
+            
+            // 実際のジグソー形状のバウンディングボックスを使用した当たり判定
+            let piece_bounds = piece.bounds;
+            
+            // ピースの実際の位置に基づいてバウンディングボックスを調整
+            let mouse_x = input_state.mouse_position.x;
+            let mouse_y = input_state.mouse_position.y;
+            let piece_left = piece_pos.x + piece_bounds.min.x;
+            let piece_right = piece_pos.x + piece_bounds.max.x;
+            let piece_bottom = piece_pos.y + piece_bounds.min.y;
+            let piece_top = piece_pos.y + piece_bounds.max.y;
+            
+            let mouse_in_bounds = mouse_x >= piece_left 
+                && mouse_x <= piece_right 
+                && mouse_y >= piece_bottom 
+                && mouse_y <= piece_top;
+            
+            if mouse_in_bounds {
+                let bounds_width = piece_bounds.max.x - piece_bounds.min.x;
+                let bounds_height = piece_bounds.max.y - piece_bounds.min.y;
+                if let Some((cam_scale, cam_pos)) = camera_info {
+                    println!("🎯 HIT! piece({},{}) pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} -> hit_area: left={:.1} right={:.1} top={:.1} bottom={:.1}, mouse: ({:.1},{:.1}), cam_scale: {:.2}", 
+                        piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y, 
+                        piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
+                        bounds_width, bounds_height,
+                        piece_left, piece_right, piece_top, piece_bottom, mouse_x, mouse_y, cam_scale);
+                } else {
+                    println!("🎯 HIT! piece({},{}) pos:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} -> hit_area: left={:.1} right={:.1} top={:.1} bottom={:.1}, mouse: ({:.1},{:.1})", 
+                        piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y,
+                        piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
+                        bounds_width, bounds_height,
+                        piece_left, piece_right, piece_top, piece_bottom, mouse_x, mouse_y);
+                }
+                
+                // Z値が高い（より前面）ピースを優先、同じZ値なら距離が近いピースを選択
+                match closest_piece {
+                    None => closest_piece = Some((entity, distance_to_mouse, transform.translation.z)),
+                    Some((_, closest_distance, closest_z)) => {
+                        if transform.translation.z > closest_z || 
+                           (transform.translation.z == closest_z && distance_to_mouse < closest_distance) {
+                            closest_piece = Some((entity, distance_to_mouse, transform.translation.z));
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 選択されたピースをドラッグ開始
+        if let Some((selected_entity, _, _)) = closest_piece {
+            println!("✅ Starting manual drag for entity: {:?}", selected_entity);
+            input_state.selected_piece = Some(selected_entity);
+            
+            for (entity, mut transform, mut pickable, piece) in piece_query.iter_mut() {
+                if entity == selected_entity {
+                    let piece_pos = transform.translation.truncate();
+                    pickable.drag_offset = piece_pos - input_state.mouse_position;
+                    
+                    // ドラッグ開始時に最前面に移動
+                    transform.translation.z = 100.0;
+                    
+                    println!("🔧 Drag offset set: piece at ({:.1}, {:.1}), mouse at ({:.1}, {:.1}), offset ({:.1}, {:.1})",
+                        piece_pos.x, piece_pos.y, 
+                        input_state.mouse_position.x, input_state.mouse_position.y,
+                        pickable.drag_offset.x, pickable.drag_offset.y);
+                    break;
+                }
+            }
+        }
+    }
+    
+    // ドラッグ中の処理
+    if let Some(dragging_entity) = input_state.selected_piece {
+        for (entity, mut transform, pickable, piece) in piece_query.iter_mut() {
+            if entity == dragging_entity {
+                if mouse_pressed {
+                    let new_pos = input_state.mouse_position + pickable.drag_offset;
+                    transform.translation.x = new_pos.x;
+                    transform.translation.y = new_pos.y;
+                    transform.translation.z = 100.0;
+                } else if mouse_just_released {
+                    input_state.selected_piece = None;
+                    
+                    // ドロップ時に新しいZ値を割り当て（最前面に配置）
+                    input_state.next_z_order += 1.0;
+                    transform.translation.z = input_state.next_z_order;
+                    
+                    println!("✅ Manual drag ended: piece dropped at ({:.2}, {:.2})", 
+                        transform.translation.x, transform.translation.y);
+                }
+                break;
+            }
+        }
+    }
+}
+
 pub fn check_piece_placement(
     mut commands: Commands,
     mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
@@ -142,6 +343,13 @@ pub fn check_piece_placement(
             let correct_pos = piece.correct_position;
             let distance = current_pos.distance(correct_pos);
             
+            // Only log successful placements to reduce noise
+            // println!("🎯 Checking placement: piece({},{}) at ({:.1},{:.1}), correct ({:.1},{:.1}), distance {:.1}, snap threshold {:.1}",
+            //     piece.grid_x, piece.grid_y, 
+            //     current_pos.x, current_pos.y, 
+            //     correct_pos.x, correct_pos.y, 
+            //     distance, puzzle_config.snap_distance);
+            
             if distance < puzzle_config.snap_distance {
                 transform.translation = correct_pos.extend(-20.0); // 固定ピースは最も下のZ値
                 piece.is_placed = true;
@@ -150,7 +358,8 @@ pub fn check_piece_placement(
                 // PickablePieceコンポーネントを削除して移動不可にする
                 commands.entity(entity).remove::<PickablePiece>();
                 
-                println!("Piece placed and fixed at grid({},{})", piece.grid_x, piece.grid_y);
+                println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
+                    piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
             }
         }
     }
@@ -245,11 +454,11 @@ pub fn spawn_puzzle_pieces(
                 return; // 次フレームで再実行
             }
             
-            if let Some(puzzle_image) = puzzle_image {
+            if let Some(ref puzzle_image) = puzzle_image {
                 // 画像サイズが正しく更新されている場合のみピースを作成
                 if puzzle_image.size.x > 1.0 && puzzle_image.size.y > 1.0 {
                     println!("Creating pieces with image size: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
-                    create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, &puzzle_image, &mut meshes, &mut materials);
+                    create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, puzzle_image, &mut meshes, &mut materials);
                 } else {
                     println!("Waiting for image size update: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
                     return; // 画像サイズがまだ更新されていない
@@ -263,7 +472,7 @@ pub fn spawn_puzzle_pieces(
         
         // 半透明の元画像をグリッドの正しい位置に表示（まだ存在しない場合のみ）
         if existing_grid_ref.is_empty() {
-            spawn_grid_reference(&mut commands, &asset_server, &puzzle_config);
+            spawn_grid_reference(&mut commands, &asset_server, &puzzle_config, puzzle_image.as_ref());
         }
     }
 }
@@ -272,6 +481,7 @@ fn spawn_grid_reference(
     commands: &mut Commands,
     asset_server: &Res<AssetServer>,
     puzzle_config: &PuzzleConfig,
+    puzzle_image: Option<&Res<PuzzleImage>>,
 ) {
     // 選択された画像を半透明で表示
     if !puzzle_config.image_path.is_empty() {
@@ -290,16 +500,24 @@ fn spawn_grid_reference(
         println!("Loading grid reference image: {}", asset_path);
         let texture_handle = asset_server.load(&asset_path);
         
+        // Use the same size calculation as pieces to ensure alignment
+        let custom_size = puzzle_image.map(|img| img.size);
+        
         commands.spawn((
             Sprite {
                 color: Color::srgb(1.0, 1.0, 1.0).with_alpha(0.3), // 半透明
                 image: texture_handle,
+                custom_size, // Match the size used for piece calculations
                 ..default()
             },
             Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
             // 参照画像としてマーク
             GridReference,
         ));
+        
+        if let Some(img) = puzzle_image {
+            println!("Grid reference spawned with size: ({:.1}, {:.1})", img.size.x, img.size.y);
+        }
     }
 }
 

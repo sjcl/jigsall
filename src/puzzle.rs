@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
+use bevy::picking::Pickable;
 use crate::components::*;
 use crate::resources::*;
 use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
@@ -49,6 +50,9 @@ pub fn create_puzzle_pieces(
             let correct_x = (x as f32 - (grid_width as f32 - 1.0) / 2.0) * piece_width;
             let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_height;
             let correct_position = Vec2::new(correct_x, correct_y);
+            
+            // println!("📍 Piece({},{}) correct position: ({:.1}, {:.1})", 
+            //     x, y, correct_position.x, correct_position.y);
             
             let mut rng = rand::thread_rng();
             
@@ -149,8 +153,18 @@ pub fn create_puzzle_pieces(
             let start_position = Vec2::new(random_x, random_y);
             placed_positions.push(start_position);
             
-            println!("Image piece ({},{}) placed at ({:.1}, {:.1}), grid size: {}x{}", 
-                x, y, random_x, random_y, grid_width, grid_height);
+            // Debug: Check initial vs correct position distance for potential immediate snapping
+            let initial_position = Vec2::new(random_x, random_y);
+            let distance_to_correct = initial_position.distance(correct_position);
+            
+            // Debug: Only log first few pieces to verify placement
+            if x <= 1 && y <= 1 {
+                println!("Piece ({},{}) initial: ({:.1}, {:.1}), correct: ({:.1}, {:.1}), distance: {:.1} (snap_distance: {})", 
+                    x, y, random_x, random_y, correct_position.x, correct_position.y, distance_to_correct, 50.0);
+                if distance_to_correct < 50.0 {
+                    println!("⚠️  WARNING: Piece will immediately snap! Distance {:.1} < snap_distance {}", distance_to_correct, 50.0);
+                }
+            }
             
             // ジグソー形状を取得
             let shape = if let Some(shape_data) = shape_generator.get_shape(x, y) {
@@ -170,10 +184,10 @@ pub fn create_puzzle_pieces(
             let piece = PuzzlePiece {
                 id: piece_id,
                 original_position: start_position,
-                current_position: start_position,
+                current_position: start_position, // Initial position should be the random start position, not correct position
                 correct_position,
                 texture_coords,
-                is_placed: false,
+                is_placed: false, // Ensure pieces start as not placed
                 grid_x: x,
                 grid_y: y,
                 bounds: shape.bounds,
@@ -193,7 +207,7 @@ pub fn create_puzzle_pieces(
             };
             let material_handle = materials.add(material);
             
-            println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
+            // println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
             
             // 2D メッシュコンポーネントを使用してピースを生成
             // Picking systemを使用する場合
@@ -205,6 +219,7 @@ pub fn create_puzzle_pieces(
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
                 },
+                Pickable::default(), // Bevy 0.16で必須
                 // 旧システムとの互換性のため残す
                 Draggable {
                     is_dragging: false,
@@ -213,7 +228,9 @@ pub fn create_puzzle_pieces(
             ))
             .observe(crate::systems::on_piece_drag_start)
             .observe(crate::systems::on_piece_drag)
-            .observe(crate::systems::on_piece_drag_end);
+            .observe(crate::systems::on_piece_drag_end)
+            .observe(crate::systems::on_piece_click)
+            .observe(crate::systems::on_piece_over);
         }
     }
 }
@@ -256,7 +273,7 @@ pub fn update_puzzle_image_size(
         static mut DEBUG_COUNTER: usize = 0;
         unsafe {
             DEBUG_COUNTER += 1;
-            if DEBUG_COUNTER % 60 == 0 { // 60フレームに1回
+            if DEBUG_COUNTER % 600 == 0 { // 600フレームに1回（10秒に1回程度）
                 println!("Image handle: {:?}, Load state: {:?}", puzzle_image.handle, load_state);
             }
         }

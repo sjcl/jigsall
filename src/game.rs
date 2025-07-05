@@ -20,7 +20,7 @@ impl Plugin for GamePlugin {
                     update_puzzle_image_size,
                     auto_adjust_camera_zoom,
                     update_input_state,
-                    // handle_piece_dragging, // Picking systemに置き換え
+                    handle_piece_dragging_hybrid, // Hybrid approach: 手動当たり判定 + picking events
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,
@@ -32,9 +32,10 @@ impl Plugin for GamePlugin {
 }
 
 fn setup_game(mut commands: Commands) {
-    // 2Dカメラを設定
+    // 2Dカメラを設定（picking対応）
     commands.spawn((
         Camera2d,
         MainCamera,
+        MeshPickingCamera, // Mesh pickingを有効化
     ));
 }

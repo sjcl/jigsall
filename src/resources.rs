@@ -41,7 +41,7 @@ impl Default for PuzzleConfig {
         Self {
             grid_size: (4, 4),
             piece_size: 100.0,
-            snap_distance: 30.0,
+            snap_distance: 50.0, // Reduced to prevent immediate snapping
             image_path: String::new(), // 空の文字列から開始
         }
     }
