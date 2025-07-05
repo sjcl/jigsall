@@ -34,6 +34,8 @@ pub struct PuzzleConfig {
     pub piece_size: f32,
     pub snap_distance: f32,
     pub image_path: String,
+    pub target_piece_count: usize,
+    pub use_target_mode: bool, // true: ターゲットピース数モード, false: 手動グリッドサイズモード
 }
 
 impl Default for PuzzleConfig {
@@ -43,6 +45,8 @@ impl Default for PuzzleConfig {
             piece_size: 100.0,
             snap_distance: 50.0, // Reduced to prevent immediate snapping
             image_path: String::new(), // 空の文字列から開始
+            target_piece_count: 16, // デフォルト16ピース
+            use_target_mode: true, // デフォルトはターゲットピース数モード
         }
     }
 }
