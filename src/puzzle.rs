@@ -8,7 +8,7 @@ use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
 use rand::Rng;
 
-/// 整列配置用のグリッド位置を生成
+/// 整列配置用のグリッド位置を生成（同心円状にグリッドを囲む配置）
 fn generate_placement_grid(
     grid_width: usize, 
     grid_height: usize, 
@@ -24,59 +24,105 @@ fn generate_placement_grid(
     let grid_half_width = display_width / 2.0;
     let grid_half_height = display_height / 2.0;
     
-    // 配置エリアのマージン
-    let margin = piece_width.max(piece_height) + 100.0;
+    // ピース間のマージン（ピースサイズに応じた割合で設定）
+    let margin_ratio = 0.6; // ピースサイズの60%をマージンとして使用
+    let piece_margin_x = piece_width * margin_ratio;
+    let piece_margin_y = piece_height * margin_ratio;
+    let effective_piece_width = piece_width + piece_margin_x;
+    let effective_piece_height = piece_height + piece_margin_y;
     
-    // 4つの配置エリアを定義（左、右、上、下）
-    let extension_x = piece_width * 8.0; // X方向の拡張幅
-    let extension_y = piece_height * 6.0; // Y方向の拡張幅
+    // グリッドからの最小距離（グリッドの境界から十分離す）
+    let min_distance = piece_width.max(piece_height) + 80.0;
     
-    let areas = [
-        // 左エリア
-        (-grid_half_width - margin - extension_x, -grid_half_width - margin, 
-         -grid_half_height, grid_half_height),
-        // 右エリア  
-        (grid_half_width + margin, grid_half_width + margin + extension_x,
-         -grid_half_height, grid_half_height),
-        // 上エリア
-        (-grid_half_width, grid_half_width,
-         grid_half_height + margin, grid_half_height + margin + extension_y),
-        // 下エリア
-        (-grid_half_width, grid_half_width,
-         -grid_half_height - margin - extension_y, -grid_half_height - margin),
-    ];
+    // 同心円状のレイヤーを作成
+    let mut layer = 1;
+    let mut pieces_placed = 0;
     
-    
-    // 各エリアに配置するピース数を計算
-    let pieces_per_area = total_pieces / 4;
-    let remaining_pieces = total_pieces % 4;
-    
-    
-    for (area_idx, &(min_x, max_x, min_y, max_y)) in areas.iter().enumerate() {
-        let area_pieces = pieces_per_area + if area_idx < remaining_pieces { 1 } else { 0 };
+    while pieces_placed < total_pieces {
+        // 現在のレイヤーの配置位置を計算
+        let layer_positions = generate_layer_positions(
+            grid_half_width, 
+            grid_half_height, 
+            effective_piece_width, 
+            effective_piece_height, 
+            layer, 
+            min_distance
+        );
         
-        if area_pieces == 0 { continue; }
+        // このレイヤーに配置できるピース数を計算
+        let remaining_pieces = total_pieces - pieces_placed;
+        let pieces_to_place = remaining_pieces.min(layer_positions.len());
         
-        // エリア内でのグリッド配置を計算
-        let area_width = max_x - min_x;
-        let area_height = max_y - min_y;
+        // 距離順にソート（グリッド中心に近い順）
+        let mut sorted_positions = layer_positions;
+        sorted_positions.sort_by(|a, b| {
+            let dist_a = a.length_squared();
+            let dist_b = b.length_squared();
+            dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
         
-        let cols = ((area_width / piece_width).floor() as usize).max(1);
-        let rows = (area_pieces as f32 / cols as f32).ceil() as usize;
-        
-        let spacing_x = area_width / cols as f32;
-        let spacing_y = area_height / rows as f32;
-        
-        
-        for i in 0..area_pieces {
-            let col = i % cols;
-            let row = i / cols;
-            
-            let x = min_x + (col as f32 + 0.5) * spacing_x;
-            let y = min_y + (row as f32 + 0.5) * spacing_y;
-            
-            positions.push(Vec2::new(x, y));
+        // 必要な数だけ配置
+        for i in 0..pieces_to_place {
+            positions.push(sorted_positions[i]);
         }
+        
+        pieces_placed += pieces_to_place;
+        layer += 1;
+        
+        // 無限ループ防止
+        if layer > 20 {
+            println!("Warning: Too many layers needed for piece placement");
+            break;
+        }
+    }
+    
+    positions
+}
+
+/// 指定されたレイヤーの配置位置を生成
+fn generate_layer_positions(
+    grid_half_width: f32,
+    grid_half_height: f32,
+    piece_width: f32,
+    piece_height: f32,
+    layer: usize,
+    min_distance: f32
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    // レイヤーの距離を計算
+    let layer_distance = min_distance + (layer - 1) as f32 * piece_height.max(piece_width);
+    
+    // 各方向の範囲を計算
+    let left_x = -grid_half_width - layer_distance;
+    let right_x = grid_half_width + layer_distance;
+    let top_y = grid_half_height + layer_distance;
+    let bottom_y = -grid_half_height - layer_distance;
+    
+    // 上辺（左から右へ）
+    let top_cols = ((right_x - left_x) / piece_width).floor() as usize;
+    for i in 0..top_cols {
+        let x = left_x + (i as f32 + 0.5) * piece_width;
+        positions.push(Vec2::new(x, top_y));
+    }
+    
+    // 右辺（上から下へ、角は除く）
+    let right_rows = ((top_y - bottom_y) / piece_height).floor() as usize;
+    for i in 1..right_rows {
+        let y = top_y - (i as f32 + 0.5) * piece_height;
+        positions.push(Vec2::new(right_x, y));
+    }
+    
+    // 下辺（右から左へ、角は除く）
+    for i in 1..top_cols {
+        let x = right_x - (i as f32 + 0.5) * piece_width;
+        positions.push(Vec2::new(x, bottom_y));
+    }
+    
+    // 左辺（下から上へ、角は除く）
+    for i in 1..right_rows {
+        let y = bottom_y + (i as f32 + 0.5) * piece_height;
+        positions.push(Vec2::new(left_x, y));
     }
     
     positions
