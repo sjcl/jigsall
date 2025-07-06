@@ -27,6 +27,7 @@ impl Plugin for GamePlugin {
                     spawn_puzzle_pieces,
                     handle_camera_zoom,
                     handle_camera_drag,
+                    frustum_culling_system, // 画面外のピースを非表示にする
                 ),
             );
     }

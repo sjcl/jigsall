@@ -51,3 +51,9 @@ pub struct MenuUI;
 
 #[derive(Component)]
 pub struct GridReference;
+
+/// Frustum culling用のコンポーネント
+#[derive(Component)]
+pub struct Cullable {
+    pub in_view: bool,
+}
