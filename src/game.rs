@@ -12,7 +12,7 @@ impl Plugin for GamePlugin {
             .init_resource::<PuzzleConfig>()
             .init_resource::<NetworkInfo>()
             .init_resource::<InputState>()
-            .add_systems(Startup, (setup_game, setup_puzzle_from_image))
+            .add_systems(Startup, setup_game)
             .add_systems(
                 Update,
                 (

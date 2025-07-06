@@ -500,14 +500,14 @@ pub fn spawn_puzzle_pieces(
                 
                 commands.insert_resource(PuzzleImage {
                     handle: image_handle,
-                    size: Vec2::new(1.0, 1.0), // 初期値として1x1を設定（update_puzzle_image_sizeで更新される）
+                    size: Vec2::new(1920.0, 1080.0), // 16:9の仮定値（update_puzzle_image_sizeで実際のサイズに更新される）
                 });
                 return; // 次フレームで再実行
             }
             
             if let Some(ref puzzle_image) = puzzle_image {
-                // 画像サイズが正しく更新されている場合のみピースを作成
-                if puzzle_image.size.x > 1.0 && puzzle_image.size.y > 1.0 {
+                // 画像サイズが適切に読み込まれている場合のみピースを作成
+                if puzzle_image.size.x > 10.0 && puzzle_image.size.y > 10.0 {
                     println!("Creating pieces with image size: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
                     create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, puzzle_image, &mut meshes, &mut materials);
                 } else {

@@ -52,15 +52,22 @@ pub fn calculate_16_9_grid(scale_factor: f32) -> (usize, usize) {
 }
 
 /// PuzzleConfigの現在のモードに基づいてグリッドサイズを計算
+/// 画像が読み込まれていない場合はNoneを返す
 pub fn calculate_grid_from_config(
     config: &PuzzleConfig,
     puzzle_image: Option<&PuzzleImage>,
-) -> (usize, usize, String) {
-    // 画像サイズを取得（ない場合は16:9の仮定値を使用）
+) -> Option<(usize, usize, String)> {
+    // 画像サイズを取得（適切でない場合はNoneを返す）
     let (image_width, image_height) = if let Some(puzzle_image) = puzzle_image {
-        (puzzle_image.size.x, puzzle_image.size.y)
+        // 画像サイズが適切に読み込まれているかチェック
+        if puzzle_image.size.x > 10.0 && puzzle_image.size.y > 10.0 {
+            (puzzle_image.size.x, puzzle_image.size.y)
+        } else {
+            // まだ読み込み中または無効なサイズの場合はNoneを返す
+            return None;
+        }
     } else {
-        (1920.0, 1080.0)
+        return None;
     };
     
     match config.piece_mode {
@@ -78,7 +85,7 @@ pub fn calculate_grid_from_config(
             } else {
                 format!("{}x{} = {} pieces", optimal_cols, optimal_rows, actual_pieces)
             };
-            (optimal_cols, optimal_rows, info)
+            Some((optimal_cols, optimal_rows, info))
         }
         
         PieceMode::ManualGrid => {
@@ -86,7 +93,7 @@ pub fn calculate_grid_from_config(
             let total_pieces = config.grid_size.0 * config.grid_size.1;
             let info = format!("{}x{} = {} pieces (manual)", 
                 config.grid_size.0, config.grid_size.1, total_pieces);
-            (config.grid_size.0, config.grid_size.1, info)
+            Some((config.grid_size.0, config.grid_size.1, info))
         }
         
         PieceMode::SquarePieces => {
@@ -97,7 +104,7 @@ pub fn calculate_grid_from_config(
             let total_pieces = grid_width * grid_height;
             let info = format!("{}x{} = {} pieces ({:.0}x{:.0}px each)", 
                 grid_width, grid_height, total_pieces, actual_width, actual_height);
-            (grid_width, grid_height, info)
+            Some((grid_width, grid_height, info))
         }
     }
 }

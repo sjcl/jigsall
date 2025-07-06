@@ -349,7 +349,7 @@ pub fn setup_puzzle_from_image(
         // デフォルトサイズを設定（実際の画像サイズは後で更新）
         commands.insert_resource(PuzzleImage {
             handle: image_handle.clone(),
-            size: Vec2::new(800.0, 600.0),
+            size: Vec2::new(1.0, 1.0), // 小さな値で初期化し、読み込み中であることを示す
         });
     }
 }
@@ -363,12 +363,13 @@ pub fn update_puzzle_image_size(
         // Asset loading状態をチェック
         let load_state = asset_server.load_state(&puzzle_image.handle);
         
-        // デバッグ用に毎回状態を出力（頻度を制限）
+        // デバッグ用に状態を出力（頻度制限）
         static mut DEBUG_COUNTER: usize = 0;
         unsafe {
             DEBUG_COUNTER += 1;
-            if DEBUG_COUNTER % 600 == 0 { // 600フレームに1回（10秒に1回程度）
-                println!("Image handle: {:?}, Load state: {:?}", puzzle_image.handle, load_state);
+            if DEBUG_COUNTER % 300 == 0 { // 5秒に1回程度
+                println!("🖼️ Image loading: handle {:?}, state: {:?}, current size: {:.0}x{:.0}", 
+                    puzzle_image.handle.id(), load_state, puzzle_image.size.x, puzzle_image.size.y);
             }
         }
         
