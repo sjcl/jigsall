@@ -1,12 +1,10 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
-use bevy::picking::Pickable;
 use bevy::render::mesh::{Indices, VertexAttributeValues};
 use crate::components::*;
 use crate::resources::*;
 use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
-use rand::Rng;
 
 /// 整列配置用のグリッド位置を生成（同心円状にグリッドを囲む配置）
 fn generate_placement_grid(
@@ -278,21 +276,12 @@ pub fn create_puzzle_pieces(
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
                 },
-                // Pickable::default(), // 一時的に無効化してテスト
                 // 旧システムとの互換性のため残す
                 Draggable {
                     is_dragging: false,
                     drag_offset: Vec2::ZERO,
                 },
             )).id();
-            
-            // 一時的に無効化してテスト
-            // .observe(crate::systems::on_piece_drag_start)
-            // .observe(crate::systems::on_piece_drag)
-            // .observe(crate::systems::on_piece_drag_end)
-            // .observe(crate::systems::on_piece_click)
-            // .observe(crate::systems::on_piece_over)
-            ;
         }
     }
 }

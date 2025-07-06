@@ -1,13 +1,9 @@
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
 use bevy::sprite::ColorMaterial;
-use bevy::picking::events::{Pointer, Click, Drag, DragStart, DragEnd, Over};
 use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
-use crate::jigsaw_shapes::JigsawShapeGenerator;
-use rand::Rng;
-use uuid::Uuid;
 use std::path::Path;
 
 /// Ray-casting アルゴリズムを使った点内判定
@@ -126,118 +122,6 @@ pub fn update_input_state(
     input_state.is_mouse_pressed = mouse_input.pressed(MouseButton::Left);
 }
 
-// Picking system用の新しいドラッグハンドラー
-pub fn on_piece_drag_start(
-    trigger: Trigger<Pointer<DragStart>>,
-    mut piece_query: Query<(&mut Transform, &mut PickablePiece, &PuzzlePiece)>,
-    mut input_state: ResMut<InputState>,
-    windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-) {
-    println!("🎯 DragStart event triggered for entity: {:?}", trigger.target());
-    
-    let Ok(window) = windows.single() else { return; };
-    let Ok((camera, camera_transform)) = camera_q.single() else { return; };
-    
-    // マウス位置を取得
-    if let Some(cursor_pos) = window.cursor_position() {
-        if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
-            input_state.mouse_position = world_pos;
-            
-            // ピースが選択された場合
-            if let Ok((mut transform, mut pickable, _piece)) = piece_query.get_mut(trigger.target()) {
-                // ドラッグオフセットを計算
-                let piece_pos = transform.translation.truncate();
-                pickable.drag_offset = piece_pos - world_pos;
-                
-                // ピースを最前面に移動
-                transform.translation.z = 100.0;
-                
-                // 選択されたピースを記録
-                input_state.selected_piece = Some(trigger.target());
-                
-                println!("✅ Piece drag started at: ({:.2}, {:.2})", world_pos.x, world_pos.y);
-            } else {
-                println!("❌ Failed to get piece components for entity: {:?}", trigger.target());
-            }
-        }
-    }
-}
-
-pub fn on_piece_drag(
-    trigger: Trigger<Pointer<Drag>>,
-    mut piece_query: Query<(&mut Transform, &PickablePiece, &PuzzlePiece)>,
-    mut input_state: ResMut<InputState>,
-    windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-) {
-    println!("🔄 Drag event triggered for entity: {:?}", trigger.target());
-    
-    let Ok(window) = windows.single() else { return; };
-    let Ok((camera, camera_transform)) = camera_q.single() else { return; };
-    
-    // マウス位置を更新
-    if let Some(cursor_pos) = window.cursor_position() {
-        if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
-            input_state.mouse_position = world_pos;
-            
-            // ピースを移動
-            if let Ok((mut transform, pickable, _piece)) = piece_query.get_mut(trigger.target()) {
-                let new_pos = world_pos + pickable.drag_offset;
-                transform.translation.x = new_pos.x;
-                transform.translation.y = new_pos.y;
-                transform.translation.z = 100.0;
-            }
-        }
-    }
-}
-
-pub fn on_piece_drag_end(
-    trigger: Trigger<Pointer<DragEnd>>,
-    mut piece_query: Query<(&mut Transform, &PickablePiece, &PuzzlePiece)>,
-    mut input_state: ResMut<InputState>,
-) {
-    println!("🏁 DragEnd event triggered for entity: {:?}", trigger.target());
-    
-    if let Ok((mut transform, _pickable, _piece)) = piece_query.get_mut(trigger.target()) {
-        // ドロップ時に新しいZ値を割り当て
-        input_state.next_z_order += 1.0;
-        transform.translation.z = input_state.next_z_order;
-        
-        // 選択解除
-        input_state.selected_piece = None;
-        
-        println!("✅ Piece dropped at: ({:.2}, {:.2})", transform.translation.x, transform.translation.y);
-    } else {
-        println!("❌ Failed to get piece components for DragEnd: {:?}", trigger.target());
-    }
-}
-
-// デバッグ用のOverイベントハンドラ
-pub fn on_piece_over(
-    trigger: Trigger<Pointer<Over>>,
-    piece_query: Query<&PuzzlePiece>,
-) {
-    println!("🎯 Mouse over entity: {:?}", trigger.target());
-    
-    if let Ok(piece) = piece_query.get(trigger.target()) {
-        println!("✅ Hovering over piece at grid ({}, {})", piece.grid_x, piece.grid_y);
-    }
-}
-
-// デバッグ用のClickイベントハンドラ
-pub fn on_piece_click(
-    trigger: Trigger<Pointer<Click>>,
-    piece_query: Query<&PuzzlePiece>,
-) {
-    println!("👆 Click event triggered for entity: {:?}", trigger.target());
-    
-    if let Ok(piece) = piece_query.get(trigger.target()) {
-        println!("✅ Clicked on piece at grid ({}, {})", piece.grid_x, piece.grid_y);
-    } else {
-        println!("❌ Failed to get piece for clicked entity: {:?}", trigger.target());
-    }
-}
 
 // 旧システムは互換性のため残す（後で削除予定）
 pub fn handle_piece_dragging(

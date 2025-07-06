@@ -16,7 +16,7 @@ use ui::*;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        // .add_plugins(MeshPickingPlugin) // 一時的に無効化してテスト
+        // .add_plugins(MeshPickingPlugin) // 一時的に無効化 - DefaultPluginsに含まれている可能性
         .add_plugins(bevy_egui::EguiPlugin::default())
         .add_plugins(GamePlugin)
         // .add_plugins(NetworkingPlugin) // 一時的に無効化
