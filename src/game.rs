@@ -24,6 +24,7 @@ impl Plugin for GamePlugin {
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,
+                    debug_piece_positions, // デバッグ用システム追加
                     handle_camera_zoom,
                     handle_camera_drag,
                 ),
@@ -36,6 +37,6 @@ fn setup_game(mut commands: Commands) {
     commands.spawn((
         Camera2d,
         MainCamera,
-        MeshPickingCamera, // Mesh pickingを有効化
+        // MeshPickingCamera, // 一時的に無効化してテスト
     ));
 }

@@ -52,18 +52,38 @@ impl JigsawShapeGenerator {
         let template = build_jigsaw_template(
             piece_width * grid_width as f32,  // 画像全体の幅
             piece_height * grid_height as f32, // 画像全体の高さ
-            grid_height,                      // 列のピース数
-            grid_width,                       // 行のピース数
+            grid_width,                       // 行のピース数（列数）
+            grid_height,                      // 列のピース数（行数）
             None,                            // デフォルトのタブサイズ
             None,                            // デフォルトのジッター
             Some(42),                        // 固定シード
         );
         
         // デバッグ: 最初のいくつかのSVGパスを出力
-        println!("Generated jigsaw template for {}x{} grid", grid_width, grid_height);
-        for (i, path) in template.svg_paths.iter().take(3).enumerate() {
-            println!("SVG path {}: {}", i, path);
+        let total_pieces = grid_width * grid_height;
+        println!("Generated jigsaw template for {}x{} grid ({} total pieces)", grid_width, grid_height, total_pieces);
+        
+        // 100ピース前後での違いを詳細に確認
+        if total_pieces <= 100 {
+            println!("🟢 <= 100 pieces - SVG paths:");
+            for (i, path) in template.svg_paths.iter().take(3).enumerate() {
+                println!("  SVG path {}: {} (length: {})", i, path, path.len());
+            }
+        } else {
+            println!("🔴 > 100 pieces - SVG paths:");
+            for (i, path) in template.svg_paths.iter().take(3).enumerate() {
+                println!("  SVG path {}: {} (length: {})", i, path, path.len());
+            }
         }
+        
+        // SVGパスの統計情報
+        let path_lengths: Vec<usize> = template.svg_paths.iter().map(|p| p.len()).collect();
+        let avg_length = path_lengths.iter().sum::<usize>() as f32 / path_lengths.len() as f32;
+        let min_length = path_lengths.iter().min().unwrap_or(&0);
+        let max_length = path_lengths.iter().max().unwrap_or(&0);
+        
+        println!("📊 SVG path statistics: total={}, avg_len={:.1}, min_len={}, max_len={}", 
+            template.svg_paths.len(), avg_length, min_length, max_length);
         
         self.jigsaw_template = Some(template);
         Ok(())
@@ -98,12 +118,27 @@ impl JigsawShapeGenerator {
         
         // Debug: Log SVG path for first few pieces to understand coordinate system
         static mut SVG_LOG_COUNT: usize = 0;
+        let total_pieces = grid_width * grid_height;
+        
         unsafe {
             if SVG_LOG_COUNT < 4 {
-                println!("🔍 SVG path for piece({},{}): {}", x, y, &svg_path[..svg_path.len().min(200)]);
+                let status = if total_pieces <= 100 { "🟢 <=100" } else { "🔴 >100" };
+                println!("{} SVG path for piece({},{}): {}", status, x, y, &svg_path[..svg_path.len().min(200)]);
                 if svg_path.len() > 200 {
                     println!("    ... (truncated {} chars)", svg_path.len() - 200);
                 }
+                
+                // SVGパスの座標範囲を簡易チェック
+                let coords: Vec<f32> = svg_path.split_whitespace()
+                    .filter_map(|s| s.parse().ok())
+                    .collect();
+                if !coords.is_empty() {
+                    let min_coord = coords.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let max_coord = coords.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    println!("    Coordinate range: {:.1} to {:.1} (span: {:.1})", 
+                        min_coord, max_coord, max_coord - min_coord);
+                }
+                
                 SVG_LOG_COUNT += 1;
             }
         }
@@ -137,12 +172,24 @@ impl JigsawShapeGenerator {
 
     /// SVGパス文字列をlyonで解析してBevyメッシュに変換
     fn parse_svg_path_to_mesh(&self, svg_path: &str, x: usize, y: usize) -> Result<Mesh, Box<dyn std::error::Error>> {
-        // ピースの絶対位置を中心基準の相対位置に変換するためのオフセットを計算
+        // puzzle-pathsが生成するSVGパスの座標系を理解する必要がある
+        // SVGパス内の座標は、puzzle-pathsが想定する全体画像サイズに基づいている
         let (piece_width, piece_height) = self.piece_size;
-        let offset_x = x as f32 * piece_width + piece_width / 2.0;  // ピース中心へのオフセット
-        let offset_y = y as f32 * piece_height + piece_height / 2.0; // ピース中心へのオフセット
+        let (grid_width, grid_height) = self.grid_size;
         
-        println!("Piece({},{}) converting coordinates: offset to center ({:.1}, {:.1})", x, y, offset_x, offset_y);
+        // puzzle-pathsに渡した全体画像サイズ
+        let total_width = piece_width * grid_width as f32;
+        let total_height = piece_height * grid_height as f32;
+        
+        // puzzle-pathsのSVGパス内での1ピースあたりのサイズ
+        let svg_piece_width = total_width / grid_width as f32;
+        let svg_piece_height = total_height / grid_height as f32;
+        
+        let offset_x = x as f32 * svg_piece_width + svg_piece_width / 2.0;
+        let offset_y = y as f32 * svg_piece_height + svg_piece_height / 2.0;
+        
+        println!("Piece({},{}) converting coordinates: offset to center ({:.1}, {:.1}) [SVG piece size: {:.1}x{:.1}, total: {:.1}x{:.1}]", 
+            x, y, offset_x, offset_y, svg_piece_width, svg_piece_height, total_width, total_height);
         
         // SVGパス文字列をlyonのPathオブジェクトに変換（座標オフセット付き）
         let lyon_path = match self.parse_svg_path_to_lyon_with_offset(svg_path, offset_x, offset_y) {

@@ -8,6 +8,88 @@ use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
 use rand::Rng;
 
+/// 整列配置用のグリッド位置を生成
+fn generate_placement_grid(
+    grid_width: usize, 
+    grid_height: usize, 
+    piece_width: f32, 
+    piece_height: f32,
+    display_width: f32,
+    display_height: f32
+) -> Vec<Vec2> {
+    let total_pieces = grid_width * grid_height;
+    let mut positions = Vec::with_capacity(total_pieces);
+    
+    // グリッド境界を計算
+    let grid_half_width = display_width / 2.0;
+    let grid_half_height = display_height / 2.0;
+    
+    // 配置エリアのマージン
+    let margin = piece_width.max(piece_height) + 100.0;
+    
+    // 4つの配置エリアを定義（左、右、上、下）
+    let extension_x = piece_width * 8.0; // X方向の拡張幅
+    let extension_y = piece_height * 6.0; // Y方向の拡張幅
+    
+    let areas = [
+        // 左エリア
+        (-grid_half_width - margin - extension_x, -grid_half_width - margin, 
+         -grid_half_height, grid_half_height),
+        // 右エリア  
+        (grid_half_width + margin, grid_half_width + margin + extension_x,
+         -grid_half_height, grid_half_height),
+        // 上エリア
+        (-grid_half_width, grid_half_width,
+         grid_half_height + margin, grid_half_height + margin + extension_y),
+        // 下エリア
+        (-grid_half_width, grid_half_width,
+         -grid_half_height - margin - extension_y, -grid_half_height - margin),
+    ];
+    
+    println!("📐 Grid bounds: ({:.1}, {:.1}) to ({:.1}, {:.1})", 
+        -grid_half_width, -grid_half_height, grid_half_width, grid_half_height);
+    println!("📐 Extension: X={:.1}, Y={:.1}, Margin={:.1}", extension_x, extension_y, margin);
+    
+    // 各エリアに配置するピース数を計算
+    let pieces_per_area = total_pieces / 4;
+    let remaining_pieces = total_pieces % 4;
+    
+    println!("📐 Generating placement grid for {} pieces", total_pieces);
+    println!("    Pieces per area: {}, Remaining: {}", pieces_per_area, remaining_pieces);
+    
+    for (area_idx, &(min_x, max_x, min_y, max_y)) in areas.iter().enumerate() {
+        let area_pieces = pieces_per_area + if area_idx < remaining_pieces { 1 } else { 0 };
+        
+        if area_pieces == 0 { continue; }
+        
+        // エリア内でのグリッド配置を計算
+        let area_width = max_x - min_x;
+        let area_height = max_y - min_y;
+        
+        let cols = ((area_width / piece_width).floor() as usize).max(1);
+        let rows = (area_pieces as f32 / cols as f32).ceil() as usize;
+        
+        let spacing_x = area_width / cols as f32;
+        let spacing_y = area_height / rows as f32;
+        
+        println!("    Area {}: {}x{} grid, spacing: ({:.1}, {:.1}), bounds: ({:.1},{:.1}) to ({:.1},{:.1})", 
+            area_idx, cols, rows, spacing_x, spacing_y, min_x, min_y, max_x, max_y);
+        
+        for i in 0..area_pieces {
+            let col = i % cols;
+            let row = i / cols;
+            
+            let x = min_x + (col as f32 + 0.5) * spacing_x;
+            let y = min_y + (row as f32 + 0.5) * spacing_y;
+            
+            positions.push(Vec2::new(x, y));
+        }
+    }
+    
+    println!("📐 Generated {} placement positions", positions.len());
+    positions
+}
+
 /// メッシュから精密当たり判定用の形状データを抽出
 fn extract_shape_data(mesh: &Mesh) -> PieceShape {
     let vertices = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
@@ -64,8 +146,16 @@ pub fn create_puzzle_pieces(
         return;
     }
     
-    // 配置済みピース位置を記録
-    let mut placed_positions: Vec<Vec2> = Vec::new();
+    // 整列配置用のグリッド位置を事前生成
+    let mut placement_positions = generate_placement_grid(grid_width, grid_height, piece_width, piece_height, display_width, display_height);
+    
+    // 順番をランダムにシャッフル
+    use rand::seq::SliceRandom;
+    placement_positions.shuffle(&mut rand::thread_rng());
+    
+    let mut position_index = 0;
+    
+    let total_pieces = grid_width * grid_height;
     
     for y in 0..grid_height {
         for x in 0..grid_width {
@@ -76,116 +166,31 @@ pub fn create_puzzle_pieces(
             let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_height;
             let correct_position = Vec2::new(correct_x, correct_y);
             
-            // println!("📍 Piece({},{}) correct position: ({:.1}, {:.1})", 
-            //     x, y, correct_position.x, correct_position.y);
+            println!("📍 Piece({},{}) correct position: ({:.1}, {:.1})", 
+                x, y, correct_position.x, correct_position.y);
             
-            let mut rng = rand::thread_rng();
+            // 事前生成された配置位置を使用
+            let start_position = if position_index < placement_positions.len() {
+                let pos = placement_positions[position_index];
+                position_index += 1;
+                pos
+            } else {
+                // フォールバック（通常は発生しない）
+                println!("⚠️ Fallback position for piece ({}, {})", x, y);
+                Vec2::new(0.0, 0.0)
+            };
             
-            // 表示サイズに基づいたグリッド外への配置
-            let grid_half_width = display_width / 2.0;
-            let grid_half_height = display_height / 2.0;
-            
-            // ピースサイズに基づいてマージンを計算（ピースサイズの半分 + 固定値）
-            let margin = piece_width.max(piece_height) / 2.0 + 50.0;
-            
-            // ピース数に応じて配置範囲を動的に計算
-            let total_pieces = (grid_width * grid_height) as f32;
-            let density_factor = (total_pieces / 16.0).sqrt().max(1.0); // 4x4を基準とした密度係数
-            
-            let base_extension = 200.0; // 基本の拡張距離
-            let extension_x = base_extension * density_factor;
-            let extension_y = base_extension * density_factor * 0.75; // Y方向は少し小さく
-            
-            let max_x = grid_half_width + margin + extension_x;
-            let max_y = grid_half_height + margin + extension_y;
-            
-            let mut area = rng.gen_range(0..8); // 8方向に拡張
-            let mut random_x;
-            let mut random_y;
-            
-            // 重ならない位置を見つける（最大50回試行）
-            let mut attempts = 0;
-            let piece_spacing = piece_width.max(piece_height) * 1.2; // ピース間の最小距離
-            
-            loop {
-                match area {
-                    0 => {
-                        // 左側
-                        random_x = rng.gen_range(-max_x..-grid_half_width - margin);
-                        random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
-                    },
-                    1 => {
-                        // 右側
-                        random_x = rng.gen_range(grid_half_width + margin..max_x);
-                        random_y = rng.gen_range(-grid_half_height - margin..grid_half_height + margin);
-                    },
-                    2 => {
-                        // 上側
-                        random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
-                        random_y = rng.gen_range(grid_half_height + margin..max_y);
-                    },
-                    3 => {
-                        // 下側
-                        random_x = rng.gen_range(-grid_half_width - margin..grid_half_width + margin);
-                        random_y = rng.gen_range(-max_y..-grid_half_height - margin);
-                    },
-                    4 => {
-                        // 左上（斜め）
-                        random_x = rng.gen_range(-max_x..-grid_half_width - margin);
-                        random_y = rng.gen_range(grid_half_height + margin..max_y);
-                    },
-                    5 => {
-                        // 右上（斜め）
-                        random_x = rng.gen_range(grid_half_width + margin..max_x);
-                        random_y = rng.gen_range(grid_half_height + margin..max_y);
-                    },
-                    6 => {
-                        // 左下（斜め）
-                        random_x = rng.gen_range(-max_x..-grid_half_width - margin);
-                        random_y = rng.gen_range(-max_y..-grid_half_height - margin);
-                    },
-                    _ => {
-                        // 右下（斜め）
-                        random_x = rng.gen_range(grid_half_width + margin..max_x);
-                        random_y = rng.gen_range(-max_y..-grid_half_height - margin);
-                    }
-                }
-                
-                let candidate_position = Vec2::new(random_x, random_y);
-                
-                // 他のピースとの重なりをチェック
-                let mut overlaps = false;
-                for placed_pos in &placed_positions {
-                    if candidate_position.distance(*placed_pos) < piece_spacing {
-                        overlaps = true;
-                        break;
-                    }
-                }
-                
-                // 重ならない位置が見つかったか、試行回数上限に達した場合は終了
-                if !overlaps || attempts >= 50 {
-                    break;
-                }
-                
-                attempts += 1;
-                
-                // 試行回数が多くなったら別のエリアに変更
-                if attempts % 10 == 0 {
-                    area = rng.gen_range(0..8);
-                }
-            }
-            
-            let start_position = Vec2::new(random_x, random_y);
-            placed_positions.push(start_position);
+            // ピースの実際のスポーン位置をログ出力
+            println!("🎯 Piece({},{}) spawned at: ({:.1}, {:.1}) [grid position {}]", 
+                x, y, start_position.x, start_position.y, position_index - 1);
             
             // Debug: Check initial vs correct position distance for potential immediate snapping
-            let initial_position = Vec2::new(random_x, random_y);
-            let distance_to_correct = initial_position.distance(correct_position);
+            let distance_to_correct = start_position.distance(correct_position);
             
             // Debug: Only log first few pieces to verify placement
             if x <= 1 && y <= 1 {
                 println!("Piece ({},{}) initial: ({:.1}, {:.1}), correct: ({:.1}, {:.1}), distance: {:.1} (snap_distance: {})", 
-                    x, y, random_x, random_y, correct_position.x, correct_position.y, distance_to_correct, 50.0);
+                    x, y, start_position.x, start_position.y, correct_position.x, correct_position.y, distance_to_correct, 50.0);
                 if distance_to_correct < 50.0 {
                     println!("⚠️  WARNING: Piece will immediately snap! Distance {:.1} < snap_distance {}", distance_to_correct, 50.0);
                 }
@@ -227,20 +232,30 @@ pub fn create_puzzle_pieces(
             // メッシュから形状データを抽出してPieceShapeコンポーネント用に準備
             let piece_shape = extract_shape_data(&mesh);
             
+            // デバッグ情報を先に取得
+            let vertices_count = piece_shape.vertices.len();
+            
             let mesh_handle = meshes.add(mesh);
             
-            // ColorMaterialを作成（画像のテクスチャを使用）
+            // ColorMaterialを作成（各ピースに個別のマテリアル）
             let material = ColorMaterial {
                 texture: Some(puzzle_image.handle.clone()),
                 ..default()
             };
             let material_handle = materials.add(material);
             
+            // 100ピース超の場合の追加デバッグ
+            if total_pieces > 100 && x == 0 && y == 0 {
+                println!("🎨 Material debugging:");
+                println!("    Image handle: {:?}", puzzle_image.handle);
+                println!("    Material handle: {:?}", material_handle);
+            }
+            
             // println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
             
             // 2D メッシュコンポーネントを使用してピースを生成
             // Picking systemを使用する場合
-            commands.spawn((
+            let entity = commands.spawn((
                 Mesh2d(mesh_handle),
                 MeshMaterial2d(material_handle),
                 Transform::from_translation(start_position.extend(z_offset)),
@@ -249,18 +264,34 @@ pub fn create_puzzle_pieces(
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
                 },
-                Pickable::default(), // Bevy 0.16で必須
+                // Pickable::default(), // 一時的に無効化してテスト
                 // 旧システムとの互換性のため残す
                 Draggable {
                     is_dragging: false,
                     drag_offset: Vec2::ZERO,
                 },
-            ))
-            .observe(crate::systems::on_piece_drag_start)
-            .observe(crate::systems::on_piece_drag)
-            .observe(crate::systems::on_piece_drag_end)
-            .observe(crate::systems::on_piece_click)
-            .observe(crate::systems::on_piece_over);
+            )).id();
+            
+            // 描画用Transform座標を確認（100ピース超の場合により詳細に）
+            if total_pieces > 100 && x <= 3 && y <= 3 {
+                println!("🎨 Entity {:?} Piece({},{}) Transform set to: ({:.1}, {:.1}, {:.3})", 
+                    entity, x, y, start_position.x, start_position.y, z_offset);
+                println!("    Mesh vertices: {}, Grid position: ({}, {})", 
+                    vertices_count, x, y);
+                println!("    Texture coords: ({:.3}, {:.3}) to ({:.3}, {:.3})",
+                    texture_coords.x, texture_coords.y,
+                    texture_coords.z, texture_coords.w);
+            } else if total_pieces <= 100 && x <= 2 && y <= 2 {
+                println!("🎨 Entity {:?} Piece({},{}) Transform set to: ({:.1}, {:.1}, {:.3})", 
+                    entity, x, y, start_position.x, start_position.y, z_offset);
+            }
+            // 一時的に無効化してテスト
+            // .observe(crate::systems::on_piece_drag_start)
+            // .observe(crate::systems::on_piece_drag)
+            // .observe(crate::systems::on_piece_drag_end)
+            // .observe(crate::systems::on_piece_click)
+            // .observe(crate::systems::on_piece_over)
+            ;
         }
     }
 }
