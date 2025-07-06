@@ -211,7 +211,7 @@ pub fn draw_host_setup_ui(
             #[cfg(target_os = "windows")]
             {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif"])
+                    .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif", "webp"])
                     .pick_file()
                 {
                     puzzle_config.image_path = path.to_string_lossy().to_string();
