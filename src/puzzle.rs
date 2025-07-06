@@ -1,9 +1,10 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
 use bevy::render::mesh::{Indices, VertexAttributeValues};
+use bevy::math::Affine2;
 use crate::components::*;
 use crate::resources::*;
-use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
+use crate::jigsaw_shapes::{JigsawShapeGenerator, SharedMeshManager};
 use uuid::Uuid;
 
 /// 整列配置用のグリッド位置を生成（同心円状にグリッドを囲む配置）
@@ -176,11 +177,14 @@ pub fn create_puzzle_pieces(
         (grid_width, grid_height),
     );
     
-    // 全ての形状を事前生成
-    if let Err(e) = shape_generator.generate_all_shapes() {
-        println!("Failed to generate jigsaw shapes: {}", e);
+    // ジグソーテンプレートを生成
+    if let Err(e) = shape_generator.generate_jigsaw_template() {
+        println!("Failed to generate jigsaw template: {}", e);
         return;
     }
+    
+    // 共有メッシュマネージャーを初期化
+    let mut mesh_manager = SharedMeshManager::new();
     
     // 整列配置用のグリッド位置を事前生成
     let mut placement_positions = generate_placement_grid(grid_width, grid_height, piece_width, piece_height, display_width, display_height);
@@ -192,6 +196,9 @@ pub fn create_puzzle_pieces(
     let mut position_index = 0;
     
     let total_pieces = grid_width * grid_height;
+    
+    // テクスチャハンドルを保持（各ピースで個別のマテリアルを作成）
+    let texture_handle = puzzle_image.handle.clone();
     
     for y in 0..grid_height {
         for x in 0..grid_width {
@@ -214,12 +221,30 @@ pub fn create_puzzle_pieces(
             };
             
             
-            // ジグソー形状を取得
-            let shape = if let Some(shape_data) = shape_generator.get_shape(x, y) {
-                shape_data
-            } else {
-                println!("Failed to get shape for piece ({}, {})", x, y);
-                continue;
+            // 共有メッシュマネージャーを使用してメッシュハンドルを取得
+            let (mesh_handle, bounds) = {
+                // SVGパスを取得
+                let template = shape_generator.jigsaw_template.as_ref().unwrap();
+                let piece_index = y * grid_width + x;
+                
+                if piece_index < template.svg_paths.len() {
+                    let svg_path = &template.svg_paths[piece_index];
+                    mesh_manager.get_or_create_mesh(
+                        svg_path,
+                        piece_width,
+                        piece_height,
+                        x,
+                        y,
+                        meshes,
+                        &shape_generator,
+                    )
+                } else {
+                    println!("Piece index {} out of bounds, using fallback", piece_index);
+                    let fallback_mesh = shape_generator.create_fallback_rectangle_mesh(piece_width, piece_height);
+                    let bounds = Rect::new(-piece_width/2.0, -piece_height/2.0, piece_width/2.0, piece_height/2.0);
+                    let handle = meshes.add(fallback_mesh);
+                    (handle, bounds)
+                }
             };
             
             let texture_coords = Vec4::new(
@@ -232,44 +257,53 @@ pub fn create_puzzle_pieces(
             let piece = PuzzlePiece {
                 id: piece_id,
                 original_position: start_position,
-                current_position: start_position, // Initial position should be the random start position, not correct position
+                current_position: start_position,
                 correct_position,
                 texture_coords,
-                is_placed: false, // Ensure pieces start as not placed
+                is_placed: false,
                 grid_x: x,
                 grid_y: y,
-                bounds: shape.bounds,
+                bounds,
             };
             
             // 各ピースに一意のZ値を設定（重なり順制御）
             let z_offset = (y * grid_width + x) as f32 * 0.001;
             
-            // メッシュをクローンしてアセットに追加
-            let mesh = clone_mesh_from_shape(shape);
+            // 当たり判定用の形状データを作成（暫定的に境界から生成）
+            let piece_shape = PieceShape {
+                vertices: vec![
+                    [bounds.min.x, bounds.min.y],
+                    [bounds.max.x, bounds.min.y], 
+                    [bounds.max.x, bounds.max.y],
+                    [bounds.min.x, bounds.max.y],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3],
+            };
             
-            // メッシュから形状データを抽出してPieceShapeコンポーネント用に準備
-            let piece_shape = extract_shape_data(&mesh);
+            // 各ピース用の個別マテリアルを作成（UV変換を設定）
+            let uv_scale = Vec2::new(1.0 / grid_width as f32, 1.0 / grid_height as f32);
+            let uv_translation = Vec2::new(
+                x as f32 / grid_width as f32,
+                y as f32 / grid_height as f32,
+            );
             
-            // デバッグ情報を先に取得
-            let vertices_count = piece_shape.vertices.len();
-            
-            let mesh_handle = meshes.add(mesh);
-            
-            // ColorMaterialを作成（各ピースに個別のマテリアル）
-            let material = ColorMaterial {
-                texture: Some(puzzle_image.handle.clone()),
+            let piece_material = ColorMaterial {
+                texture: Some(texture_handle.clone()),
+                uv_transform: Affine2::from_scale_angle_translation(
+                    uv_scale,
+                    0.0,
+                    uv_translation,
+                ),
                 ..default()
             };
-            let material_handle = materials.add(material);
-            
+            let piece_material_handle = materials.add(piece_material);
             
             // println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
             
             // 2D メッシュコンポーネントを使用してピースを生成
-            // Picking systemを使用する場合
             let entity = commands.spawn((
                 Mesh2d(mesh_handle),
-                MeshMaterial2d(material_handle),
+                MeshMaterial2d(piece_material_handle),
                 Transform::from_translation(start_position.extend(z_offset)),
                 piece,
                 piece_shape, // 精密当たり判定用の形状データ
@@ -284,6 +318,9 @@ pub fn create_puzzle_pieces(
             )).id();
         }
     }
+    
+    // 統計情報を表示
+    mesh_manager.print_stats();
 }
 
 pub fn load_puzzle_image(
