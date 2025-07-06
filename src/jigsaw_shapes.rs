@@ -63,27 +63,6 @@ impl JigsawShapeGenerator {
         let total_pieces = grid_width * grid_height;
         println!("Generated jigsaw template for {}x{} grid ({} total pieces)", grid_width, grid_height, total_pieces);
         
-        // 100ピース前後での違いを詳細に確認
-        if total_pieces <= 100 {
-            println!("🟢 <= 100 pieces - SVG paths:");
-            for (i, path) in template.svg_paths.iter().take(3).enumerate() {
-                println!("  SVG path {}: {} (length: {})", i, path, path.len());
-            }
-        } else {
-            println!("🔴 > 100 pieces - SVG paths:");
-            for (i, path) in template.svg_paths.iter().take(3).enumerate() {
-                println!("  SVG path {}: {} (length: {})", i, path, path.len());
-            }
-        }
-        
-        // SVGパスの統計情報
-        let path_lengths: Vec<usize> = template.svg_paths.iter().map(|p| p.len()).collect();
-        let avg_length = path_lengths.iter().sum::<usize>() as f32 / path_lengths.len() as f32;
-        let min_length = path_lengths.iter().min().unwrap_or(&0);
-        let max_length = path_lengths.iter().max().unwrap_or(&0);
-        
-        println!("📊 SVG path statistics: total={}, avg_len={:.1}, min_len={}, max_len={}", 
-            template.svg_paths.len(), avg_length, min_length, max_length);
         
         self.jigsaw_template = Some(template);
         Ok(())
@@ -116,32 +95,6 @@ impl JigsawShapeGenerator {
             return Err(format!("Piece index {} out of bounds", piece_index).into());
         };
         
-        // Debug: Log SVG path for first few pieces to understand coordinate system
-        static mut SVG_LOG_COUNT: usize = 0;
-        let total_pieces = grid_width * grid_height;
-        
-        unsafe {
-            if SVG_LOG_COUNT < 4 {
-                let status = if total_pieces <= 100 { "🟢 <=100" } else { "🔴 >100" };
-                println!("{} SVG path for piece({},{}): {}", status, x, y, &svg_path[..svg_path.len().min(200)]);
-                if svg_path.len() > 200 {
-                    println!("    ... (truncated {} chars)", svg_path.len() - 200);
-                }
-                
-                // SVGパスの座標範囲を簡易チェック
-                let coords: Vec<f32> = svg_path.split_whitespace()
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
-                if !coords.is_empty() {
-                    let min_coord = coords.iter().cloned().fold(f32::INFINITY, f32::min);
-                    let max_coord = coords.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    println!("    Coordinate range: {:.1} to {:.1} (span: {:.1})", 
-                        min_coord, max_coord, max_coord - min_coord);
-                }
-                
-                SVG_LOG_COUNT += 1;
-            }
-        }
 
         // SVGパスをlyonのPathに変換してメッシュ生成
         let mesh = self.parse_svg_path_to_mesh(svg_path, x, y)?;
@@ -188,8 +141,6 @@ impl JigsawShapeGenerator {
         let offset_x = x as f32 * svg_piece_width + svg_piece_width / 2.0;
         let offset_y = y as f32 * svg_piece_height + svg_piece_height / 2.0;
         
-        println!("Piece({},{}) converting coordinates: offset to center ({:.1}, {:.1}) [SVG piece size: {:.1}x{:.1}, total: {:.1}x{:.1}]", 
-            x, y, offset_x, offset_y, svg_piece_width, svg_piece_height, total_width, total_height);
         
         // SVGパス文字列をlyonのPathオブジェクトに変換（座標オフセット付き）
         let lyon_path = match self.parse_svg_path_to_lyon_with_offset(svg_path, offset_x, offset_y) {
@@ -213,7 +164,6 @@ impl JigsawShapeGenerator {
             }
         };
         
-        println!("Parsed SVG path for piece ({}, {}) - Path length: {} chars", x, y, svg_path.len());
         
         // SimpleVertexを使用してテセレーション（より高精度設定）
         let mut vb: VertexBuffers<SimpleVertex, u16> = VertexBuffers::new();
@@ -247,8 +197,6 @@ impl JigsawShapeGenerator {
         let width = max_x - min_x;
         let height = max_y - min_y;
         
-        println!("Shape({},{}) vertex bounds: ({:.1},{:.1}) to ({:.1},{:.1}) size: {:.1}x{:.1} vertices: {}", 
-            x, y, min_x, min_y, max_x, max_y, width, height, vb.vertices.len());
         
         // Bevyメッシュを作成
         let mut mesh = Mesh::new(

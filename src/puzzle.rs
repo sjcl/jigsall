@@ -46,16 +46,11 @@ fn generate_placement_grid(
          -grid_half_height - margin - extension_y, -grid_half_height - margin),
     ];
     
-    println!("📐 Grid bounds: ({:.1}, {:.1}) to ({:.1}, {:.1})", 
-        -grid_half_width, -grid_half_height, grid_half_width, grid_half_height);
-    println!("📐 Extension: X={:.1}, Y={:.1}, Margin={:.1}", extension_x, extension_y, margin);
     
     // 各エリアに配置するピース数を計算
     let pieces_per_area = total_pieces / 4;
     let remaining_pieces = total_pieces % 4;
     
-    println!("📐 Generating placement grid for {} pieces", total_pieces);
-    println!("    Pieces per area: {}, Remaining: {}", pieces_per_area, remaining_pieces);
     
     for (area_idx, &(min_x, max_x, min_y, max_y)) in areas.iter().enumerate() {
         let area_pieces = pieces_per_area + if area_idx < remaining_pieces { 1 } else { 0 };
@@ -72,8 +67,6 @@ fn generate_placement_grid(
         let spacing_x = area_width / cols as f32;
         let spacing_y = area_height / rows as f32;
         
-        println!("    Area {}: {}x{} grid, spacing: ({:.1}, {:.1}), bounds: ({:.1},{:.1}) to ({:.1},{:.1})", 
-            area_idx, cols, rows, spacing_x, spacing_y, min_x, min_y, max_x, max_y);
         
         for i in 0..area_pieces {
             let col = i % cols;
@@ -86,7 +79,6 @@ fn generate_placement_grid(
         }
     }
     
-    println!("📐 Generated {} placement positions", positions.len());
     positions
 }
 
@@ -166,9 +158,6 @@ pub fn create_puzzle_pieces(
             let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_height;
             let correct_position = Vec2::new(correct_x, correct_y);
             
-            println!("📍 Piece({},{}) correct position: ({:.1}, {:.1})", 
-                x, y, correct_position.x, correct_position.y);
-            
             // 事前生成された配置位置を使用
             let start_position = if position_index < placement_positions.len() {
                 let pos = placement_positions[position_index];
@@ -180,21 +169,6 @@ pub fn create_puzzle_pieces(
                 Vec2::new(0.0, 0.0)
             };
             
-            // ピースの実際のスポーン位置をログ出力
-            println!("🎯 Piece({},{}) spawned at: ({:.1}, {:.1}) [grid position {}]", 
-                x, y, start_position.x, start_position.y, position_index - 1);
-            
-            // Debug: Check initial vs correct position distance for potential immediate snapping
-            let distance_to_correct = start_position.distance(correct_position);
-            
-            // Debug: Only log first few pieces to verify placement
-            if x <= 1 && y <= 1 {
-                println!("Piece ({},{}) initial: ({:.1}, {:.1}), correct: ({:.1}, {:.1}), distance: {:.1} (snap_distance: {})", 
-                    x, y, start_position.x, start_position.y, correct_position.x, correct_position.y, distance_to_correct, 50.0);
-                if distance_to_correct < 50.0 {
-                    println!("⚠️  WARNING: Piece will immediately snap! Distance {:.1} < snap_distance {}", distance_to_correct, 50.0);
-                }
-            }
             
             // ジグソー形状を取得
             let shape = if let Some(shape_data) = shape_generator.get_shape(x, y) {
@@ -244,12 +218,6 @@ pub fn create_puzzle_pieces(
             };
             let material_handle = materials.add(material);
             
-            // 100ピース超の場合の追加デバッグ
-            if total_pieces > 100 && x == 0 && y == 0 {
-                println!("🎨 Material debugging:");
-                println!("    Image handle: {:?}", puzzle_image.handle);
-                println!("    Material handle: {:?}", material_handle);
-            }
             
             // println!("Spawning 2D jigsaw piece at ({:.1}, {:.1}, {:.3})", start_position.x, start_position.y, z_offset);
             
@@ -272,19 +240,6 @@ pub fn create_puzzle_pieces(
                 },
             )).id();
             
-            // 描画用Transform座標を確認（100ピース超の場合により詳細に）
-            if total_pieces > 100 && x <= 3 && y <= 3 {
-                println!("🎨 Entity {:?} Piece({},{}) Transform set to: ({:.1}, {:.1}, {:.3})", 
-                    entity, x, y, start_position.x, start_position.y, z_offset);
-                println!("    Mesh vertices: {}, Grid position: ({}, {})", 
-                    vertices_count, x, y);
-                println!("    Texture coords: ({:.3}, {:.3}) to ({:.3}, {:.3})",
-                    texture_coords.x, texture_coords.y,
-                    texture_coords.z, texture_coords.w);
-            } else if total_pieces <= 100 && x <= 2 && y <= 2 {
-                println!("🎨 Entity {:?} Piece({},{}) Transform set to: ({:.1}, {:.1}, {:.3})", 
-                    entity, x, y, start_position.x, start_position.y, z_offset);
-            }
             // 一時的に無効化してテスト
             // .observe(crate::systems::on_piece_drag_start)
             // .observe(crate::systems::on_piece_drag)
