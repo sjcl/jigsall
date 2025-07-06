@@ -68,10 +68,16 @@ fn generate_placement_grid(
         pieces_placed += pieces_to_place;
         layer += 1;
         
-        // 無限ループ防止
-        if layer > 20 {
-            println!("Warning: Too many layers needed for piece placement");
+        // 無限ループ防止（より大きな値に設定）
+        if layer > 1000 {
+            println!("Error: Excessive layers needed ({}), something went wrong", layer);
             break;
+        }
+        
+        // 進捗ログ（大量ピースの場合）
+        if total_pieces > 1000 && layer % 10 == 0 {
+            println!("📍 Placement progress: layer {}, placed {}/{} pieces", 
+                layer, pieces_placed, total_pieces);
         }
     }
     
