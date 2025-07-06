@@ -394,6 +394,45 @@ pub fn update_game_state(
     }
 }
 
+/// パズルをリセットする（既存のピースとグリッド背景を削除）
+pub fn reset_puzzle(
+    mut commands: Commands,
+    mut game_state: ResMut<GameState>,
+    puzzle_pieces: Query<Entity, With<PuzzlePiece>>,
+    grid_references: Query<Entity, With<GridReference>>,
+    mut input_state: ResMut<InputState>,
+) {
+    if !game_state.needs_reset {
+        return;
+    }
+    
+    println!("🔄 Resetting puzzle...");
+    
+    // すべてのパズルピースを削除
+    for entity in puzzle_pieces.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // グリッド背景画像も削除
+    for entity in grid_references.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // ゲーム状態をリセット
+    game_state.puzzle_completed = false;
+    game_state.puzzle_progress = 0.0;
+    game_state.needs_reset = false;
+    
+    // 入力状態をリセット
+    input_state.selected_piece = None;
+    input_state.next_z_order = 1.0;
+    
+    // PuzzleImageリソースを削除して再読み込みを強制
+    commands.remove_resource::<crate::resources::PuzzleImage>();
+    
+    println!("✅ Puzzle reset completed (pieces and grid background)");
+}
+
 pub fn spawn_puzzle_pieces(
     mut commands: Commands,
     asset_server: Res<AssetServer>,

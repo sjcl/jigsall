@@ -9,6 +9,7 @@ pub struct GameState {
     pub players: Vec<PlayerInfo>,
     pub puzzle_completed: bool,
     pub puzzle_progress: f32,
+    pub needs_reset: bool, // パズルをリセットする必要があるかのフラグ
 }
 
 #[derive(Default, PartialEq, Clone)]

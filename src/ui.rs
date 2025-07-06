@@ -211,6 +211,7 @@ pub fn draw_host_setup_ui(
             if ui.button("Start Game").clicked() {
                 // ローカルゲーム開始（ネットワーキング無効のため）
                 game_state.current_screen = GameScreen::InGame;
+                game_state.needs_reset = true; // 新しいゲーム開始時にリセット
             }
         });
         
@@ -328,6 +329,7 @@ pub fn draw_completion_ui(
             game_state.current_screen = GameScreen::Menu;
             game_state.puzzle_completed = false;
             game_state.puzzle_progress = 0.0;
+            game_state.needs_reset = true; // パズルリセットフラグを設定
         }
         
         if ui.button("Exit").clicked() {

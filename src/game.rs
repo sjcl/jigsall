@@ -20,6 +20,7 @@ impl Plugin for GamePlugin {
                     update_puzzle_image_size,
                     auto_adjust_camera_zoom,
                     update_input_state,
+                    reset_puzzle, // パズルリセット機能
                     handle_piece_dragging_hybrid, // 一時的に復帰
                     check_piece_placement,
                     update_game_state,
