@@ -29,6 +29,19 @@ pub struct PlayerInfo {
     pub score: u32,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum PieceMode {
+    TargetCount,  // 目標ピース数から計算
+    ManualGrid,   // 手動でグリッドサイズを指定
+    SquarePieces, // 正方形ピースサイズから計算
+}
+
+impl Default for PieceMode {
+    fn default() -> Self {
+        PieceMode::TargetCount
+    }
+}
+
 #[derive(Resource)]
 pub struct PuzzleConfig {
     pub grid_size: (usize, usize),
@@ -36,7 +49,9 @@ pub struct PuzzleConfig {
     pub snap_distance: f32,
     pub image_path: String,
     pub target_piece_count: usize,
-    pub use_target_mode: bool, // true: ターゲットピース数モード, false: 手動グリッドサイズモード
+    pub use_target_mode: bool, // 下位互換性のため残す
+    pub piece_mode: PieceMode, // 新しいモード選択
+    pub target_piece_size: f32, // 正方形ピースの目標サイズ（ピクセル）
 }
 
 impl Default for PuzzleConfig {
@@ -47,7 +62,9 @@ impl Default for PuzzleConfig {
             snap_distance: 50.0, // Reduced to prevent immediate snapping
             image_path: String::new(), // 空の文字列から開始
             target_piece_count: 16, // デフォルト16ピース
-            use_target_mode: true, // デフォルトはターゲットピース数モード
+            use_target_mode: true, // デフォルトはターゲットピース数モード（下位互換性）
+            piece_mode: PieceMode::TargetCount, // 新しいデフォルトモード
+            target_piece_size: 4.0, // 4x4グリッド相当（16ピース）
         }
     }
 }

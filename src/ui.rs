@@ -1,6 +1,7 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::resources::*;
+use crate::puzzle_utils::calculate_grid_from_config;
 // use crate::networking::{start_server, start_client}; // ネットワーキング無効化
 use std::path::PathBuf;
 use puzzle_paths::generate_columns_rows_numbers;
@@ -91,75 +92,97 @@ pub fn draw_host_setup_ui(
         
         // ピース数設定モードの切り替え
         ui.horizontal(|ui| {
-            ui.label("Piece Count Mode:");
-            ui.radio_value(&mut puzzle_config.use_target_mode, true, "Target Piece Count");
-            ui.radio_value(&mut puzzle_config.use_target_mode, false, "Manual Grid Size");
+            ui.label("Piece Mode:");
+            ui.radio_value(&mut puzzle_config.piece_mode, PieceMode::TargetCount, "Target Piece Count");
+            ui.radio_value(&mut puzzle_config.piece_mode, PieceMode::ManualGrid, "Manual Grid Size");
+            ui.radio_value(&mut puzzle_config.piece_mode, PieceMode::SquarePieces, "Aspect Ratio Scale");
         });
+        
+        // 下位互換性のため、piece_modeの変更をuse_target_modeに反映
+        puzzle_config.use_target_mode = puzzle_config.piece_mode == PieceMode::TargetCount;
         
         ui.separator();
         
-        if puzzle_config.use_target_mode {
-            // ターゲットピース数モード
-            ui.horizontal(|ui| {
-                ui.label("Target Piece Count:");
-                ui.add(egui::Slider::new(&mut puzzle_config.target_piece_count, 4..=1000).text("pieces"));
-            });
-            
-            // 最適なグリッドサイズを計算して表示
-            let (image_width, image_height) = if let Some(puzzle_image) = puzzle_image.as_ref() {
-                // 実際の画像サイズを使用
-                (puzzle_image.size.x, puzzle_image.size.y)
-            } else {
-                // 画像が読み込まれていない場合は標準的な16:9の比率を仮定
-                (1920.0, 1080.0)
-            };
-            
-            let (optimal_cols, optimal_rows) = generate_columns_rows_numbers(
-                image_width, 
-                image_height, 
-                puzzle_config.target_piece_count
-            );
-            
-            puzzle_config.grid_size = (optimal_cols, optimal_rows);
-            
-            ui.horizontal(|ui| {
-                ui.label("Image Size:");
-                if let Some(_) = puzzle_image.as_ref() {
-                    ui.colored_label(egui::Color32::BLUE, format!("{:.0}x{:.0}", image_width, image_height));
-                } else {
-                    ui.colored_label(egui::Color32::GRAY, format!("{:.0}x{:.0} (assumed)", image_width, image_height));
-                }
-            });
-            
-            ui.horizontal(|ui| {
-                ui.label("Calculated Grid:");
-                ui.colored_label(egui::Color32::GREEN, format!("{}x{} = {} pieces", 
-                    optimal_cols, optimal_rows, optimal_cols * optimal_rows));
-            });
-            
-            // 実際のピース数が目標と異なる場合は警告
-            let actual_pieces = optimal_cols * optimal_rows;
-            if actual_pieces != puzzle_config.target_piece_count {
+        match puzzle_config.piece_mode {
+            PieceMode::TargetCount => {
+                // ターゲットピース数モード
                 ui.horizontal(|ui| {
-                    ui.colored_label(egui::Color32::YELLOW, format!(
-                        "Note: Actual pieces ({}) differs from target ({})", 
-                        actual_pieces, puzzle_config.target_piece_count
-                    ));
+                    ui.label("Target Piece Count:");
+                    ui.add(egui::Slider::new(&mut puzzle_config.target_piece_count, 4..=10000).text("pieces"));
+                });
+                
+                // 最適なグリッドサイズを計算して表示
+                let (grid_width, grid_height, info) = calculate_grid_from_config(&puzzle_config, puzzle_image.as_deref());
+                puzzle_config.grid_size = (grid_width, grid_height);
+                
+                let (image_width, image_height) = if let Some(puzzle_image) = puzzle_image.as_ref() {
+                    (puzzle_image.size.x, puzzle_image.size.y)
+                } else {
+                    (1920.0, 1080.0)
+                };
+                
+                ui.horizontal(|ui| {
+                    ui.label("Image Size:");
+                    if puzzle_image.is_some() {
+                        ui.colored_label(egui::Color32::BLUE, format!("{:.0}x{:.0}", image_width, image_height));
+                    } else {
+                        ui.colored_label(egui::Color32::GRAY, format!("{:.0}x{:.0} (assumed)", image_width, image_height));
+                    }
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label("Calculated Grid:");
+                    ui.colored_label(egui::Color32::GREEN, info);
                 });
             }
-        } else {
-            // 手動グリッドサイズモード
-            ui.horizontal(|ui| {
-                ui.label("Grid Size:");
-                ui.add(egui::Slider::new(&mut puzzle_config.grid_size.0, 2..=100).text("Width"));
-                ui.add(egui::Slider::new(&mut puzzle_config.grid_size.1, 2..=100).text("Height"));
-            });
             
-            let total_pieces = puzzle_config.grid_size.0 * puzzle_config.grid_size.1;
-            ui.horizontal(|ui| {
-                ui.label("Total pieces:");
-                ui.colored_label(egui::Color32::BLUE, format!("{}", total_pieces));
-            });
+            PieceMode::ManualGrid => {
+                // 手動グリッドサイズモード
+                ui.horizontal(|ui| {
+                    ui.label("Grid Size:");
+                    ui.add(egui::Slider::new(&mut puzzle_config.grid_size.0, 2..=100).text("Width"));
+                    ui.add(egui::Slider::new(&mut puzzle_config.grid_size.1, 2..=100).text("Height"));
+                });
+                
+                let total_pieces = puzzle_config.grid_size.0 * puzzle_config.grid_size.1;
+                ui.horizontal(|ui| {
+                    ui.label("Total pieces:");
+                    ui.colored_label(egui::Color32::BLUE, format!("{}", total_pieces));
+                });
+            }
+            
+            PieceMode::SquarePieces => {
+                // 縦横比保持スケールモード
+                ui.horizontal(|ui| {
+                    ui.label("Grid Scale:");
+                    ui.add(egui::Slider::new(&mut puzzle_config.target_piece_size, 1.0..=50.0).text("x"));
+                });
+                
+                ui.label("Scale 1x = 1 piece, 2x ≈ 4 pieces, 4x ≈ 16 pieces, etc.");
+                
+                let (grid_width, grid_height, info) = calculate_grid_from_config(&puzzle_config, puzzle_image.as_deref());
+                puzzle_config.grid_size = (grid_width, grid_height);
+                
+                let (image_width, image_height) = if let Some(puzzle_image) = puzzle_image.as_ref() {
+                    (puzzle_image.size.x, puzzle_image.size.y)
+                } else {
+                    (1920.0, 1080.0)
+                };
+                
+                ui.horizontal(|ui| {
+                    ui.label("Image Size:");
+                    if puzzle_image.is_some() {
+                        ui.colored_label(egui::Color32::BLUE, format!("{:.0}x{:.0}", image_width, image_height));
+                    } else {
+                        ui.colored_label(egui::Color32::GRAY, format!("{:.0}x{:.0} (assumed)", image_width, image_height));
+                    }
+                });
+                
+                ui.horizontal(|ui| {
+                    ui.label("Calculated Grid:");
+                    ui.colored_label(egui::Color32::GREEN, info);
+                });
+            }
         }
         
         ui.horizontal(|ui| {

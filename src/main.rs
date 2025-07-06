@@ -6,6 +6,7 @@ mod components;
 mod resources;
 mod systems;
 mod jigsaw_shapes;
+mod puzzle_utils;
 
 use bevy::prelude::*;
 use bevy_egui::{self, EguiPrimaryContextPass};
