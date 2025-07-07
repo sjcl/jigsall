@@ -311,7 +311,8 @@ pub fn draw_host_setup_ui(
             if ui.button("Start Game").clicked() {
                 // ローカルゲーム開始（ネットワーキング無効のため）
                 game_state.current_screen = GameScreen::InGame;
-                game_state.needs_reset = true; // 新しいゲーム開始時にリセット
+                // 新しいゲーム開始時はリセットしない（画像設定を保持）
+                // game_state.needs_reset = true; 
             }
         });
         
@@ -501,7 +502,7 @@ pub fn draw_in_game_menu_ui(
                     game_state.current_screen = GameScreen::Menu;
                     game_state.puzzle_completed = false;
                     game_state.puzzle_progress = 0.0;
-                    game_state.needs_reset = true; // パズルリセットフラグを設定
+                    game_state.needs_reset = true; // パズルと画像設定を完全リセット
                     println!("🎮 Returning to title screen");
                 }
                 

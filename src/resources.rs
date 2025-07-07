@@ -12,7 +12,7 @@ pub struct GameState {
     pub needs_reset: bool, // パズルをリセットする必要があるかのフラグ
 }
 
-#[derive(Default, PartialEq, Clone)]
+#[derive(Default, PartialEq, Clone, Debug)]
 pub enum GameScreen {
     #[default]
     Menu,

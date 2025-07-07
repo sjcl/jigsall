@@ -434,10 +434,11 @@ pub fn update_game_state(
     }
 }
 
-/// パズルをリセットする（既存のピースとグリッド背景を削除）
+/// パズルをリセットする（既存のピース、グリッド背景、画像設定を削除）
 pub fn reset_puzzle(
     mut commands: Commands,
     mut game_state: ResMut<GameState>,
+    mut puzzle_config: ResMut<PuzzleConfig>,
     puzzle_pieces: Query<Entity, With<PuzzlePiece>>,
     grid_references: Query<Entity, With<GridReference>>,
     mut input_state: ResMut<InputState>,
@@ -446,7 +447,7 @@ pub fn reset_puzzle(
         return;
     }
     
-    println!("🔄 Resetting puzzle...");
+    println!("🔄 Resetting puzzle completely...");
     
     // すべてのパズルピースを削除
     for entity in puzzle_pieces.iter() {
@@ -467,10 +468,13 @@ pub fn reset_puzzle(
     input_state.selected_piece = None;
     input_state.next_z_order = 1.0;
     
+    // 画像設定を完全にクリア
+    puzzle_config.image_path.clear();
+    
     // PuzzleImageリソースを削除して再読み込みを強制
     commands.remove_resource::<crate::resources::PuzzleImage>();
     
-    println!("✅ Puzzle reset completed (pieces and grid background)");
+    println!("✅ Puzzle reset completed (pieces, grid background, and image settings cleared)");
 }
 
 pub fn spawn_puzzle_pieces(
@@ -488,6 +492,7 @@ pub fn spawn_puzzle_pieces(
     if game_state.current_screen == GameScreen::InGame && existing_pieces.is_empty() {
         // 画像パスが設定されている場合
         if !puzzle_config.image_path.is_empty() {
+            println!("🎮 Attempting to create puzzle with image: {}", puzzle_config.image_path);
             // PuzzleImageリソースがまだない場合は作成
             if puzzle_image.is_none() {
                 // ファイルの存在確認
@@ -557,7 +562,8 @@ pub fn spawn_puzzle_pieces(
             }
         } else {
             // 画像が選択されていない場合はエラーメッセージ
-            println!("No image selected for puzzle creation!");
+            println!("⚠️ No image selected for puzzle creation! Current screen: {:?}, image_path: '{}'", 
+                game_state.current_screen, puzzle_config.image_path);
             return;
         }
         
@@ -835,3 +841,4 @@ pub fn handle_escape_input(
         }
     }
 }
+
