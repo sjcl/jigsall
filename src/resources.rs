@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crossbeam::channel;
 use std::sync::Arc;
+use std::collections::HashMap;
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use crate::components::{PuzzlePiece, PieceShape};
 
@@ -89,6 +90,14 @@ pub struct NetworkInfo {
     pub player_id: Option<Uuid>,
 }
 
+#[derive(Default, Clone, Debug)]
+pub enum SelectionMode {
+    #[default]
+    Single,        // 単一ピース選択モード
+    BoxSelection,  // 範囲選択モード  
+    MultiDrag,     // 複数ピース同時移動モード
+}
+
 #[derive(Resource)]
 pub struct InputState {
     pub mouse_position: Vec2,
@@ -99,6 +108,13 @@ pub struct InputState {
     pub camera_drag_start_pos: Vec2,
     pub last_mouse_position: Vec2,
     pub last_cursor_position: Option<Vec2>,
+    
+    // 新しいマルチ選択関連フィールド
+    pub selection_mode: SelectionMode,
+    pub selection_start: Option<Vec2>,
+    pub selection_current: Option<Vec2>,
+    pub selected_pieces: Vec<Entity>,
+    pub multi_drag_offset: HashMap<Entity, Vec2>,
 }
 
 impl Default for InputState {
@@ -112,6 +128,13 @@ impl Default for InputState {
             camera_drag_start_pos: Vec2::ZERO,
             last_mouse_position: Vec2::ZERO,
             last_cursor_position: None,
+            
+            // 新しいマルチ選択関連フィールドの初期化
+            selection_mode: SelectionMode::Single,
+            selection_start: None,
+            selection_current: None,
+            selected_pieces: Vec::new(),
+            multi_drag_offset: HashMap::new(),
         }
     }
 }

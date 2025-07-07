@@ -57,3 +57,15 @@ pub struct GridReference;
 pub struct Cullable {
     pub in_view: bool,
 }
+
+/// 選択されたピースをマークするコンポーネント
+#[derive(Component)]
+pub struct SelectedPiece;
+
+/// 選択範囲の可視化用コンポーネント
+#[derive(Component)]
+pub struct SelectionBox;
+
+/// 選択されたピースの枠線表示用コンポーネント
+#[derive(Component)]
+pub struct PieceOutline;

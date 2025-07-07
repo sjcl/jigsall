@@ -22,7 +22,16 @@ impl Plugin for GamePlugin {
                     auto_adjust_camera_zoom,
                     update_input_state,
                     reset_puzzle, // パズルリセット機能
-                    handle_piece_dragging_hybrid, // 一時的に復帰
+                    
+                    // 新しいマルチ選択システム（優先順位: 最初に実行）
+                    handle_box_selection,
+                    handle_multi_piece_drag,
+                    render_selection_box,
+                    highlight_selected_pieces,
+                    
+                    // 既存のレガシーシステム（マルチ選択と共存）
+                    handle_piece_dragging_hybrid_legacy, // マルチ選択時は無効化
+                    
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,

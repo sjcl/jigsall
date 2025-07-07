@@ -7,6 +7,38 @@ use crate::resources::*;
 use crate::puzzle::*;
 use crate::jigsaw_shapes::{JigsawShapeGenerator, JigsawPieceShape};
 use std::path::Path;
+use std::collections::HashMap;
+
+/// カメラのズーム・パンを考慮してスクリーン座標をワールド座標に変換
+fn screen_to_world_pos(screen_pos: Vec2, camera_transform: &Transform) -> Vec2 {
+    // Bevyでは、カメラの逆変換を使用してスクリーン座標をワールド座標に変換
+    // スケールが小さい = ズームイン、大きい = ズームアウト
+    let scale = camera_transform.scale.x;
+    let camera_translation = camera_transform.translation.truncate();
+    
+    // 正しい逆変換: (screen_pos - screen_center) / scale + camera_position
+    // ただし、Bevyの座標系を考慮
+    screen_pos / scale + camera_translation
+}
+
+/// ワールド座標をカメラのズーム・パンを考慮してスクリーン座標に変換
+fn world_to_screen_pos(world_pos: Vec2, camera_transform: &Transform) -> Vec2 {
+    let scale = camera_transform.scale.x;
+    let camera_translation = camera_transform.translation.truncate();
+    
+    (world_pos - camera_translation) * scale
+}
+
+/// 矩形範囲内にピースが含まれているかチェック
+fn is_piece_in_selection_box(piece_pos: Vec2, selection_start: Vec2, selection_end: Vec2) -> bool {
+    let min_x = selection_start.x.min(selection_end.x);
+    let max_x = selection_start.x.max(selection_end.x);
+    let min_y = selection_start.y.min(selection_end.y);
+    let max_y = selection_start.y.max(selection_end.y);
+    
+    piece_pos.x >= min_x && piece_pos.x <= max_x && 
+    piece_pos.y >= min_y && piece_pos.y <= max_y
+}
 
 /// Ray-casting アルゴリズムを使った点内判定
 fn point_in_mesh(vertices: &[[f32; 2]], indices: &[u32], point: Vec2) -> bool {
@@ -140,8 +172,8 @@ pub fn handle_piece_dragging(
     return;
 }
 
-// ハイブリッドアプローチ: 手動当たり判定 + picking eventの合成
-pub fn handle_piece_dragging_hybrid(
+// レガシーシステム: 新しいマルチ選択システムに置き換え予定
+pub fn handle_piece_dragging_hybrid_legacy(
     mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
@@ -152,6 +184,11 @@ pub fn handle_piece_dragging_hybrid(
 ) {
     // ゲーム内メニューが表示されている間はピースドラッグを無効化
     if game_state.current_screen == GameScreen::InGameMenu {
+        return;
+    }
+    
+    // 新しいマルチ選択システムが有効な場合は無効化
+    if !matches!(input_state.selection_mode, SelectionMode::Single) || !input_state.selected_pieces.is_empty() {
         return;
     }
     
@@ -1512,6 +1549,397 @@ pub fn handle_escape_input(
             _ => {
                 // 他の画面では何もしない
             }
+        }
+    }
+}
+
+/// 範囲選択システム - 左クリック＋ドラッグで複数ピースを選択
+pub fn handle_box_selection(
+    mut commands: Commands,
+    mut input_state: ResMut<InputState>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
+    mut selected_query: Query<Entity, With<SelectedPiece>>,
+    game_state: Res<GameState>,
+) {
+    // ゲーム内メニューが表示されている間は無効化
+    if game_state.current_screen != GameScreen::InGame {
+        return;
+    }
+
+    let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Left);
+    let mouse_pressed = mouse_input.pressed(MouseButton::Left);
+    let mouse_just_released = mouse_input.just_released(MouseButton::Left);
+    
+    // ESCキーで選択解除
+    if keyboard_input.just_pressed(KeyCode::Escape) {
+        // 全ての選択を解除
+        for entity in selected_query.iter() {
+            commands.entity(entity).remove::<SelectedPiece>();
+        }
+        input_state.selected_pieces.clear();
+        input_state.selection_mode = SelectionMode::Single;
+        input_state.selection_start = None;
+        input_state.selection_current = None;
+        println!("🔄 Selection cleared");
+        return;
+    }
+    
+    match input_state.selection_mode {
+        SelectionMode::Single => {
+            // マウスクリック開始 - どこをクリックしたかで動作分岐
+            if mouse_just_pressed && !input_state.is_camera_dragging {
+                let world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
+                
+                // ピースをクリックしたかチェック（Z順序を考慮して最前面のピースを優先）
+                let mut clicked_piece = None;
+                let mut highest_z = f32::NEG_INFINITY;
+                
+                // PieceShapeを使用して正確な判定を行う
+                for (entity, transform, piece, shape) in piece_query.iter() {
+                    // ピースのローカル座標に変換
+                    let local_pos = world_pos - transform.translation.truncate();
+                    
+                    // まず境界ボックス内かチェック（高速フィルタリング）
+                    if local_pos.x >= piece.bounds.min.x && local_pos.x <= piece.bounds.max.x &&
+                       local_pos.y >= piece.bounds.min.y && local_pos.y <= piece.bounds.max.y {
+                        
+                        // 実際のジグソー形状内かチェック
+                        if point_in_mesh(&shape.vertices, &shape.indices, local_pos) {
+                            // より前面にあるピースを優先
+                            if transform.translation.z > highest_z {
+                                clicked_piece = Some(entity);
+                                highest_z = transform.translation.z;
+                            }
+                        }
+                    }
+                }
+                
+                if let Some(piece_entity) = clicked_piece {
+                    // ピースをクリック - 選択状態をトグル
+                    if input_state.selected_pieces.contains(&piece_entity) {
+                        // 既に選択済み → 複数ピース移動モードに移行
+                        input_state.selection_mode = SelectionMode::MultiDrag;
+                        
+                        // 各ピースのドラッグオフセットを計算
+                        input_state.multi_drag_offset.clear();
+                        let selected_pieces_copy = input_state.selected_pieces.clone();
+                        for selected_entity in selected_pieces_copy {
+                            // 全てのピース（選択済みも含む）から検索
+                            for (entity, transform, _, _) in piece_query.iter() {
+                                if entity == selected_entity {
+                                    let piece_world_pos = transform.translation.truncate();
+                                    let offset = piece_world_pos - world_pos;
+                                    input_state.multi_drag_offset.insert(selected_entity, offset);
+                                    break;
+                                }
+                            }
+                        }
+                        println!("🎯 Started multi-piece drag with {} pieces", input_state.selected_pieces.len());
+                    } else {
+                        // 単一ピースのドラッグ - 既存の選択をクリアして新しいピースを選択
+                        // 既存の選択を全てクリア
+                        for entity in selected_query.iter() {
+                            commands.entity(entity).remove::<SelectedPiece>();
+                        }
+                        input_state.selected_pieces.clear();
+                        input_state.multi_drag_offset.clear();
+                        
+                        // レガシーシステムに処理を委譲（単一ピースドラッグ）
+                        input_state.selected_piece = Some(piece_entity);
+                        
+                        println!("🎯 Started single piece drag");
+                    }
+                } else {
+                    // 空の場所をクリック - 範囲選択モードに移行
+                    input_state.selection_mode = SelectionMode::BoxSelection;
+                    input_state.selection_start = Some(world_pos);
+                    input_state.selection_current = Some(world_pos);
+                    
+                    // 既存の選択をクリア（Ctrlキー押下でない場合）
+                    if !keyboard_input.pressed(KeyCode::ControlLeft) && !keyboard_input.pressed(KeyCode::ControlRight) {
+                        for entity in selected_query.iter() {
+                            commands.entity(entity).remove::<SelectedPiece>();
+                        }
+                        input_state.selected_pieces.clear();
+                    }
+                    println!("📦 Started box selection");
+                }
+            }
+        }
+        
+        SelectionMode::BoxSelection => {
+            if mouse_pressed {
+                // 範囲選択中 - 現在位置を更新
+                let world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
+                input_state.selection_current = Some(world_pos);
+            }
+            
+            if mouse_just_released {
+                // 範囲選択終了 - 範囲内のピースを選択
+                if let (Some(start), Some(end)) = (input_state.selection_start, input_state.selection_current) {
+                    let mut newly_selected = 0;
+                    
+                    for (entity, transform, _piece, _) in piece_query.iter() {
+                        let piece_pos = transform.translation.truncate();
+                        
+                        if is_piece_in_selection_box(piece_pos, start, end) {
+                            commands.entity(entity).insert(SelectedPiece);
+                            input_state.selected_pieces.push(entity);
+                            newly_selected += 1;
+                        }
+                    }
+                    
+                    println!("📦 Box selection completed: {} new pieces selected (total: {})", 
+                             newly_selected, input_state.selected_pieces.len());
+                }
+                
+                // 範囲選択モード終了
+                input_state.selection_mode = SelectionMode::Single;
+                input_state.selection_start = None;
+                input_state.selection_current = None;
+            }
+        }
+        
+        SelectionMode::MultiDrag => {
+            // 複数ピース移動モードは separate system で処理
+        }
+    }
+}
+
+/// 複数ピース同時移動システム
+pub fn handle_multi_piece_drag(
+    mut input_state: ResMut<InputState>,
+    mouse_input: Res<ButtonInput<MouseButton>>,
+    mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece), With<SelectedPiece>>,
+    game_state: Res<GameState>,
+) {
+    // ゲーム内メニューが表示されている間は無効化
+    if game_state.current_screen != GameScreen::InGame {
+        return;
+    }
+    
+    // MultiDragモードでない場合は何もしない
+    if !matches!(input_state.selection_mode, SelectionMode::MultiDrag) {
+        return;
+    }
+    
+    let mouse_pressed = mouse_input.pressed(MouseButton::Left);
+    let mouse_just_released = mouse_input.just_released(MouseButton::Left);
+    
+    if mouse_pressed {
+        // ドラッグ中 - 全ての選択されたピースを移動
+        let current_world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
+        
+        for (entity, mut transform, _piece) in piece_query.iter_mut() {
+            if let Some(offset) = input_state.multi_drag_offset.get(&entity) {
+                let new_position = current_world_pos + *offset;
+                transform.translation = new_position.extend(input_state.next_z_order);
+            }
+        }
+        
+        // Z-orderを更新（ドラッグ中のピースが最前面に）
+        if piece_query.iter().count() > 0 {
+            input_state.next_z_order += 0.1;
+        }
+    }
+    
+    if mouse_just_released {
+        // ドラッグ終了 - MultiDragモードを終了
+        input_state.selection_mode = SelectionMode::Single;
+        input_state.multi_drag_offset.clear();
+        
+        // ドラッグ終了時にZ-orderを調整
+        for (_, mut transform, _) in piece_query.iter_mut() {
+            transform.translation.z = input_state.next_z_order;
+            input_state.next_z_order += 0.1;
+        }
+        
+        println!("🎯 Multi-piece drag completed");
+    }
+}
+
+/// 選択範囲可視化システム - 範囲選択中の矩形を描画
+pub fn render_selection_box(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    input_state: Res<InputState>,
+    camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
+    mut selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
+    game_state: Res<GameState>,
+) {
+    // ゲーム内メニューが表示されている間は無効化
+    if game_state.current_screen != GameScreen::InGame {
+        return;
+    }
+    
+    // 既存の選択ボックスを削除
+    for (entity, _) in selection_box_query.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // 範囲選択中の場合のみ描画
+    if matches!(input_state.selection_mode, SelectionMode::BoxSelection) {
+        if let (Some(start), Some(current)) = (input_state.selection_start, input_state.selection_current) {
+            // 矩形の大きさを計算
+            let width = (current.x - start.x).abs();
+            let height = (current.y - start.y).abs();
+            let center_x = (start.x + current.x) / 2.0;
+            let center_y = (start.y + current.y) / 2.0;
+            
+            if width > 1.0 && height > 1.0 {
+                // 選択範囲の矩形メッシュを作成
+                let mesh = Mesh::from(Rectangle::new(width, height));
+                let material = ColorMaterial::from(Color::srgba(0.3, 0.6, 1.0, 0.3)); // 半透明の青
+                
+                // 選択ボックスエンティティを生成
+                commands.spawn((
+                    Mesh2d(meshes.add(mesh)),
+                    MeshMaterial2d(materials.add(material)),
+                    Transform::from_translation(Vec3::new(center_x, center_y, 100.0)), // 最前面に表示
+                    SelectionBox,
+                ));
+            }
+        }
+    }
+}
+
+/// 枠線メッシュを作成する関数
+fn create_outline_mesh(vertices: &[[f32; 2]], indices: &[u32]) -> Mesh {
+    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::render::render_resource::PrimitiveTopology;
+    
+    // 枠線用の頂点を作成（元の頂点を少し外側に拡張）
+    let outline_width = 3.0; // 枠線の幅
+    let mut outline_vertices = Vec::new();
+    let mut outline_indices = Vec::new();
+    
+    // 三角形の輪郭を抽出して線分として描画
+    for triangle in indices.chunks(3) {
+        if triangle.len() < 3 { continue; }
+        
+        let v0 = vertices[triangle[0] as usize];
+        let v1 = vertices[triangle[1] as usize];
+        let v2 = vertices[triangle[2] as usize];
+        
+        // 三角形の各辺を枠線として追加
+        add_outline_edge(&mut outline_vertices, &mut outline_indices, v0, v1, outline_width);
+        add_outline_edge(&mut outline_vertices, &mut outline_indices, v1, v2, outline_width);
+        add_outline_edge(&mut outline_vertices, &mut outline_indices, v2, v0, outline_width);
+    }
+    
+    // Bevyメッシュを作成
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    
+    // 頂点データを設定
+    let positions: Vec<[f32; 3]> = outline_vertices.iter()
+        .map(|v| [v[0], v[1], 0.0])
+        .collect();
+    
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_indices(bevy::render::mesh::Indices::U32(outline_indices));
+    
+    mesh
+}
+
+/// 枠線の辺を追加する関数
+fn add_outline_edge(vertices: &mut Vec<[f32; 2]>, indices: &mut Vec<u32>, p1: [f32; 2], p2: [f32; 2], width: f32) {
+    let base_index = vertices.len() as u32;
+    
+    // 辺の方向ベクトル
+    let dx = p2[0] - p1[0];
+    let dy = p2[1] - p1[1];
+    let length = (dx * dx + dy * dy).sqrt();
+    
+    if length < 1e-6 { return; } // 長さが0の辺は無視
+    
+    // 正規化された垂直ベクトル
+    let nx = -dy / length * width / 2.0;
+    let ny = dx / length * width / 2.0;
+    
+    // 枠線用の4つの頂点を追加
+    vertices.push([p1[0] + nx, p1[1] + ny]); // 0
+    vertices.push([p1[0] - nx, p1[1] - ny]); // 1
+    vertices.push([p2[0] + nx, p2[1] + ny]); // 2
+    vertices.push([p2[0] - nx, p2[1] - ny]); // 3
+    
+    // 矩形を2つの三角形で表現
+    indices.extend_from_slice(&[
+        base_index, base_index + 1, base_index + 2,
+        base_index + 1, base_index + 3, base_index + 2,
+    ]);
+}
+
+/// 選択されたピースのハイライト表示システム
+pub fn highlight_selected_pieces(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
+    all_pieces_query: Query<Entity, With<PuzzlePiece>>,
+    mut piece_query: Query<&mut MeshMaterial2d<ColorMaterial>, With<PuzzlePiece>>,
+    piece_transform_query: Query<&Transform, With<PuzzlePiece>>,
+    piece_shape_query: Query<&PieceShape, With<PuzzlePiece>>,
+    existing_outline_query: Query<Entity, With<PieceOutline>>,
+    game_state: Res<GameState>,
+) {
+    // ゲーム内メニューが表示されている間は無効化
+    if game_state.current_screen != GameScreen::InGame {
+        return;
+    }
+    
+    // まず、全てのピースを通常の色に戻す
+    for entity in all_pieces_query.iter() {
+        if let Ok(mut material_handle) = piece_query.get_mut(entity) {
+            if let Some(material) = materials.get_mut(&material_handle.0) {
+                // 通常の白色に戻す（テクスチャの元の色）
+                material.color = Color::srgba(1.0, 1.0, 1.0, 1.0);
+            }
+        }
+    }
+    
+    // 既存の枠線を削除
+    for outline_entity in existing_outline_query.iter() {
+        commands.entity(outline_entity).despawn();
+    }
+    
+    // 選択されたピースに黄色い枠線を追加
+    for entity in selected_pieces_query.iter() {
+        if let (Ok(transform), Ok(piece_shape)) = (
+            piece_transform_query.get(entity),
+            piece_shape_query.get(entity)
+        ) {
+            // 枠線用のメッシュを作成
+            let outline_mesh = create_outline_mesh(&piece_shape.vertices, &piece_shape.indices);
+            let outline_mesh_handle = meshes.add(outline_mesh);
+            
+            // 黄色い枠線用のマテリアル
+            let outline_material = ColorMaterial {
+                color: Color::srgba(1.0, 1.0, 0.0, 1.0), // 黄色
+                ..Default::default()
+            };
+            let outline_material_handle = materials.add(outline_material);
+            
+            // 枠線エンティティをスポーン（元のピースより少し上のZ位置）
+            commands.spawn((
+                Mesh2d(outline_mesh_handle),
+                MeshMaterial2d(outline_material_handle),
+                Transform {
+                    translation: Vec3::new(
+                        transform.translation.x,
+                        transform.translation.y,
+                        transform.translation.z + 0.1, // 少し上に表示
+                    ),
+                    rotation: transform.rotation,
+                    scale: transform.scale,
+                },
+                PieceOutline,
+            ));
         }
     }
 }
