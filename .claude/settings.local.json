@@ -5,6 +5,9 @@
       "Bash(grep:*)",
       "Bash(rg:*)"
     ],
-    "deny": []
+    "deny": [
+      "Bash(cargo run:*)",
+      "Bash(cargo build:*)"
+    ]
   }
 }
