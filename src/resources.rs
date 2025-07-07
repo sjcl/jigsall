@@ -69,8 +69,8 @@ impl Default for PuzzleConfig {
             snap_distance: 50.0, // Reduced to prevent immediate snapping
             image_path: String::new(), // 空の文字列から開始
             target_piece_count: 16, // デフォルト16ピース
-            use_target_mode: true, // デフォルトはターゲットピース数モード（下位互換性）
-            piece_mode: PieceMode::TargetCount, // 新しいデフォルトモード
+            use_target_mode: false, // アスペクト比モードがデフォルト
+            piece_mode: PieceMode::SquarePieces, // アスペクト比モードをデフォルトに
             target_piece_size: 4.0, // 4x4グリッド相当（16ピース）
         }
     }
