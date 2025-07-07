@@ -167,27 +167,30 @@ pub fn handle_piece_dragging_hybrid(
         }
     }
     
-    // ピースサイズを計算（オリジナル画像サイズを使用）
-    let (piece_width, piece_height) = if let Some(puzzle_image) = puzzle_image.as_ref() {
-        let (grid_width, grid_height) = puzzle_config.grid_size;
-        let display_width = puzzle_image.size.x;
-        let display_height = puzzle_image.size.y;
-        (display_width / grid_width as f32, display_height / grid_height as f32)
-    } else {
-        (80.0, 80.0) // デフォルト値
-    };
-    
     // マウスがクリックされた瞬間かつ、他にドラッグ中のピースがない場合のみ新しい選択を行う
     if mouse_just_pressed && current_dragging_piece.is_none() && !input_state.is_camera_dragging {
         let mut closest_piece: Option<(Entity, f32, f32)> = None;
         
-        // 効率的な距離制限を設定
-        let max_check_distance = piece_width.max(piece_height) * 3.0;
+        // 動的な距離制限を設定（実際のピースサイズに基づく）
+        // First, find the actual maximum piece bounds size from all pieces
+        let max_piece_size = piece_query.iter()
+            .map(|(_, _, _, piece, _)| {
+                let bounds_size = Vec2::new(
+                    piece.bounds.max.x - piece.bounds.min.x,
+                    piece.bounds.max.y - piece.bounds.min.y
+                );
+                bounds_size.x.max(bounds_size.y)
+            })
+            .fold(0.0, f32::max);
+        
+        // Use the actual maximum piece size for distance checking
+        // Increase multiplier to cover jigsaw tab extensions beyond the base piece bounds
+        let max_check_distance = max_piece_size * 3.0;
         
         // デバッグ: マウスクリック位置とピース総数
         let total_pieces = puzzle_config.grid_size.0 * puzzle_config.grid_size.1;
-        println!("🖱️ Mouse click at ({:.1}, {:.1}) - Total pieces: {}", 
-            input_state.mouse_position.x, input_state.mouse_position.y, total_pieces);
+        println!("🖱️ Mouse click at ({:.1}, {:.1}) - Total pieces: {}, max_piece_size: {:.1}, max_check_distance: {:.1}", 
+            input_state.mouse_position.x, input_state.mouse_position.y, total_pieces, max_piece_size, max_check_distance);
         
         
         let mut pieces_checked = 0;
@@ -221,19 +224,36 @@ pub fn handle_piece_dragging_hybrid(
             let piece_bounds = piece.bounds;
             
             // 境界を動的に拡張してジグソー形状の凸部分を完全にカバー
-            let piece_size = if let Some(puzzle_image) = puzzle_image.as_ref() {
-                let (grid_width, grid_height) = puzzle_config.grid_size;
-                Vec2::new(
-                    puzzle_image.size.x / grid_width as f32,
-                    puzzle_image.size.y / grid_height as f32
-                )
-            } else {
-                Vec2::new(1920.0, 1080.0)
-            };
+            // For a 3840x2160 image with 5x3 grid, piece size should be 768x720
+            // Since bounds are (-384,-360 to 384,360), the piece size is 768x720
+            let piece_bounds_size = Vec2::new(
+                piece_bounds.max.x - piece_bounds.min.x,
+                piece_bounds.max.y - piece_bounds.min.y
+            );
             
-            // ピースサイズに比例したマージン（ジグソー突起は通常ピースサイズの10-15%程度）
-            // より大きなマージンで凸部分の先端も確実にカバー
-            let margin = (piece_size.x.max(piece_size.y) * 0.35).max(100.0); // 35%マージン、最低100ピクセル
+            // Use the bounds size for margin calculation
+            let piece_size = piece_bounds_size;
+            
+            // Debug: Log piece size and camera info for first few pieces
+            static mut PIECE_SIZE_LOG_COUNT: usize = 0;
+            unsafe {
+                if PIECE_SIZE_LOG_COUNT < 5 {
+                    let camera_scale = if let Ok(cam_transform) = camera_query.single() {
+                        cam_transform.scale.x
+                    } else {
+                        1.0
+                    };
+                    println!("🔍 Collision detection piece {}: bounds({:.1},{:.1} to {:.1},{:.1}) size:({:.1}x{:.1}), camera_scale:{:.3}",
+                        PIECE_SIZE_LOG_COUNT, 
+                        piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
+                        piece_bounds_size.x, piece_bounds_size.y, camera_scale);
+                    PIECE_SIZE_LOG_COUNT += 1;
+                }
+            }
+            
+            // Add margin to account for jigsaw tabs extending beyond base bounds
+            // Jigsaw tabs can extend significantly beyond the base piece rectangle
+            let margin = piece_size.x.max(piece_size.y) * 0.4; // 40% additional margin for tab extensions
             let expanded_bounds = Rect::new(
                 piece_bounds.min.x - margin,
                 piece_bounds.min.y - margin, 
@@ -243,18 +263,32 @@ pub fn handle_piece_dragging_hybrid(
             
             let in_bounds = expanded_bounds.contains(piece_relative_point);
             
+            // DEBUG: Always log bounds check for pieces close to mouse
+            if distance_to_mouse < max_check_distance {
+                println!("🔍 DEBUG piece({},{}) mouse_rel:({:.1},{:.1}) bounds:({:.1},{:.1} to {:.1},{:.1}) in_bounds:{}",
+                    piece.grid_x, piece.grid_y,
+                    piece_relative_point.x, piece_relative_point.y,
+                    expanded_bounds.min.x, expanded_bounds.min.y, expanded_bounds.max.x, expanded_bounds.max.y,
+                    in_bounds);
+            }
+            
             // デバッグ: 距離の近いピースの境界情報を詳しく出力
             if distance_to_mouse < max_check_distance * 0.5 {
                 let bounds_width = piece_bounds.max.x - piece_bounds.min.x;
                 let bounds_height = piece_bounds.max.y - piece_bounds.min.y;
                 let expected_piece_size = piece_size;
-                println!("🔍 Piece({},{}) pos:({:.1},{:.1}) mouse_world:({:.1},{:.1}) mouse_rel:({:.1},{:.1}) dist:{:.1}", 
-                    piece.grid_x, piece.grid_y, piece_pos.x, piece_pos.y,
+                println!("🔍 Piece({},{}) entity:{:?} pos:({:.1},{:.1}) mouse_world:({:.1},{:.1}) mouse_rel:({:.1},{:.1}) dist:{:.1}", 
+                    piece.grid_x, piece.grid_y, entity, piece_pos.x, piece_pos.y,
                     input_state.mouse_position.x, input_state.mouse_position.y,
                     piece_relative_point.x, piece_relative_point.y, distance_to_mouse);
-                println!("    orig_bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} expected:{:.1}x{:.1} margin:{:.1} in_bounds:{}", 
+                println!("    orig_bounds:({:.1},{:.1} to {:.1},{:.1}) size:{:.1}x{:.1} calc_piece_size:{:.1}x{:.1} margin:{:.1} in_bounds:{}", 
                     piece_bounds.min.x, piece_bounds.min.y, piece_bounds.max.x, piece_bounds.max.y,
-                    bounds_width, bounds_height, expected_piece_size.x, expected_piece_size.y, margin, in_bounds);
+                    bounds_width, bounds_height, piece_size.x, piece_size.y, margin, in_bounds);
+                
+                // Additional debug for expanded bounds
+                println!("    expanded_bounds:({:.1},{:.1} to {:.1},{:.1}) mouse_rel:({:.1},{:.1})",
+                    expanded_bounds.min.x, expanded_bounds.min.y, expanded_bounds.max.x, expanded_bounds.max.y,
+                    piece_relative_point.x, piece_relative_point.y);
             }
             
             if in_bounds {

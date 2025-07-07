@@ -173,8 +173,8 @@ pub fn create_puzzle_pieces(
     let piece_width = display_width / grid_width as f32;
     let piece_height = display_height / grid_height as f32;
     
-    println!("Original image size: {}x{}, Display size: {}x{}, Piece size: {}x{}", 
-        puzzle_image.size.x, puzzle_image.size.y, display_width, display_height, piece_width, piece_height);
+    println!("🧩 Creating puzzle pieces: image_size({}x{}), grid({}x{}), piece_size({}x{})", 
+        puzzle_image.size.x, puzzle_image.size.y, grid_width, grid_height, piece_width, piece_height);
     
     // ジグソー形状ジェネレータを初期化
     let mut shape_generator = JigsawShapeGenerator::new(
@@ -235,6 +235,18 @@ pub fn create_puzzle_pieces(
                 (y + 1) as f32 / grid_height as f32,
             );
             
+            // Create proper collision bounds based on piece size, not tight mesh bounds
+            // Add margin to cover jigsaw tabs and blanks properly
+            let margin_ratio = 1.3; // 30% larger to cover jigsaw tabs and blanks
+            let half_width = (piece_width * margin_ratio) / 2.0;
+            let half_height = (piece_height * margin_ratio) / 2.0;
+            let collision_bounds = Rect::new(
+                -half_width,
+                -half_height,
+                half_width,
+                half_height
+            );
+            
             let piece = PuzzlePiece {
                 id: piece_id,
                 original_position: start_position,
@@ -244,7 +256,7 @@ pub fn create_puzzle_pieces(
                 is_placed: false, // Ensure pieces start as not placed
                 grid_x: x,
                 grid_y: y,
-                bounds: shape.bounds,
+                bounds: collision_bounds, // Use full piece size for collision detection
             };
             
             // 各ピースに一意のZ値を設定（重なり順制御）
