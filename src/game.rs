@@ -12,6 +12,7 @@ impl Plugin for GamePlugin {
             .init_resource::<PuzzleConfig>()
             .init_resource::<NetworkInfo>()
             .init_resource::<InputState>()
+            .init_resource::<PieceGenerationProgress>()
             .add_systems(Startup, setup_game)
             .add_systems(
                 Update,
@@ -25,6 +26,7 @@ impl Plugin for GamePlugin {
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,
+                    spawn_puzzle_pieces_progressive, // 新しいプログレッシブ生成システム
                     handle_camera_zoom,
                     handle_camera_drag,
                     frustum_culling_system, // 画面外のピースを非表示にする

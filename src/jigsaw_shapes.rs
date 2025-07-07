@@ -59,9 +59,9 @@ impl JigsawShapeGenerator {
             Some(42),                        // 固定シード
         );
         
-        // デバッグ: 最初のいくつかのSVGパスを出力
+        // デバッグ: ジグソーテンプレート生成ログ
         let total_pieces = grid_width * grid_height;
-        println!("Generated jigsaw template for {}x{} grid ({} total pieces)", grid_width, grid_height, total_pieces);
+        println!("🧩 Generated jigsaw template for {}x{} grid ({} total pieces)", grid_width, grid_height, total_pieces);
         
         
         self.jigsaw_template = Some(template);
@@ -119,7 +119,7 @@ impl JigsawShapeGenerator {
         // キャッシュに保存
         self.shape_cache.insert((x, y), shape);
         
-        println!("Generated shape for piece ({}, {})", x, y);
+        // ログは削除（バックグラウンド生成で大量になるため）
         Ok(self.shape_cache.get(&(x, y)).unwrap())
     }
 
@@ -268,7 +268,7 @@ impl JigsawShapeGenerator {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
         mesh.insert_indices(Indices::U32(indices));
         
-        println!("Generated 2D mesh for piece ({}, {}) with {} vertices", x, y, vb.vertices.len());
+        // ログは削除（バックグラウンド生成で大量になるため）
         Ok(mesh)
     }
 
@@ -329,6 +329,9 @@ impl JigsawShapeGenerator {
         let mut path_started = false;
         let mut coord_count = 0;
         
+        // デバッグログを最初の数ピースのみに制限
+        let should_debug = offset_x < 200.0 && offset_y < 200.0;
+        
         // SVG解析を実装
         for segment in PathParser::from(svg_path) {
             match segment {
@@ -341,8 +344,8 @@ impl JigsawShapeGenerator {
                             // 絶対座標から相対座標に変換してからBevyの座標系に合わせる
                             let relative_x = x as f32 - offset_x;
                             let relative_y = y as f32 - offset_y;
-                            // Debug: Log first few coordinates
-                            if coord_count < 3 {
+                            // Debug: Log first few coordinates for first few pieces only
+                            if should_debug && coord_count < 3 {
                                 println!("MoveTo: abs({:.1}, {:.1}) - offset({:.1}, {:.1}) = rel({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})", 
                                     x, y, offset_x, offset_y, relative_x, relative_y, relative_x, -relative_y);
                                 coord_count += 1;
@@ -358,8 +361,8 @@ impl JigsawShapeGenerator {
                             // 絶対座標から相対座標に変換してからBevyの座標系に合わせる
                             let relative_x = x as f32 - offset_x;
                             let relative_y = y as f32 - offset_y;
-                            // Debug: Log first few coordinates
-                            if coord_count < 3 {
+                            // Debug: Log first few coordinates for first few pieces only
+                            if should_debug && coord_count < 3 {
                                 println!("LineTo: abs({:.1}, {:.1}) - offset({:.1}, {:.1}) = rel({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})", 
                                     x, y, offset_x, offset_y, relative_x, relative_y, relative_x, -relative_y);
                                 coord_count += 1;
@@ -513,7 +516,7 @@ impl JigsawShapeGenerator {
             }
         }
         
-        println!("Generated all {} shapes", grid_width * grid_height);
+        println!("✅ Generated all {} shapes", grid_width * grid_height);
         Ok(())
     }
 

@@ -32,5 +32,9 @@ fn main() {
                 draw_in_game_menu_ui, // ゲーム内メニューUI
             ),
         )
+        .add_systems(
+            EguiPrimaryContextPass,
+            draw_generation_progress_ui, // ピース生成プログレスバーを別に追加
+        )
         .run();
 }

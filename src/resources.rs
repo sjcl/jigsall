@@ -1,6 +1,12 @@
 use bevy::prelude::*;
+use bevy::tasks::Task;
+use bevy::sprite::ColorMaterial;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crossbeam::channel;
+use std::sync::Arc;
+use crate::jigsaw_shapes::JigsawShapeGenerator;
+use crate::components::{PuzzlePiece, PieceShape};
 
 #[derive(Resource, Default)]
 pub struct GameState {
@@ -109,3 +115,99 @@ impl Default for InputState {
         }
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum GenerationPhase {
+    NotStarted,
+    PreparingShapes,    // ジグソー形状を生成中（非同期）
+    CreatingPieces,     // ピースエンティティを作成中（非同期）
+    SpawningEntities,   // メインスレッドでエンティティをスポーン中
+    Completed,
+}
+
+// 非同期タスクの結果を格納する構造体
+pub struct ShapeGenerationResult {
+    pub shape_generator: JigsawShapeGenerator,
+    pub placement_positions: Vec<Vec2>,
+    pub grid_size: (usize, usize),
+    pub total_pieces: usize,
+}
+
+// メッシュとピースデータを含む構造体
+pub struct PieceData {
+    pub mesh: Mesh,
+    pub piece_component: PuzzlePiece,
+    pub piece_shape: PieceShape,
+    pub transform: Transform,
+    pub material_handle: Handle<ColorMaterial>,
+}
+
+// ピース作成の非同期タスク結果
+pub struct PieceCreationResult {
+    pub pieces: Vec<PieceData>,
+}
+
+// 進捗更新メッセージ
+#[derive(Clone)]
+pub enum ProgressMessage {
+    ShapeProgress(usize), // 生成済み形状数
+    PieceProgress(usize), // 作成済みピース数
+    ShapeCompleted,       // 形状生成完了
+    PieceCompleted,       // ピース作成完了
+}
+
+impl Default for GenerationPhase {
+    fn default() -> Self {
+        GenerationPhase::NotStarted
+    }
+}
+
+#[derive(Resource)]
+pub struct PieceGenerationProgress {
+    // バックグラウンドスレッド版 - フィールドテスト
+    pub is_generating: bool,
+    pub current_piece: usize,
+    pub total_pieces: usize,
+    pub generation_phase: GenerationPhase,
+    pub grid_size: (usize, usize),
+    pub shapes_generated: usize,
+    pub pieces_created: usize,
+    pub shape_generator: Option<JigsawShapeGenerator>,
+    pub placement_positions: Vec<Vec2>,
+    pub async_task: Option<Task<ShapeGenerationResult>>,
+    pub piece_creation_task: Option<Task<PieceCreationResult>>,
+    pub pending_pieces: Vec<PieceData>, // 非同期で作成されたピースデータの待機列
+    pub pieces_spawned_this_frame: usize, // 今フレームでスポーンしたピース数
+    
+    // 新しい標準スレッド用フィールド（crossbeam channelを使用）
+    pub bg_thread_receiver: Option<channel::Receiver<ShapeGenerationResult>>,
+    pub piece_thread_receiver: Option<channel::Receiver<PieceCreationResult>>,
+    
+    // 進捗更新用チャンネル
+    pub progress_receiver: Option<channel::Receiver<ProgressMessage>>,
+}
+
+impl Default for PieceGenerationProgress {
+    fn default() -> Self {
+        Self {
+            is_generating: false,
+            current_piece: 0,
+            total_pieces: 0,
+            generation_phase: GenerationPhase::NotStarted,
+            grid_size: (0, 0),
+            shapes_generated: 0,
+            pieces_created: 0,
+            shape_generator: None,
+            placement_positions: Vec::new(),
+            async_task: None,
+            piece_creation_task: None,
+            pending_pieces: Vec::new(),
+            pieces_spawned_this_frame: 0,
+            bg_thread_receiver: None,
+            piece_thread_receiver: None,
+            progress_receiver: None,
+        }
+    }
+}
+
+// バックグラウンドスレッド版の完了

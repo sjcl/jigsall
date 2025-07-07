@@ -7,7 +7,7 @@ use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
 
 /// 整列配置用のグリッド位置を生成（同心円状にグリッドを囲む配置）
-fn generate_placement_grid(
+pub fn generate_placement_grid(
     grid_width: usize, 
     grid_height: usize, 
     piece_width: f32, 
@@ -133,7 +133,7 @@ fn generate_layer_positions(
 }
 
 /// メッシュから精密当たり判定用の形状データを抽出
-fn extract_shape_data(mesh: &Mesh) -> PieceShape {
+pub fn extract_shape_data(mesh: &Mesh) -> PieceShape {
     let vertices = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
         Some(VertexAttributeValues::Float32x3(positions)) => {
             positions.iter().map(|pos| [pos[0], pos[1]]).collect()

@@ -1,9 +1,11 @@
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
 use bevy::sprite::ColorMaterial;
+use bevy::tasks::AsyncComputeTaskPool;
 use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
+use crate::jigsaw_shapes::{JigsawShapeGenerator, JigsawPieceShape};
 use std::path::Path;
 
 /// Ray-casting アルゴリズムを使った点内判定
@@ -193,10 +195,16 @@ pub fn handle_piece_dragging_hybrid(
         // Increase multiplier to cover jigsaw tab extensions beyond the base piece bounds
         let max_check_distance = max_piece_size * 3.0;
         
-        // デバッグ: マウスクリック位置とピース総数
+        // デバッグ: マウスクリック位置とピース総数（頻度制限）
         let total_pieces = puzzle_config.grid_size.0 * puzzle_config.grid_size.1;
-        println!("🖱️ Mouse click at ({:.1}, {:.1}) - Total pieces: {}, max_piece_size: {:.1}, max_check_distance: {:.1}", 
-            input_state.mouse_position.x, input_state.mouse_position.y, total_pieces, max_piece_size, max_check_distance);
+        static mut CLICK_LOG_COUNT: usize = 0;
+        unsafe {
+            CLICK_LOG_COUNT += 1;
+            if CLICK_LOG_COUNT % 20 == 0 {  // 20回に1回のみ出力
+                println!("🖱️ Mouse click #{} at ({:.1}, {:.1}) - Total pieces: {}, max_piece_size: {:.1}", 
+                    CLICK_LOG_COUNT, input_state.mouse_position.x, input_state.mouse_position.y, total_pieces, max_piece_size);
+            }
+        }
         
         
         let mut pieces_checked = 0;
@@ -488,11 +496,11 @@ pub fn spawn_puzzle_pieces(
     images: Res<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut progress: ResMut<PieceGenerationProgress>,
 ) {
     if game_state.current_screen == GameScreen::InGame && existing_pieces.is_empty() {
         // 画像パスが設定されている場合
         if !puzzle_config.image_path.is_empty() {
-            println!("🎮 Attempting to create puzzle with image: {}", puzzle_config.image_path);
             // PuzzleImageリソースがまだない場合は作成
             if puzzle_image.is_none() {
                 // ファイルの存在確認
@@ -550,26 +558,13 @@ pub fn spawn_puzzle_pieces(
                 return; // 次フレームで再実行
             }
             
-            if let Some(ref puzzle_image) = puzzle_image {
-                // 画像サイズが適切に読み込まれている場合のみピースを作成
-                if puzzle_image.size.x > 10.0 && puzzle_image.size.y > 10.0 {
-                    println!("Creating pieces with image size: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
-                    create_puzzle_pieces(&mut commands, &asset_server, &puzzle_config, puzzle_image, &mut meshes, &mut materials);
-                } else {
-                    println!("Waiting for image size update: {}x{}", puzzle_image.size.x, puzzle_image.size.y);
-                    return; // 画像サイズがまだ更新されていない
-                }
-            }
+            // プログレッシブ生成システムが処理するので、ここでは何もしない
+            // spawn_puzzle_pieces_progressiveシステムが実際の生成を行う
         } else {
             // 画像が選択されていない場合はエラーメッセージ
             println!("⚠️ No image selected for puzzle creation! Current screen: {:?}, image_path: '{}'", 
                 game_state.current_screen, puzzle_config.image_path);
             return;
-        }
-        
-        // 半透明の元画像をグリッドの正しい位置に表示（まだ存在しない場合のみ）
-        if existing_grid_ref.is_empty() {
-            spawn_grid_reference(&mut commands, &asset_server, &puzzle_config, puzzle_image.as_ref());
         }
     }
 }
@@ -812,10 +807,689 @@ pub fn frustum_culling_system(
     static mut FRAME_COUNT: usize = 0;
     unsafe {
         FRAME_COUNT += 1;
-        if FRAME_COUNT % 300 == 0 {  // 5秒ごとに出力（60FPSの場合）
+        if FRAME_COUNT % 600 == 0 {  // 10秒ごとに出力（60FPSの場合）
             println!("🎯 Frustum Culling: {} visible, {} culled", visible_count, culled_count);
         }
     }
+}
+
+/// ピース生成を段階的に実行する新しいシステム
+pub fn spawn_puzzle_pieces_progressive(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    puzzle_config: Res<PuzzleConfig>,
+    puzzle_image: Option<Res<PuzzleImage>>,
+    game_state: Res<GameState>,
+    existing_pieces: Query<&PuzzlePiece>,
+    existing_grid_ref: Query<&GridReference>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut progress: ResMut<PieceGenerationProgress>,
+) {
+    // システム実行のデバッグログ（スポーン中のみ）
+    if progress.generation_phase == GenerationPhase::SpawningEntities {
+        static mut SYSTEM_CALL_COUNT: usize = 0;
+        unsafe {
+            SYSTEM_CALL_COUNT += 1;
+            println!("🔄 System call #{}: spawned={}, pending={}", 
+                SYSTEM_CALL_COUNT, progress.pieces_created, progress.pending_pieces.len());
+        }
+    }
+    
+    // ゲーム画面でない場合は何もしない
+    if game_state.current_screen != GameScreen::InGame {
+        return;
+    }
+    
+    // 生成中でない場合で、かつ既にピースがある場合は何もしない
+    if !progress.is_generating && !existing_pieces.is_empty() {
+        return;
+    }
+
+    // 画像が選択されていない場合
+    if puzzle_config.image_path.is_empty() {
+        println!("⚠️ No image selected for puzzle creation!");
+        return;
+    }
+
+    // PuzzleImageがまだない場合は待機
+    let Some(ref puzzle_image) = puzzle_image else {
+        return;
+    };
+
+    // 画像サイズが適切でない場合は待機
+    if puzzle_image.size.x <= 10.0 || puzzle_image.size.y <= 10.0 {
+        return;
+    }
+
+    // グリッド背景を表示（まだない場合）
+    if existing_grid_ref.is_empty() && !progress.is_generating {
+        spawn_grid_reference(&mut commands, &asset_server, &puzzle_config, Some(puzzle_image));
+    }
+
+    // 生成を開始
+    if !progress.is_generating {
+        let (grid_width, grid_height) = puzzle_config.grid_size;
+        let total_pieces = grid_width * grid_height;
+        
+        println!("🎮 Starting progressive puzzle generation: {} pieces", total_pieces);
+        
+        progress.is_generating = true;
+        progress.total_pieces = total_pieces;
+        progress.grid_size = puzzle_config.grid_size;
+        progress.generation_phase = GenerationPhase::PreparingShapes;
+        progress.current_piece = 0;
+        progress.shapes_generated = 0;
+        progress.pieces_created = 0;
+
+        // 画像サイズとピースサイズを計算
+        let display_width = puzzle_image.size.x;
+        let display_height = puzzle_image.size.y;
+        let piece_width = display_width / grid_width as f32;
+        let piece_height = display_height / grid_height as f32;
+
+        // 標準スレッドでバックグラウンド処理を実行（crossbeam channelを使用）
+        let (sender, receiver) = crossbeam::channel::unbounded();
+        let (progress_sender, progress_receiver) = crossbeam::channel::unbounded();
+        
+        std::thread::spawn(move || {
+            println!("🧵 Background thread started for shape generation");
+            
+            // 画像サイズとピースサイズを計算
+            let piece_width = display_width / grid_width as f32;
+            let piece_height = display_height / grid_height as f32;
+
+            // ジグソー形状ジェネレータを初期化
+            let mut shape_generator = JigsawShapeGenerator::new(
+                (piece_width, piece_height),
+                (grid_width, grid_height),
+            );
+
+            // ジグソーテンプレートを先に生成
+            if let Err(e) = shape_generator.generate_jigsaw_template() {
+                println!("Failed to generate jigsaw template: {}", e);
+                return;
+            }
+
+            // 全ての形状を生成（進捗を定期的に送信）
+            let mut generated_count = 0;
+            for y in 0..grid_height {
+                for x in 0..grid_width {
+                    if let Err(e) = shape_generator.generate_piece_shape(x, y) {
+                        println!("Failed to generate jigsaw shape ({}, {}): {}", x, y, e);
+                    }
+                    
+                    generated_count += 1;
+                    
+                    // 10個ごとに進捗を送信
+                    if generated_count % 10 == 0 {
+                        let send_result = progress_sender.send(ProgressMessage::ShapeProgress(generated_count));
+                        // 100個ごとにログで確認
+                        if generated_count % 100 == 0 {
+                            match send_result {
+                                Ok(_) => println!("🧵 Sent progress: {} shapes", generated_count),
+                                Err(e) => println!("🧵 Failed to send progress: {}", e),
+                            }
+                        }
+                    }
+                }
+            }
+            
+            println!("🧵 Background thread completed all {} shapes", total_pieces);
+
+            // 配置位置を事前生成
+            let mut placement_positions = generate_placement_grid(
+                grid_width, grid_height, 
+                piece_width, piece_height, 
+                display_width, display_height
+            );
+            
+            // 順番をランダムにシャッフル
+            use rand::seq::SliceRandom;
+            placement_positions.shuffle(&mut rand::thread_rng());
+
+            let result = ShapeGenerationResult {
+                shape_generator,
+                placement_positions,
+                grid_size: (grid_width, grid_height),
+                total_pieces,
+            };
+            
+            // 完了通知を送信
+            let _ = progress_sender.send(ProgressMessage::ShapeCompleted);
+            
+            if let Err(e) = sender.send(result) {
+                println!("Failed to send result from background thread: {}", e);
+            }
+        });
+
+        progress.bg_thread_receiver = Some(receiver);
+        progress.progress_receiver = Some(progress_receiver);
+        
+        return;
+    }
+
+    // 進捗メッセージを処理
+    let mut messages_to_process = Vec::new();
+    if let Some(progress_receiver) = &progress.progress_receiver {
+        while let Ok(message) = progress_receiver.try_recv() {
+            messages_to_process.push(message);
+        }
+    }
+    
+    // 借用の競合を避けるため、メッセージを別途処理
+    for message in messages_to_process {
+        match message {
+            ProgressMessage::ShapeProgress(count) => {
+                progress.shapes_generated = count;
+                // デバッグ: 進捗更新をログ
+                if count % 100 == 0 {
+                    println!("📊 Progress update: {} shapes generated", count);
+                }
+            }
+            ProgressMessage::PieceProgress(count) => {
+                progress.pieces_created = count;
+                // デバッグ: 進捗更新をログ
+                if count % 100 == 0 {
+                    println!("📊 Progress update: {} pieces created", count);
+                }
+            }
+            ProgressMessage::ShapeCompleted => {
+                // 形状生成完了は別途処理される
+            }
+            ProgressMessage::PieceCompleted => {
+                // ピース作成完了は別途処理される
+            }
+        }
+    }
+
+    // 形状生成フェーズ（バックグラウンドスレッドの完了チェック）
+    if progress.generation_phase == GenerationPhase::PreparingShapes {
+        if let Some(receiver) = &progress.bg_thread_receiver {
+            // ノンブロッキングでメッセージをチェック
+            match receiver.try_recv() {
+                Ok(result) => {
+                    println!("✅ Background shape generation completed: {} shapes", result.total_pieces);
+                    
+                    progress.shape_generator = Some(result.shape_generator);
+                    progress.placement_positions = result.placement_positions;
+                    progress.shapes_generated = result.total_pieces;
+                    progress.generation_phase = GenerationPhase::CreatingPieces;
+                    progress.pieces_created = 0;
+                    progress.bg_thread_receiver = None; // レシーバーをクリア
+                }
+                Err(crossbeam::channel::TryRecvError::Empty) => {
+                    // まだ完了していない - 進捗表示のためのダミー更新
+                    static mut DUMMY_COUNTER: usize = 0;
+                    unsafe {
+                        DUMMY_COUNTER += 1;
+                        if DUMMY_COUNTER % 60 == 0 { // 約1秒ごと
+                            progress.shapes_generated = (progress.shapes_generated + 100).min(progress.total_pieces);
+                            println!("🧵 Shape generation in progress... (estimated {}/{})", 
+                                progress.shapes_generated, progress.total_pieces);
+                        }
+                    }
+                }
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    println!("❌ Background thread disconnected unexpectedly");
+                    progress.generation_phase = GenerationPhase::Completed;
+                    progress.is_generating = false;
+                }
+            }
+        }
+        return;
+    }
+
+    // ピース作成フェーズ（バックグラウンドスレッド）
+    if progress.generation_phase == GenerationPhase::CreatingPieces {
+        // バックグラウンドスレッドがまだ開始されていない場合、開始する
+        if progress.piece_thread_receiver.is_none() {
+            if let Some(shape_generator) = progress.shape_generator.take() {
+                let placement_positions = progress.placement_positions.clone();
+                let (grid_width, grid_height) = progress.grid_size;
+                let total_pieces = progress.total_pieces;
+                let display_width = puzzle_image.size.x;
+                let display_height = puzzle_image.size.y;
+                let image_handle = puzzle_image.handle.clone();
+                
+                println!("🧵 Starting background piece creation: {} pieces", total_pieces);
+                
+                let (sender, receiver) = crossbeam::channel::unbounded();
+                
+                // 進捗送信用のチャンネル（既存のものを再利用）
+                let progress_sender = if let Some(existing_receiver) = &progress.progress_receiver {
+                    // 既存のチャンネルに送信するために新しい送信者を作成
+                    let (new_sender, _) = crossbeam::channel::unbounded::<ProgressMessage>();
+                    new_sender
+                } else {
+                    crossbeam::channel::unbounded().0
+                };
+                
+                std::thread::spawn(move || {
+                    println!("🧵 Background thread started for piece creation");
+                    
+                    // ピースデータを作成（標準スレッド内で同期実行）
+                    let result = create_all_pieces_sync(
+                        shape_generator,
+                        placement_positions,
+                        grid_width,
+                        grid_height,
+                        total_pieces,
+                        display_width,
+                        display_height,
+                        image_handle,
+                    );
+                    
+                    if let Err(e) = sender.send(result) {
+                        println!("Failed to send piece creation result: {}", e);
+                    }
+                });
+                
+                progress.piece_thread_receiver = Some(receiver);
+            }
+        }
+        
+        // バックグラウンドスレッドの完了をチェック
+        if let Some(receiver) = &progress.piece_thread_receiver {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    let pieces_count = result.pieces.len();
+                    println!("✅ Background piece creation completed: {} pieces, moving to spawn phase", pieces_count);
+                    
+                    // 待機列に追加
+                    progress.pending_pieces = result.pieces;
+                    progress.generation_phase = GenerationPhase::SpawningEntities;
+                    progress.pieces_spawned_this_frame = 0;
+                    progress.pieces_created = 0; // スポーン済み数をリセット
+                    progress.piece_thread_receiver = None; // レシーバーをクリア
+                    
+                    println!("📦 Ready to spawn {} pieces", progress.pending_pieces.len());
+                }
+                Err(crossbeam::channel::TryRecvError::Empty) => {
+                    // まだ完了していない - 進捗表示のためのダミー更新
+                    static mut PIECE_DUMMY_COUNTER: usize = 0;
+                    unsafe {
+                        PIECE_DUMMY_COUNTER += 1;
+                        if PIECE_DUMMY_COUNTER % 60 == 0 { // 約1秒ごと
+                            progress.pieces_created = (progress.pieces_created + 50).min(progress.total_pieces);
+                            println!("🧵 Piece creation in progress... (estimated {}/{})", 
+                                progress.pieces_created, progress.total_pieces);
+                        }
+                    }
+                }
+                Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                    println!("❌ Piece creation thread disconnected unexpectedly");
+                    progress.generation_phase = GenerationPhase::Completed;
+                    progress.is_generating = false;
+                }
+            }
+        }
+        
+        return;
+    }
+
+    // エンティティスポーンフェーズ（大量のピースを効率的にスポーン）
+    if progress.generation_phase == GenerationPhase::SpawningEntities {
+        // 毎フレームログ出力（デバッグ用）
+        println!("📦 Spawn frame - spawned: {}, pending: {}, phase: {:?}", 
+            progress.pieces_created, progress.pending_pieces.len(), progress.generation_phase);
+        
+        let mut spawned_this_frame = 0;
+        const MAX_SPAWNS_PER_FRAME: usize = 1000; // より多くのピースを一度に処理（調整済み）
+        
+        // 大量のピースを効率的にスポーン（フレーム制限あり）
+        while !progress.pending_pieces.is_empty() && spawned_this_frame < MAX_SPAWNS_PER_FRAME {
+            let piece_data = progress.pending_pieces.pop().unwrap(); // 末尾から取得（O(1)）
+            
+            let mesh_handle = meshes.add(piece_data.mesh);
+            
+            // マテリアルを作成
+            let material = ColorMaterial {
+                texture: Some(puzzle_image.handle.clone()),
+                ..default()
+            };
+            let material_handle = materials.add(material);
+            
+            commands.spawn((
+                Mesh2d(mesh_handle),
+                MeshMaterial2d(material_handle),
+                piece_data.transform,
+                piece_data.piece_component,
+                piece_data.piece_shape,
+                PickablePiece {
+                    drag_offset: Vec2::ZERO,
+                },
+                Draggable {
+                    is_dragging: false,
+                    drag_offset: Vec2::ZERO,
+                },
+            ));
+            
+            progress.pieces_created += 1;
+            spawned_this_frame += 1;
+        }
+        
+        // 進捗表示（フレームごと、または最後）
+        if spawned_this_frame == MAX_SPAWNS_PER_FRAME || progress.pending_pieces.is_empty() {
+            println!("📦 Spawning entities: {}/{} (remaining: {})", 
+                progress.pieces_created, progress.total_pieces, progress.pending_pieces.len());
+        }
+        
+        // 全てのエンティティがスポーンされた場合
+        if progress.pending_pieces.is_empty() {
+            progress.generation_phase = GenerationPhase::Completed;
+            progress.is_generating = false;
+            progress.placement_positions.clear();
+            
+            println!("🎉 All entities spawned: {} pieces", progress.pieces_created);
+        }
+        
+        return;
+    }
+}
+
+/// 単一のピースを作成するヘルパー関数
+fn create_single_puzzle_piece(
+    commands: &mut Commands,
+    x: usize,
+    y: usize,
+    puzzle_config: &PuzzleConfig,
+    puzzle_image: &PuzzleImage,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<ColorMaterial>>,
+    shape: &JigsawPieceShape,
+    placement_positions: &[Vec2],
+    position_index: usize,
+) {
+    use crate::jigsaw_shapes::clone_mesh_from_shape;
+    use uuid::Uuid;
+
+    let piece_id = Uuid::new_v4();
+    let (grid_width, grid_height) = puzzle_config.grid_size;
+    
+    let display_width = puzzle_image.size.x;
+    let display_height = puzzle_image.size.y;
+    let piece_width = display_width / grid_width as f32;
+    let piece_height = display_height / grid_height as f32;
+    
+    // 正しい位置を計算
+    let correct_x = (x as f32 - (grid_width as f32 - 1.0) / 2.0) * piece_width;
+    let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_height;
+    let correct_position = Vec2::new(correct_x, correct_y);
+    
+    // 開始位置を取得
+    let start_position = if position_index < placement_positions.len() {
+        placement_positions[position_index]
+    } else {
+        println!("⚠️ Position index {} exceeds placement_positions length {}", position_index, placement_positions.len());
+        Vec2::new(0.0, 0.0)
+    };
+    
+    let texture_coords = Vec4::new(
+        x as f32 / grid_width as f32,
+        y as f32 / grid_height as f32,
+        (x + 1) as f32 / grid_width as f32,
+        (y + 1) as f32 / grid_height as f32,
+    );
+    
+    // 当たり判定用の境界
+    let margin_ratio = 1.3;
+    let half_width = (piece_width * margin_ratio) / 2.0;
+    let half_height = (piece_height * margin_ratio) / 2.0;
+    let collision_bounds = Rect::new(
+        -half_width,
+        -half_height,
+        half_width,
+        half_height
+    );
+    
+    let piece = PuzzlePiece {
+        id: piece_id,
+        original_position: start_position,
+        current_position: start_position,
+        correct_position,
+        texture_coords,
+        is_placed: false,
+        grid_x: x,
+        grid_y: y,
+        bounds: collision_bounds,
+    };
+    
+    let z_offset = (y * grid_width + x) as f32 * 0.001;
+    
+    // メッシュをクローン
+    let mesh = clone_mesh_from_shape(shape);
+    let piece_shape = extract_shape_data(&mesh);
+    let mesh_handle = meshes.add(mesh);
+    
+    // マテリアルを作成
+    let material = ColorMaterial {
+        texture: Some(puzzle_image.handle.clone()),
+        ..default()
+    };
+    let material_handle = materials.add(material);
+    
+    // エンティティを生成
+    commands.spawn((
+        Mesh2d(mesh_handle),
+        MeshMaterial2d(material_handle),
+        Transform::from_translation(start_position.extend(z_offset)),
+        piece,
+        piece_shape,
+        PickablePiece {
+            drag_offset: Vec2::ZERO,
+        },
+        Draggable {
+            is_dragging: false,
+            drag_offset: Vec2::ZERO,
+        },
+    ));
+}
+
+/// 非同期でピース作成を行う関数
+async fn create_all_pieces_async(
+    shape_generator: JigsawShapeGenerator,
+    placement_positions: Vec<Vec2>,
+    grid_width: usize,
+    grid_height: usize,
+    total_pieces: usize,
+    display_width: f32,
+    display_height: f32,
+    image_handle: Handle<Image>,
+) -> PieceCreationResult {
+    use crate::jigsaw_shapes::clone_mesh_from_shape;
+    use crate::components::*;
+    use uuid::Uuid;
+    use bevy::sprite::ColorMaterial;
+    
+    let mut pieces = Vec::with_capacity(total_pieces);
+    let piece_width = display_width / grid_width as f32;
+    let piece_height = display_height / grid_height as f32;
+    
+    for piece_index in 0..total_pieces {
+        let y = piece_index / grid_width;
+        let x = piece_index % grid_width;
+        
+        if let Some(shape) = shape_generator.get_shape(x, y) {
+            let piece_id = Uuid::new_v4();
+            
+            // 正しい位置を計算
+            let correct_x = (x as f32 - (grid_width as f32 - 1.0) / 2.0) * piece_width;
+            let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_height;
+            let correct_position = Vec2::new(correct_x, correct_y);
+            
+            // 開始位置を取得
+            let start_position = if piece_index < placement_positions.len() {
+                placement_positions[piece_index]
+            } else {
+                Vec2::new(0.0, 0.0)
+            };
+            
+            let texture_coords = Vec4::new(
+                x as f32 / grid_width as f32,
+                y as f32 / grid_height as f32,
+                (x + 1) as f32 / grid_width as f32,
+                (y + 1) as f32 / grid_height as f32,
+            );
+            
+            // 当たり判定用の境界
+            let margin_ratio = 1.3;
+            let half_width = (piece_width * margin_ratio) / 2.0;
+            let half_height = (piece_height * margin_ratio) / 2.0;
+            let collision_bounds = Rect::new(
+                -half_width,
+                -half_height,
+                half_width,
+                half_height
+            );
+            
+            let piece_component = PuzzlePiece {
+                id: piece_id,
+                original_position: start_position,
+                current_position: start_position,
+                correct_position,
+                texture_coords,
+                is_placed: false,
+                grid_x: x,
+                grid_y: y,
+                bounds: collision_bounds,
+            };
+            
+            let z_offset = (y * grid_width + x) as f32 * 0.001;
+            
+            // メッシュをクローン（ここが重い処理）
+            let mesh = clone_mesh_from_shape(shape);
+            let piece_shape = extract_shape_data(&mesh);
+            
+            // マテリアルハンドルを作成（Bevyアセットは非同期では作成できないため、ハンドルのみ）
+            let material_handle = Handle::<ColorMaterial>::default(); // 後でメインスレッドで設定
+            
+            let transform = Transform::from_translation(start_position.extend(z_offset));
+            
+            pieces.push(PieceData {
+                mesh,
+                piece_component,
+                piece_shape,
+                transform,
+                material_handle, // 一時的な値
+            });
+        }
+        
+        // 進捗表示
+        if piece_index % 1000 == 0 {
+            println!("🔧 Async piece creation progress: {}/{}", piece_index, total_pieces);
+        }
+    }
+    
+    println!("✅ Async piece creation completed: {} pieces", pieces.len());
+    PieceCreationResult { pieces }
+}
+
+/// 同期版のピース作成関数（標準スレッド用）
+fn create_all_pieces_sync(
+    shape_generator: JigsawShapeGenerator,
+    placement_positions: Vec<Vec2>,
+    grid_width: usize,
+    grid_height: usize,
+    total_pieces: usize,
+    display_width: f32,
+    display_height: f32,
+    image_handle: Handle<Image>,
+) -> PieceCreationResult {
+    use crate::jigsaw_shapes::clone_mesh_from_shape;
+    use crate::components::*;
+    use uuid::Uuid;
+    use bevy::sprite::ColorMaterial;
+    
+    let mut pieces = Vec::with_capacity(total_pieces);
+    let piece_width = display_width / grid_width as f32;
+    let piece_height = display_height / grid_height as f32;
+    
+    println!("🧵 Starting piece creation loop for {} pieces", total_pieces);
+    
+    for piece_index in 0..total_pieces {
+        let y = piece_index / grid_width;
+        let x = piece_index % grid_width;
+        
+        if let Some(shape) = shape_generator.get_shape(x, y) {
+            let piece_id = Uuid::new_v4();
+            
+            // 正しい位置を計算
+            let correct_x = (x as f32 - (grid_width as f32 - 1.0) / 2.0) * piece_width;
+            let correct_y = ((grid_height as f32 - 1.0) / 2.0 - y as f32) * piece_height;
+            let correct_position = Vec2::new(correct_x, correct_y);
+            
+            // 開始位置を取得
+            let start_position = if piece_index < placement_positions.len() {
+                placement_positions[piece_index]
+            } else {
+                Vec2::new(0.0, 0.0)
+            };
+            
+            let texture_coords = Vec4::new(
+                x as f32 / grid_width as f32,
+                y as f32 / grid_height as f32,
+                (x + 1) as f32 / grid_width as f32,
+                (y + 1) as f32 / grid_height as f32,
+            );
+            
+            // 当たり判定用の境界
+            let margin_ratio = 1.3;
+            let half_width = (piece_width * margin_ratio) / 2.0;
+            let half_height = (piece_height * margin_ratio) / 2.0;
+            let collision_bounds = Rect::new(
+                -half_width,
+                -half_height,
+                half_width,
+                half_height
+            );
+            
+            let piece_component = PuzzlePiece {
+                id: piece_id,
+                original_position: start_position,
+                current_position: start_position,
+                correct_position,
+                texture_coords,
+                is_placed: false,
+                grid_x: x,
+                grid_y: y,
+                bounds: collision_bounds,
+            };
+            
+            let z_offset = (y * grid_width + x) as f32 * 0.001;
+            
+            // メッシュをクローン（ここが重い処理だがバックグラウンドで実行）
+            if piece_index < 5 {
+                println!("🧵 Cloning mesh for piece {}", piece_index);
+            }
+            let mesh = clone_mesh_from_shape(shape);
+            if piece_index < 5 {
+                println!("🧵 Extracting shape data for piece {}", piece_index);
+            }
+            let piece_shape = extract_shape_data(&mesh);
+            
+            // マテリアルハンドルを作成（Bevyアセットは非同期では作成できないため、ハンドルのみ）
+            let material_handle = Handle::<ColorMaterial>::default(); // 後でメインスレッドで設定
+            
+            let transform = Transform::from_translation(start_position.extend(z_offset));
+            
+            pieces.push(PieceData {
+                mesh,
+                piece_component,
+                piece_shape,
+                transform,
+                material_handle, // 一時的な値
+            });
+        }
+        
+        // 進捗表示（より頻繁に）
+        if piece_index % 100 == 0 {
+            println!("🧵 Background piece creation progress: {}/{}", piece_index, total_pieces);
+        }
+    }
+    
+    println!("✅ Background piece creation completed: {} pieces", pieces.len());
+    PieceCreationResult { pieces }
 }
 
 /// ESCキー入力でゲーム内メニューの表示/非表示を切り替え
