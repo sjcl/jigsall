@@ -444,3 +444,78 @@ pub fn draw_completion_ui(
         }
     });
 }
+
+pub fn draw_in_game_menu_ui(
+    mut contexts: EguiContexts,
+    mut game_state: ResMut<GameState>,
+) {
+    if game_state.current_screen != GameScreen::InGameMenu {
+        return;
+    }
+    
+    let Ok(ctx) = contexts.ctx_mut() else { return; };
+    
+    // 半透明の背景を表示してゲーム画面を暗くする
+    egui::Area::new(egui::Id::new("in_game_menu_background"))
+        .fixed_pos(egui::pos2(0.0, 0.0))
+        .show(ctx, |ui| {
+            let screen_rect = ctx.screen_rect();
+            ui.allocate_ui_with_layout(
+                screen_rect.size(),
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    // 背景全体を半透明の黒で覆う
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        egui::Rounding::ZERO,
+                        egui::Color32::from_black_alpha(128), // 半透明の黒
+                    );
+                },
+            );
+        });
+    
+    // メニューを画面中央に表示
+    egui::Window::new("Game Menu")
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(false)
+        .show(ctx, |ui| {
+            ui.set_min_size(egui::vec2(300.0, 200.0));
+            
+            ui.vertical_centered(|ui| {
+                ui.spacing_mut().item_spacing.y = 20.0;
+                
+                ui.heading("🎮 Game Menu");
+                
+                ui.separator();
+                
+                // Resume Game ボタン
+                if ui.add_sized([200.0, 40.0], egui::Button::new("Resume Game")).clicked() {
+                    game_state.current_screen = GameScreen::InGame;
+                    println!("🎮 Resuming game from menu");
+                }
+                
+                // Return to Title ボタン
+                if ui.add_sized([200.0, 40.0], egui::Button::new("Return to Title")).clicked() {
+                    game_state.current_screen = GameScreen::Menu;
+                    game_state.puzzle_completed = false;
+                    game_state.puzzle_progress = 0.0;
+                    game_state.needs_reset = true; // パズルリセットフラグを設定
+                    println!("🎮 Returning to title screen");
+                }
+                
+                ui.separator();
+                
+                // Exit Game ボタン
+                if ui.add_sized([200.0, 40.0], egui::Button::new("Exit Game")).clicked() {
+                    println!("🎮 Exiting game");
+                    std::process::exit(0);
+                }
+                
+                ui.separator();
+                
+                ui.label("Press ESC to resume");
+            });
+        });
+}

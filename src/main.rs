@@ -29,6 +29,7 @@ fn main() {
                 draw_host_setup_ui,
                 draw_join_game_ui,
                 draw_completion_ui,
+                draw_in_game_menu_ui, // ゲーム内メニューUI
             ),
         )
         .run();

@@ -146,7 +146,13 @@ pub fn handle_piece_dragging_hybrid(
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
     camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
+    game_state: Res<GameState>,
 ) {
+    // ゲーム内メニューが表示されている間はピースドラッグを無効化
+    if game_state.current_screen == GameScreen::InGameMenu {
+        return;
+    }
+    
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Left);
     let mouse_pressed = mouse_input.pressed(MouseButton::Left);
     let mouse_just_released = mouse_input.just_released(MouseButton::Left);
@@ -802,6 +808,30 @@ pub fn frustum_culling_system(
         FRAME_COUNT += 1;
         if FRAME_COUNT % 300 == 0 {  // 5秒ごとに出力（60FPSの場合）
             println!("🎯 Frustum Culling: {} visible, {} culled", visible_count, culled_count);
+        }
+    }
+}
+
+/// ESCキー入力でゲーム内メニューの表示/非表示を切り替え
+pub fn handle_escape_input(
+    mut game_state: ResMut<GameState>,
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+) {
+    if keyboard_input.just_pressed(KeyCode::Escape) {
+        match game_state.current_screen {
+            GameScreen::InGame => {
+                // ゲーム中にESCキーが押されたらメニューを表示
+                game_state.current_screen = GameScreen::InGameMenu;
+                println!("🎮 Opening in-game menu");
+            },
+            GameScreen::InGameMenu => {
+                // メニュー表示中にESCキーが押されたらゲームに戻る
+                game_state.current_screen = GameScreen::InGame;
+                println!("🎮 Resuming game");
+            },
+            _ => {
+                // 他の画面では何もしない
+            }
         }
     }
 }

@@ -28,6 +28,7 @@ impl Plugin for GamePlugin {
                     handle_camera_zoom,
                     handle_camera_drag,
                     frustum_culling_system, // 画面外のピースを非表示にする
+                    handle_escape_input, // ESCキー入力処理
                 ),
             );
     }

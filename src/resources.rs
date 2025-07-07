@@ -19,6 +19,7 @@ pub enum GameScreen {
     HostSetup,
     JoinGame,
     InGame,
+    InGameMenu,  // ESCキーで表示されるゲーム内メニュー
     GameComplete,
 }
 
