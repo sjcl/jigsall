@@ -31,6 +31,7 @@ pub struct PickablePiece {
 pub struct PieceShape {
     pub vertices: Vec<[f32; 2]>,  // メッシュの頂点（2D）
     pub indices: Vec<u32>,        // 三角形インデックス
+    pub stroke_mesh: Option<Handle<Mesh>>, // ストローク用メッシュハンドル
 }
 
 #[derive(Component)]
@@ -68,4 +69,10 @@ pub struct SelectionBox;
 
 /// 選択されたピースの枠線表示用コンポーネント
 #[derive(Component)]
-pub struct PieceOutline;
+pub struct PieceOutline {
+    pub piece_entity: Entity, // 親ピースのエンティティ
+}
+
+/// 選択範囲プレビュー中のピースをマークするコンポーネント
+#[derive(Component)]
+pub struct SelectionPreview;

@@ -153,7 +153,11 @@ pub fn extract_shape_data(mesh: &Mesh) -> PieceShape {
         }
     };
     
-    PieceShape { vertices, indices }
+    PieceShape { 
+        vertices, 
+        indices,
+        stroke_mesh: None, // 初期化時はNone、後でストロークメッシュを追加
+    }
 }
 
 pub fn create_puzzle_pieces(

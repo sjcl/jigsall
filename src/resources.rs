@@ -159,6 +159,7 @@ pub struct ShapeGenerationResult {
 // メッシュとピースデータを含む構造体
 pub struct PieceData {
     pub mesh: Mesh,
+    pub stroke_mesh: Option<Mesh>, // ストロークメッシュ
     pub piece_component: PuzzlePiece,
     pub piece_shape: PieceShape,
     pub transform: Transform,

@@ -1180,6 +1180,15 @@ pub fn spawn_puzzle_pieces_progressive(
             
             let mesh_handle = meshes.add(piece_data.mesh);
             
+            // ストロークメッシュがあればアセットに追加
+            let stroke_mesh_handle = piece_data.stroke_mesh.map(|stroke_mesh| {
+                meshes.add(stroke_mesh)
+            });
+            
+            // ピース形状にストロークメッシュハンドルを設定
+            let mut piece_shape = piece_data.piece_shape;
+            piece_shape.stroke_mesh = stroke_mesh_handle;
+            
             // マテリアルを作成
             let material = ColorMaterial {
                 texture: Some(puzzle_image.handle.clone()),
@@ -1192,7 +1201,7 @@ pub fn spawn_puzzle_pieces_progressive(
                 MeshMaterial2d(material_handle),
                 piece_data.transform,
                 piece_data.piece_component,
-                piece_data.piece_shape,
+                piece_shape,
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
                 },
@@ -1405,6 +1414,7 @@ async fn create_all_pieces_async(
             
             pieces.push(PieceData {
                 mesh,
+                stroke_mesh: shape.stroke_mesh.clone(),
                 piece_component,
                 piece_shape,
                 transform,
@@ -1512,6 +1522,7 @@ fn create_all_pieces_sync(
             
             pieces.push(PieceData {
                 mesh,
+                stroke_mesh: shape.stroke_mesh.clone(),
                 piece_component,
                 piece_shape,
                 transform,
@@ -1674,6 +1685,43 @@ pub fn handle_box_selection(
                 // 範囲選択中 - 現在位置を更新
                 let world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
                 input_state.selection_current = Some(world_pos);
+                
+                // 範囲選択プレビューを更新
+                if let (Some(start), Some(end)) = (input_state.selection_start, input_state.selection_current) {
+                    // 既存のプレビューをクリア
+                    for entity in selected_query.iter() {
+                        commands.entity(entity).remove::<SelectionPreview>();
+                    }
+                    // プレビュー用にも全ピースをチェック
+                    for (entity, _, _, _) in piece_query.iter() {
+                        commands.entity(entity).remove::<SelectionPreview>();
+                    }
+                    
+                    // 範囲内のピースにプレビューマークを追加
+                    for (entity, transform, piece, _) in piece_query.iter() {
+                        let piece_pos = transform.translation.truncate();
+                        
+                        // ピースの境界ボックスと選択範囲の重なりをチェック
+                        let piece_min = piece_pos + piece.bounds.min;
+                        let piece_max = piece_pos + piece.bounds.max;
+                        
+                        // 選択範囲の境界
+                        let select_min_x = start.x.min(end.x);
+                        let select_max_x = start.x.max(end.x);
+                        let select_min_y = start.y.min(end.y);
+                        let select_max_y = start.y.max(end.y);
+                        
+                        // 矩形の重なり判定
+                        let overlaps = piece_min.x <= select_max_x && 
+                                      piece_max.x >= select_min_x &&
+                                      piece_min.y <= select_max_y && 
+                                      piece_max.y >= select_min_y;
+                        
+                        if overlaps && !input_state.selected_pieces.contains(&entity) {
+                            commands.entity(entity).insert(SelectionPreview);
+                        }
+                    }
+                }
             }
             
             if mouse_just_released {
@@ -1681,10 +1729,26 @@ pub fn handle_box_selection(
                 if let (Some(start), Some(end)) = (input_state.selection_start, input_state.selection_current) {
                     let mut newly_selected = 0;
                     
-                    for (entity, transform, _piece, _) in piece_query.iter() {
+                    for (entity, transform, piece, _) in piece_query.iter() {
                         let piece_pos = transform.translation.truncate();
                         
-                        if is_piece_in_selection_box(piece_pos, start, end) {
+                        // ピースの境界ボックスと選択範囲の重なりをチェック
+                        let piece_min = piece_pos + piece.bounds.min;
+                        let piece_max = piece_pos + piece.bounds.max;
+                        
+                        // 選択範囲の境界
+                        let select_min_x = start.x.min(end.x);
+                        let select_max_x = start.x.max(end.x);
+                        let select_min_y = start.y.min(end.y);
+                        let select_max_y = start.y.max(end.y);
+                        
+                        // 矩形の重なり判定
+                        let overlaps = piece_min.x <= select_max_x && 
+                                      piece_max.x >= select_min_x &&
+                                      piece_min.y <= select_max_y && 
+                                      piece_max.y >= select_min_y;
+                        
+                        if overlaps {
                             commands.entity(entity).insert(SelectedPiece);
                             input_state.selected_pieces.push(entity);
                             newly_selected += 1;
@@ -1693,6 +1757,11 @@ pub fn handle_box_selection(
                     
                     println!("📦 Box selection completed: {} new pieces selected (total: {})", 
                              newly_selected, input_state.selected_pieces.len());
+                }
+                
+                // プレビューをクリア
+                for (entity, _, _, _) in piece_query.iter() {
+                    commands.entity(entity).remove::<SelectionPreview>();
                 }
                 
                 // 範囲選択モード終了
@@ -1806,81 +1875,35 @@ pub fn render_selection_box(
     }
 }
 
-/// 枠線メッシュを作成する関数
+/// 枠線表示のためのシンプルなアプローチ - 元のメッシュをそのまま使用
 fn create_outline_mesh(vertices: &[[f32; 2]], indices: &[u32]) -> Mesh {
     use bevy::render::render_asset::RenderAssetUsages;
     use bevy::render::render_resource::PrimitiveTopology;
     
-    // 枠線用の頂点を作成（元の頂点を少し外側に拡張）
-    let outline_width = 3.0; // 枠線の幅
-    let mut outline_vertices = Vec::new();
-    let mut outline_indices = Vec::new();
-    
-    // 三角形の輪郭を抽出して線分として描画
-    for triangle in indices.chunks(3) {
-        if triangle.len() < 3 { continue; }
-        
-        let v0 = vertices[triangle[0] as usize];
-        let v1 = vertices[triangle[1] as usize];
-        let v2 = vertices[triangle[2] as usize];
-        
-        // 三角形の各辺を枠線として追加
-        add_outline_edge(&mut outline_vertices, &mut outline_indices, v0, v1, outline_width);
-        add_outline_edge(&mut outline_vertices, &mut outline_indices, v1, v2, outline_width);
-        add_outline_edge(&mut outline_vertices, &mut outline_indices, v2, v0, outline_width);
-    }
-    
-    // Bevyメッシュを作成
+    // 元のメッシュをそのまま使用（スケールは Transform で調整）
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
     );
     
-    // 頂点データを設定
-    let positions: Vec<[f32; 3]> = outline_vertices.iter()
+    // 頂点データをそのままコピー
+    let positions: Vec<[f32; 3]> = vertices.iter()
         .map(|v| [v[0], v[1], 0.0])
         .collect();
     
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_indices(bevy::render::mesh::Indices::U32(outline_indices));
+    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices.to_vec()));
     
     mesh
 }
 
-/// 枠線の辺を追加する関数
-fn add_outline_edge(vertices: &mut Vec<[f32; 2]>, indices: &mut Vec<u32>, p1: [f32; 2], p2: [f32; 2], width: f32) {
-    let base_index = vertices.len() as u32;
-    
-    // 辺の方向ベクトル
-    let dx = p2[0] - p1[0];
-    let dy = p2[1] - p1[1];
-    let length = (dx * dx + dy * dy).sqrt();
-    
-    if length < 1e-6 { return; } // 長さが0の辺は無視
-    
-    // 正規化された垂直ベクトル
-    let nx = -dy / length * width / 2.0;
-    let ny = dx / length * width / 2.0;
-    
-    // 枠線用の4つの頂点を追加
-    vertices.push([p1[0] + nx, p1[1] + ny]); // 0
-    vertices.push([p1[0] - nx, p1[1] - ny]); // 1
-    vertices.push([p2[0] + nx, p2[1] + ny]); // 2
-    vertices.push([p2[0] - nx, p2[1] - ny]); // 3
-    
-    // 矩形を2つの三角形で表現
-    indices.extend_from_slice(&[
-        base_index, base_index + 1, base_index + 2,
-        base_index + 1, base_index + 3, base_index + 2,
-    ]);
-}
-
-/// 選択されたピースのハイライト表示システム
+/// 選択されたピースのハイライト表示システム（ストロークメッシュ版）
 pub fn highlight_selected_pieces(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,
     selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
+    preview_pieces_query: Query<Entity, (With<SelectionPreview>, With<PuzzlePiece>)>,
     all_pieces_query: Query<Entity, With<PuzzlePiece>>,
     mut piece_query: Query<&mut MeshMaterial2d<ColorMaterial>, With<PuzzlePiece>>,
     piece_transform_query: Query<&Transform, With<PuzzlePiece>>,
@@ -1908,39 +1931,71 @@ pub fn highlight_selected_pieces(
         commands.entity(outline_entity).despawn();
     }
     
-    // 選択されたピースに黄色い枠線を追加
+    // プレビュー中のピースにストロークハイライトを追加
+    for entity in preview_pieces_query.iter() {
+        if let (Ok(transform), Ok(piece_shape)) = (
+            piece_transform_query.get(entity),
+            piece_shape_query.get(entity)
+        ) {
+            if let Some(stroke_mesh_handle) = &piece_shape.stroke_mesh {
+                // ストロークメッシュを使ってハイライト表示
+                let stroke_material = ColorMaterial {
+                    color: Color::srgba(0.3, 0.6, 1.0, 0.8), // 薄い青色
+                    ..Default::default()
+                };
+                let stroke_material_handle = materials.add(stroke_material);
+                
+                let outline_entity = commands.spawn((
+                    Mesh2d(stroke_mesh_handle.clone()),
+                    MeshMaterial2d(stroke_material_handle),
+                    Transform {
+                        translation: Vec3::new(0.0, 0.0, -0.1), // 親からの相対位置
+                        rotation: Quat::IDENTITY,
+                        scale: Vec3::ONE,
+                    },
+                    PieceOutline {
+                        piece_entity: entity,
+                    },
+                )).id();
+                
+                // 輪郭線をピースの子エンティティとして設定
+                commands.entity(entity).add_child(outline_entity);
+            }
+        }
+    }
+    
+    // 選択されたピースにストロークハイライトを追加
     for entity in selected_pieces_query.iter() {
         if let (Ok(transform), Ok(piece_shape)) = (
             piece_transform_query.get(entity),
             piece_shape_query.get(entity)
         ) {
-            // 枠線用のメッシュを作成
-            let outline_mesh = create_outline_mesh(&piece_shape.vertices, &piece_shape.indices);
-            let outline_mesh_handle = meshes.add(outline_mesh);
-            
-            // 黄色い枠線用のマテリアル
-            let outline_material = ColorMaterial {
-                color: Color::srgba(1.0, 1.0, 0.0, 1.0), // 黄色
-                ..Default::default()
-            };
-            let outline_material_handle = materials.add(outline_material);
-            
-            // 枠線エンティティをスポーン（元のピースより少し上のZ位置）
-            commands.spawn((
-                Mesh2d(outline_mesh_handle),
-                MeshMaterial2d(outline_material_handle),
-                Transform {
-                    translation: Vec3::new(
-                        transform.translation.x,
-                        transform.translation.y,
-                        transform.translation.z + 0.1, // 少し上に表示
-                    ),
-                    rotation: transform.rotation,
-                    scale: transform.scale,
-                },
-                PieceOutline,
-            ));
+            if let Some(stroke_mesh_handle) = &piece_shape.stroke_mesh {
+                // ストロークメッシュを使ってハイライト表示
+                let stroke_material = ColorMaterial {
+                    color: Color::srgba(1.0, 0.8, 0.0, 1.0), // 黄色
+                    ..Default::default()
+                };
+                let stroke_material_handle = materials.add(stroke_material);
+                
+                let outline_entity = commands.spawn((
+                    Mesh2d(stroke_mesh_handle.clone()),
+                    MeshMaterial2d(stroke_material_handle),
+                    Transform {
+                        translation: Vec3::new(0.0, 0.0, -0.05), // 親からの相対位置（プレビューより上）
+                        rotation: Quat::IDENTITY,
+                        scale: Vec3::ONE,
+                    },
+                    PieceOutline {
+                        piece_entity: entity,
+                    },
+                )).id();
+                
+                // 輪郭線をピースの子エンティティとして設定
+                commands.entity(entity).add_child(outline_entity);
+            }
         }
     }
 }
+
 

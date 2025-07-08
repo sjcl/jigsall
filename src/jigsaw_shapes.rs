@@ -6,6 +6,7 @@ use lyon::path::{Path, Builder};
 use lyon::math;
 use lyon_tessellation::{
     VertexBuffers, FillTessellator, FillOptions, FillRule, FillVertex,
+    StrokeTessellator, StrokeOptions, StrokeVertex,
     geometry_builder::BuffersBuilder, VertexId
 };
 use puzzle_paths::{build_jigsaw_template, JigsawTemplate};
@@ -21,6 +22,7 @@ pub struct SimpleVertex {
 /// ジグソーピースの形状データを管理する構造体
 pub struct JigsawPieceShape {
     pub mesh: Mesh,
+    pub stroke_mesh: Option<Mesh>, // アウトライン用のストロークメッシュ
     pub bounds: Rect,
     pub texture_coords: Vec4,
 }
@@ -96,8 +98,8 @@ impl JigsawShapeGenerator {
         };
         
 
-        // SVGパスをlyonのPathに変換してメッシュ生成
-        let mesh = self.parse_svg_path_to_mesh(svg_path, x, y)?;
+        // SVGパスをlyonのPathに変換してメッシュ生成（フィルとストローク両方）
+        let (mesh, stroke_mesh) = self.parse_svg_path_to_meshes(svg_path, x, y)?;
         
         // テクスチャ座標を計算
         let texture_coords = Vec4::new(
@@ -112,6 +114,7 @@ impl JigsawShapeGenerator {
 
         let shape = JigsawPieceShape {
             mesh,
+            stroke_mesh,
             bounds,
             texture_coords,
         };
@@ -123,8 +126,8 @@ impl JigsawShapeGenerator {
         Ok(self.shape_cache.get(&(x, y)).unwrap())
     }
 
-    /// SVGパス文字列をlyonで解析してBevyメッシュに変換
-    fn parse_svg_path_to_mesh(&self, svg_path: &str, x: usize, y: usize) -> Result<Mesh, Box<dyn std::error::Error>> {
+    /// SVGパス文字列をlyonで解析してBevyメッシュに変換（フィルとストローク両方）
+    fn parse_svg_path_to_meshes(&self, svg_path: &str, x: usize, y: usize) -> Result<(Mesh, Option<Mesh>), Box<dyn std::error::Error>> {
         // puzzle-pathsが生成するSVGパスの座標系を理解する必要がある
         // SVGパス内の座標は、puzzle-pathsが想定する全体画像サイズに基づいている
         let (piece_width, piece_height) = self.piece_size;
@@ -165,7 +168,7 @@ impl JigsawShapeGenerator {
         };
         
         
-        // SimpleVertexを使用してテセレーション（より高精度設定）
+        // フィル（塗りつぶし）メッシュを生成
         let mut vb: VertexBuffers<SimpleVertex, u16> = VertexBuffers::new();
         let fill_options = FillOptions::tolerance(0.1) // より細かいテッセレーション（デフォルトは0.25）
             .with_fill_rule(FillRule::NonZero);
@@ -178,6 +181,26 @@ impl JigsawShapeGenerator {
                     position: [v.position().x, v.position().y],
                 }),
             )?;
+
+        // ストローク（輪郭線）メッシュを生成
+        let mut stroke_vb: VertexBuffers<SimpleVertex, u16> = VertexBuffers::new();
+        let stroke_options = StrokeOptions::tolerance(0.1)
+            .with_line_width(16.0); // 16ピクセル幅の輪郭線
+            
+        let stroke_result = StrokeTessellator::new()
+            .tessellate_path(
+                &lyon_path,
+                &stroke_options,
+                &mut BuffersBuilder::new(&mut stroke_vb, |v: StrokeVertex| SimpleVertex {
+                    position: [v.position().x, v.position().y],
+                }),
+            );
+            
+        let stroke_mesh = if stroke_result.is_ok() && !stroke_vb.vertices.is_empty() {
+            Some(self.create_stroke_mesh(&stroke_vb)?)
+        } else {
+            None
+        };
         
         // バウンディングボックスを実際の頂点から計算
         let (min_x, max_x, min_y, max_y) = if vb.vertices.is_empty() {
@@ -269,7 +292,33 @@ impl JigsawShapeGenerator {
         mesh.insert_indices(Indices::U32(indices));
         
         // ログは削除（バックグラウンド生成で大量になるため）
-        Ok(mesh)
+        Ok((mesh, stroke_mesh))
+    }
+
+    /// ストローク用のメッシュを作成
+    fn create_stroke_mesh(&self, stroke_vb: &VertexBuffers<SimpleVertex, u16>) -> Result<Mesh, Box<dyn std::error::Error>> {
+        let mut stroke_mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        
+        // 頂点位置を変換
+        let positions: Vec<[f32; 3]> = stroke_vb.vertices
+            .iter()
+            .map(|v| [v.position[0], v.position[1], 0.0])
+            .collect();
+        
+        // インデックスを変換
+        let indices: Vec<u32> = stroke_vb.indices
+            .iter()
+            .map(|&i| i as u32)
+            .collect();
+        
+        // メッシュにデータを設定（UVは不要）
+        stroke_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        stroke_mesh.insert_indices(Indices::U32(indices));
+        
+        Ok(stroke_mesh)
     }
 
     /// メッシュからバウンディングボックスを計算（ピース中心を原点とした相対座標）

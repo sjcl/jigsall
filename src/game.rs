@@ -27,10 +27,12 @@ impl Plugin for GamePlugin {
                     handle_box_selection,
                     handle_multi_piece_drag,
                     render_selection_box,
-                    highlight_selected_pieces,
                     
                     // 既存のレガシーシステム（マルチ選択と共存）
                     handle_piece_dragging_hybrid_legacy, // マルチ選択時は無効化
+                    
+                    // ハイライト関連は移動処理の後に実行
+                    highlight_selected_pieces,
                     
                     check_piece_placement,
                     update_game_state,
