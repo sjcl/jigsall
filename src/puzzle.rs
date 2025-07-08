@@ -132,8 +132,59 @@ fn generate_layer_positions(
     positions
 }
 
-/// メッシュから精密当たり判定用の形状データを抽出
-pub fn extract_shape_data(mesh: &Mesh) -> PieceShape {
+/// SVGパスから形状ハッシュを計算する（実際の形状データに基づく）
+fn calculate_shape_hash_from_svg(svg_path: &str) -> String {
+    // SVGパスの長さと複雑さに基づいて簡単なハッシュを計算
+    // より正確にするには、実際の辺の形状を解析する必要がある
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    
+    let mut hasher = DefaultHasher::new();
+    svg_path.hash(&mut hasher);
+    let hash_value = hasher.finish();
+    
+    // SVGパスから形状の特徴を抽出してより意味のあるハッシュを作成
+    let normalized_path = svg_path.replace(&[' ', '\n', '\t'][..], "").to_lowercase();
+    format!("svg_{:x}", hash_value)
+}
+
+/// ピースの形状ハッシュを計算する（代替案：グリッド位置ベース、後でSVGベースに変更）
+fn calculate_piece_shape_hash(grid_x: usize, grid_y: usize, grid_width: usize, grid_height: usize) -> String {
+    // 一時的な実装：グリッド位置をそのまま使用
+    // 後でSVGパスから実際の形状を解析するように変更する予定
+    format!("temp_{}_{}", grid_x, grid_y)
+}
+
+/// メッシュから精密当たり判定用の形状データを抽出（JigsawPieceShapeから）
+pub fn extract_shape_data_from_jigsaw_shape(jigsaw_shape: &crate::jigsaw_shapes::JigsawPieceShape) -> PieceShape {
+    let vertices = match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(VertexAttributeValues::Float32x3(positions)) => {
+            positions.iter().map(|pos| [pos[0], pos[1]]).collect()
+        }
+        _ => {
+            println!("Warning: Could not extract vertices from jigsaw mesh, using fallback");
+            vec![[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
+        }
+    };
+    
+    let indices = match jigsaw_shape.mesh.indices() {
+        Some(Indices::U32(idx)) => idx.clone(),
+        Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
+        None => {
+            println!("Warning: Could not extract indices from jigsaw mesh, using fallback");
+            vec![0, 1, 2, 1, 2, 3]
+        }
+    };
+    
+    PieceShape { 
+        vertices, 
+        indices,
+        shape_hash: jigsaw_shape.shape_hash.clone(), // JigsawPieceShapeから形状ハッシュを取得
+    }
+}
+
+/// メッシュから精密当たり判定用の形状データを抽出（レガシー関数、後方互換性のため残す）
+pub fn extract_shape_data(mesh: &Mesh, grid_x: usize, grid_y: usize, grid_width: usize, grid_height: usize) -> PieceShape {
     let vertices = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
         Some(VertexAttributeValues::Float32x3(positions)) => {
             positions.iter().map(|pos| [pos[0], pos[1]]).collect()
@@ -153,10 +204,13 @@ pub fn extract_shape_data(mesh: &Mesh) -> PieceShape {
         }
     };
     
+    // 形状ハッシュを計算（レガシー関数）
+    let shape_hash = calculate_piece_shape_hash(grid_x, grid_y, grid_width, grid_height);
+    
     PieceShape { 
         vertices, 
         indices,
-        stroke_mesh: None, // 初期化時はNone、後でストロークメッシュを追加
+        shape_hash, // 形状ハッシュを保存
     }
 }
 
@@ -269,8 +323,8 @@ pub fn create_puzzle_pieces(
             // メッシュをクローンしてアセットに追加
             let mesh = clone_mesh_from_shape(shape);
             
-            // メッシュから形状データを抽出してPieceShapeコンポーネント用に準備
-            let piece_shape = extract_shape_data(&mesh);
+            // JigsawPieceShapeから形状データを抽出してPieceShapeコンポーネント用に準備
+            let piece_shape = extract_shape_data_from_jigsaw_shape(shape);
             
             // デバッグ情報を先に取得
             let vertices_count = piece_shape.vertices.len();

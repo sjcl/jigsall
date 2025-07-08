@@ -862,6 +862,7 @@ pub fn spawn_puzzle_pieces_progressive(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut progress: ResMut<PieceGenerationProgress>,
+    mut stroke_cache: ResMut<StrokeMeshCache>,
 ) {
     // システム実行のデバッグログ（スポーン中のみ）
     if progress.generation_phase == GenerationPhase::SpawningEntities {
@@ -1181,13 +1182,26 @@ pub fn spawn_puzzle_pieces_progressive(
             let mesh_handle = meshes.add(piece_data.mesh);
             
             // ストロークメッシュがあればアセットに追加
-            let stroke_mesh_handle = piece_data.stroke_mesh.map(|stroke_mesh| {
-                meshes.add(stroke_mesh)
-            });
+            // ストロークメッシュをキャッシュに追加
+            if let Some(stroke_mesh) = piece_data.stroke_mesh {
+                let shape_hash = piece_data.piece_shape.shape_hash.clone();
+                let stroke_mesh_handle = meshes.add(stroke_mesh);
+                
+                // キャッシュに既に存在するかチェック
+                let was_cached = stroke_cache.stroke_meshes.contains_key(&shape_hash);
+                
+                if !was_cached {
+                    // 新しい形状なのでキャッシュに追加
+                    stroke_cache.stroke_meshes.insert(shape_hash.clone(), stroke_mesh_handle);
+                    println!("💾 NEW stroke mesh cached for shape: '{}' (cache size: {})", 
+                        shape_hash, stroke_cache.stroke_meshes.len());
+                } else {
+                    // 既にキャッシュされている形状
+                    println!("♻️ Shape '{}' already cached - reusing existing stroke mesh", shape_hash);
+                }
+            }
             
-            // ピース形状にストロークメッシュハンドルを設定
-            let mut piece_shape = piece_data.piece_shape;
-            piece_shape.stroke_mesh = stroke_mesh_handle;
+            let piece_shape = piece_data.piece_shape;
             
             // マテリアルを作成
             let material = ColorMaterial {
@@ -1227,7 +1241,21 @@ pub fn spawn_puzzle_pieces_progressive(
             progress.is_generating = false;
             progress.placement_positions.clear();
             
-            println!("🎉 All entities spawned: {} pieces", progress.pieces_created);
+            // キャッシュ効率の統計を表示
+            let total_pieces = progress.pieces_created;
+            let cached_shapes = stroke_cache.stroke_meshes.len();
+            let cache_efficiency = if total_pieces > 0 {
+                (total_pieces - cached_shapes) as f32 / total_pieces as f32 * 100.0
+            } else {
+                0.0
+            };
+            
+            println!("🎉 All entities spawned: {} pieces", total_pieces);
+            println!("📊 Stroke mesh cache stats:");
+            println!("   - Total pieces: {}", total_pieces);
+            println!("   - Unique shapes cached: {}", cached_shapes);
+            println!("   - Memory saved: {:.1}% ({} duplicate shapes avoided)", 
+                cache_efficiency, total_pieces - cached_shapes);
         }
         
         return;
@@ -1305,7 +1333,7 @@ fn create_single_puzzle_piece(
     
     // メッシュをクローン
     let mesh = clone_mesh_from_shape(shape);
-    let piece_shape = extract_shape_data(&mesh);
+    let piece_shape = extract_shape_data(&mesh, x, y, grid_width, grid_height);
     let mesh_handle = meshes.add(mesh);
     
     // マテリアルを作成
@@ -1405,7 +1433,7 @@ async fn create_all_pieces_async(
             
             // メッシュをクローン（ここが重い処理）
             let mesh = clone_mesh_from_shape(shape);
-            let piece_shape = extract_shape_data(&mesh);
+            let piece_shape = extract_shape_data_from_jigsaw_shape(shape);
             
             // マテリアルハンドルを作成（Bevyアセットは非同期では作成できないため、ハンドルのみ）
             let material_handle = Handle::<ColorMaterial>::default(); // 後でメインスレッドで設定
@@ -1513,7 +1541,7 @@ fn create_all_pieces_sync(
             if piece_index < 5 {
                 println!("🧵 Extracting shape data for piece {}", piece_index);
             }
-            let piece_shape = extract_shape_data(&mesh);
+            let piece_shape = extract_shape_data_from_jigsaw_shape(shape);
             
             // マテリアルハンドルを作成（Bevyアセットは非同期では作成できないため、ハンドルのみ）
             let material_handle = Handle::<ColorMaterial>::default(); // 後でメインスレッドで設定
@@ -1897,11 +1925,10 @@ fn create_outline_mesh(vertices: &[[f32; 2]], indices: &[u32]) -> Mesh {
     mesh
 }
 
-/// 選択されたピースのハイライト表示システム（ストロークメッシュ版）
+/// 選択されたピースのハイライト表示システム（ストロークメッシュキャッシュ版）
 pub fn highlight_selected_pieces(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
     selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
     preview_pieces_query: Query<Entity, (With<SelectionPreview>, With<PuzzlePiece>)>,
     all_pieces_query: Query<Entity, With<PuzzlePiece>>,
@@ -1909,6 +1936,7 @@ pub fn highlight_selected_pieces(
     piece_transform_query: Query<&Transform, With<PuzzlePiece>>,
     piece_shape_query: Query<&PieceShape, With<PuzzlePiece>>,
     existing_outline_query: Query<Entity, With<PieceOutline>>,
+    stroke_cache: Res<StrokeMeshCache>,
     game_state: Res<GameState>,
 ) {
     // ゲーム内メニューが表示されている間は無効化
@@ -1933,11 +1961,19 @@ pub fn highlight_selected_pieces(
     
     // プレビュー中のピースにストロークハイライトを追加
     for entity in preview_pieces_query.iter() {
-        if let (Ok(transform), Ok(piece_shape)) = (
+        if let (Ok(_transform), Ok(piece_shape)) = (
             piece_transform_query.get(entity),
             piece_shape_query.get(entity)
         ) {
-            if let Some(stroke_mesh_handle) = &piece_shape.stroke_mesh {
+            // キャッシュからストロークメッシュを取得
+            if let Some(stroke_mesh_handle) = stroke_cache.stroke_meshes.get(&piece_shape.shape_hash) {
+                static mut PREVIEW_CACHE_LOG_COUNT: usize = 0;
+                unsafe {
+                    if PREVIEW_CACHE_LOG_COUNT < 5 {
+                        println!("🔍 PREVIEW: Using cached stroke mesh for shape: '{}'", piece_shape.shape_hash);
+                        PREVIEW_CACHE_LOG_COUNT += 1;
+                    }
+                }
                 // ストロークメッシュを使ってハイライト表示
                 let stroke_material = ColorMaterial {
                     color: Color::srgba(0.3, 0.6, 1.0, 0.8), // 薄い青色
@@ -1966,11 +2002,19 @@ pub fn highlight_selected_pieces(
     
     // 選択されたピースにストロークハイライトを追加
     for entity in selected_pieces_query.iter() {
-        if let (Ok(transform), Ok(piece_shape)) = (
+        if let (Ok(_transform), Ok(piece_shape)) = (
             piece_transform_query.get(entity),
             piece_shape_query.get(entity)
         ) {
-            if let Some(stroke_mesh_handle) = &piece_shape.stroke_mesh {
+            // キャッシュからストロークメッシュを取得
+            if let Some(stroke_mesh_handle) = stroke_cache.stroke_meshes.get(&piece_shape.shape_hash) {
+                static mut SELECTED_CACHE_LOG_COUNT: usize = 0;
+                unsafe {
+                    if SELECTED_CACHE_LOG_COUNT < 5 {
+                        println!("✨ SELECTED: Using cached stroke mesh for shape: '{}'", piece_shape.shape_hash);
+                        SELECTED_CACHE_LOG_COUNT += 1;
+                    }
+                }
                 // ストロークメッシュを使ってハイライト表示
                 let stroke_material = ColorMaterial {
                     color: Color::srgba(1.0, 0.8, 0.0, 1.0), // 黄色

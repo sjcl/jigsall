@@ -13,6 +13,7 @@ impl Plugin for GamePlugin {
             .init_resource::<NetworkInfo>()
             .init_resource::<InputState>()
             .init_resource::<PieceGenerationProgress>()
+            .init_resource::<StrokeMeshCache>()
             .add_systems(Startup, setup_game)
             .add_systems(
                 Update,

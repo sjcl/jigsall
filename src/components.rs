@@ -31,7 +31,7 @@ pub struct PickablePiece {
 pub struct PieceShape {
     pub vertices: Vec<[f32; 2]>,  // メッシュの頂点（2D）
     pub indices: Vec<u32>,        // 三角形インデックス
-    pub stroke_mesh: Option<Handle<Mesh>>, // ストローク用メッシュハンドル
+    pub shape_hash: String,       // 形状のハッシュ（ストロークメッシュキャッシュのキー）
 }
 
 #[derive(Component)]

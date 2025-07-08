@@ -9,6 +9,12 @@ use std::collections::HashMap;
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use crate::components::{PuzzlePiece, PieceShape};
 
+/// ストロークメッシュのキャッシュリソース
+#[derive(Resource, Default)]
+pub struct StrokeMeshCache {
+    pub stroke_meshes: HashMap<String, Handle<Mesh>>, // shape_hash -> stroke mesh handle
+}
+
 #[derive(Resource, Default)]
 pub struct GameState {
     pub current_screen: GameScreen,

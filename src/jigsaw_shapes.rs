@@ -25,6 +25,7 @@ pub struct JigsawPieceShape {
     pub stroke_mesh: Option<Mesh>, // アウトライン用のストロークメッシュ
     pub bounds: Rect,
     pub texture_coords: Vec4,
+    pub shape_hash: String, // SVGパスベースの形状ハッシュ
 }
 
 /// ジグソーピース形状の生成とキャッシュを管理するシステム
@@ -101,6 +102,9 @@ impl JigsawShapeGenerator {
         // SVGパスをlyonのPathに変換してメッシュ生成（フィルとストローク両方）
         let (mesh, stroke_mesh) = self.parse_svg_path_to_meshes(svg_path, x, y)?;
         
+        // SVGパスから形状ハッシュを計算
+        let shape_hash = self.calculate_shape_hash_from_svg_path(svg_path);
+        
         // テクスチャ座標を計算
         let texture_coords = Vec4::new(
             x as f32 / grid_width as f32,
@@ -117,6 +121,7 @@ impl JigsawShapeGenerator {
             stroke_mesh,
             bounds,
             texture_coords,
+            shape_hash,
         };
 
         // キャッシュに保存
@@ -370,6 +375,131 @@ impl JigsawShapeGenerator {
             let (piece_width, piece_height) = self.piece_size;
             Rect::new(-piece_width / 2.0, -piece_height / 2.0, piece_width, piece_height)
         }
+    }
+
+    /// SVGパスから形状ハッシュを計算（座標正規化版）
+    fn calculate_shape_hash_from_svg_path(&self, svg_path: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use svgtypes::{PathParser, PathSegment};
+        
+        // SVGパスから形状パターンを抽出（座標を正規化）
+        let shape_pattern = self.extract_shape_pattern_from_svg(svg_path);
+        
+        // 正規化されたパターンからハッシュを計算
+        let mut hasher = DefaultHasher::new();
+        shape_pattern.hash(&mut hasher);
+        let hash_value = hasher.finish();
+        
+        let hash = format!("shape_{:08x}", hash_value % 0xFFFFFFFF);
+        
+        // デバッグログ（最初の数ピースのみ）
+        static mut SVG_HASH_LOG_COUNT: usize = 0;
+        unsafe {
+            if SVG_HASH_LOG_COUNT < 10 {
+                println!("🔑 Shape pattern: '{}' -> hash: '{}'", 
+                    shape_pattern, hash);
+                SVG_HASH_LOG_COUNT += 1;
+            }
+        }
+        
+        hash
+    }
+
+    /// SVGパスから形状パターンを抽出（正規化版）
+    fn extract_shape_pattern_from_svg(&self, svg_path: &str) -> String {
+        use svgtypes::{PathParser, PathSegment};
+        
+        let mut coords = Vec::new();
+        let mut commands = Vec::new();
+        
+        // SVGパスから座標と命令を分離
+        for segment in PathParser::from(svg_path) {
+            match segment {
+                Ok(seg) => {
+                    match seg {
+                        PathSegment::MoveTo { x, y, .. } => {
+                            commands.push("M");
+                            coords.push(x);
+                            coords.push(y);
+                        }
+                        PathSegment::LineTo { x, y, .. } => {
+                            commands.push("L");
+                            coords.push(x);
+                            coords.push(y);
+                        }
+                        PathSegment::CurveTo { x1, y1, x2, y2, x, y, .. } => {
+                            commands.push("C");
+                            coords.extend_from_slice(&[x1, y1, x2, y2, x, y]);
+                        }
+                        PathSegment::ClosePath { .. } => {
+                            commands.push("Z");
+                        }
+                        _ => {
+                            // 他のセグメントタイプは無視
+                        }
+                    }
+                }
+                Err(_) => {
+                    // パースエラーは無視
+                }
+            }
+        }
+        
+        // 座標を正規化（バウンディングボックスで0-1に正規化）
+        if coords.len() >= 2 {
+            let min_x = coords.iter().step_by(2).cloned().fold(f64::INFINITY, f64::min);
+            let max_x = coords.iter().step_by(2).cloned().fold(f64::NEG_INFINITY, f64::max);
+            let min_y = coords.iter().skip(1).step_by(2).cloned().fold(f64::INFINITY, f64::min);
+            let max_y = coords.iter().skip(1).step_by(2).cloned().fold(f64::NEG_INFINITY, f64::max);
+            
+            let width = max_x - min_x;
+            let height = max_y - min_y;
+            
+            if width > 0.0 && height > 0.0 {
+                // 座標を0-1000の範囲に正規化（精度のため）
+                for i in 0..coords.len() {
+                    if i % 2 == 0 {
+                        // X座標
+                        coords[i] = ((coords[i] - min_x) / width * 1000.0).round();
+                    } else {
+                        // Y座標
+                        coords[i] = ((coords[i] - min_y) / height * 1000.0).round();
+                    }
+                }
+            }
+        }
+        
+        // 正規化された座標と命令から形状パターンを生成
+        let mut pattern = String::new();
+        let mut coord_idx = 0;
+        
+        for cmd in commands {
+            pattern.push_str(cmd);
+            match cmd {
+                "M" | "L" => {
+                    if coord_idx + 1 < coords.len() {
+                        pattern.push_str(&format!("{},{}", coords[coord_idx] as i32, coords[coord_idx + 1] as i32));
+                        coord_idx += 2;
+                    }
+                }
+                "C" => {
+                    if coord_idx + 5 < coords.len() {
+                        pattern.push_str(&format!("{},{},{},{},{},{}", 
+                            coords[coord_idx] as i32, coords[coord_idx + 1] as i32,
+                            coords[coord_idx + 2] as i32, coords[coord_idx + 3] as i32,
+                            coords[coord_idx + 4] as i32, coords[coord_idx + 5] as i32));
+                        coord_idx += 6;
+                    }
+                }
+                "Z" => {
+                    // ClosePath - 座標なし
+                }
+                _ => {}
+            }
+        }
+        
+        pattern
     }
 
     /// SVGパス文字列をlyonのPathオブジェクトに変換（座標オフセット付き）
