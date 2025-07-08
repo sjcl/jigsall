@@ -429,9 +429,28 @@ pub fn handle_piece_dragging_hybrid_legacy(
 pub fn check_piece_placement(
     mut commands: Commands,
     mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
+    selected_pieces_query: Query<Entity, With<SelectedPiece>>,
     puzzle_config: Res<PuzzleConfig>,
     input_state: Res<InputState>,
 ) {
+    // 複数選択中または複数ドラッグ中の場合はスナップを無効化
+    let is_multi_selection_active = matches!(input_state.selection_mode, SelectionMode::BoxSelection | SelectionMode::MultiDrag);
+    let selected_count = selected_pieces_query.iter().count();
+    let has_multiple_selected = selected_count > 1;
+    
+    if is_multi_selection_active || has_multiple_selected {
+        // 複数選択関連のモードの場合はスナップを無効化
+        static mut SNAP_DISABLE_LOG_COUNT: usize = 0;
+        unsafe {
+            if SNAP_DISABLE_LOG_COUNT < 5 {
+                println!("🚫 Snap disabled: mode={:?}, selected_count={}, multi_active={}", 
+                    input_state.selection_mode, selected_count, is_multi_selection_active);
+                SNAP_DISABLE_LOG_COUNT += 1;
+            }
+        }
+        return;
+    }
+    
     for (entity, mut transform, mut piece) in piece_query.iter_mut() {
         // 現在ドラッグ中でなく、かつまだ配置されていないピースのみチェック
         let is_currently_dragged = input_state.selected_piece == Some(entity);
