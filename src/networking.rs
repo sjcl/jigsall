@@ -55,7 +55,7 @@ pub fn start_client(
 
 fn handle_server_events(
     server: Option<ResMut<RenetServer>>,
-    mut game_state: ResMut<crate::resources::GameState>,
+    mut game_state: ResMut<crate::resources::GameData>,
 ) {
     let Some(mut server) = server else { return; };
     for client_id in server.clients_id() {

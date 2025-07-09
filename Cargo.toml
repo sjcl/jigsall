@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = { version = "0.16.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_asset", "bevy_ui", "bevy_text", "bevy_picking", "png", "jpeg", "webp", "bmp", "x11"] }
+bevy = { version = "0.16.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_asset", "bevy_ui", "bevy_text", "bevy_picking", "bevy_state", "png", "jpeg", "webp", "bmp", "x11"] }
 # bevy_renet = "1.0.0" # 一時的に無効化
 # renet = "1.0.0" # 一時的に無効化
 bevy_egui = "0.35"

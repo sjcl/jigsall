@@ -207,7 +207,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
     camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
     cache: Res<PieceSelectionCache>,
 ) {
     // ゲーム内メニューが表示されている間はピースドラッグを無効化
@@ -357,7 +357,7 @@ pub fn handle_box_selection(
     piece_query: Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
     selected_query: Query<Entity, With<SelectedPiece>>,
     mut cache: ResMut<PieceSelectionCache>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
     let start_time = perf_monitor.start_system_timing("handle_box_selection");
@@ -579,7 +579,7 @@ pub fn handle_multi_piece_drag(
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece), With<SelectedPiece>>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
 ) {
     // ゲーム内メニューが表示されている間は無効化
     if game_state.current_screen != GameScreen::InGame {
@@ -633,7 +633,7 @@ pub fn render_selection_box(
     input_state: Res<InputState>,
     _camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
     selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
 ) {
     // ゲーム内メニューが表示されている間は無効化
     if game_state.current_screen != GameScreen::InGame {
@@ -684,7 +684,7 @@ pub fn highlight_selected_pieces(
     piece_shape_query: Query<&PieceShape, With<PuzzlePiece>>,
     existing_outline_query: Query<Entity, With<PieceOutline>>,
     stroke_cache: Res<StrokeMeshCache>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
     cache: Res<PieceSelectionCache>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
     mut highlight_state: ResMut<HighlightState>,

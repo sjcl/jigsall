@@ -11,7 +11,7 @@ pub fn spawn_puzzle_pieces(
     asset_server: Res<AssetServer>,
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
     existing_pieces: Query<&PuzzlePiece>,
     _existing_grid_ref: Query<&GridReference>,
     _images: Res<Assets<Image>>,
@@ -137,14 +137,14 @@ fn spawn_grid_reference(
 /// パズルをリセットする（既存のピース、グリッド背景、画像設定を削除）
 pub fn reset_puzzle(
     mut commands: Commands,
-    mut game_state: ResMut<GameState>,
+    mut game_data: ResMut<GameData>,
     mut puzzle_config: ResMut<PuzzleConfig>,
     puzzle_pieces: Query<Entity, With<PuzzlePiece>>,
     grid_references: Query<Entity, With<GridReference>>,
     mut input_state: ResMut<InputState>,
     mut piece_cache: ResMut<PieceSelectionCache>,
 ) {
-    if !game_state.needs_reset {
+    if !game_data.needs_reset {
         return;
     }
     
@@ -161,9 +161,9 @@ pub fn reset_puzzle(
     }
     
     // ゲーム状態をリセット
-    game_state.puzzle_completed = false;
-    game_state.puzzle_progress = 0.0;
-    game_state.needs_reset = false;
+    game_data.puzzle_completed = false;
+    game_data.puzzle_progress = 0.0;
+    game_data.needs_reset = false;
     
     // 入力状態をリセット
     input_state.selected_piece = None;
@@ -194,7 +194,7 @@ pub fn spawn_puzzle_pieces_progressive(
     asset_server: Res<AssetServer>,
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
     existing_pieces: Query<&PuzzlePiece>,
     existing_grid_ref: Query<&GridReference>,
     mut meshes: ResMut<Assets<Mesh>>,

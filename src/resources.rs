@@ -42,8 +42,8 @@ pub struct PieceSelectionCache {
 }
 
 #[derive(Resource, Default)]
-pub struct GameState {
-    pub current_screen: GameScreen,
+pub struct GameData {
+    pub current_screen: GameScreen,  // 一時的に残す
     pub is_host: bool,
     pub players: Vec<PlayerInfo>,
     pub puzzle_completed: bool,
@@ -51,6 +51,28 @@ pub struct GameState {
     pub needs_reset: bool, // パズルをリセットする必要があるかのフラグ
 }
 
+/// メインアプリケーションの状態
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AppState {
+    #[default]
+    Loading,      // 起動時の初期化
+    Menu,         // メインメニュー
+    GameSetup,    // ゲーム設定・画像読み込み
+    InGame,       // ゲーム中
+    GameComplete, // ゲーム完了
+}
+
+/// ゲーム内のサブ状態（InGame時のみ有効）
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum GameSubState {
+    #[default]
+    Initializing, // パズル生成中
+    Playing,      // プレイ中
+    Paused,       // ポーズ中（ESCメニュー）
+    Complete,     // 完了（結果表示）
+}
+
+/// 従来のGameScreen（後で削除予定）
 #[derive(Default, PartialEq, Clone, Debug)]
 pub enum GameScreen {
     #[default]

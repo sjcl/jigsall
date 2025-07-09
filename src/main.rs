@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use bevy_egui::{self, EguiPrimaryContextPass};
 use game::GamePlugin;
 // use networking::NetworkingPlugin;
+use resources::AppState;
 use ui::*;
 
 fn main() {
@@ -24,17 +25,21 @@ fn main() {
         .add_systems(
             EguiPrimaryContextPass,
             (
-                draw_menu_ui,
-                draw_game_ui,
-                draw_host_setup_ui,
-                draw_join_game_ui,
-                draw_completion_ui,
-                draw_in_game_menu_ui, // ゲーム内メニューUI
+                // Menu state UI
+                draw_menu_ui.run_if(in_state(AppState::Menu)),
+                
+                // GameSetup state UI
+                draw_host_setup_ui.run_if(in_state(AppState::GameSetup)),
+                draw_join_game_ui.run_if(in_state(AppState::GameSetup)),
+                
+                // InGame state UI
+                draw_game_ui.run_if(in_state(AppState::InGame)),
+                draw_in_game_menu_ui.run_if(in_state(AppState::InGame)),
+                draw_generation_progress_ui.run_if(in_state(AppState::InGame)),
+                
+                // GameComplete state UI
+                draw_completion_ui.run_if(in_state(AppState::GameComplete)),
             ),
-        )
-        .add_systems(
-            EguiPrimaryContextPass,
-            draw_generation_progress_ui, // ピース生成プログレスバーを別に追加
         )
         .run();
 }

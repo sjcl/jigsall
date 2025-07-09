@@ -5,7 +5,8 @@ use crate::resources::*;
 /// メインメニューUI
 pub fn draw_menu_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::Menu {
         return;
@@ -73,6 +74,7 @@ pub fn draw_menu_ui(
                     )).clicked() {
                     game_state.current_screen = GameScreen::HostSetup;
                     game_state.is_host = true;
+                    next_state.set(AppState::GameSetup);
                 }
                 
                 // Join Game ボタン
@@ -83,6 +85,7 @@ pub fn draw_menu_ui(
                     )).clicked() {
                     game_state.current_screen = GameScreen::JoinGame;
                     game_state.is_host = false;
+                    next_state.set(AppState::GameSetup);
                 }
                 
                 ui.add_space(10.0);

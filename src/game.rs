@@ -8,7 +8,7 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameState>()
+        app.init_resource::<GameData>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<NetworkInfo>()
             .init_resource::<InputState>()
@@ -17,48 +17,51 @@ impl Plugin for GamePlugin {
             .init_resource::<PieceSelectionCache>()
             .init_resource::<PerformanceMonitor>()
             .init_resource::<HighlightState>()
+            .insert_state(AppState::Loading)
+            .insert_state(GameSubState::Initializing)
             .add_systems(Startup, (setup_game, setup_highlight_materials))
             .add_systems(First, performance_frame_start)
-            .add_systems(
-                Update,
-                (
-                    // 基本システム
-                    update_puzzle_image_size,
-                    auto_adjust_camera_zoom,
-                    update_input_state,
-                    reset_puzzle,
-                    
-                    // 選択システム
-                    update_piece_cache,
-                    handle_box_selection,
-                    handle_multi_piece_drag,
-                    render_selection_box,
-                    
-                    // レガシー & ハイライト
-                    handle_piece_dragging_hybrid_legacy,
-                    highlight_selected_pieces,
-                    
-                    // ゲームロジック
-                    check_piece_placement,
-                    update_game_state,
-                    spawn_puzzle_pieces,
-                ),
-            )
-            .add_systems(
-                Update,
-                (
-                    // パズル生成とカメラ
-                    spawn_puzzle_pieces_progressive,
-                    handle_camera_zoom,
-                    handle_camera_drag,
-                    frustum_culling_system,
-                    handle_escape_input,
-                    
-                    // パフォーマンス計測システム
-                    performance_toggle_system,
-                    performance_report_system,
-                ),
-            )
+            // State transition systems
+            .add_systems(OnEnter(AppState::Loading), transition_to_menu)
+            .add_systems(OnEnter(AppState::InGame), initialize_game)
+            .add_systems(OnExit(AppState::InGame), cleanup_game)
+            // GameSetup state systems
+            .add_systems(Update, (
+                update_puzzle_image_size,
+            ).run_if(in_state(AppState::GameSetup)))
+            // InGame state systems
+            .add_systems(Update, (
+                // 基本システム
+                auto_adjust_camera_zoom,
+                update_input_state,
+                reset_puzzle,
+                
+                // 選択システム
+                update_piece_cache,
+                handle_box_selection,
+                handle_multi_piece_drag,
+                render_selection_box,
+                
+                // レガシー & ハイライト
+                handle_piece_dragging_hybrid_legacy,
+                highlight_selected_pieces,
+                
+                // ゲームロジック
+                check_piece_placement,
+                update_game_state,
+                spawn_puzzle_pieces,
+                
+                // パズル生成とカメラ
+                spawn_puzzle_pieces_progressive,
+                handle_camera_zoom,
+                handle_camera_drag,
+                frustum_culling_system,
+                handle_escape_input,
+                
+                // パフォーマンス計測システム
+                performance_toggle_system,
+                performance_report_system,
+            ).run_if(in_state(AppState::InGame)))
             .add_systems(Last, performance_frame_end);
     }
 }
@@ -95,3 +98,87 @@ fn setup_highlight_materials(
         selected_material: selected_material_handle,
     });
 }
+
+/// Loading -> Menu への遷移
+fn transition_to_menu(mut next_state: ResMut<NextState<AppState>>) {
+    println!("🚀 Application loaded, transitioning to menu");
+    next_state.set(AppState::Menu);
+}
+
+// 画像読み込み完了チェック関数は削除
+// 開始ボタンを押したときのみゲームを開始するようにしました
+
+/// ゲーム開始時の初期化
+fn initialize_game(
+    mut commands: Commands,
+    mut game_data: ResMut<GameData>,
+    mut input_state: ResMut<InputState>,
+    mut piece_cache: ResMut<PieceSelectionCache>,
+    mut highlight_state: ResMut<HighlightState>,
+    mut game_sub_state: ResMut<NextState<GameSubState>>,
+) {
+    println!("🎮 Initializing game...");
+    
+    // ゲームデータをリセット
+    game_data.puzzle_completed = false;
+    game_data.puzzle_progress = 0.0;
+    game_data.needs_reset = false;
+    
+    // 入力状態をリセット
+    input_state.selected_piece = None;
+    input_state.next_z_order = 1.0;
+    input_state.selected_pieces.clear();
+    input_state.selected_pieces_set.clear();
+    input_state.multi_drag_offset.clear();
+    input_state.last_selection_rect = None;
+    input_state.cached_drag_entity = None;
+    
+    // パフォーマンスキャッシュをクリア
+    piece_cache.all_pieces.clear();
+    piece_cache.piece_positions.clear();
+    piece_cache.piece_bounds.clear();
+    piece_cache.need_refresh = true;
+    
+    // ハイライト状態をリセット
+    highlight_state.last_selected_pieces.clear();
+    highlight_state.last_preview_pieces.clear();
+    highlight_state.selection_changed = false;
+    highlight_state.preview_changed = false;
+    highlight_state.frame_count = 0;
+    
+    // ゲームサブ状態を初期化に設定
+    game_sub_state.set(GameSubState::Initializing);
+}
+
+/// ゲーム終了時のクリーンアップ
+fn cleanup_game(
+    mut commands: Commands,
+    puzzle_pieces: Query<Entity, With<PuzzlePiece>>,
+    grid_references: Query<Entity, With<GridReference>>,
+    outline_entities: Query<Entity, With<PieceOutline>>,
+    mut piece_cache: ResMut<PieceSelectionCache>,
+) {
+    println!("🧹 Cleaning up game...");
+    
+    // すべてのパズルピースを削除
+    for entity in puzzle_pieces.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // グリッド背景画像も削除
+    for entity in grid_references.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // アウトラインエンティティを削除
+    for entity in outline_entities.iter() {
+        commands.entity(entity).despawn();
+    }
+    
+    // キャッシュをクリア
+    piece_cache.all_pieces.clear();
+    piece_cache.piece_positions.clear();
+    piece_cache.piece_bounds.clear();
+    piece_cache.need_refresh = true;
+}
+

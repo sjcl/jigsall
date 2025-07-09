@@ -5,7 +5,9 @@ use crate::resources::*;
 /// インゲームメニューUI（ESCキーで表示）
 pub fn draw_in_game_menu_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
     if game_state.current_screen != GameScreen::InGameMenu {
         return;
@@ -51,6 +53,7 @@ pub fn draw_in_game_menu_ui(
                 // Resume Game ボタン
                 if ui.add_sized([200.0, 40.0], egui::Button::new("Resume Game")).clicked() {
                     game_state.current_screen = GameScreen::InGame;
+                    next_sub_state.set(GameSubState::Playing);
                     println!("🎮 Resuming game from menu");
                 }
                 
@@ -60,6 +63,7 @@ pub fn draw_in_game_menu_ui(
                     game_state.puzzle_completed = false;
                     game_state.puzzle_progress = 0.0;
                     game_state.needs_reset = true; // パズルと画像設定を完全リセット
+                    next_state.set(AppState::Menu);
                     println!("🎮 Returning to title screen");
                 }
                 
@@ -82,7 +86,7 @@ pub fn draw_in_game_menu_ui(
 pub fn draw_generation_progress_ui(
     mut contexts: EguiContexts,
     progress: Res<PieceGenerationProgress>,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
 ) {
     // ゲーム画面で生成中の場合のみ表示
     if game_state.current_screen != GameScreen::InGame || !progress.is_generating {

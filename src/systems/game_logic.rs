@@ -60,8 +60,9 @@ pub fn check_piece_placement(
 
 /// ゲーム状態の更新 - 完了チェックとプログレス計算
 pub fn update_game_state(
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
     piece_query: Query<&PuzzlePiece>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     let total_pieces = piece_query.iter().count();
     let placed_pieces = piece_query.iter().filter(|p| p.is_placed).count();
@@ -72,29 +73,37 @@ pub fn update_game_state(
         
         if game_state.puzzle_completed && game_state.current_screen == GameScreen::InGame {
             game_state.current_screen = GameScreen::GameComplete;
+            next_state.set(AppState::GameComplete);
         }
     }
 }
 
 /// ESCキー入力でゲーム内メニューの表示/非表示を切り替え
 pub fn handle_escape_input(
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    mut next_sub_state: ResMut<NextState<GameSubState>>,
+    app_state: Res<State<AppState>>,
 ) {
     if keyboard_input.just_pressed(KeyCode::Escape) {
-        match game_state.current_screen {
-            GameScreen::InGame => {
-                // ゲーム中にESCキーが押されたらメニューを表示
-                game_state.current_screen = GameScreen::InGameMenu;
-                println!("🎮 Opening in-game menu");
-            },
-            GameScreen::InGameMenu => {
-                // メニュー表示中にESCキーが押されたらゲームに戻る
-                game_state.current_screen = GameScreen::InGame;
-                println!("🎮 Resuming game");
-            },
-            _ => {
-                // 他の画面では何もしない
+        // AppStateがInGameの場合のみESCキーを処理
+        if *app_state.get() == AppState::InGame {
+            match game_state.current_screen {
+                GameScreen::InGame => {
+                    // ゲーム中にESCキーが押されたらメニューを表示
+                    game_state.current_screen = GameScreen::InGameMenu;
+                    next_sub_state.set(GameSubState::Paused);
+                    println!("🎮 Opening in-game menu");
+                },
+                GameScreen::InGameMenu => {
+                    // メニュー表示中にESCキーが押されたらゲームに戻る
+                    game_state.current_screen = GameScreen::InGame;
+                    next_sub_state.set(GameSubState::Playing);
+                    println!("🎮 Resuming game");
+                },
+                _ => {
+                    // 他の画面では何もしない
+                }
             }
         }
     }

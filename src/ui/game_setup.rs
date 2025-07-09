@@ -6,12 +6,13 @@ use crate::puzzle_utils::calculate_grid_from_config;
 /// ホストゲーム設定UI
 pub fn draw_host_setup_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
     mut puzzle_config: ResMut<PuzzleConfig>,
     mut network_info: ResMut<NetworkInfo>,
     mut commands: Commands,
     puzzle_image: Option<Res<PuzzleImage>>,
     asset_server: Res<AssetServer>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::HostSetup {
         return;
@@ -329,6 +330,7 @@ pub fn draw_host_setup_ui(
                                     )).clicked() {
                                     // ローカルゲーム開始（ネットワーキング無効のため）
                                     game_state.current_screen = GameScreen::InGame;
+                                    next_state.set(AppState::InGame);
                                     // 新しいゲーム開始時はリセットしない（画像設定を保持）
                                     // game_state.needs_reset = true; 
                                 }
@@ -363,6 +365,7 @@ pub fn draw_host_setup_ui(
                                         .color(egui::Color32::LIGHT_GRAY)
                                 )).clicked() {
                                 game_state.current_screen = GameScreen::Menu;
+                                next_state.set(AppState::Menu);
                             }
                             
                             ui.add_space(20.0);
@@ -627,9 +630,10 @@ pub fn draw_host_setup_ui(
 /// ゲーム参加UI
 pub fn draw_join_game_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
     mut network_info: ResMut<NetworkInfo>,
     _commands: Commands,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::JoinGame {
         return;
@@ -760,6 +764,7 @@ pub fn draw_join_game_ui(
                                 .color(egui::Color32::LIGHT_GRAY)
                         )).clicked() {
                         game_state.current_screen = GameScreen::Menu;
+                        next_state.set(AppState::Menu);
                     }
                     
                     ui.add_space(20.0);

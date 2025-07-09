@@ -5,7 +5,7 @@ use crate::resources::*;
 /// インゲームUI（プレイ中のUI）
 pub fn draw_game_ui(
     mut contexts: EguiContexts,
-    game_state: Res<GameState>,
+    game_state: Res<GameData>,
 ) {
     if game_state.current_screen != GameScreen::InGame {
         return;
@@ -46,7 +46,8 @@ pub fn draw_game_ui(
 /// ゲーム完了UI
 pub fn draw_completion_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameState>,
+    mut game_state: ResMut<GameData>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::GameComplete {
         return;
@@ -67,6 +68,7 @@ pub fn draw_completion_ui(
             game_state.puzzle_completed = false;
             game_state.puzzle_progress = 0.0;
             game_state.needs_reset = true; // パズルリセットフラグを設定
+            next_state.set(AppState::Menu);
         }
         
         if ui.button("Exit").clicked() {
