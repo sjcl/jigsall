@@ -40,6 +40,7 @@ pub fn update_input_state(
     perf_monitor.end_system_timing("update_input_state", start_time);
 }
 
+/// ゲーム開始時に一度だけカメラズームを自動調整
 pub fn auto_adjust_camera_zoom(
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     puzzle_image: Option<Res<PuzzleImage>>,
@@ -48,20 +49,30 @@ pub fn auto_adjust_camera_zoom(
     if let Some(puzzle_image) = puzzle_image.as_ref() {
         if let Ok(window) = windows.single() {
             for mut transform in camera_query.iter_mut() {
-                // 現在のスケールが1.0（初期状態）の場合のみ自動調整
-                if (transform.scale.x - 1.0).abs() < 0.01 {
-                    let window_width = window.width();
-                    let window_height = window.height();
-                    
-                    // 画像がウィンドウに収まるように初期ズームを計算
-                    let scale_x = window_width / puzzle_image.size.x * 0.8; // 80%のマージン
-                    let scale_y = window_height / puzzle_image.size.y * 0.8;
-                    let initial_scale = scale_x.min(scale_y).clamp(0.1, 5.0);
-                    
-                    transform.scale = Vec3::splat(initial_scale);
-                    println!("Auto-adjusted camera zoom to {:.2} for image {}x{}", 
-                        initial_scale, puzzle_image.size.x, puzzle_image.size.y);
-                }
+                let window_width = window.width();
+                let window_height = window.height();
+                
+                // ズームアウトして画像全体が見えるようにする
+                // 画像がウィンドウより大きい場合、ズームアウトが必要
+                let scale_x = puzzle_image.size.x / window_width;
+                let scale_y = puzzle_image.size.y / window_height;
+                
+                // より大きい方のスケールを使用（全体が見えるように）
+                let required_scale = scale_x.max(scale_y);
+                
+                // マージンを追加（画像の周りに少し余白を作る）
+                let initial_scale = (required_scale * 1.2).clamp(0.5, 10.0);
+                
+                transform.scale = Vec3::splat(initial_scale);
+                
+                // カメラを画像の中心に配置
+                transform.translation.x = 0.0;
+                transform.translation.y = 0.0;
+                
+                println!("🎥 Auto-adjusted camera zoom to {:.2} for image {}x{}", 
+                    initial_scale, puzzle_image.size.x, puzzle_image.size.y);
+                println!("   Window size: {}x{}, Scale factors: x={:.2}, y={:.2}", 
+                    window_width, window_height, scale_x, scale_y);
             }
         }
     }

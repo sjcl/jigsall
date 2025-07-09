@@ -23,7 +23,7 @@ impl Plugin for GamePlugin {
             .add_systems(First, performance_frame_start)
             // State transition systems
             .add_systems(OnEnter(AppState::Loading), transition_to_menu)
-            .add_systems(OnEnter(AppState::InGame), initialize_game)
+            .add_systems(OnEnter(AppState::InGame), (initialize_game, auto_adjust_camera_zoom))
             .add_systems(OnExit(AppState::InGame), cleanup_game)
             // GameSetup state systems
             .add_systems(Update, (
@@ -32,7 +32,6 @@ impl Plugin for GamePlugin {
             // InGame state systems
             .add_systems(Update, (
                 // 基本システム
-                auto_adjust_camera_zoom,
                 update_input_state,
                 reset_puzzle,
                 
