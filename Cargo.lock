@@ -4184,6 +4184,7 @@ dependencies = [
  "bincode",
  "crossbeam",
  "image",
+ "instant",
  "lyon",
  "lyon_tessellation",
  "puzzle-paths",

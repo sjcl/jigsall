@@ -15,38 +15,50 @@ impl Plugin for GamePlugin {
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<StrokeMeshCache>()
             .init_resource::<PieceSelectionCache>()
+            .init_resource::<PerformanceMonitor>()
             .add_systems(Startup, setup_game)
+            .add_systems(First, performance_frame_start)
             .add_systems(
                 Update,
                 (
-                    // simple_game_start, // 無効化
+                    // 基本システム
                     update_puzzle_image_size,
                     auto_adjust_camera_zoom,
                     update_input_state,
-                    reset_puzzle, // パズルリセット機能
+                    reset_puzzle,
                     
-                    // 新しいマルチ選択システム（優先順位: 最初に実行）
-                    update_piece_cache,  // パフォーマンス最適化用キャッシュ更新
+                    // 選択システム
+                    update_piece_cache,
                     handle_box_selection,
                     handle_multi_piece_drag,
                     render_selection_box,
                     
-                    // 既存のレガシーシステム（マルチ選択と共存）
-                    handle_piece_dragging_hybrid_legacy, // マルチ選択時は無効化
-                    
-                    // ハイライト関連は移動処理の後に実行
+                    // レガシー & ハイライト
+                    handle_piece_dragging_hybrid_legacy,
                     highlight_selected_pieces,
                     
+                    // ゲームロジック
                     check_piece_placement,
                     update_game_state,
                     spawn_puzzle_pieces,
-                    spawn_puzzle_pieces_progressive, // 新しいプログレッシブ生成システム
+                ),
+            )
+            .add_systems(
+                Update,
+                (
+                    // パズル生成とカメラ
+                    spawn_puzzle_pieces_progressive,
                     handle_camera_zoom,
                     handle_camera_drag,
-                    frustum_culling_system, // 画面外のピースを非表示にする
-                    handle_escape_input, // ESCキー入力処理
+                    frustum_culling_system,
+                    handle_escape_input,
+                    
+                    // パフォーマンス計測システム
+                    performance_toggle_system,
+                    performance_report_system,
                 ),
-            );
+            )
+            .add_systems(Last, performance_frame_end);
     }
 }
 

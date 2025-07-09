@@ -2,13 +2,18 @@ use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
 use crate::components::*;
 use crate::resources::*;
+use crate::time_scope;
 
 /// ピース検索キャッシュの更新システム
 pub fn update_piece_cache(
     mut cache: ResMut<PieceSelectionCache>,
     piece_query: Query<(Entity, &Transform, &PuzzlePiece), (With<PickablePiece>, Changed<Transform>)>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("update_piece_cache");
+    
     // Transformが変更されたピースのみキャッシュ更新
+    let mut updated_count = 0;
     for (entity, transform, piece) in piece_query.iter() {
         let position = transform.translation.truncate();
         cache.piece_positions.insert(entity, position);
@@ -18,7 +23,20 @@ pub fn update_piece_cache(
         cache.piece_bounds.insert(entity, (min_bound, max_bound));
         
         cache.need_refresh = true;
+        updated_count += 1;
     }
+    
+    // 詳細計測（High レベル）
+    if perf_monitor.debug_level == PerformanceDebugLevel::High && updated_count > 0 {
+        time_scope!(perf_monitor, "update_piece_cache_detailed", {
+            let timing = perf_monitor.system_timings
+                .entry("update_piece_cache_pieces_updated".to_string())
+                .or_insert_with(|| SystemTiming::new("update_piece_cache_pieces_updated".to_string()));
+            timing.record_timing(std::time::Duration::from_nanos(updated_count as u64));
+        });
+    }
+    
+    perf_monitor.end_system_timing("update_piece_cache", start_time);
 }
 
 /// 効率的なピースクリック判定（レガシーシステム用）
@@ -339,13 +357,19 @@ pub fn handle_box_selection(
     selected_query: Query<Entity, With<SelectedPiece>>,
     mut cache: ResMut<PieceSelectionCache>,
     game_state: Res<GameState>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("handle_box_selection");
+    
     // キャッシュ更新が必要な場合のみ更新
     if cache.need_refresh {
+        let cache_start = perf_monitor.start_system_timing("box_selection_cache_update");
+        
         cache.all_pieces.clear();
         cache.piece_positions.clear();
         cache.piece_bounds.clear();
         
+        let mut cache_piece_count = 0;
         for (entity, transform, piece, _) in piece_query.iter() {
             let position = transform.translation.truncate();
             cache.all_pieces.push(entity);
@@ -354,9 +378,20 @@ pub fn handle_box_selection(
             let min_bound = position + piece.bounds.min;
             let max_bound = position + piece.bounds.max;
             cache.piece_bounds.insert(entity, (min_bound, max_bound));
+            cache_piece_count += 1;
         }
         
         cache.need_refresh = false;
+        perf_monitor.end_system_timing("box_selection_cache_update", cache_start);
+        
+        if perf_monitor.debug_level == PerformanceDebugLevel::High {
+            time_scope!(perf_monitor, "box_selection_cache_pieces", {
+                let timing = perf_monitor.system_timings
+                    .entry("box_selection_cached_pieces".to_string())
+                    .or_insert_with(|| SystemTiming::new("box_selection_cached_pieces".to_string()));
+                timing.record_timing(std::time::Duration::from_nanos(cache_piece_count as u64));
+            });
+        }
     }
     // ゲーム内メニューが表示されている間は無効化
     if game_state.current_screen != GameScreen::InGame {
@@ -535,6 +570,8 @@ pub fn handle_box_selection(
             // MultiDragモードの処理は handle_multi_piece_drag で行う
         }
     }
+    
+    perf_monitor.end_system_timing("handle_box_selection", start_time);
 }
 
 pub fn handle_multi_piece_drag(
@@ -649,21 +686,29 @@ pub fn highlight_selected_pieces(
     stroke_cache: Res<StrokeMeshCache>,
     game_state: Res<GameState>,
     cache: Res<PieceSelectionCache>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("highlight_selected_pieces");
+    
     // ゲーム内メニューが表示されている間は無効化
     if game_state.current_screen != GameScreen::InGame {
+        perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
         return;
     }
     
     // キャッシュされたピース一覧を使用してピースを通常の色に戻す（最適化）
+    let reset_color_start = perf_monitor.start_system_timing("highlight_reset_colors");
+    let mut _reset_count = 0;
     for &entity in &cache.all_pieces {
         if let Ok(material_handle) = piece_query.get_mut(entity) {
             if let Some(material) = materials.get_mut(&material_handle.0) {
                 // 通常の白色に戻す（テクスチャの元の色）
                 material.color = Color::srgba(1.0, 1.0, 1.0, 1.0);
+                _reset_count += 1;
             }
         }
     }
+    perf_monitor.end_system_timing("highlight_reset_colors", reset_color_start);
     
     // 既存の枠線を削除
     for outline_entity in existing_outline_query.iter() {
@@ -751,4 +796,6 @@ pub fn highlight_selected_pieces(
             }
         }
     }
+    
+    perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
 }

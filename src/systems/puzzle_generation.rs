@@ -202,7 +202,10 @@ pub fn spawn_puzzle_pieces_progressive(
     mut progress: ResMut<PieceGenerationProgress>,
     mut stroke_cache: ResMut<StrokeMeshCache>,
     mut piece_cache: ResMut<PieceSelectionCache>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("spawn_puzzle_pieces_progressive");
+    
     // システム実行のデバッグログ（スポーン中のみ）
     if progress.generation_phase == GenerationPhase::SpawningEntities {
         static mut SYSTEM_CALL_COUNT: usize = 0;
@@ -215,27 +218,32 @@ pub fn spawn_puzzle_pieces_progressive(
     
     // ゲーム画面でない場合は何もしない
     if game_state.current_screen != GameScreen::InGame {
+        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     }
     
     // 生成中でない場合で、かつ既にピースがある場合は何もしない
     if !progress.is_generating && !existing_pieces.is_empty() {
+        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     }
 
     // 画像が選択されていない場合
     if puzzle_config.image_path.is_empty() {
         println!("⚠️ No image selected for puzzle creation!");
+        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     }
 
     // PuzzleImageがまだない場合は待機
     let Some(ref puzzle_image) = puzzle_image else {
+        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     };
 
     // 画像サイズが適切でない場合は待機
     if puzzle_image.size.x <= 10.0 || puzzle_image.size.y <= 10.0 {
+        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     }
 
@@ -463,6 +471,8 @@ pub fn spawn_puzzle_pieces_progressive(
             }
         }
     }
+    
+    perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
 }
 
 fn create_all_pieces_sync(
