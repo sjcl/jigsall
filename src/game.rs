@@ -14,6 +14,7 @@ impl Plugin for GamePlugin {
             .init_resource::<InputState>()
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<StrokeMeshCache>()
+            .init_resource::<PieceSelectionCache>()
             .add_systems(Startup, setup_game)
             .add_systems(
                 Update,
@@ -25,6 +26,7 @@ impl Plugin for GamePlugin {
                     reset_puzzle, // パズルリセット機能
                     
                     // 新しいマルチ選択システム（優先順位: 最初に実行）
+                    update_piece_cache,  // パフォーマンス最適化用キャッシュ更新
                     handle_box_selection,
                     handle_multi_piece_drag,
                     render_selection_box,

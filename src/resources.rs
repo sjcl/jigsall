@@ -3,7 +3,7 @@ use bevy::sprite::ColorMaterial;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crossbeam::channel;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use crate::components::{PuzzlePiece, PieceShape};
 
@@ -11,6 +11,16 @@ use crate::components::{PuzzlePiece, PieceShape};
 #[derive(Resource, Default)]
 pub struct StrokeMeshCache {
     pub stroke_meshes: HashMap<String, Handle<Mesh>>, // shape_hash -> stroke mesh handle
+}
+
+/// パフォーマンス最適化用のピース検索キャッシュ
+#[derive(Resource, Default)]
+pub struct PieceSelectionCache {
+    pub all_pieces: Vec<Entity>,  // 全ピースのキャッシュリスト
+    pub piece_positions: HashMap<Entity, Vec2>,  // ピース位置のキャッシュ
+    pub piece_bounds: HashMap<Entity, (Vec2, Vec2)>,  // ピース境界ボックスのキャッシュ
+    pub last_update_frame: u64,  // 最終更新フレーム
+    pub need_refresh: bool,  // キャッシュ更新が必要か
 }
 
 #[derive(Resource, Default)]
@@ -115,6 +125,11 @@ pub struct InputState {
     pub selection_current: Option<Vec2>,
     pub selected_pieces: Vec<Entity>,
     pub multi_drag_offset: HashMap<Entity, Vec2>,
+    
+    // パフォーマンス最適化用のキャッシュ
+    pub selected_pieces_set: HashSet<Entity>,  // 高速な選択状態チェック用
+    pub last_selection_rect: Option<(Vec2, Vec2)>,  // 前回の選択範囲
+    pub cached_drag_entity: Option<Entity>,  // ドラッグ中のエンティティキャッシュ
 }
 
 impl Default for InputState {
@@ -134,6 +149,11 @@ impl Default for InputState {
             selection_current: None,
             selected_pieces: Vec::new(),
             multi_drag_offset: HashMap::new(),
+            
+            // パフォーマンス最適化用のキャッシュの初期化
+            selected_pieces_set: HashSet::new(),
+            last_selection_rect: None,
+            cached_drag_entity: None,
         }
     }
 }

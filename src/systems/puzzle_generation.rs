@@ -142,6 +142,7 @@ pub fn reset_puzzle(
     puzzle_pieces: Query<Entity, With<PuzzlePiece>>,
     grid_references: Query<Entity, With<GridReference>>,
     mut input_state: ResMut<InputState>,
+    mut piece_cache: ResMut<PieceSelectionCache>,
 ) {
     if !game_state.needs_reset {
         return;
@@ -167,6 +168,17 @@ pub fn reset_puzzle(
     // 入力状態をリセット
     input_state.selected_piece = None;
     input_state.next_z_order = 1.0;
+    input_state.selected_pieces.clear();
+    input_state.selected_pieces_set.clear();
+    input_state.multi_drag_offset.clear();
+    input_state.last_selection_rect = None;
+    input_state.cached_drag_entity = None;
+    
+    // パフォーマンスキャッシュをクリア
+    piece_cache.all_pieces.clear();
+    piece_cache.piece_positions.clear();
+    piece_cache.piece_bounds.clear();
+    piece_cache.need_refresh = true;
     
     // 画像設定を完全にクリア
     puzzle_config.image_path.clear();
@@ -189,6 +201,7 @@ pub fn spawn_puzzle_pieces_progressive(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut progress: ResMut<PieceGenerationProgress>,
     mut stroke_cache: ResMut<StrokeMeshCache>,
+    mut piece_cache: ResMut<PieceSelectionCache>,
 ) {
     // システム実行のデバッグログ（スポーン中のみ）
     if progress.generation_phase == GenerationPhase::SpawningEntities {
@@ -413,6 +426,9 @@ pub fn spawn_puzzle_pieces_progressive(
             spawned_count += 1;
             progress.pieces_created += 1;
             progress.pieces_spawned_this_frame += 1;
+            
+            // パフォーマンスキャッシュをマーク（新しいピースが追加された）
+            piece_cache.need_refresh = true;
         }
         
         // 進捗ログ（頻度制限）
