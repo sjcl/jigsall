@@ -6,13 +6,18 @@ use crate::resources::*;
 pub fn frustum_culling_system(
     mut piece_query: Query<(&Transform, &PuzzlePiece, &mut Visibility), With<PickablePiece>>,
     camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("frustum_culling_system");
+    
     let Ok((camera, camera_transform)) = camera_query.single() else {
+        perf_monitor.end_system_timing("frustum_culling_system", start_time);
         return;
     };
     
     // カメラの視錐台を取得
     let Some(viewport_size) = camera.logical_viewport_size() else {
+        perf_monitor.end_system_timing("frustum_culling_system", start_time);
         return;
     };
     
@@ -64,6 +69,8 @@ pub fn frustum_culling_system(
             println!("🎯 Frustum Culling: {} visible, {} culled", visible_count, culled_count);
         }
     }
+    
+    perf_monitor.end_system_timing("frustum_culling_system", start_time);
 }
 
 /// フレーム開始時のパフォーマンス計測システム

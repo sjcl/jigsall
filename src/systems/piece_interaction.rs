@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
+use std::collections::HashSet;
 use crate::components::*;
 use crate::resources::*;
 use crate::time_scope;
@@ -672,10 +673,9 @@ pub fn render_selection_box(
 
 /// 枠線表示のためのシンプルなアプローチ - 元のメッシュをそのまま使用
 
-/// 選択されたピースのハイライト表示システム（ストロークメッシュキャッシュ版）
+/// 選択されたピースのハイライト表示システム（最適化版）
 pub fn highlight_selected_pieces(
     mut commands: Commands,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
     preview_pieces_query: Query<Entity, (With<SelectionPreview>, With<PuzzlePiece>)>,
     _all_pieces_query: Query<Entity, With<PuzzlePiece>>,
@@ -687,6 +687,9 @@ pub fn highlight_selected_pieces(
     game_state: Res<GameState>,
     cache: Res<PieceSelectionCache>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut highlight_state: ResMut<HighlightState>,
+    highlight_materials: Res<HighlightMaterials>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let start_time = perf_monitor.start_system_timing("highlight_selected_pieces");
     
@@ -696,26 +699,76 @@ pub fn highlight_selected_pieces(
         return;
     }
     
-    // キャッシュされたピース一覧を使用してピースを通常の色に戻す（最適化）
+    // 現在の選択状態を取得
+    let change_detection_start = perf_monitor.start_system_timing("highlight_change_detection");
+    let current_selected: HashSet<Entity> = selected_pieces_query.iter().collect();
+    let current_preview: HashSet<Entity> = preview_pieces_query.iter().collect();
+    
+    // 選択状態変更を検出
+    let selection_changed = current_selected != highlight_state.last_selected_pieces;
+    let preview_changed = current_preview != highlight_state.last_preview_pieces;
+    
+    highlight_state.frame_count += 1;
+    highlight_state.selection_changed = selection_changed;
+    highlight_state.preview_changed = preview_changed;
+    
+    perf_monitor.end_system_timing("highlight_change_detection", change_detection_start);
+    
+    // 変更がない場合は早期リターン
+    if !selection_changed && !preview_changed {
+        // 定期的にスキップ情報を出力
+        if perf_monitor.debug_level == PerformanceDebugLevel::High && highlight_state.frame_count % 300 == 0 {
+            println!("🚀 HIGHLIGHT OPTIMIZATION: Skipped {} frames (no changes)", highlight_state.frame_count);
+        }
+        perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
+        return;
+    }
+    
+    // 変更があった場合のみ処理を実行
+    if perf_monitor.debug_level == PerformanceDebugLevel::Medium {
+        println!("🔄 HIGHLIGHT UPDATE: Selection changed={}, Preview changed={}, Frame={}", 
+            selection_changed, preview_changed, highlight_state.frame_count);
+    }
+    
+    // 変更されたピースのみ通常の色に戻す（最適化）
     let reset_color_start = perf_monitor.start_system_timing("highlight_reset_colors");
-    let mut _reset_count = 0;
-    for &entity in &cache.all_pieces {
-        if let Ok(material_handle) = piece_query.get_mut(entity) {
-            if let Some(material) = materials.get_mut(&material_handle.0) {
-                // 通常の白色に戻す（テクスチャの元の色）
-                material.color = Color::srgba(1.0, 1.0, 1.0, 1.0);
-                _reset_count += 1;
+    let mut reset_count = 0;
+    
+    // 前回選択されていたが今回選択されていないピースの色をリセット
+    for &entity in &highlight_state.last_selected_pieces {
+        if !current_selected.contains(&entity) {
+            if let Ok(material_handle) = piece_query.get_mut(entity) {
+                if let Some(material) = materials.get_mut(&material_handle.0) {
+                    material.color = Color::srgba(1.0, 1.0, 1.0, 1.0);
+                    reset_count += 1;
+                }
             }
         }
     }
+    
+    // 前回プレビューだったが今回プレビューでないピースの色をリセット
+    for &entity in &highlight_state.last_preview_pieces {
+        if !current_preview.contains(&entity) {
+            if let Ok(material_handle) = piece_query.get_mut(entity) {
+                if let Some(material) = materials.get_mut(&material_handle.0) {
+                    material.color = Color::srgba(1.0, 1.0, 1.0, 1.0);
+                    reset_count += 1;
+                }
+            }
+        }
+    }
+    
     perf_monitor.end_system_timing("highlight_reset_colors", reset_color_start);
     
-    // 既存の枠線を削除
+    // 既存の枠線を削除（変更があった場合のみ）
+    let outline_removal_start = perf_monitor.start_system_timing("highlight_outline_removal");
     for outline_entity in existing_outline_query.iter() {
         commands.entity(outline_entity).despawn();
     }
+    perf_monitor.end_system_timing("highlight_outline_removal", outline_removal_start);
     
-    // プレビュー中のピースにストロークハイライトを追加
+    // プレビュー中のピースにストロークハイライトを追加（共有マテリアル使用）
+    let preview_outline_start = perf_monitor.start_system_timing("highlight_preview_outlines");
     for entity in preview_pieces_query.iter() {
         if let (Ok(_transform), Ok(piece_shape)) = (
             piece_transform_query.get(entity),
@@ -730,16 +783,11 @@ pub fn highlight_selected_pieces(
                         PREVIEW_CACHE_LOG_COUNT += 1;
                     }
                 }
-                // ストロークメッシュを使ってハイライト表示
-                let stroke_material = ColorMaterial {
-                    color: Color::srgba(0.3, 0.6, 1.0, 0.8), // 薄い青色
-                    ..Default::default()
-                };
-                let stroke_material_handle = materials.add(stroke_material);
                 
+                // 共有マテリアルを使用（マテリアル作成のオーバーヘッドを削減）
                 let outline_entity = commands.spawn((
                     Mesh2d(stroke_mesh_handle.clone()),
-                    MeshMaterial2d(stroke_material_handle),
+                    MeshMaterial2d(highlight_materials.preview_material.clone()),
                     Transform {
                         translation: Vec3::new(0.0, 0.0, -0.1), // 親からの相対位置
                         rotation: Quat::IDENTITY,
@@ -755,8 +803,10 @@ pub fn highlight_selected_pieces(
             }
         }
     }
+    perf_monitor.end_system_timing("highlight_preview_outlines", preview_outline_start);
     
-    // 選択されたピースにストロークハイライトを追加
+    // 選択されたピースにストロークハイライトを追加（共有マテリアル使用）
+    let selected_outline_start = perf_monitor.start_system_timing("highlight_selected_outlines");
     for entity in selected_pieces_query.iter() {
         if let (Ok(_transform), Ok(piece_shape)) = (
             piece_transform_query.get(entity),
@@ -771,16 +821,11 @@ pub fn highlight_selected_pieces(
                         SELECTED_CACHE_LOG_COUNT += 1;
                     }
                 }
-                // ストロークメッシュを使ってハイライト表示
-                let stroke_material = ColorMaterial {
-                    color: Color::srgba(1.0, 0.8, 0.0, 1.0), // 黄色
-                    ..Default::default()
-                };
-                let stroke_material_handle = materials.add(stroke_material);
                 
+                // 共有マテリアルを使用（マテリアル作成のオーバーヘッドを削減）
                 let outline_entity = commands.spawn((
                     Mesh2d(stroke_mesh_handle.clone()),
-                    MeshMaterial2d(stroke_material_handle),
+                    MeshMaterial2d(highlight_materials.selected_material.clone()),
                     Transform {
                         translation: Vec3::new(0.0, 0.0, -0.05), // 親からの相対位置（プレビューより上）
                         rotation: Quat::IDENTITY,
@@ -796,6 +841,22 @@ pub fn highlight_selected_pieces(
             }
         }
     }
+    perf_monitor.end_system_timing("highlight_selected_outlines", selected_outline_start);
+    
+    // 最適化の統計情報を出力（移動前に値を取得）
+    if perf_monitor.debug_level == PerformanceDebugLevel::High {
+        let total_pieces = cache.all_pieces.len();
+        let selected_count = current_selected.len();
+        let preview_count = current_preview.len();
+        println!("🔥 HIGHLIGHT OPTIMIZATION: Reset {} pieces, Current selected: {}, Current preview: {}, Total pieces: {}", 
+            reset_count, selected_count, preview_count, total_pieces);
+    }
+    
+    // 次フレーム用に現在の選択状態を保存
+    let state_update_start = perf_monitor.start_system_timing("highlight_state_update");
+    highlight_state.last_selected_pieces = current_selected;
+    highlight_state.last_preview_pieces = current_preview;
+    perf_monitor.end_system_timing("highlight_state_update", state_update_start);
     
     perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
 }

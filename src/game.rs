@@ -16,7 +16,8 @@ impl Plugin for GamePlugin {
             .init_resource::<StrokeMeshCache>()
             .init_resource::<PieceSelectionCache>()
             .init_resource::<PerformanceMonitor>()
-            .add_systems(Startup, setup_game)
+            .init_resource::<HighlightState>()
+            .add_systems(Startup, (setup_game, setup_highlight_materials))
             .add_systems(First, performance_frame_start)
             .add_systems(
                 Update,
@@ -68,4 +69,29 @@ fn setup_game(mut commands: Commands) {
         Camera2d,
         MainCamera,
     ));
+}
+
+fn setup_highlight_materials(
+    mut commands: Commands,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
+    // プレビュー用マテリアル（薄い青色）
+    let preview_material = ColorMaterial {
+        color: Color::srgba(0.3, 0.6, 1.0, 0.8),
+        ..Default::default()
+    };
+    let preview_material_handle = materials.add(preview_material);
+    
+    // 選択用マテリアル（黄色）
+    let selected_material = ColorMaterial {
+        color: Color::srgba(1.0, 0.8, 0.0, 1.0),
+        ..Default::default()
+    };
+    let selected_material_handle = materials.add(selected_material);
+    
+    // リソースとして登録
+    commands.insert_resource(HighlightMaterials {
+        preview_material: preview_material_handle,
+        selected_material: selected_material_handle,
+    });
 }

@@ -8,9 +8,18 @@ pub fn update_input_state(
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
-    let Ok(window) = windows.single() else { return; };
-    let Ok((camera, camera_transform)) = camera_q.single() else { return; };
+    let start_time = perf_monitor.start_system_timing("update_input_state");
+    
+    let Ok(window) = windows.single() else { 
+        perf_monitor.end_system_timing("update_input_state", start_time);
+        return; 
+    };
+    let Ok((camera, camera_transform)) = camera_q.single() else { 
+        perf_monitor.end_system_timing("update_input_state", start_time);
+        return; 
+    };
     
     // 前のマウス位置を保存
     input_state.last_mouse_position = input_state.mouse_position;
@@ -27,6 +36,8 @@ pub fn update_input_state(
     }
     
     input_state.is_mouse_pressed = mouse_input.pressed(MouseButton::Left);
+    
+    perf_monitor.end_system_timing("update_input_state", start_time);
 }
 
 pub fn auto_adjust_camera_zoom(
@@ -59,7 +70,10 @@ pub fn auto_adjust_camera_zoom(
 pub fn handle_camera_zoom(
     mut scroll_evr: EventReader<MouseWheel>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("handle_camera_zoom");
+    
     for ev in scroll_evr.read() {
         for mut transform in camera_query.iter_mut() {
             let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
@@ -73,6 +87,8 @@ pub fn handle_camera_zoom(
             println!("Camera zoom: {:.2}", new_scale);
         }
     }
+    
+    perf_monitor.end_system_timing("handle_camera_zoom", start_time);
 }
 
 pub fn handle_camera_drag(

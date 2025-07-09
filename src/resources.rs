@@ -14,6 +14,23 @@ pub struct StrokeMeshCache {
     pub stroke_meshes: HashMap<String, Handle<Mesh>>, // shape_hash -> stroke mesh handle
 }
 
+/// ハイライト表示用の共有マテリアルリソース
+#[derive(Resource)]
+pub struct HighlightMaterials {
+    pub preview_material: Handle<ColorMaterial>,  // プレビュー用（薄い青色）
+    pub selected_material: Handle<ColorMaterial>, // 選択用（黄色）
+}
+
+/// ハイライト状態変更検出リソース
+#[derive(Resource, Default)]
+pub struct HighlightState {
+    pub last_selected_pieces: HashSet<Entity>,    // 前フレームの選択ピース
+    pub last_preview_pieces: HashSet<Entity>,     // 前フレームのプレビューピース
+    pub selection_changed: bool,                  // 選択状態が変わったか
+    pub preview_changed: bool,                    // プレビュー状態が変わったか
+    pub frame_count: u64,                         // フレーム数（デバッグ用）
+}
+
 /// パフォーマンス最適化用のピース検索キャッシュ
 #[derive(Resource, Default)]
 pub struct PieceSelectionCache {
