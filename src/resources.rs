@@ -1,10 +1,8 @@
 use bevy::prelude::*;
-use bevy::tasks::Task;
 use bevy::sprite::ColorMaterial;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crossbeam::channel;
-use std::sync::Arc;
 use std::collections::HashMap;
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use crate::components::{PuzzlePiece, PieceShape};
@@ -59,7 +57,6 @@ impl Default for PieceMode {
 #[derive(Resource)]
 pub struct PuzzleConfig {
     pub grid_size: (usize, usize),
-    pub piece_size: f32,
     pub snap_distance: f32,
     pub image_path: String,
     pub target_piece_count: usize,
@@ -72,7 +69,6 @@ impl Default for PuzzleConfig {
     fn default() -> Self {
         Self {
             grid_size: (4, 4),
-            piece_size: 100.0,
             snap_distance: 50.0, // Reduced to prevent immediate snapping
             image_path: String::new(), // 空の文字列から開始
             target_piece_count: 16, // デフォルト16ピース
@@ -93,7 +89,6 @@ pub struct PuzzleImage {
 pub struct NetworkInfo {
     pub server_address: String,
     pub port: u16,
-    pub player_id: Option<Uuid>,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -111,7 +106,6 @@ pub struct InputState {
     pub selected_piece: Option<Entity>,
     pub next_z_order: f32,
     pub is_camera_dragging: bool,
-    pub camera_drag_start_pos: Vec2,
     pub last_mouse_position: Vec2,
     pub last_cursor_position: Option<Vec2>,
     
@@ -131,7 +125,6 @@ impl Default for InputState {
             selected_piece: None,
             next_z_order: 1.0, // 1.0から開始
             is_camera_dragging: false,
-            camera_drag_start_pos: Vec2::ZERO,
             last_mouse_position: Vec2::ZERO,
             last_cursor_position: None,
             
@@ -177,14 +170,6 @@ pub struct PieceCreationResult {
     pub pieces: Vec<PieceData>,
 }
 
-// 進捗更新メッセージ
-#[derive(Clone)]
-pub enum ProgressMessage {
-    ShapeProgress(usize), // 生成済み形状数
-    PieceProgress(usize), // 作成済みピース数
-    ShapeCompleted,       // 形状生成完了
-    PieceCompleted,       // ピース作成完了
-}
 
 impl Default for GenerationPhase {
     fn default() -> Self {
@@ -203,17 +188,14 @@ pub struct PieceGenerationProgress {
     pub shapes_generated: usize,
     pub pieces_created: usize,
     pub placement_positions: Vec<Vec2>,
-    pub async_task: Option<Task<ShapeGenerationResult>>,
-    pub piece_creation_task: Option<Task<PieceCreationResult>>,
     pub pending_pieces: Vec<PieceData>, // 非同期で作成されたピースデータの待機列
     pub pieces_spawned_this_frame: usize, // 今フレームでスポーンしたピース数
     
     // 新しい標準スレッド用フィールド（crossbeam channelを使用）
     pub bg_thread_receiver: Option<channel::Receiver<ShapeGenerationResult>>,
     pub piece_thread_receiver: Option<channel::Receiver<PieceCreationResult>>,
+    pub progress_receiver: Option<channel::Receiver<()>>,
     
-    // 進捗更新用チャンネル
-    pub progress_receiver: Option<channel::Receiver<ProgressMessage>>,
 }
 
 impl Default for PieceGenerationProgress {
@@ -227,8 +209,6 @@ impl Default for PieceGenerationProgress {
             shapes_generated: 0,
             pieces_created: 0,
             placement_positions: Vec::new(),
-            async_task: None,
-            piece_creation_task: None,
             pending_pieces: Vec::new(),
             pieces_spawned_this_frame: 0,
             bg_thread_receiver: None,

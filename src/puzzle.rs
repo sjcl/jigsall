@@ -144,12 +144,12 @@ fn calculate_shape_hash_from_svg(svg_path: &str) -> String {
     let hash_value = hasher.finish();
     
     // SVGパスから形状の特徴を抽出してより意味のあるハッシュを作成
-    let normalized_path = svg_path.replace(&[' ', '\n', '\t'][..], "").to_lowercase();
+    let _normalized_path = svg_path.replace(&[' ', '\n', '\t'][..], "").to_lowercase();
     format!("svg_{:x}", hash_value)
 }
 
 /// ピースの形状ハッシュを計算する（代替案：グリッド位置ベース、後でSVGベースに変更）
-fn calculate_piece_shape_hash(grid_x: usize, grid_y: usize, grid_width: usize, grid_height: usize) -> String {
+fn calculate_piece_shape_hash(grid_x: usize, grid_y: usize, _grid_width: usize, _grid_height: usize) -> String {
     // 一時的な実装：グリッド位置をそのまま使用
     // 後でSVGパスから実際の形状を解析するように変更する予定
     format!("temp_{}_{}", grid_x, grid_y)
@@ -255,7 +255,7 @@ pub fn create_puzzle_pieces(
     
     let mut position_index = 0;
     
-    let total_pieces = grid_width * grid_height;
+    let _total_pieces = grid_width * grid_height;
     
     for y in 0..grid_height {
         for x in 0..grid_width {
@@ -327,7 +327,7 @@ pub fn create_puzzle_pieces(
             let piece_shape = extract_shape_data_from_jigsaw_shape(shape);
             
             // デバッグ情報を先に取得
-            let vertices_count = piece_shape.vertices.len();
+            let _vertices_count = piece_shape.vertices.len();
             
             let mesh_handle = meshes.add(mesh);
             
@@ -343,7 +343,7 @@ pub fn create_puzzle_pieces(
             
             // 2D メッシュコンポーネントを使用してピースを生成
             // Picking systemを使用する場合
-            let entity = commands.spawn((
+            let _entity = commands.spawn((
                 Mesh2d(mesh_handle),
                 MeshMaterial2d(material_handle),
                 Transform::from_translation(start_position.extend(z_offset)),
@@ -362,33 +362,8 @@ pub fn create_puzzle_pieces(
     }
 }
 
-pub fn load_puzzle_image(
-    asset_server: &AssetServer,
-    puzzle_config: &PuzzleConfig,
-) -> Handle<Image> {
-    asset_server.load(&puzzle_config.image_path)
-}
-
-pub fn setup_puzzle_from_image(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    puzzle_config: Res<PuzzleConfig>,
-    mut images: ResMut<Assets<Image>>,
-) {
-    // 画像パスが設定されている場合のみ画像を読み込み
-    if !puzzle_config.image_path.is_empty() {
-        let image_handle = load_puzzle_image(&asset_server, &puzzle_config);
-        
-        // デフォルトサイズを設定（実際の画像サイズは後で更新）
-        commands.insert_resource(PuzzleImage {
-            handle: image_handle.clone(),
-            size: Vec2::new(1.0, 1.0), // 小さな値で初期化し、読み込み中であることを示す
-        });
-    }
-}
-
 pub fn update_puzzle_image_size(
-    mut puzzle_image: Option<ResMut<PuzzleImage>>,
+    puzzle_image: Option<ResMut<PuzzleImage>>,
     images: Res<Assets<Image>>,
     asset_server: Res<AssetServer>,
 ) {

@@ -2,12 +2,12 @@ use bevy::prelude::*;
 use bevy::render::mesh::Indices;
 use bevy::render::render_resource::PrimitiveTopology;
 use bevy::render::render_asset::RenderAssetUsages;
-use lyon::path::{Path, Builder};
+use lyon::path::Path;
 use lyon::math;
 use lyon_tessellation::{
     VertexBuffers, FillTessellator, FillOptions, FillRule, FillVertex,
     StrokeTessellator, StrokeOptions, StrokeVertex,
-    geometry_builder::BuffersBuilder, VertexId
+    geometry_builder::BuffersBuilder
 };
 use puzzle_paths::{build_jigsaw_template, JigsawTemplate};
 use std::collections::HashMap;
@@ -222,8 +222,8 @@ impl JigsawShapeGenerator {
                 }
             )
         };
-        let width = max_x - min_x;
-        let height = max_y - min_y;
+        let _width = max_x - min_x;
+        let _height = max_y - min_y;
         
         
         // Bevyメッシュを作成
@@ -244,9 +244,9 @@ impl JigsawShapeGenerator {
         
         // ピースの絶対座標範囲（変換前）
         let piece_abs_min_x = x as f32 * piece_width;
-        let piece_abs_max_x = (x + 1) as f32 * piece_width;
+        let _piece_abs_max_x = (x + 1) as f32 * piece_width;
         let piece_abs_min_y = y as f32 * piece_height;
-        let piece_abs_max_y = (y + 1) as f32 * piece_height;
+        let _piece_abs_max_y = (y + 1) as f32 * piece_height;
         
         // テクスチャ座標範囲
         let texture_u_start = x as f32 / grid_width as f32;
@@ -381,8 +381,7 @@ impl JigsawShapeGenerator {
     fn calculate_shape_hash_from_svg_path(&self, svg_path: &str) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        use svgtypes::{PathParser, PathSegment};
-        
+                
         // SVGパスから形状パターンを抽出（座標を正規化）
         let shape_pattern = self.extract_shape_pattern_from_svg(svg_path);
         
@@ -408,8 +407,7 @@ impl JigsawShapeGenerator {
 
     /// SVGパスから形状パターンを抽出（正規化版）
     fn extract_shape_pattern_from_svg(&self, svg_path: &str) -> String {
-        use svgtypes::{PathParser, PathSegment};
-        
+                
         let mut coords = Vec::new();
         let mut commands = Vec::new();
         
@@ -516,7 +514,7 @@ impl JigsawShapeGenerator {
             match segment {
                 Ok(seg) => {
                     match seg {
-                        PathSegment::MoveTo { abs, x, y } => {
+                        PathSegment::MoveTo { abs: _, x, y } => {
                             if path_started {
                                 builder.end(false);
                             }
@@ -532,7 +530,7 @@ impl JigsawShapeGenerator {
                             builder.begin(math::point(relative_x, -relative_y));
                             path_started = true;
                         }
-                        PathSegment::LineTo { abs, x, y } => {
+                        PathSegment::LineTo { abs: _, x, y } => {
                             if !path_started {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
@@ -548,7 +546,7 @@ impl JigsawShapeGenerator {
                             }
                             builder.line_to(math::point(relative_x, -relative_y));
                         }
-                        PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
+                        PathSegment::CurveTo { abs: _, x1, y1, x2, y2, x, y } => {
                             if !path_started {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
@@ -604,7 +602,7 @@ impl JigsawShapeGenerator {
             match segment {
                 Ok(seg) => {
                     match seg {
-                        PathSegment::MoveTo { abs, x, y } => {
+                        PathSegment::MoveTo { abs: _, x, y } => {
                             if path_started {
                                 builder.end(false);
                             }
@@ -617,7 +615,7 @@ impl JigsawShapeGenerator {
                             builder.begin(math::point(x as f32, -y as f32));
                             path_started = true;
                         }
-                        PathSegment::LineTo { abs, x, y } => {
+                        PathSegment::LineTo { abs: _, x, y } => {
                             if !path_started {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
@@ -630,7 +628,7 @@ impl JigsawShapeGenerator {
                             // Y座標を反転してBevyの座標系に合わせる
                             builder.line_to(math::point(x as f32, -y as f32));
                         }
-                        PathSegment::CurveTo { abs, x1, y1, x2, y2, x, y } => {
+                        PathSegment::CurveTo { abs: _, x1, y1, x2, y2, x, y } => {
                             if !path_started {
                                 builder.begin(math::point(0.0, 0.0));
                                 path_started = true;
@@ -728,7 +726,7 @@ impl JigsawShapeGenerator {
         
         let indices = match mesh.indices() {
             Some(Indices::U32(idx)) => idx,
-            Some(Indices::U16(idx)) => {
+            Some(Indices::U16(_idx)) => {
                 // U16をU32に変換
                 return self.point_in_mesh_u16(mesh, point);
             },

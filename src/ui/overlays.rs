@@ -25,7 +25,7 @@ pub fn draw_in_game_menu_ui(
                     // 背景全体を半透明の黒で覆う
                     ui.painter().rect_filled(
                         screen_rect,
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         egui::Color32::from_black_alpha(128), // 半透明の黒
                     );
                 },

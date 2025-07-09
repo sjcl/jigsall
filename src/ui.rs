@@ -6,7 +6,6 @@ pub mod game_play;
 pub mod overlays;
 
 // Re-export all public functions from submodules
-pub use common::*;
 pub use menu::*;
 pub use game_setup::*;
 pub use game_play::*;

@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use crate::components::*;
-use crate::resources::*;
 
 /// Frustum cullingシステム - 画面外のピースを非表示にする
 pub fn frustum_culling_system(
@@ -66,43 +65,3 @@ pub fn frustum_culling_system(
     }
 }
 
-/// デバッグ用のピース位置情報出力システム
-pub fn debug_piece_positions(
-    piece_query: Query<(&Transform, &PuzzlePiece), (With<PickablePiece>, Without<MainCamera>)>,
-    camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
-    puzzle_config: Res<PuzzleConfig>,
-) {
-    static mut DEBUG_FRAME_COUNT: usize = 0;
-    unsafe {
-        DEBUG_FRAME_COUNT += 1;
-        
-        // 100ピース超の場合のみ、60フレーム後に1回だけ実行
-        if puzzle_config.grid_size.0 * puzzle_config.grid_size.1 > 100 && DEBUG_FRAME_COUNT == 60 {
-            // カメラの状態を確認
-            if let Ok(camera_transform) = camera_query.single() {
-                println!("📹 Camera status (frame {}):", DEBUG_FRAME_COUNT);
-                println!("  Position: ({:.1}, {:.1}, {:.1})", 
-                    camera_transform.translation.x, camera_transform.translation.y, camera_transform.translation.z);
-                println!("  Scale: ({:.3}, {:.3}, {:.3})", 
-                    camera_transform.scale.x, camera_transform.scale.y, camera_transform.scale.z);
-            }
-            
-            println!("🔍 Actual Transform positions for pieces (frame {}):", DEBUG_FRAME_COUNT);
-            let mut count = 0;
-            for (transform, piece) in piece_query.iter() {
-                if count < 10 { // 最初の10ピースの位置を確認
-                    println!("  Piece({},{}) Transform: ({:.1}, {:.1}, {:.3})", 
-                        piece.grid_x, piece.grid_y, 
-                        transform.translation.x, transform.translation.y, transform.translation.z);
-                    count += 1;
-                } else {
-                    break;
-                }
-            }
-            
-            // 統計情報も出力
-            let total_pieces = piece_query.iter().count();
-            println!("🔍 Total pieces found: {}", total_pieces);
-        }
-    }
-}

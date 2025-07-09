@@ -36,9 +36,7 @@ pub struct PieceShape {
 
 #[derive(Component)]
 pub struct Player {
-    pub id: Uuid,
-    pub name: String,
-    pub is_host: bool,
+    pub score: u32,
 }
 
 #[derive(Component)]
@@ -54,10 +52,6 @@ pub struct MenuUI;
 pub struct GridReference;
 
 /// Frustum culling用のコンポーネント
-#[derive(Component)]
-pub struct Cullable {
-    pub in_view: bool,
-}
 
 /// 選択されたピースをマークするコンポーネント
 #[derive(Component)]
@@ -70,7 +64,7 @@ pub struct SelectionBox;
 /// 選択されたピースの枠線表示用コンポーネント
 #[derive(Component)]
 pub struct PieceOutline {
-    pub piece_entity: Entity, // 親ピースのエンティティ
+    pub piece_entity: Entity,
 }
 
 /// 選択範囲プレビュー中のピースをマークするコンポーネント

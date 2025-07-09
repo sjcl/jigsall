@@ -38,19 +38,6 @@ pub fn calculate_aspect_ratio_grid(
     (grid_width, grid_height, actual_piece_width, actual_piece_height)
 }
 
-/// 16:9比率での理想的なグリッドサイズを計算
-pub fn calculate_16_9_grid(scale_factor: f32) -> (usize, usize) {
-    // 16:9比率での理想的なグリッド
-    let base_width = (scale_factor * 16.0 / 9.0_f32.sqrt()).round() as usize;
-    let base_height = (scale_factor * 9.0 / 16.0_f32.sqrt()).round() as usize;
-    
-    // 最小サイズを確保しつつ、可能な限り16:9に近づける
-    let grid_width = base_width.max(1);
-    let grid_height = base_height.max(1);
-    
-    (grid_width, grid_height)
-}
-
 /// PuzzleConfigの現在のモードに基づいてグリッドサイズを計算
 /// 画像が読み込まれていない場合はNoneを返す
 pub fn calculate_grid_from_config(

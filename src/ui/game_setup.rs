@@ -30,7 +30,7 @@ pub fn draw_host_setup_ui(
                 |ui| {
                     ui.painter().rect_filled(
                         screen_rect,
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         egui::Color32::from_rgb(25, 35, 45), // 少し明るめのダークブルー
                     );
                 },
@@ -648,7 +648,7 @@ pub fn draw_join_game_ui(
                 |ui| {
                     ui.painter().rect_filled(
                         screen_rect,
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         egui::Color32::from_rgb(30, 40, 50), // ダークブルーグリーン
                     );
                 },

@@ -3,26 +3,6 @@ use bevy::input::mouse::MouseWheel;
 use crate::components::*;
 use crate::resources::*;
 
-/// カメラのズーム・パンを考慮してスクリーン座標をワールド座標に変換
-pub(super) fn screen_to_world_pos(screen_pos: Vec2, camera_transform: &Transform) -> Vec2 {
-    // Bevyでは、カメラの逆変換を使用してスクリーン座標をワールド座標に変換
-    // スケールが小さい = ズームイン、大きい = ズームアウト
-    let scale = camera_transform.scale.x;
-    let camera_translation = camera_transform.translation.truncate();
-    
-    // 正しい逆変換: (screen_pos - screen_center) / scale + camera_position
-    // ただし、Bevyの座標系を考慮
-    screen_pos / scale + camera_translation
-}
-
-/// ワールド座標をカメラのズーム・パンを考慮してスクリーン座標に変換
-pub(super) fn world_to_screen_pos(world_pos: Vec2, camera_transform: &Transform) -> Vec2 {
-    let scale = camera_transform.scale.x;
-    let camera_translation = camera_transform.translation.truncate();
-    
-    (world_pos - camera_translation) * scale
-}
-
 pub fn update_input_state(
     mut input_state: ResMut<InputState>,
     windows: Query<&Window>,

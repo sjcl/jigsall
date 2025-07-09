@@ -25,7 +25,7 @@ pub fn draw_menu_ui(
                     // 背景全体をダークブルーのグラデーションで覆う
                     ui.painter().rect_filled(
                         screen_rect,
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         egui::Color32::from_rgb(20, 30, 60), // ダークブルー
                     );
                 },

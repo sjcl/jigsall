@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use crate::components::*;
 use crate::resources::*;
 use crate::systems::*;
-use crate::puzzle::{setup_puzzle_from_image, update_puzzle_image_size};
+use crate::puzzle::update_puzzle_image_size;
 
 pub struct GamePlugin;
 

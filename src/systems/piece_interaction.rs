@@ -3,17 +3,6 @@ use bevy::sprite::ColorMaterial;
 use crate::components::*;
 use crate::resources::*;
 
-/// 矩形範囲内にピースが含まれているかチェック
-fn is_piece_in_selection_box(piece_pos: Vec2, selection_start: Vec2, selection_end: Vec2) -> bool {
-    let min_x = selection_start.x.min(selection_end.x);
-    let max_x = selection_start.x.max(selection_end.x);
-    let min_y = selection_start.y.min(selection_end.y);
-    let max_y = selection_start.y.max(selection_end.y);
-    
-    piece_pos.x >= min_x && piece_pos.x <= max_x && 
-    piece_pos.y >= min_y && piece_pos.y <= max_y
-}
-
 /// Ray-casting アルゴリズムを使った点内判定
 fn point_in_mesh(vertices: &[[f32; 2]], indices: &[u32], point: Vec2) -> bool {
     let mut intersections = 0;
@@ -104,20 +93,6 @@ fn count_ray_edge_intersections(point: Vec2, ray_y: f32, edge_start: [f32; 2], e
     }
 }
 
-// 旧システムは互換性のため残す（後で削除予定）
-pub fn handle_piece_dragging(
-    _commands: Commands,
-    mut piece_query: Query<(Entity, &mut Transform, &mut Draggable, &PuzzlePiece)>,
-    mut input_state: ResMut<InputState>,
-    mut game_state: ResMut<GameState>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    puzzle_config: Res<PuzzleConfig>,
-    puzzle_image: Option<Res<PuzzleImage>>,
-    camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
-) {
-    // 旧システムは無効化 - picking systemを使用
-    return;
-}
 
 // レガシーシステム: 新しいマルチ選択システムに置き換え予定
 pub fn handle_piece_dragging_hybrid_legacy(
@@ -152,7 +127,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
     
     // 現在ドラッグ中のピースがあるかチェック
     let mut current_dragging_piece: Option<Entity> = None;
-    for (entity, _transform, pickable, _piece, _shape) in piece_query.iter() {
+    for (entity, _transform, _pickable, _piece, _shape) in piece_query.iter() {
         if input_state.selected_piece == Some(entity) {
             current_dragging_piece = Some(entity);
             break;
@@ -293,8 +268,8 @@ pub fn handle_box_selection(
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
-    mut selected_query: Query<Entity, With<SelectedPiece>>,
+    piece_query: Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
+    selected_query: Query<Entity, With<SelectedPiece>>,
     game_state: Res<GameState>,
 ) {
     // ゲーム内メニューが表示されている間は無効化
@@ -556,8 +531,8 @@ pub fn render_selection_box(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     input_state: Res<InputState>,
-    camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
-    mut selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
+    _camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
+    selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
     game_state: Res<GameState>,
 ) {
     // ゲーム内メニューが表示されている間は無効化
@@ -597,26 +572,6 @@ pub fn render_selection_box(
 }
 
 /// 枠線表示のためのシンプルなアプローチ - 元のメッシュをそのまま使用
-fn create_outline_mesh(vertices: &[[f32; 2]], indices: &[u32]) -> Mesh {
-    use bevy::render::render_asset::RenderAssetUsages;
-    use bevy::render::render_resource::PrimitiveTopology;
-    
-    // 元のメッシュをそのまま使用（スケールは Transform で調整）
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    
-    // 頂点データをそのままコピー
-    let positions: Vec<[f32; 3]> = vertices.iter()
-        .map(|v| [v[0], v[1], 0.0])
-        .collect();
-    
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_indices(bevy::render::mesh::Indices::U32(indices.to_vec()));
-    
-    mesh
-}
 
 /// 選択されたピースのハイライト表示システム（ストロークメッシュキャッシュ版）
 pub fn highlight_selected_pieces(
@@ -639,7 +594,7 @@ pub fn highlight_selected_pieces(
     
     // まず、全てのピースを通常の色に戻す
     for entity in all_pieces_query.iter() {
-        if let Ok(mut material_handle) = piece_query.get_mut(entity) {
+        if let Ok(material_handle) = piece_query.get_mut(entity) {
             if let Some(material) = materials.get_mut(&material_handle.0) {
                 // 通常の白色に戻す（テクスチャの元の色）
                 material.color = Color::srgba(1.0, 1.0, 1.0, 1.0);

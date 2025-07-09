@@ -1,12 +1,10 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
-use bevy::tasks::AsyncComputeTaskPool;
 use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
-use crate::jigsaw_shapes::{JigsawShapeGenerator, JigsawPieceShape};
+use crate::jigsaw_shapes::JigsawShapeGenerator;
 use std::path::Path;
-use std::collections::HashMap;
 
 pub fn spawn_puzzle_pieces(
     mut commands: Commands,
@@ -15,11 +13,11 @@ pub fn spawn_puzzle_pieces(
     puzzle_image: Option<Res<PuzzleImage>>,
     game_state: Res<GameState>,
     existing_pieces: Query<&PuzzlePiece>,
-    existing_grid_ref: Query<&GridReference>,
-    images: Res<Assets<Image>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut progress: ResMut<PieceGenerationProgress>,
+    _existing_grid_ref: Query<&GridReference>,
+    _images: Res<Assets<Image>>,
+    _meshes: ResMut<Assets<Mesh>>,
+    _materials: ResMut<Assets<ColorMaterial>>,
+    _progress: ResMut<PieceGenerationProgress>,
 ) {
     if game_state.current_screen == GameScreen::InGame && existing_pieces.is_empty() {
         // 画像パスが設定されている場合
@@ -251,12 +249,11 @@ pub fn spawn_puzzle_pieces_progressive(
         // 画像サイズとピースサイズを計算
         let display_width = puzzle_image.size.x;
         let display_height = puzzle_image.size.y;
-        let piece_width = display_width / grid_width as f32;
-        let piece_height = display_height / grid_height as f32;
+        let _piece_width = display_width / grid_width as f32;
+        let _piece_height = display_height / grid_height as f32;
 
         // 標準スレッドでバックグラウンド処理を実行（crossbeam channelを使用）
         let (sender, receiver) = crossbeam::channel::unbounded();
-        let (progress_sender, progress_receiver) = crossbeam::channel::unbounded();
         
         std::thread::spawn(move || {
             println!("🧵 Background thread started for shape generation");
@@ -277,8 +274,8 @@ pub fn spawn_puzzle_pieces_progressive(
                 return;
             }
 
-            // 全ての形状を生成（進捗を定期的に送信）
-            let mut generated_count = 0;
+            // 全ての形状を生成する
+            let _generated_count = 0;
             
             if let Err(e) = shape_generator.generate_all_shapes() {
                 println!("Failed to generate all shapes: {}", e);
@@ -310,7 +307,6 @@ pub fn spawn_puzzle_pieces_progressive(
 
         // レシーバーを保存
         progress.bg_thread_receiver = Some(receiver);
-        progress.progress_receiver = Some(progress_receiver);
         
         return;
     }
@@ -461,7 +457,7 @@ fn create_all_pieces_sync(
     total_pieces: usize,
     display_width: f32,
     display_height: f32,
-    image_handle: Handle<Image>,
+    _image_handle: Handle<Image>,
 ) -> PieceCreationResult {
     use crate::jigsaw_shapes::clone_mesh_from_shape;
     use crate::components::*;
