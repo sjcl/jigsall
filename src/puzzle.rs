@@ -105,23 +105,29 @@ fn generate_spiral_positions(
     let mut angle: f32 = 0.0;
     
     // 角度ステップと半径成長率を適応的に計算
-    // 元の値（0.15, 0.03）を基準に、ピースサイズに応じて調整
-    let angle_step = if piece_size > 300.0 { 
-        0.10  // 大きなピース：より小さな角度ステップ
+    // ピース数とサイズの両方を考慮して、重なりを防ぐ
+    
+    // 螺旋の1周あたりに配置できる理論上のピース数を計算
+    let circumference = 2.0 * std::f32::consts::PI * radius;
+    let pieces_per_revolution = (circumference / piece_size).max(6.0); // 最低6個は確保
+    
+    // 角度ステップ：1周あたりのピース数から計算
+    let mut angle_step = (2.0 * std::f32::consts::PI) / pieces_per_revolution;
+    
+    // 半径成長率：ピースが重ならないように調整
+    let radius_growth = if piece_size > 300.0 {
+        // 大きなピース：角度ステップに応じて適切に成長
+        piece_size * angle_step / (2.0 * std::f32::consts::PI) * 0.8
     } else if piece_size > 150.0 {
-        0.12  // 中サイズピース：やや小さな角度ステップ
+        // 中サイズピース
+        piece_size * angle_step / (2.0 * std::f32::consts::PI) * 0.9
     } else {
-        0.15  // 小さなピース：元の値
+        // 小さなピース：元の固定値を使用
+        0.03
     };
     
-    // 半径成長率：ピースサイズに比例して調整
-    let radius_growth = if piece_size > 300.0 {
-        piece_size * 0.0003  // 大きなピース：サイズに比例した成長
-    } else if piece_size > 150.0 {
-        piece_size * 0.0002  // 中サイズピース
-    } else {
-        0.03  // 小さなピース：元の固定値
-    };
+    // ピース数が少ない場合でも、最小の成長率を確保
+    let radius_growth = radius_growth.max(piece_size * 0.01);
     
     // 最大試行回数（元のコードと同じ計算）
     let max_attempts = num_pieces * 100;
@@ -129,7 +135,8 @@ fn generate_spiral_positions(
     println!("🌀 Generating spiral placement from center ({:.1}, {:.1})", center.x, center.y);
     println!("   📊 Exclusion area: {:.1}x{:.1}, Min clearance: {:.1}, Initial radius: {:.1}", 
         exclusion_width, exclusion_height, min_clearance_distance, radius);
-    println!("   ⚙️ Angle step: {:.3}, Radius growth: {:.4}", angle_step, radius_growth);
+    println!("   ⚙️ Pieces per revolution: {:.1}, Angle step: {:.3}, Radius growth: {:.4}", 
+        pieces_per_revolution, angle_step, radius_growth);
     let mut attempts = 0;
     
     while positions.len() < num_pieces && attempts < max_attempts {
@@ -162,6 +169,15 @@ fn generate_spiral_positions(
         angle += angle_step;
         radius += radius_growth;
         attempts += 1;
+        
+        // 半径が大きくなったら角度ステップを再計算（より多くのピースが配置できる）
+        if angle >= 2.0 * std::f32::consts::PI {
+            angle -= 2.0 * std::f32::consts::PI;
+            // 新しい周での角度ステップを再計算
+            let new_circumference = 2.0 * std::f32::consts::PI * radius;
+            let new_pieces_per_revolution = (new_circumference / piece_size).max(6.0);
+            angle_step = (2.0 * std::f32::consts::PI) / new_pieces_per_revolution;
+        }
         
         // 定期的な進捗ログ（大きな除外エリアの場合）
         if exclusion_width.max(exclusion_height) > 2000.0 && attempts % 1000 == 0 {
