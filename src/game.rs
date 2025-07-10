@@ -33,7 +33,6 @@ impl Plugin for GamePlugin {
             .add_systems(Update, (
                 // 基本システム
                 update_input_state,
-                reset_puzzle,
                 
                 // 選択システム
                 update_piece_cache,
@@ -149,13 +148,16 @@ fn initialize_game(
     game_sub_state.set(GameSubState::Initializing);
 }
 
-/// ゲーム終了時のクリーンアップ
+/// ゲーム終了時のクリーンアップ（reset_puzzle機能も統合）
 fn cleanup_game(
     mut commands: Commands,
     puzzle_pieces: Query<Entity, With<PuzzlePiece>>,
     grid_references: Query<Entity, With<GridReference>>,
     outline_entities: Query<Entity, With<PieceOutline>>,
     mut piece_cache: ResMut<PieceSelectionCache>,
+    mut game_data: ResMut<GameData>,
+    mut input_state: ResMut<InputState>,
+    mut puzzle_config: ResMut<PuzzleConfig>,
 ) {
     println!("🧹 Cleaning up game...");
     
@@ -174,10 +176,32 @@ fn cleanup_game(
         commands.entity(entity).despawn();
     }
     
-    // キャッシュをクリア
+    // ゲーム状態をリセット
+    game_data.puzzle_completed = false;
+    game_data.puzzle_progress = 0.0;
+    game_data.needs_reset = false;
+    
+    // 入力状態をリセット
+    input_state.selected_piece = None;
+    input_state.next_z_order = 1.0;
+    input_state.selected_pieces.clear();
+    input_state.selected_pieces_set.clear();
+    input_state.multi_drag_offset.clear();
+    input_state.last_selection_rect = None;
+    input_state.cached_drag_entity = None;
+    
+    // パフォーマンスキャッシュをクリア
     piece_cache.all_pieces.clear();
     piece_cache.piece_positions.clear();
     piece_cache.piece_bounds.clear();
     piece_cache.need_refresh = true;
+    
+    // 画像設定を完全にクリア
+    puzzle_config.image_path.clear();
+    
+    // PuzzleImageリソースを削除して再読み込みを強制
+    commands.remove_resource::<PuzzleImage>();
+    
+    println!("✅ Game cleanup completed (all entities, states, and resources cleared)");
 }
 
