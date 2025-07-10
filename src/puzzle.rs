@@ -85,7 +85,6 @@ fn generate_spiral_positions(
     // 除外エリアのサイズを計算
     let exclusion_width = puzzle_max.x - puzzle_min.x;
     let exclusion_height = puzzle_max.y - puzzle_min.y;
-    let exclusion_radius = (exclusion_width.max(exclusion_height)) / 2.0;
     
     // マージンを除外エリアサイズに応じて調整
     let piece_size = piece_width.max(piece_height);
@@ -95,26 +94,42 @@ fn generate_spiral_positions(
     let effective_piece_width = piece_width + margin_x;
     let effective_piece_height = piece_height + margin_y;
     
+    // 初期半径を楕円的に計算（横長・縦長の画像に対応）
+    // パズルの四隅までの最小距離を基準にする
+    let corner_distance_x = exclusion_width / 2.0;
+    let corner_distance_y = exclusion_height / 2.0;
+    let min_clearance_distance = (corner_distance_x.min(corner_distance_y)) + piece_size * 0.5;
+    
     // 渦巻きパラメータを除外エリアサイズに基づいて動的計算
-    let mut radius = exclusion_radius + piece_size * 0.5; // 除外エリアの外から開始
+    let mut radius = min_clearance_distance; // 最小クリアランス距離から開始
     let mut angle: f32 = 0.0;
     
-    // 角度ステップと半径成長率を除外エリアに適応
-    let angle_step = if exclusion_radius > 1000.0 { 0.08 } else { 0.12 };
-    let radius_growth = if exclusion_radius > 1000.0 { 
-        exclusion_radius * 0.0008  // 大きな除外エリア：急速に外向き拡散
-    } else { 
-        piece_size * 0.02  // 小さな除外エリア：標準成長率
+    // 角度ステップと半径成長率を適応的に計算
+    // 元の値（0.15, 0.03）を基準に、ピースサイズに応じて調整
+    let angle_step = if piece_size > 300.0 { 
+        0.10  // 大きなピース：より小さな角度ステップ
+    } else if piece_size > 150.0 {
+        0.12  // 中サイズピース：やや小さな角度ステップ
+    } else {
+        0.15  // 小さなピース：元の値
     };
     
-    println!("🌀 Generating spiral placement from center ({:.1}, {:.1})", center.x, center.y);
-    println!("   📊 Exclusion radius: {:.1}, Initial spiral radius: {:.1}", exclusion_radius, radius);
-    println!("   ⚙️ Angle step: {:.3}, Radius growth: {:.4}", angle_step, radius_growth);
+    // 半径成長率：ピースサイズに比例して調整
+    let radius_growth = if piece_size > 300.0 {
+        piece_size * 0.0003  // 大きなピース：サイズに比例した成長
+    } else if piece_size > 150.0 {
+        piece_size * 0.0002  // 中サイズピース
+    } else {
+        0.03  // 小さなピース：元の固定値
+    };
     
-    // 最大試行回数を除外エリアサイズに応じて調整
-    let base_attempts = num_pieces * 150;
-    let size_multiplier = if exclusion_radius > 1500.0 { 3.0 } else if exclusion_radius > 1000.0 { 2.0 } else { 1.0 };
-    let max_attempts = (base_attempts as f32 * size_multiplier) as usize;
+    // 最大試行回数（元のコードと同じ計算）
+    let max_attempts = num_pieces * 100;
+    
+    println!("🌀 Generating spiral placement from center ({:.1}, {:.1})", center.x, center.y);
+    println!("   📊 Exclusion area: {:.1}x{:.1}, Min clearance: {:.1}, Initial radius: {:.1}", 
+        exclusion_width, exclusion_height, min_clearance_distance, radius);
+    println!("   ⚙️ Angle step: {:.3}, Radius growth: {:.4}", angle_step, radius_growth);
     let mut attempts = 0;
     
     while positions.len() < num_pieces && attempts < max_attempts {
@@ -149,7 +164,7 @@ fn generate_spiral_positions(
         attempts += 1;
         
         // 定期的な進捗ログ（大きな除外エリアの場合）
-        if exclusion_radius > 1000.0 && attempts % 1000 == 0 {
+        if exclusion_width.max(exclusion_height) > 2000.0 && attempts % 1000 == 0 {
             println!("   🔄 Spiral attempt #{}, placed: {}/{}, radius: {:.1}", 
                 attempts, positions.len(), num_pieces, radius);
         }
@@ -177,8 +192,17 @@ fn is_in_grid_area(
 ) -> bool {
     let (puzzle_min, puzzle_max) = puzzle_area;
     
-    // ピースサイズを考慮した余白を設定（より大きく）
-    let margin = piece_width.max(piece_height) * 1.0;  // 50% -> 100%
+    // ピースサイズに応じて適応的な余白を設定
+    let piece_size = piece_width.max(piece_height);
+    let margin_factor = if piece_size > 300.0 {
+        0.8  // 大きなピース：80%マージン
+    } else if piece_size > 150.0 {
+        0.9  // 中サイズピース：90%マージン  
+    } else {
+        1.0  // 小さなピース：元の100%マージン
+    };
+    let margin = piece_size * margin_factor;
+    
     let expanded_min = Vec2::new(puzzle_min.x - margin, puzzle_min.y - margin);
     let expanded_max = Vec2::new(puzzle_max.x + margin, puzzle_max.y + margin);
     
@@ -193,6 +217,7 @@ fn is_overlapping_with_existing(
     piece_width: f32,
     piece_height: f32
 ) -> bool {
+    // 元のコードと同じ：ピースサイズそのものを最小距離とする
     let min_distance = piece_width.max(piece_height);
     
     for existing_pos in existing_positions {
@@ -220,53 +245,79 @@ fn generate_fallback_positions(
     
     let (puzzle_min, puzzle_max) = puzzle_area;
     let piece_size = piece_width.max(piece_height);
-    let spacing = piece_size * 1.2; // ピース間のスペース
+    
+    // ピースサイズに応じてスペーシングを設定（元の1.2を基準に調整）
+    let spacing_factor = if piece_size > 300.0 {
+        1.1   // 大きなピース：10%スペース
+    } else {
+        1.2   // 標準：元の値
+    };
+    let spacing = piece_size * spacing_factor;
     
     println!("🔄 Fallback: attempting grid-based placement...");
     
-    // 除外エリアの外側にグリッド状配置を試行
-    let grid_margin = piece_size * 0.5;
-    let _left_x = puzzle_min.x - grid_margin - piece_size;
-    let _right_x = puzzle_max.x + grid_margin + piece_size;
-    let top_y = puzzle_max.y + grid_margin + piece_size;
-    let bottom_y = puzzle_min.y - grid_margin - piece_size;
+    // 四方向に均等に配置するための準備
+    let grid_margin = piece_size * 0.6;
+    let pieces_per_side = (count + 3) / 4; // 各方向の最大ピース数
     
-    // 上下のエリアにグリッド配置
-    let cols = ((puzzle_max.x - puzzle_min.x) / spacing).max(1.0) as usize;
-    let needed_rows_top = (count / 2 / cols).max(1);
-    let needed_rows_bottom = (count - (needed_rows_top * cols)) / cols;
+    // 各方向のエリア定義
+    let areas = [
+        // 上側エリア
+        ("top", puzzle_min.x, puzzle_max.x, puzzle_max.y + grid_margin, spacing, true),
+        // 下側エリア  
+        ("bottom", puzzle_min.x, puzzle_max.x, puzzle_min.y - grid_margin, -spacing, true),
+        // 右側エリア
+        ("right", puzzle_max.x + grid_margin, spacing, puzzle_min.y, puzzle_max.y, false),
+        // 左側エリア
+        ("left", puzzle_min.x - grid_margin, -spacing, puzzle_min.y, puzzle_max.y, false),
+    ];
     
-    // 上側エリア
-    for row in 0..needed_rows_top {
-        for col in 0..cols {
-            if positions.len() >= count { break; }
+    for (side_name, start_pos, step_or_end, fixed_coord, range_end, is_horizontal) in areas {
+        if positions.len() >= count { break; }
+        
+        let pieces_this_side = (pieces_per_side).min(count - positions.len());
+        println!("   📍 Placing {} pieces on {} side", pieces_this_side, side_name);
+        
+        if is_horizontal {
+            // 水平配置（上下）
+            let x_range = step_or_end - start_pos;
+            let cols = (x_range / spacing).max(1.0) as usize;
+            let rows = (pieces_this_side + cols - 1) / cols; // 切り上げ除算
             
-            let x = puzzle_min.x + (col as f32 * spacing) + (spacing / 2.0);
-            let y = top_y + (row as f32 * spacing);
-            let pos = Vec2::new(x, y);
-            
-            // 画面境界内かチェック
-            if pos.x.abs() <= display_width * 0.8 && pos.y.abs() <= display_height * 0.8 {
-                if !is_overlapping_with_all(pos, existing_positions, &positions, piece_size) {
-                    positions.push(pos);
+            for row in 0..rows {
+                for col in 0..cols {
+                    if positions.len() >= count || (row * cols + col) >= pieces_this_side { break; }
+                    
+                    let x = start_pos + (col as f32 * spacing) + (spacing / 2.0);
+                    let y = fixed_coord + (row as f32 * range_end);
+                    let pos = Vec2::new(x, y);
+                    
+                    if pos.x.abs() <= display_width * 0.9 && pos.y.abs() <= display_height * 0.9 {
+                        if !is_overlapping_with_all(pos, existing_positions, &positions, piece_size * 0.8) {
+                            positions.push(pos);
+                        }
+                    }
                 }
             }
-        }
-    }
-    
-    // 下側エリア
-    for row in 0..needed_rows_bottom {
-        for col in 0..cols {
-            if positions.len() >= count { break; }
+        } else {
+            // 垂直配置（左右）
+            let y_range = range_end - fixed_coord;
+            let rows = (y_range / spacing).max(1.0) as usize;
+            let cols = (pieces_this_side + rows - 1) / rows; // 切り上げ除算
             
-            let x = puzzle_min.x + (col as f32 * spacing) + (spacing / 2.0);
-            let y = bottom_y - (row as f32 * spacing);
-            let pos = Vec2::new(x, y);
-            
-            // 画面境界内かチェック
-            if pos.x.abs() <= display_width * 0.8 && pos.y.abs() <= display_height * 0.8 {
-                if !is_overlapping_with_all(pos, existing_positions, &positions, piece_size) {
-                    positions.push(pos);
+            for col in 0..cols {
+                for row in 0..rows {
+                    if positions.len() >= count || (col * rows + row) >= pieces_this_side { break; }
+                    
+                    let x = start_pos + (col as f32 * step_or_end);
+                    let y = fixed_coord + (row as f32 * spacing) + (spacing / 2.0);
+                    let pos = Vec2::new(x, y);
+                    
+                    if pos.x.abs() <= display_width * 0.9 && pos.y.abs() <= display_height * 0.9 {
+                        if !is_overlapping_with_all(pos, existing_positions, &positions, piece_size * 0.8) {
+                            positions.push(pos);
+                        }
+                    }
                 }
             }
         }
@@ -350,31 +401,29 @@ fn calculate_puzzle_grid_area(
     display_height: f32,
 ) -> (Vec2, Vec2) {
     // 画像サイズに応じた適応的マージン計算
-    let image_area = display_width * display_height;
     let piece_size = piece_width.max(piece_height);
     
-    // 画像が大きいほど、またピースが大きいほどマージンを小さくする
-    let base_margin_factor = if image_area > 8_000_000.0 {
-        // 4K以上の大画像：非常に小さなマージン
-        0.15
-    } else if image_area > 2_000_000.0 {
-        // Full HD以上：小さなマージン
-        0.25
-    } else if image_area > 500_000.0 {
-        // HD以上：標準マージン
-        0.4
+    // 画像サイズとピース数の複合指標でマージンを決定
+    let total_pieces_estimate = (display_width * display_height) / (piece_width * piece_height);
+    
+    // 基本マージン係数：ピース数が多いほど小さく
+    let base_margin_factor = if total_pieces_estimate > 2000.0 {
+        0.15  // 大量ピース：小さなマージン（4K画像の問題を解決するため調整）
+    } else if total_pieces_estimate > 500.0 {
+        0.3   // 多めピース：やや小さなマージン
+    } else if total_pieces_estimate > 100.0 {
+        0.5   // 標準ピース数：元の値
     } else {
-        // 小画像：大きなマージン
-        0.6
+        0.6   // 少ないピース：大きなマージン
     };
     
-    // ピースサイズに応じてマージンを調整（大きなピースほど小さなマージン）
-    let size_adjusted_margin = if piece_size > 500.0 {
-        base_margin_factor * 0.5  // 大ピース：マージンを半分に
+    // ピースサイズに応じてマージンを微調整
+    let size_adjusted_margin = if piece_size > 400.0 {
+        base_margin_factor * 0.8  // 大ピース：80%
     } else if piece_size > 200.0 {
-        base_margin_factor * 0.75 // 中ピース：マージンを3/4に
+        base_margin_factor * 0.9  // 中ピース：90%
     } else {
-        base_margin_factor        // 小ピース：標準マージン
+        base_margin_factor        // 小ピース：100%
     };
     
     let margin = piece_size * size_adjusted_margin;
@@ -389,8 +438,10 @@ fn calculate_puzzle_grid_area(
     
     println!("🚫 Exclusion area: ({:.1}, {:.1}) to ({:.1}, {:.1})", 
         min_x, min_y, max_x, max_y);
-    println!("   📏 Image: {:.0}x{:.0}, Piece: {:.0}x{:.0}, Margin factor: {:.2}", 
-        display_width, display_height, piece_width, piece_height, size_adjusted_margin);
+    println!("   📏 Image: {:.0}x{:.0}, Piece: {:.0}x{:.0}, Est. pieces: {:.0}", 
+        display_width, display_height, piece_width, piece_height, total_pieces_estimate);
+    println!("   🎚️ Base margin factor: {:.3}, Size adjusted: {:.3}, Final margin: {:.1}", 
+        base_margin_factor, size_adjusted_margin, margin);
     
     (exclusion_min, exclusion_max)
 }
