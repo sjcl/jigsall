@@ -446,20 +446,31 @@ pub fn handle_box_selection(
                         println!("🎯 Started single piece drag");
                     }
                 } else {
-                    // 空の場所をクリック - 範囲選択モードに移行
-                    input_state.selection_mode = SelectionMode::BoxSelection;
-                    input_state.selection_start = Some(world_pos);
-                    input_state.selection_current = Some(world_pos);
-                    
-                    // 既存の選択をクリア（Ctrlキー押下でない場合）
+                    // 空の場所をクリック
+                    // 既存の選択がある場合はクリア（Ctrlキー押下でない場合）
                     if !keyboard_input.pressed(KeyCode::ControlLeft) && !keyboard_input.pressed(KeyCode::ControlRight) {
-                        for entity in selected_query.iter() {
-                            commands.entity(entity).remove::<SelectedPiece>();
+                        if !input_state.selected_pieces.is_empty() {
+                            // 選択をクリア
+                            for entity in selected_query.iter() {
+                                commands.entity(entity).remove::<SelectedPiece>();
+                            }
+                            input_state.selected_pieces.clear();
+                            input_state.selected_pieces_set.clear();
+                            println!("🧹 Cleared selection by clicking empty space");
+                        } else {
+                            // 選択がない場合は範囲選択モードに移行
+                            input_state.selection_mode = SelectionMode::BoxSelection;
+                            input_state.selection_start = Some(world_pos);
+                            input_state.selection_current = Some(world_pos);
+                            println!("📦 Started box selection");
                         }
-                        input_state.selected_pieces.clear();
-                        input_state.selected_pieces_set.clear();
+                    } else {
+                        // Ctrlキー押下時は常に範囲選択モードに移行（既存選択を保持）
+                        input_state.selection_mode = SelectionMode::BoxSelection;
+                        input_state.selection_start = Some(world_pos);
+                        input_state.selection_current = Some(world_pos);
+                        println!("📦 Started box selection (keeping existing selection)");
                     }
-                    println!("📦 Started box selection");
                 }
             }
         }
