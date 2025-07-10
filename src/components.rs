@@ -77,3 +77,11 @@ pub struct PieceMoveCompleted {
     pub entity: Entity,
     pub new_position: Vec2,
 }
+
+/// ピース配置完了イベント
+#[derive(Event)]
+pub struct PiecePlacedEvent {
+    pub entity: Entity,
+    pub grid_x: usize,
+    pub grid_y: usize,
+}

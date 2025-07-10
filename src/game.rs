@@ -9,6 +9,7 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<PieceMoveCompleted>()
+            .add_event::<PiecePlacedEvent>()
             .init_resource::<GameData>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<NetworkInfo>()
@@ -54,7 +55,7 @@ impl Plugin for GamePlugin {
                 
                 // ゲームロジック
                 check_piece_placement_event_driven,
-                update_game_state,
+                update_game_state_event_driven,
                 
                 // カメラ
                 handle_camera_zoom,

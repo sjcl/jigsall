@@ -37,6 +37,7 @@ pub fn check_piece_placement_event_driven(
     mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
     puzzle_config: Res<PuzzleConfig>,
     mut move_events: EventReader<PieceMoveCompleted>,
+    mut placed_events: EventWriter<PiecePlacedEvent>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
     let start_time = perf_monitor.start_system_timing("check_piece_placement_event_driven");
@@ -60,6 +61,13 @@ pub fn check_piece_placement_event_driven(
                     transform.translation = correct_pos.extend(-20.0); // 固定ピースは最も下のZ値
                     piece.is_placed = true;
                     piece.current_position = correct_pos;
+                    
+                    // ピース配置完了イベントを発火
+                    placed_events.write(PiecePlacedEvent {
+                        entity,
+                        grid_x: piece.grid_x,
+                        grid_y: piece.grid_y,
+                    });
                     
                     // PickablePieceコンポーネントを削除して移動不可にする
                     commands.entity(entity).remove::<PickablePiece>();
@@ -130,7 +138,40 @@ pub fn check_piece_placement(
     }
 }
 
-/// ゲーム状態の更新 - 完了チェックとプログレス計算
+/// ゲーム状態の更新 - イベントドリブン版（最適化）
+pub fn update_game_state_event_driven(
+    mut game_state: ResMut<GameData>,
+    piece_query: Query<&PuzzlePiece>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut placed_events: EventReader<PiecePlacedEvent>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
+) {
+    let start_time = perf_monitor.start_system_timing("update_game_state_event_driven");
+    
+    // ピース配置イベントがある場合のみ更新
+    if placed_events.read().count() > 0 {
+        let total_pieces = piece_query.iter().count();
+        let placed_pieces = piece_query.iter().filter(|p| p.is_placed).count();
+        
+        if total_pieces > 0 {
+            game_state.puzzle_progress = placed_pieces as f32 / total_pieces as f32;
+            game_state.puzzle_completed = placed_pieces == total_pieces;
+            
+            println!("🎯 Game progress updated: {}/{} pieces placed ({:.1}%)", 
+                placed_pieces, total_pieces, game_state.puzzle_progress * 100.0);
+            
+            if game_state.puzzle_completed && game_state.current_screen == GameScreen::InGame {
+                game_state.current_screen = GameScreen::GameComplete;
+                next_state.set(AppState::GameComplete);
+                println!("🎉 Puzzle completed!");
+            }
+        }
+    }
+    
+    perf_monitor.end_system_timing("update_game_state_event_driven", start_time);
+}
+
+/// レガシー版のゲーム状態更新（後方互換性のため保持）
 pub fn update_game_state(
     mut game_state: ResMut<GameData>,
     piece_query: Query<&PuzzlePiece>,
