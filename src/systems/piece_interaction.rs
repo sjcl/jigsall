@@ -363,6 +363,7 @@ pub fn handle_box_selection(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     piece_query: Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
     selected_query: Query<Entity, With<SelectedPiece>>,
+    selection_box_query: Query<Entity, With<SelectionBox>>,
     mut cache: ResMut<PieceSelectionCache>,
     game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -454,25 +455,34 @@ pub fn handle_box_selection(
                     }
                 } else {
                     // 空の場所をクリック
-                    // 既存の選択がある場合はクリア（Ctrlキー押下でない場合）
                     if !keyboard_input.pressed(KeyCode::ControlLeft) && !keyboard_input.pressed(KeyCode::ControlRight) {
+                        // 既存の選択をクリア（Ctrlキー押下でない場合）
                         if !input_state.selected_pieces.is_empty() {
-                            // 選択をクリア
                             for entity in selected_query.iter() {
                                 commands.entity(entity).remove::<SelectedPiece>();
                             }
                             input_state.selected_pieces.clear();
                             input_state.selected_pieces_set.clear();
+                            
+                            // 選択ボックスも削除
+                            let selection_box_count = selection_box_query.iter().count();
+                            for entity in selection_box_query.iter() {
+                                commands.entity(entity).despawn();
+                            }
+                            if selection_box_count > 0 {
+                                println!("🗑️ Deleted {} selection boxes on selection clear", selection_box_count);
+                            }
+                            
                             println!("🧹 Cleared selection by clicking empty space");
-                        } else {
-                            // 選択がない場合は範囲選択モードに移行
-                            input_state.selection_mode = SelectionMode::BoxSelection;
-                            input_state.selection_start = Some(world_pos);
-                            input_state.selection_current = Some(world_pos);
-                            println!("📦 Started box selection");
                         }
+                        
+                        // 常に新しい範囲選択を開始
+                        input_state.selection_mode = SelectionMode::BoxSelection;
+                        input_state.selection_start = Some(world_pos);
+                        input_state.selection_current = Some(world_pos);
+                        println!("📦 Started box selection");
                     } else {
-                        // Ctrlキー押下時は常に範囲選択モードに移行（既存選択を保持）
+                        // Ctrlキー押下時は既存選択を保持して範囲選択モードに移行
                         input_state.selection_mode = SelectionMode::BoxSelection;
                         input_state.selection_start = Some(world_pos);
                         input_state.selection_current = Some(world_pos);
@@ -562,6 +572,15 @@ pub fn handle_box_selection(
                     commands.entity(entity).remove::<SelectionPreview>();
                 }
                 
+                // 選択ボックスを削除
+                let selection_box_count = selection_box_query.iter().count();
+                for entity in selection_box_query.iter() {
+                    commands.entity(entity).despawn();
+                }
+                if selection_box_count > 0 {
+                    println!("🗑️ Deleted {} selection boxes on box selection completion", selection_box_count);
+                }
+                
                 // 範囲選択モード終了
                 input_state.selection_mode = SelectionMode::Single;
                 input_state.selection_start = None;
@@ -643,40 +662,38 @@ pub fn render_selection_box(
     input_state: Res<InputState>,
     _camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
     selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
-    game_state: Res<GameData>,
 ) {
-    // ゲーム内メニューが表示されている間は無効化
-    if game_state.current_screen != GameScreen::InGame {
-        return;
-    }
     
     // 既存の選択ボックスを削除
+    let existing_box_count = selection_box_query.iter().count();
     for (entity, _) in selection_box_query.iter() {
         commands.entity(entity).despawn();
     }
+    if existing_box_count > 0 {
+        println!("🖼️ Deleted {} existing selection boxes", existing_box_count);
+    }
     
-    // 範囲選択中の場合のみ描画
-    if matches!(input_state.selection_mode, SelectionMode::BoxSelection) {
-        if let (Some(start), Some(current)) = (input_state.selection_start, input_state.selection_current) {
-            // 矩形の大きさを計算
-            let width = (current.x - start.x).abs();
-            let height = (current.y - start.y).abs();
-            let center_x = (start.x + current.x) / 2.0;
-            let center_y = (start.y + current.y) / 2.0;
+    // 範囲選択中の選択ボックスを描画
+    if let (Some(start), Some(current)) = (input_state.selection_start, input_state.selection_current) {
+        // 矩形の大きさを計算
+        let width = (current.x - start.x).abs();
+        let height = (current.y - start.y).abs();
+        let center_x = (start.x + current.x) / 2.0;
+        let center_y = (start.y + current.y) / 2.0;
+        
+        if width > 1.0 && height > 1.0 {
+            // 選択範囲の矩形メッシュを作成
+            let mesh = Mesh::from(Rectangle::new(width, height));
+            let material = ColorMaterial::from(Color::srgba(0.3, 0.6, 1.0, 0.3)); // 半透明の青
             
-            if width > 1.0 && height > 1.0 {
-                // 選択範囲の矩形メッシュを作成
-                let mesh = Mesh::from(Rectangle::new(width, height));
-                let material = ColorMaterial::from(Color::srgba(0.3, 0.6, 1.0, 0.3)); // 半透明の青
-                
-                // 選択ボックスエンティティを生成
-                commands.spawn((
-                    Mesh2d(meshes.add(mesh)),
-                    MeshMaterial2d(materials.add(material)),
-                    Transform::from_translation(Vec3::new(center_x, center_y, 100.0)), // 最前面に表示
-                    SelectionBox,
-                ));
-            }
+            // 選択ボックスエンティティを生成
+            let selection_box_entity = commands.spawn((
+                Mesh2d(meshes.add(mesh)),
+                MeshMaterial2d(materials.add(material)),
+                Transform::from_translation(Vec3::new(center_x, center_y, 100.0)), // 最前面に表示
+                SelectionBox,
+            )).id();
+            println!("🖼️ Created selection box {:?}", selection_box_entity);
         }
     }
 }
@@ -871,11 +888,10 @@ pub fn highlight_selected_pieces(
     perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
 }
 
-/// システム条件: 選択されたピースまたはプレビューピースがあるかチェック
-/// パフォーマンス最適化: 選択中のピースがない場合はhighlight_selected_piecesシステムをスキップ
-pub fn has_selected_pieces(
-    selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
-    preview_pieces_query: Query<Entity, (With<SelectionPreview>, With<PuzzlePiece>)>,
+/// システム条件: ボックス選択モード中またはボックスエンティティが存在するかチェック
+pub fn should_render_selection_box(
+    input_state: Res<InputState>,
+    selection_box_query: Query<Entity, With<SelectionBox>>,
 ) -> bool {
-    !selected_pieces_query.is_empty() || !preview_pieces_query.is_empty()
+    matches!(input_state.selection_mode, SelectionMode::BoxSelection) || !selection_box_query.is_empty()
 }
