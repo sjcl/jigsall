@@ -89,9 +89,9 @@ pub fn handle_camera_zoom(
         for mut transform in camera_query.iter_mut() {
             let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
             
-            // ズーム制限 (0.1倍から5.0倍まで - 大きな画像に対応)
+            // ズーム制限 (0.1倍から10.0倍まで - 大きな画像に対応)
             let current_scale = transform.scale.x;
-            let new_scale = (current_scale * zoom_factor).clamp(0.1, 5.0);
+            let new_scale = (current_scale * zoom_factor).clamp(0.1, 10.0);
             
             transform.scale = Vec3::splat(new_scale);
             
