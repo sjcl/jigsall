@@ -209,6 +209,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
     camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
     game_state: Res<GameData>,
     cache: Res<PieceSelectionCache>,
+    mut move_events: EventWriter<PieceMoveCompleted>,
 ) {
     // ゲーム内メニューが表示されている間はピースドラッグを無効化
     if game_state.current_screen == GameScreen::InGameMenu {
@@ -340,6 +341,12 @@ pub fn handle_piece_dragging_hybrid_legacy(
                     pickable.drag_offset = Vec2::ZERO;
                     println!("🎯 Dropped piece at grid({}, {}), world pos({:.1}, {:.1})", 
                         piece.grid_x, piece.grid_y, transform.translation.x, transform.translation.y);
+                    
+                    // ピース移動完了イベントを発火
+                    move_events.write(PieceMoveCompleted {
+                        entity: e,
+                        new_position: transform.translation.truncate(),
+                    });
                     break;
                 }
             }
@@ -576,6 +583,7 @@ pub fn handle_multi_piece_drag(
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece), With<SelectedPiece>>,
     game_state: Res<GameData>,
+    mut move_events: EventWriter<PieceMoveCompleted>,
 ) {
     // ゲーム内メニューが表示されている間は無効化
     if game_state.current_screen != GameScreen::InGame {
@@ -612,10 +620,16 @@ pub fn handle_multi_piece_drag(
         input_state.selection_mode = SelectionMode::Single;
         input_state.multi_drag_offset.clear();
         
-        // ドラッグ終了時にZ-orderを調整
-        for (_, mut transform, _) in piece_query.iter_mut() {
+        // ドラッグ終了時にZ-orderを調整し、各ピースの移動完了イベントを発火
+        for (entity, mut transform, _) in piece_query.iter_mut() {
             transform.translation.z = input_state.next_z_order;
             input_state.next_z_order += 0.1;
+            
+            // 各ピースの移動完了イベントを発火
+            move_events.write(PieceMoveCompleted {
+                entity,
+                new_position: transform.translation.truncate(),
+            });
         }
         
         println!("🎯 Multi-piece drag completed");

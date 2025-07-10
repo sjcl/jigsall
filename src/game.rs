@@ -8,7 +8,8 @@ pub struct GamePlugin;
 
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GameData>()
+        app.add_event::<PieceMoveCompleted>()
+            .init_resource::<GameData>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<NetworkInfo>()
             .init_resource::<InputState>()
@@ -52,7 +53,7 @@ impl Plugin for GamePlugin {
                 highlight_selected_pieces,
                 
                 // ゲームロジック
-                check_piece_placement,
+                check_piece_placement_event_driven,
                 update_game_state,
                 
                 // カメラ

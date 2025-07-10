@@ -31,7 +31,46 @@ pub fn toggle_game_menu(
     }
 }
 
-/// ピースの配置チェック - 正しい位置に近い場合にスナップする
+/// ピースの配置チェック - イベントドリブン版（最適化）
+pub fn check_piece_placement_event_driven(
+    mut commands: Commands,
+    mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
+    puzzle_config: Res<PuzzleConfig>,
+    mut move_events: EventReader<PieceMoveCompleted>,
+) {
+    
+    // 移動完了したピースのみをチェック（イベントドリブン）
+    for move_event in move_events.read() {
+        if let Ok((entity, mut transform, mut piece)) = piece_query.get_mut(move_event.entity) {
+            // まだ配置されていないピースのみチェック
+            if !piece.is_placed {
+                let current_pos = transform.translation.truncate();
+                let correct_pos = piece.correct_position;
+                let distance = current_pos.distance(correct_pos);
+                
+                println!("🎯 Event-driven placement check: piece({},{}) at ({:.1},{:.1}), correct ({:.1},{:.1}), distance {:.1}, snap threshold {:.1}",
+                    piece.grid_x, piece.grid_y, 
+                    current_pos.x, current_pos.y, 
+                    correct_pos.x, correct_pos.y, 
+                    distance, puzzle_config.snap_distance);
+                
+                if distance < puzzle_config.snap_distance {
+                    transform.translation = correct_pos.extend(-20.0); // 固定ピースは最も下のZ値
+                    piece.is_placed = true;
+                    piece.current_position = correct_pos;
+                    
+                    // PickablePieceコンポーネントを削除して移動不可にする
+                    commands.entity(entity).remove::<PickablePiece>();
+                    
+                    println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
+                        piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
+                }
+            }
+        }
+    }
+}
+
+/// レガシー版のピース配置チェック（後方互換性のため保持）
 pub fn check_piece_placement(
     mut commands: Commands,
     mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,

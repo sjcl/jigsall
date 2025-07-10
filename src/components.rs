@@ -70,3 +70,10 @@ pub struct PieceOutline {
 /// 選択範囲プレビュー中のピースをマークするコンポーネント
 #[derive(Component)]
 pub struct SelectionPreview;
+
+/// ピース移動完了イベント
+#[derive(Event)]
+pub struct PieceMoveCompleted {
+    pub entity: Entity,
+    pub new_position: Vec2,
+}
