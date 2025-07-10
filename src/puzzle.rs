@@ -5,8 +5,9 @@ use crate::components::*;
 use crate::resources::*;
 use crate::jigsaw_shapes::{JigsawShapeGenerator, clone_mesh_from_shape};
 use uuid::Uuid;
+use rand::prelude::*;
 
-/// 整列配置用のグリッド位置を生成（同心円状にグリッドを囲む配置）
+/// パズルグリッドの周囲を囲む配置でピース位置を生成（マージン付き）
 pub fn generate_placement_grid(
     grid_width: usize, 
     grid_height: usize, 
@@ -16,70 +17,1105 @@ pub fn generate_placement_grid(
     display_height: f32
 ) -> Vec<Vec2> {
     let total_pieces = grid_width * grid_height;
-    let mut positions = Vec::with_capacity(total_pieces);
+    let mut rng = thread_rng();
     
-    // グリッド境界を計算
-    let grid_half_width = display_width / 2.0;
-    let grid_half_height = display_height / 2.0;
+    println!("🎯 Generating {} positions surrounding puzzle grid...", total_pieces);
     
-    // ピース間のマージン（ピースサイズに応じた割合で設定）
-    let margin_ratio = 0.6; // ピースサイズの60%をマージンとして使用
-    let piece_margin_x = piece_width * margin_ratio;
-    let piece_margin_y = piece_height * margin_ratio;
-    let effective_piece_width = piece_width + piece_margin_x;
-    let effective_piece_height = piece_height + piece_margin_y;
+    // パズルグリッド領域を計算
+    let puzzle_area = calculate_puzzle_grid_area(
+        grid_width, grid_height, piece_width, piece_height,
+        display_width, display_height
+    );
     
-    // グリッドからの最小距離（グリッドの境界から十分離す）
-    let min_distance = piece_width.max(piece_height) + 80.0;
+    // 渦巻き状配置でピース位置を生成
+    let surrounding_positions = generate_spiral_positions(
+        total_pieces,
+        piece_width,
+        piece_height,
+        &puzzle_area,
+        display_width,
+        display_height
+    );
     
-    // 同心円状のレイヤーを作成
-    let mut layer = 1;
-    let mut pieces_placed = 0;
+    // ランダムシャッフルで配置をランダム化
+    let mut positions = surrounding_positions;
+    positions.shuffle(&mut rng);
     
-    while pieces_placed < total_pieces {
-        // 現在のレイヤーの配置位置を計算
-        let layer_positions = generate_layer_positions(
-            grid_half_width, 
-            grid_half_height, 
-            effective_piece_width, 
-            effective_piece_height, 
-            layer, 
-            min_distance
-        );
+    println!("✅ Generated {} positions surrounding puzzle", positions.len());
+    
+    positions
+}
+
+/// 中心からの渦巻き状配置でピース位置を生成（グリッド回避）
+fn generate_spiral_positions(
+    num_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_area: &(Vec2, Vec2),
+    _display_width: f32,
+    _display_height: f32
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    let (puzzle_min, puzzle_max) = puzzle_area;
+    
+    // パズルの中心を渦巻きの中心とする
+    let center = Vec2::new(
+        (puzzle_min.x + puzzle_max.x) / 2.0,
+        (puzzle_min.y + puzzle_max.y) / 2.0
+    );
+    
+    // マージンを設定（より大きく）
+    let margin_x = piece_width * 0.8;  // 30% -> 80%
+    let margin_y = piece_height * 0.8;  // 30% -> 80%
+    let effective_piece_width = piece_width + margin_x;
+    let effective_piece_height = piece_height + margin_y;
+    
+    // 渦巻きパラメータ
+    let mut radius = effective_piece_width.max(effective_piece_height) * 1.5; // 初期半径を大きく
+    let mut angle: f32 = 0.0;
+    let angle_step: f32 = 0.15; // 角度刻み（大きくして間隔を広げる）
+    let radius_growth: f32 = 0.03; // 半径成長率を増やして外側への拡散を速める
+    
+    println!("🌀 Generating spiral placement from center ({:.1}, {:.1})", center.x, center.y);
+    
+    // 最大試行回数（無限ループ防止）
+    let max_attempts = num_pieces * 100;
+    let mut attempts = 0;
+    
+    while positions.len() < num_pieces && attempts < max_attempts {
+        // 渦巻き座標を計算
+        let x = center.x + radius * angle.cos();
+        let y = center.y + radius * angle.sin();
+        let position = Vec2::new(x, y);
         
-        // このレイヤーに配置できるピース数を計算
-        let remaining_pieces = total_pieces - pieces_placed;
-        let pieces_to_place = remaining_pieces.min(layer_positions.len());
-        
-        // 距離順にソート（グリッド中心に近い順）
-        let mut sorted_positions = layer_positions;
-        sorted_positions.sort_by(|a, b| {
-            let dist_a = a.length_squared();
-            let dist_b = b.length_squared();
-            dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        
-        // 必要な数だけ配置
-        for i in 0..pieces_to_place {
-            positions.push(sorted_positions[i]);
+        // グリッド領域内でないかチェック
+        if !is_in_grid_area(position, puzzle_area, effective_piece_width, effective_piece_height) {
+            // 他のピースと重複していないかチェック
+            if !is_overlapping_with_existing(position, &positions, effective_piece_width, effective_piece_height) {
+                positions.push(position);
+            }
         }
         
-        pieces_placed += pieces_to_place;
-        layer += 1;
-        
-        // 無限ループ防止（より大きな値に設定）
-        if layer > 1000 {
-            println!("Error: Excessive layers needed ({}), something went wrong", layer);
-            break;
-        }
-        
-        // 進捗ログ（大量ピースの場合）
-        if total_pieces > 1000 && layer % 10 == 0 {
-            println!("📍 Placement progress: layer {}, placed {}/{} pieces", 
-                layer, pieces_placed, total_pieces);
+        // 渦巻きパラメータを更新
+        angle += angle_step;
+        radius += radius_growth;
+        attempts += 1;
+    }
+    
+    if positions.len() < num_pieces {
+        println!("⚠️ Could only place {} of {} pieces in spiral", positions.len(), num_pieces);
+    } else {
+        println!("✅ Successfully placed {} pieces in spiral pattern", positions.len());
+    }
+    
+    positions
+}
+
+/// 指定位置がグリッド領域内かどうかをチェック
+fn is_in_grid_area(
+    position: Vec2,
+    puzzle_area: &(Vec2, Vec2),
+    piece_width: f32,
+    piece_height: f32
+) -> bool {
+    let (puzzle_min, puzzle_max) = puzzle_area;
+    
+    // ピースサイズを考慮した余白を設定（より大きく）
+    let margin = piece_width.max(piece_height) * 1.0;  // 50% -> 100%
+    let expanded_min = Vec2::new(puzzle_min.x - margin, puzzle_min.y - margin);
+    let expanded_max = Vec2::new(puzzle_max.x + margin, puzzle_max.y + margin);
+    
+    position.x >= expanded_min.x && position.x <= expanded_max.x &&
+    position.y >= expanded_min.y && position.y <= expanded_max.y
+}
+
+/// 指定位置が既存のピースと重複しているかチェック
+fn is_overlapping_with_existing(
+    position: Vec2,
+    existing_positions: &[Vec2],
+    piece_width: f32,
+    piece_height: f32
+) -> bool {
+    let min_distance = piece_width.max(piece_height);
+    
+    for existing_pos in existing_positions {
+        let distance = position.distance(*existing_pos);
+        if distance < min_distance {
+            return true;
         }
     }
     
+    false
+}
+
+/// 左右レイヤー数のみを計算（上下の拡張は考慮しない）
+fn calculate_left_right_layers_needed(
+    remaining_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_area: &(Vec2, Vec2)
+) -> usize {
+    if remaining_pieces == 0 { return 0; }
+    
+    let (puzzle_min, puzzle_max) = puzzle_area;
+    let puzzle_width = puzzle_max.x - puzzle_min.x;
+    let puzzle_height = puzzle_max.y - puzzle_min.y;
+    
+    // 基本レイヤー（レイヤー1）でのピース数を計算
+    let basic_top_cols = (puzzle_width / piece_width).ceil() as usize;
+    let basic_side_rows = (puzzle_height / piece_height).ceil() as usize;
+    let basic_layer_pieces = basic_top_cols * 2 + basic_side_rows * 2; // 上下 + 左右
+    
+    // 基本レイヤーで配置できる分を除く
+    let pieces_for_additional_layers = if remaining_pieces > basic_layer_pieces {
+        remaining_pieces - basic_layer_pieces
+    } else {
+        return 0; // 基本レイヤーで十分
+    };
+    
+    // 追加レイヤーは左右のみなので、左右ピース数で計算
+    let left_right_pieces_per_layer = basic_side_rows * 2; // 左辺 + 右辺
+    
+    let additional_layers = if left_right_pieces_per_layer > 0 {
+        (pieces_for_additional_layers as f32 / left_right_pieces_per_layer as f32).ceil() as usize
+    } else {
+        0
+    };
+    
+    println!("📊 Basic layer: {} pieces, additional: {} pieces, {} left/right layers needed", 
+        basic_layer_pieces, pieces_for_additional_layers, additional_layers);
+    
+    additional_layers
+}
+
+/// 総レイヤー数を事前計算
+fn calculate_total_layers_needed(
+    remaining_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_area: &(Vec2, Vec2),
+    base_margin: f32
+) -> usize {
+    if remaining_pieces == 0 { return 0; }
+    
+    let (puzzle_min, puzzle_max) = puzzle_area;
+    let puzzle_width = puzzle_max.x - puzzle_min.x;
+    let puzzle_height = puzzle_max.y - puzzle_min.y;
+    
+    // 1レイヤーあたりのピース数を概算
+    let top_cols = (puzzle_width / piece_width).ceil() as usize;
+    let side_rows = (puzzle_height / piece_height).ceil() as usize;
+    let pieces_per_layer = top_cols * 2 + side_rows * 2; // 上下 + 左右
+    
+    let layers_needed = (remaining_pieces as f32 / pieces_per_layer as f32).ceil() as usize;
+    println!("📊 Estimated {} pieces per layer, need {} layers for {} pieces", 
+        pieces_per_layer, layers_needed, remaining_pieces);
+    
+    layers_needed
+}
+
+/// 動的横幅拡張付きフレームレイヤーを生成
+fn generate_frame_layer_with_dynamic_width(
+    num_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_area: &(Vec2, Vec2),
+    total_margin: f32,  // パズルからの総距離
+    max_layer_margin: f32   // 現在の最大レイヤーマージン
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    let (puzzle_min, puzzle_max) = puzzle_area;
+    
+    let puzzle_width = puzzle_max.x - puzzle_min.x;
+    let puzzle_height = puzzle_max.y - puzzle_min.y;
+    
+    // 横幅を現在の最大レイヤーまで拡張（動的更新）
+    let extended_width = puzzle_width + max_layer_margin * 2.0;
+    
+    println!("🔧 Layer frame: puzzle {}x{}, margin {:.1}, extended_width {:.1}", 
+        puzzle_width, puzzle_height, total_margin, extended_width);
+    
+    // 上辺（実際の最外層まで拡張）
+    let top_y = puzzle_max.y + total_margin;
+    let top_cols = (extended_width / piece_width).ceil() as usize;
+    let top_start_x = puzzle_min.x - max_layer_margin;
+    
+    for col in 0..top_cols {
+        if positions.len() >= num_pieces { break; }
+        let x = top_start_x + (col as f32 * piece_width);
+        positions.push(Vec2::new(x, top_y));
+    }
+    
+    // 下辺（拡張された横幅）
+    let bottom_y = puzzle_min.y - total_margin;
+    let bottom_cols = top_cols; // 上辺と同じ列数
+    let bottom_start_x = top_start_x; // 上辺と同じ開始位置
+    
+    for col in 0..bottom_cols {
+        if positions.len() >= num_pieces { break; }
+        let x = bottom_start_x + (col as f32 * piece_width);
+        positions.push(Vec2::new(x, bottom_y));
+    }
+    
+    // 左辺（上下辺を除く）
+    let left_x = puzzle_min.x - total_margin;
+    let side_rows = (puzzle_height / piece_height).ceil() as usize;
+    
+    for row in 0..side_rows {
+        if positions.len() >= num_pieces { break; }
+        let y = puzzle_min.y + (row as f32 * piece_height);
+        positions.push(Vec2::new(left_x, y));
+    }
+    
+    // 右辺（上下辺を除く）
+    let right_x = puzzle_max.x + total_margin;
+    for row in 0..side_rows {
+        if positions.len() >= num_pieces { break; }
+        let y = puzzle_min.y + (row as f32 * piece_height);
+        positions.push(Vec2::new(right_x, y));
+    }
+    
+    println!("🔧 Generated {} extended frame layer positions", positions.len());
+    positions
+}
+
+/// 横幅拡張により過去のレイヤーの拡張エリアに遡及配置
+fn backfill_expanded_areas(
+    num_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_area: &(Vec2, Vec2),
+    base_margin: f32,
+    start_layer: usize,
+    end_layer: usize,
+    current_max_margin: f32
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    if num_pieces == 0 {
+        return positions;
+    }
+    
+    let (puzzle_min, puzzle_max) = puzzle_area;
+    let puzzle_width = puzzle_max.x - puzzle_min.x;
+    
+    println!("🔄 Backfilling layers {}-{} with expanded width (max margin: {:.1})", 
+        start_layer, end_layer, current_max_margin);
+    
+    // 過去のレイヤーを遡って拡張エリアに配置
+    for layer in start_layer..=end_layer {
+        if positions.len() >= num_pieces { break; }
+        
+        let layer_margin = base_margin * layer as f32;
+        let layer_max_margin = base_margin * layer as f32; // そのレイヤー時点での最大マージン
+        
+        // そのレイヤー時点の横幅 vs 現在の横幅の差分を計算
+        let old_extended_width = puzzle_width + layer_max_margin * 2.0;
+        let new_extended_width = puzzle_width + current_max_margin * 2.0;
+        
+        if new_extended_width > old_extended_width {
+            // 拡張された部分に配置
+            let width_diff = new_extended_width - old_extended_width;
+            let extra_cols = (width_diff / piece_width).floor() as usize;
+            
+            if extra_cols > 0 {
+                let top_y = puzzle_max.y + layer_margin;
+                let bottom_y = puzzle_min.y - layer_margin;
+                
+                // 左側の拡張部分
+                let left_start_x = puzzle_min.x - current_max_margin;
+                for col in 0..(extra_cols / 2) {
+                    if positions.len() >= num_pieces { break; }
+                    let x = left_start_x + (col as f32 * piece_width);
+                    positions.push(Vec2::new(x, top_y));
+                    if positions.len() < num_pieces {
+                        positions.push(Vec2::new(x, bottom_y));
+                    }
+                }
+                
+                // 右側の拡張部分
+                let right_start_x = puzzle_max.x + layer_max_margin;
+                for col in 0..(extra_cols / 2) {
+                    if positions.len() >= num_pieces { break; }
+                    let x = right_start_x + (col as f32 * piece_width);
+                    positions.push(Vec2::new(x, top_y));
+                    if positions.len() < num_pieces {
+                        positions.push(Vec2::new(x, bottom_y));
+                    }
+                }
+            }
+        }
+    }
+    
+    println!("🔄 Backfilled {} positions in expanded areas", positions.len());
+    positions
+}
+
+
+/// 最適なパッキング矩形を計算
+fn calculate_optimal_packing_rectangle(
+    num_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    display_width: f32,
+    display_height: f32
+) -> (usize, usize, f32, f32) {
+    // 理想的な正方形に近い配置を目指す
+    let ideal_side = (num_pieces as f32).sqrt();
+    
+    // 幅優先と高さ優先の2つの候補を計算
+    let cols_wide = ideal_side.ceil() as usize;
+    let rows_wide = (num_pieces as f32 / cols_wide as f32).ceil() as usize;
+    
+    let rows_tall = ideal_side.ceil() as usize;
+    let cols_tall = (num_pieces as f32 / rows_tall as f32).ceil() as usize;
+    
+    // 両方の候補の実際の寸法を計算
+    let wide_rect = (cols_wide, rows_wide, cols_wide as f32 * piece_width, rows_wide as f32 * piece_height);
+    let tall_rect = (cols_tall, rows_tall, cols_tall as f32 * piece_width, rows_tall as f32 * piece_height);
+    
+    // ディスプレイサイズに収まりやすい方を選択
+    let wide_fits = wide_rect.2 < display_width * 0.8 && wide_rect.3 < display_height * 0.8;
+    let tall_fits = tall_rect.2 < display_width * 0.8 && tall_rect.3 < display_height * 0.8;
+    
+    match (wide_fits, tall_fits) {
+        (true, true) => {
+            // 両方収まる場合は、よりコンパクトな方を選択
+            if wide_rect.2 * wide_rect.3 < tall_rect.2 * tall_rect.3 {
+                wide_rect
+            } else {
+                tall_rect
+            }
+        },
+        (true, false) => wide_rect,
+        (false, true) => tall_rect,
+        (false, false) => {
+            // どちらも収まらない場合は、アスペクト比が良い方を選択
+            wide_rect
+        }
+    }
+}
+
+/// パズルエリアとの干渉を避ける最適配置位置を計算
+fn find_best_placement_position(
+    rect_width: f32,
+    rect_height: f32,
+    display_width: f32,
+    display_height: f32,
+    exclusion_area: &(Vec2, Vec2)
+) -> Vec2 {
+    let (exclusion_min, exclusion_max) = exclusion_area;
+    
+    // パズルの右側に配置を試す
+    let right_x = exclusion_max.x + rect_width * 0.1;
+    let right_y = -rect_height / 2.0;
+    
+    // ディスプレイ範囲内に収まるかチェック
+    if right_x + rect_width < display_width / 2.0 {
+        return Vec2::new(right_x, right_y);
+    }
+    
+    // パズルの左側に配置を試す
+    let left_x = exclusion_min.x - rect_width - rect_width * 0.1;
+    let left_y = -rect_height / 2.0;
+    
+    if left_x > -display_width / 2.0 {
+        return Vec2::new(left_x, left_y);
+    }
+    
+    // パズルの下側に配置
+    let bottom_x = -rect_width / 2.0;
+    let bottom_y = exclusion_min.y - rect_height - rect_height * 0.1;
+    
+    Vec2::new(bottom_x, bottom_y)
+}
+
+/// 隣接エリアで完全充填を行う
+fn generate_adjacent_perfect_fill(
+    shortage: usize,
+    piece_width: f32,
+    piece_height: f32,
+    origin: Vec2,
+    rect_width: f32,
+    rect_height: f32,
+    exclusion_area: &(Vec2, Vec2)
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    // 右隣接エリアに配置
+    let adjacent_x = origin.x + rect_width;
+    let cols_needed = (shortage as f32 / (rect_height / piece_height)).ceil() as usize;
+    
+    for row in 0..(rect_height / piece_height) as usize {
+        for col in 0..cols_needed {
+            if positions.len() >= shortage {
+                break;
+            }
+            
+            let x = adjacent_x + (col as f32 * piece_width);
+            let y = origin.y + (row as f32 * piece_height);
+            let position = Vec2::new(x, y);
+            
+            if !is_position_in_exclusion_area(&position, exclusion_area) {
+                positions.push(position);
+            }
+        }
+        if positions.len() >= shortage {
+            break;
+        }
+    }
+    
+    positions
+}
+
+/// パズル周囲にコンパクトな配置エリアを生成（大幅拡張版）
+fn generate_compact_placement_areas(
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+) -> Vec<(String, Vec<Vec2>)> {
+    let mut areas = Vec::new();
+    let min_distance = piece_width.max(piece_height) * 0.5;
+    
+    // エリアサイズを動的計算（十分に大きくする）
+    let expansion_factor = 2.5; // パズルサイズの2.5倍のエリア
+    let extended_width = puzzle_width * expansion_factor;
+    let extended_height = puzzle_height * expansion_factor;
+    
+    // 各エリアで必要な行数・列数を計算
+    let side_cols = ((extended_width / 2.0) / piece_width).floor() as usize; // 片側の幅
+    let side_rows = (extended_height / piece_height).floor() as usize;
+    let horizontal_cols = (extended_width / piece_width).floor() as usize;
+    let horizontal_rows = ((extended_height / 2.0) / piece_height).floor() as usize; // 片側の高さ
+    
+    println!("🏗️ Area calculations: side={}x{}, horizontal={}x{}", 
+        side_cols, side_rows, horizontal_cols, horizontal_rows);
+    
+    // 右側エリア（縦列のコンパクトグリッド）
+    let right_area = generate_side_compact_area(
+        puzzle_width / 2.0 + min_distance,
+        0.0,
+        piece_width,
+        piece_height,
+        "right",
+        side_cols.max(8), // 最低8列は確保
+        side_rows.max(30), // 最低30行は確保
+    );
+    areas.push(("Right".to_string(), right_area));
+    
+    // 左側エリア（縦列のコンパクトグリッド）
+    let left_area = generate_side_compact_area(
+        -puzzle_width / 2.0 - min_distance,
+        0.0,
+        piece_width,
+        piece_height,
+        "left",
+        side_cols.max(8),
+        side_rows.max(30),
+    );
+    areas.push(("Left".to_string(), left_area));
+    
+    // 上側エリア（横列のコンパクトグリッド）
+    let top_area = generate_horizontal_compact_area(
+        0.0,
+        puzzle_height / 2.0 + min_distance,
+        piece_width,
+        piece_height,
+        "top",
+        horizontal_cols.max(20), // 最低20列は確保
+        horizontal_rows.max(8),  // 最低8行は確保
+    );
+    areas.push(("Top".to_string(), top_area));
+    
+    // 下側エリア（横列のコンパクトグリッド）
+    let bottom_area = generate_horizontal_compact_area(
+        0.0,
+        -puzzle_height / 2.0 - min_distance,
+        piece_width,
+        piece_height,
+        "bottom",
+        horizontal_cols.max(20),
+        horizontal_rows.max(8),
+    );
+    areas.push(("Bottom".to_string(), bottom_area));
+    
+    // 4つのコーナーエリアも追加（さらなる拡張）
+    let corner_size = 10; // 10x10のコーナーエリア
+    
+    // 右上コーナー
+    let top_right_area = generate_corner_compact_area(
+        puzzle_width / 2.0 + min_distance,
+        puzzle_height / 2.0 + min_distance,
+        piece_width,
+        piece_height,
+        corner_size,
+        corner_size,
+    );
+    areas.push(("TopRight".to_string(), top_right_area));
+    
+    // 右下コーナー
+    let bottom_right_area = generate_corner_compact_area(
+        puzzle_width / 2.0 + min_distance,
+        -puzzle_height / 2.0 - min_distance,
+        piece_width,
+        piece_height,
+        corner_size,
+        corner_size,
+    );
+    areas.push(("BottomRight".to_string(), bottom_right_area));
+    
+    // 左上コーナー
+    let top_left_area = generate_corner_compact_area(
+        -puzzle_width / 2.0 - min_distance,
+        puzzle_height / 2.0 + min_distance,
+        piece_width,
+        piece_height,
+        corner_size,
+        corner_size,
+    );
+    areas.push(("TopLeft".to_string(), top_left_area));
+    
+    // 左下コーナー
+    let bottom_left_area = generate_corner_compact_area(
+        -puzzle_width / 2.0 - min_distance,
+        -puzzle_height / 2.0 - min_distance,
+        piece_width,
+        piece_height,
+        corner_size,
+        corner_size,
+    );
+    areas.push(("BottomLeft".to_string(), bottom_left_area));
+    
+    areas
+}
+
+/// 縦側（左右）のコンパクトエリアを生成
+fn generate_side_compact_area(
+    center_x: f32,
+    center_y: f32,
+    piece_width: f32,
+    piece_height: f32,
+    side: &str,
+    max_cols: usize,
+    max_rows: usize,
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    let start_x = if side == "left" { 
+        center_x - (max_cols as f32 * piece_width) 
+    } else { 
+        center_x 
+    };
+    let start_y = center_y - (max_rows as f32 * piece_height) / 2.0;
+    
+    for row in 0..max_rows {
+        for col in 0..max_cols {
+            let x = start_x + col as f32 * piece_width;
+            let y = start_y + row as f32 * piece_height;
+            positions.push(Vec2::new(x, y));
+        }
+    }
+    
+    positions
+}
+
+/// 横側（上下）のコンパクトエリアを生成
+fn generate_horizontal_compact_area(
+    center_x: f32,
+    center_y: f32,
+    piece_width: f32,
+    piece_height: f32,
+    side: &str,
+    max_cols: usize,
+    max_rows: usize,
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    let start_x = center_x - (max_cols as f32 * piece_width) / 2.0;
+    let start_y = if side == "bottom" { 
+        center_y - (max_rows as f32 * piece_height) 
+    } else { 
+        center_y 
+    };
+    
+    for row in 0..max_rows {
+        for col in 0..max_cols {
+            let x = start_x + col as f32 * piece_width;
+            let y = start_y + row as f32 * piece_height;
+            positions.push(Vec2::new(x, y));
+        }
+    }
+    
+    positions
+}
+
+/// コーナーエリアのコンパクトグリッドを生成
+fn generate_corner_compact_area(
+    corner_x: f32,
+    corner_y: f32,
+    piece_width: f32,
+    piece_height: f32,
+    cols: usize,
+    rows: usize,
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    // コーナー位置から外側に向かって展開
+    let start_x = if corner_x < 0.0 {
+        corner_x - (cols as f32 * piece_width)
+    } else {
+        corner_x
+    };
+    
+    let start_y = if corner_y < 0.0 {
+        corner_y - (rows as f32 * piece_height)
+    } else {
+        corner_y
+    };
+    
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = start_x + col as f32 * piece_width;
+            let y = start_y + row as f32 * piece_height;
+            positions.push(Vec2::new(x, y));
+        }
+    }
+    
+    positions
+}
+
+/// コンパクトな追加位置を生成
+fn generate_compact_additional_positions(
+    count: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    exclusion_area: &(Vec2, Vec2),
+    existing_positions: &[Vec2],
+) -> Vec<Vec2> {
+    let mut positions = Vec::with_capacity(count);
+    let mut rng = thread_rng();
+    
+    // 既存位置の近くにコンパクトに追加
+    let max_attempts = count * 50;
+    let mut attempts = 0;
+    
+    while positions.len() < count && attempts < max_attempts {
+        attempts += 1;
+        
+        if !existing_positions.is_empty() {
+            // 既存位置の近くを優先
+            let base_pos = existing_positions.choose(&mut rng).unwrap();
+            let offset_x = rng.gen_range(-piece_width * 2.0..piece_width * 2.0);
+            let offset_y = rng.gen_range(-piece_height * 2.0..piece_height * 2.0);
+            let candidate = Vec2::new(base_pos.x + offset_x, base_pos.y + offset_y);
+            
+            if !is_position_in_exclusion_area(&candidate, exclusion_area) {
+                // 既存位置との重複チェック
+                let min_distance = piece_width.min(piece_height) * 0.8;
+                let mut valid = true;
+                
+                for existing in existing_positions.iter().chain(positions.iter()) {
+                    if candidate.distance(*existing) < min_distance {
+                        valid = false;
+                        break;
+                    }
+                }
+                
+                if valid {
+                    positions.push(candidate);
+                }
+            }
+        } else {
+            // フォールバック: パズル周辺のランダム位置
+            let area_expansion = 1.5;
+            let x = rng.gen_range(-puzzle_width * area_expansion..puzzle_width * area_expansion);
+            let y = rng.gen_range(-puzzle_height * area_expansion..puzzle_height * area_expansion);
+            let candidate = Vec2::new(x, y);
+            
+            if !is_position_in_exclusion_area(&candidate, exclusion_area) {
+                positions.push(candidate);
+            }
+        }
+    }
+    
+    println!("🔄 Generated {} compact additional positions after {} attempts", positions.len(), attempts);
+    
+    positions
+}
+
+/// パズル周辺の拡張エリアに詰められたグリッドを生成
+fn generate_extended_area_grid(
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+) -> Vec<Vec2> {
+    let mut positions = Vec::new();
+    
+    // 拡張エリアのサイズを計算（パズルの3倍のエリア）
+    let extended_width = puzzle_width * 3.0;
+    let extended_height = puzzle_height * 3.0;
+    
+    // グリッドの行数・列数を計算
+    let cols = (extended_width / piece_width).floor() as usize;
+    let rows = (extended_height / piece_height).floor() as usize;
+    
+    // グリッドの開始位置を計算（中央寄せ）
+    let start_x = -(cols as f32 * piece_width) / 2.0;
+    let start_y = -(rows as f32 * piece_height) / 2.0;
+    
+    // 詰められたグリッド状に位置を生成
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = start_x + col as f32 * piece_width + piece_width / 2.0;
+            let y = start_y + row as f32 * piece_height + piece_height / 2.0;
+            positions.push(Vec2::new(x, y));
+        }
+    }
+    
+    println!("🗂️ Generated {}x{} = {} extended grid positions", cols, rows, positions.len());
+    
+    positions
+}
+
+/// パズルグリッド領域を計算（除外エリア）
+fn calculate_puzzle_grid_area(
+    grid_width: usize,
+    grid_height: usize,
+    piece_width: f32,
+    piece_height: f32,
+    display_width: f32,
+    display_height: f32,
+) -> (Vec2, Vec2) {
+    // グリッド領域の境界を計算（少し余裕を持たせる）
+    let margin = piece_width.max(piece_height) * 0.5;
+    let min_x = -display_width / 2.0 - margin;
+    let max_x = display_width / 2.0 + margin;
+    let min_y = -display_height / 2.0 - margin;
+    let max_y = display_height / 2.0 + margin;
+    
+    let exclusion_min = Vec2::new(min_x, min_y);
+    let exclusion_max = Vec2::new(max_x, max_y);
+    
+    println!("🚫 Exclusion area: ({:.1}, {:.1}) to ({:.1}, {:.1})", 
+        min_x, min_y, max_x, max_y);
+    
+    (exclusion_min, exclusion_max)
+}
+
+/// 位置が除外エリア内にあるかチェック
+fn is_position_in_exclusion_area(pos: &Vec2, exclusion_area: &(Vec2, Vec2)) -> bool {
+    let (min, max) = exclusion_area;
+    pos.x >= min.x && pos.x <= max.x && pos.y >= min.y && pos.y <= max.y
+}
+
+/// 不足分の位置をフォールバック生成
+fn generate_fallback_positions(
+    count: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    exclusion_area: &(Vec2, Vec2),
+    rng: &mut ThreadRng,
+) -> Vec<Vec2> {
+    let mut positions = Vec::with_capacity(count);
+    
+    // より広いエリアでランダム生成
+    let area_width = puzzle_width * 4.0;
+    let area_height = puzzle_height * 4.0;
+    let half_width = area_width / 2.0;
+    let half_height = area_height / 2.0;
+    
+    let mut attempts = 0;
+    let max_attempts = count * 100;
+    
+    while positions.len() < count && attempts < max_attempts {
+        attempts += 1;
+        
+        let x = rng.gen_range(-half_width..half_width);
+        let y = rng.gen_range(-half_height..half_height);
+        let candidate = Vec2::new(x, y);
+        
+        // 除外エリア外であれば追加
+        if !is_position_in_exclusion_area(&candidate, exclusion_area) {
+            positions.push(candidate);
+        }
+    }
+    
+    println!("🔄 Generated {} fallback positions after {} attempts", positions.len(), attempts);
+    
+    positions
+}
+
+/// 詰められたグリッド配置を生成（複数のレイアウトパターン対応）
+fn generate_compact_grid_layout(
+    total_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    min_distance_from_puzzle: f32,
+) -> Vec<Vec2> {
+    let mut rng = thread_rng();
+    
+    // 複数の配置パターンからランダムに選択
+    let layout_patterns = vec![
+        "compact_grid",      // 詰められたグリッド
+        "surrounding_frame", // パズル周囲のフレーム状配置
+        "side_columns",      // 左右の縦列配置
+        "mixed_areas",       // 複数エリアに分散配置
+    ];
+    
+    let selected_pattern = layout_patterns.choose(&mut rng).unwrap();
+    
+    println!("🎨 Selected layout pattern: {}", selected_pattern);
+    
+    match *selected_pattern {
+        "compact_grid" => generate_compact_grid_pattern(
+            total_pieces, piece_width, piece_height, 
+            puzzle_width, puzzle_height, min_distance_from_puzzle
+        ),
+        "surrounding_frame" => generate_surrounding_frame_pattern(
+            total_pieces, piece_width, piece_height,
+            puzzle_width, puzzle_height, min_distance_from_puzzle
+        ),
+        "side_columns" => generate_side_columns_pattern(
+            total_pieces, piece_width, piece_height,
+            puzzle_width, puzzle_height, min_distance_from_puzzle
+        ),
+        "mixed_areas" => generate_mixed_areas_pattern(
+            total_pieces, piece_width, piece_height,
+            puzzle_width, puzzle_height, min_distance_from_puzzle
+        ),
+        _ => generate_compact_grid_pattern(
+            total_pieces, piece_width, piece_height,
+            puzzle_width, puzzle_height, min_distance_from_puzzle
+        ),
+    }
+}
+
+/// パターン1: グリッド周囲の詰められた配置
+fn generate_compact_grid_pattern(
+    total_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    min_distance: f32,
+) -> Vec<Vec2> {
+    let mut positions = Vec::with_capacity(total_pieces);
+    
+    // グリッド周囲のエリアを4つに分けて配置
+    let pieces_per_side = total_pieces / 4;
+    let remaining_pieces = total_pieces % 4;
+    
+    // 右側エリア
+    let right_pieces = pieces_per_side + if remaining_pieces > 0 { 1 } else { 0 };
+    let right_cols = (right_pieces as f32).sqrt().ceil() as usize;
+    let right_rows = (right_pieces as f32 / right_cols as f32).ceil() as usize;
+    
+    let right_start_x = puzzle_width / 2.0 + min_distance;
+    let right_start_y = -(right_rows as f32 * piece_height) / 2.0;
+    
+    for i in 0..right_pieces {
+        let col = i % right_cols;
+        let row = i / right_cols;
+        let x = right_start_x + col as f32 * piece_width;
+        let y = right_start_y + row as f32 * piece_height;
+        positions.push(Vec2::new(x, y));
+    }
+    
+    // 左側エリア
+    let left_pieces = pieces_per_side + if remaining_pieces > 1 { 1 } else { 0 };
+    let left_cols = (left_pieces as f32).sqrt().ceil() as usize;
+    let left_rows = (left_pieces as f32 / left_cols as f32).ceil() as usize;
+    
+    let left_end_x = -puzzle_width / 2.0 - min_distance;
+    let left_start_y = -(left_rows as f32 * piece_height) / 2.0;
+    
+    for i in 0..left_pieces {
+        let col = i % left_cols;
+        let row = i / left_cols;
+        let x = left_end_x - col as f32 * piece_width;
+        let y = left_start_y + row as f32 * piece_height;
+        positions.push(Vec2::new(x, y));
+    }
+    
+    // 上側エリア
+    let top_pieces = pieces_per_side + if remaining_pieces > 2 { 1 } else { 0 };
+    let top_cols = (top_pieces as f32).sqrt().ceil() as usize;
+    let top_rows = (top_pieces as f32 / top_cols as f32).ceil() as usize;
+    
+    let top_start_x = -(top_cols as f32 * piece_width) / 2.0;
+    let top_start_y = puzzle_height / 2.0 + min_distance;
+    
+    for i in 0..top_pieces {
+        let col = i % top_cols;
+        let row = i / top_cols;
+        let x = top_start_x + col as f32 * piece_width;
+        let y = top_start_y + row as f32 * piece_height;
+        positions.push(Vec2::new(x, y));
+    }
+    
+    // 下側エリア
+    let bottom_pieces = pieces_per_side;
+    let bottom_cols = (bottom_pieces as f32).sqrt().ceil() as usize;
+    let bottom_rows = (bottom_pieces as f32 / bottom_cols as f32).ceil() as usize;
+    
+    let bottom_start_x = -(bottom_cols as f32 * piece_width) / 2.0;
+    let bottom_end_y = -puzzle_height / 2.0 - min_distance;
+    
+    for i in 0..bottom_pieces {
+        let col = i % bottom_cols;
+        let row = i / bottom_cols;
+        let x = bottom_start_x + col as f32 * piece_width;
+        let y = bottom_end_y - row as f32 * piece_height;
+        positions.push(Vec2::new(x, y));
+    }
+    
+    println!("📐 Compact grid around puzzle: {} right, {} left, {} top, {} bottom", 
+        right_pieces, left_pieces, top_pieces, bottom_pieces);
+    
+    positions
+}
+
+/// パターン2: パズル周囲のフレーム状配置
+fn generate_surrounding_frame_pattern(
+    total_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    min_distance: f32,
+) -> Vec<Vec2> {
+    let mut positions = Vec::with_capacity(total_pieces);
+    
+    // パズル周囲のフレーム配置
+    let frame_margin = min_distance;
+    let frame_left = -puzzle_width / 2.0 - frame_margin;
+    let frame_right = puzzle_width / 2.0 + frame_margin;
+    let frame_top = puzzle_height / 2.0 + frame_margin;
+    let frame_bottom = -puzzle_height / 2.0 - frame_margin;
+    
+    // 上下の横列
+    let cols_per_row = ((puzzle_width + frame_margin * 2.0) / piece_width).floor() as usize;
+    let rows_needed = (total_pieces as f32 / (cols_per_row * 2 + 2) as f32).ceil() as usize;
+    
+    let mut piece_count = 0;
+    
+    for row in 0..rows_needed {
+        if piece_count >= total_pieces { break; }
+        
+        // 上の行
+        let y_top = frame_top + row as f32 * piece_height;
+        for col in 0..cols_per_row {
+            if piece_count >= total_pieces { break; }
+            let x = frame_left + col as f32 * piece_width;
+            positions.push(Vec2::new(x, y_top));
+            piece_count += 1;
+        }
+        
+        // 下の行
+        if piece_count >= total_pieces { break; }
+        let y_bottom = frame_bottom - row as f32 * piece_height;
+        for col in 0..cols_per_row {
+            if piece_count >= total_pieces { break; }
+            let x = frame_left + col as f32 * piece_width;
+            positions.push(Vec2::new(x, y_bottom));
+            piece_count += 1;
+        }
+    }
+    
+    println!("🖼️ Frame layout: {} pieces in surrounding frame", positions.len());
+    positions
+}
+
+/// パターン3: 左右の縦列配置
+fn generate_side_columns_pattern(
+    total_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    min_distance: f32,
+) -> Vec<Vec2> {
+    let mut positions = Vec::with_capacity(total_pieces);
+    
+    let pieces_per_side = total_pieces / 2;
+    let remaining_pieces = total_pieces % 2;
+    
+    // 左側の縦列
+    let left_x = -puzzle_width / 2.0 - min_distance - piece_width;
+    let left_start_y = -(pieces_per_side as f32 * piece_height) / 2.0;
+    
+    for i in 0..pieces_per_side + remaining_pieces {
+        let y = left_start_y + i as f32 * piece_height;
+        positions.push(Vec2::new(left_x, y));
+    }
+    
+    // 右側の縦列
+    let right_x = puzzle_width / 2.0 + min_distance + piece_width;
+    let right_start_y = -(pieces_per_side as f32 * piece_height) / 2.0;
+    
+    for i in 0..pieces_per_side {
+        let y = right_start_y + i as f32 * piece_height;
+        positions.push(Vec2::new(right_x, y));
+    }
+    
+    println!("📏 Side columns: {} left, {} right", pieces_per_side + remaining_pieces, pieces_per_side);
+    positions
+}
+
+/// パターン4: 複数エリアに分散配置
+fn generate_mixed_areas_pattern(
+    total_pieces: usize,
+    piece_width: f32,
+    piece_height: f32,
+    puzzle_width: f32,
+    puzzle_height: f32,
+    min_distance: f32,
+) -> Vec<Vec2> {
+    let mut positions = Vec::with_capacity(total_pieces);
+    
+    // 4つのエリアに分散
+    let pieces_per_area = total_pieces / 4;
+    let remaining_pieces = total_pieces % 4;
+    
+    let areas = [
+        // 右上
+        (puzzle_width / 2.0 + min_distance, puzzle_height / 2.0 + min_distance),
+        // 右下  
+        (puzzle_width / 2.0 + min_distance, -puzzle_height / 2.0 - min_distance),
+        // 左上
+        (-puzzle_width / 2.0 - min_distance, puzzle_height / 2.0 + min_distance),
+        // 左下
+        (-puzzle_width / 2.0 - min_distance, -puzzle_height / 2.0 - min_distance),
+    ];
+    
+    for (area_idx, (start_x, start_y)) in areas.iter().enumerate() {
+        let pieces_in_this_area = pieces_per_area + if area_idx < remaining_pieces { 1 } else { 0 };
+        
+        // 各エリア内で小さなグリッド配置
+        let cols = (pieces_in_this_area as f32).sqrt().ceil() as usize;
+        let rows = (pieces_in_this_area as f32 / cols as f32).ceil() as usize;
+        
+        for i in 0..pieces_in_this_area {
+            let col = i % cols;
+            let row = i / cols;
+            
+            let x = start_x + col as f32 * piece_width * if start_x < &0.0 { -1.0 } else { 1.0 };
+            let y = start_y + row as f32 * piece_height * if start_y < &0.0 { -1.0 } else { 1.0 };
+            
+            positions.push(Vec2::new(x, y));
+        }
+    }
+    
+    println!("🎯 Mixed areas: 4 compact areas with {}-{} pieces each", 
+        pieces_per_area, pieces_per_area + 1);
     positions
 }
 
