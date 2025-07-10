@@ -113,6 +113,9 @@ fn generate_spiral_positions(
     
     // 各レイヤーを順次生成
     while positions.len() < num_pieces && radius <= max_screen_distance {
+        // 残り必要なピース数を計算
+        let remaining_pieces = num_pieces - positions.len();
+        
         let layer_positions = generate_circle_layer(
             center,
             radius,
@@ -122,7 +125,8 @@ fn generate_spiral_positions(
             effective_piece_height,
             &positions,
             max_screen_distance,
-            current_layer
+            current_layer,
+            remaining_pieces  // 残り必要数を渡す
         );
         
         let placed_count = layer_positions.len();
@@ -130,6 +134,12 @@ fn generate_spiral_positions(
         
         println!("   ⭕ Layer {}: radius {:.1}, placed {} pieces, total: {}/{}", 
             current_layer, radius, placed_count, positions.len(), num_pieces);
+        
+        // 目標数に達したら完了
+        if positions.len() >= num_pieces {
+            println!("✅ Target piece count reached, stopping at layer {}", current_layer);
+            break;
+        }
         
         // 次のレイヤーに移動
         current_layer += 1;
@@ -166,6 +176,7 @@ fn generate_circle_layer(
     existing_positions: &[Vec2],
     max_screen_distance: f32,
     layer_index: usize,
+    max_pieces_needed: usize,  // このレイヤーで必要な最大ピース数
 ) -> Vec<Vec2> {
     let mut layer_positions = Vec::new();
     
@@ -179,14 +190,26 @@ fn generate_circle_layer(
         return layer_positions;
     }
     
+    // 実際に配置を試行する数（必要数と推定数の小さい方）
+    let target_pieces = estimated_pieces.min(max_pieces_needed);
+    
     // 実際の角度ステップを計算
     let angle_step = (2.0 * std::f32::consts::PI) / estimated_pieces as f32;
     
     // レイヤーごとに開始角度を少しずらす（均等分散のため）
     let start_angle = (layer_index as f32 * 0.1) % (2.0 * std::f32::consts::PI);
     
+    println!("     🎯 Layer {} target: {} pieces (estimated: {}, needed: {})", 
+        layer_index, target_pieces, estimated_pieces, max_pieces_needed);
+    
     // 円周上の各位置にピースを配置試行
     for i in 0..estimated_pieces {
+        // 必要数に達したら停止
+        if layer_positions.len() >= target_pieces {
+            println!("     ✅ Layer {} completed: reached target {} pieces", layer_index, target_pieces);
+            break;
+        }
+        
         let angle = start_angle + (i as f32 * angle_step);
         let x = center.x + radius * angle.cos();
         let y = center.y + radius * angle.sin();
@@ -209,6 +232,12 @@ fn generate_circle_layer(
                 }
             }
         }
+    }
+    
+    // レイヤー完了ログ
+    if layer_positions.len() < target_pieces {
+        println!("     ⚠️ Layer {} partial: placed {} of {} target pieces", 
+            layer_index, layer_positions.len(), target_pieces);
     }
     
     layer_positions
