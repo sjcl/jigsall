@@ -58,7 +58,6 @@ impl Plugin for GamePlugin {
                 // カメラ
                 handle_camera_zoom,
                 handle_camera_drag,
-                frustum_culling_system,
                 
                 // パフォーマンス計測システム
                 toggle_performance_debug.run_if(f12_just_pressed),
