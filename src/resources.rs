@@ -135,6 +135,7 @@ pub struct PuzzleImage {
     pub size: Vec2,
 }
 
+
 #[derive(Resource, Default)]
 pub struct NetworkInfo {
     pub server_address: String,

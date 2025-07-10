@@ -40,7 +40,7 @@ pub fn update_input_state(
     perf_monitor.end_system_timing("update_input_state", start_time);
 }
 
-/// ゲーム開始時に一度だけカメラズームを自動調整
+/// ゲーム開始時にカメラズームを自動調整（解像度適応型・OnEnterで1回のみ実行）
 pub fn auto_adjust_camera_zoom(
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     puzzle_image: Option<Res<PuzzleImage>>,
@@ -51,28 +51,64 @@ pub fn auto_adjust_camera_zoom(
             for mut transform in camera_query.iter_mut() {
                 let window_width = window.width();
                 let window_height = window.height();
+                let image_width = puzzle_image.size.x;
+                let image_height = puzzle_image.size.y;
                 
-                // ズームアウトして画像全体が見えるようにする
-                // 画像がウィンドウより大きい場合、ズームアウトが必要
-                let scale_x = puzzle_image.size.x / window_width;
-                let scale_y = puzzle_image.size.y / window_height;
+                // 解像度に応じて適応的マージンを計算
+                let resolution_factor = (image_width * image_height) / (1920.0 * 1080.0);
+                let base_margin = 1.2; // 基本マージン
+                let raw_margin: f32 = if resolution_factor > 4.0 {
+                    // 4K以上の超高解像度
+                    base_margin + 0.3
+                } else if resolution_factor > 2.0 {
+                    // 2K-4K解像度
+                    base_margin + 0.2
+                } else if resolution_factor > 1.0 {
+                    // Full HD以上
+                    base_margin + 0.1
+                } else if resolution_factor > 0.5 {
+                    // HD
+                    base_margin
+                } else {
+                    // SD以下
+                    base_margin - 0.1
+                };
+                let adaptive_margin = raw_margin.clamp(1.05, 1.8);
                 
-                // より大きい方のスケールを使用（全体が見えるように）
-                let required_scale = scale_x.max(scale_y);
+                // 画像とウィンドウのアスペクト比を考慮した最適スケール計算
+                let image_aspect = image_width / image_height;
+                let window_aspect = window_width / window_height;
                 
-                // マージンを追加（画像の周りに少し余白を作る）
-                let initial_scale = (required_scale * 1.2).clamp(0.5, 10.0);
+                let scale_x = image_width / window_width;
+                let scale_y = image_height / window_height;
                 
-                transform.scale = Vec3::splat(initial_scale);
+                // アスペクト比差を考慮してスケール調整
+                let optimal_scale = if (image_aspect - window_aspect).abs() < 0.1 {
+                    // アスペクト比が近い場合：均等スケール
+                    scale_x.max(scale_y)
+                } else if image_aspect > window_aspect {
+                    // 画像が横長：幅基準でスケール
+                    scale_x * 1.1 // 横長画像には少し余裕を持たせる
+                } else {
+                    // 画像が縦長：高さ基準でスケール
+                    scale_y * 1.1 // 縦長画像には少し余裕を持たせる
+                };
+                
+                // 最終的なズーム値を計算（解像度適応マージン適用）
+                let final_scale = (optimal_scale * adaptive_margin).clamp(0.1, 15.0);
+                
+                transform.scale = Vec3::splat(final_scale);
                 
                 // カメラを画像の中心に配置
                 transform.translation.x = 0.0;
                 transform.translation.y = 0.0;
                 
-                println!("🎥 Auto-adjusted camera zoom to {:.2} for image {}x{}", 
-                    initial_scale, puzzle_image.size.x, puzzle_image.size.y);
-                println!("   Window size: {}x{}, Scale factors: x={:.2}, y={:.2}", 
-                    window_width, window_height, scale_x, scale_y);
+                println!("🎥 Adaptive camera zoom: {:.2}x for {}x{} image (aspect: {:.2})", 
+                    final_scale, image_width, image_height, image_aspect);
+                println!("   Resolution factor: {:.2}, Adaptive margin: {:.2}", 
+                    resolution_factor, adaptive_margin);
+                println!("   Window: {}x{} (aspect: {:.2}), Scale factors: x={:.2}, y={:.2}", 
+                    window_width, window_height, window_aspect, scale_x, scale_y);
             }
         }
     }
@@ -81,6 +117,7 @@ pub fn auto_adjust_camera_zoom(
 pub fn handle_camera_zoom(
     mut scroll_evr: EventReader<MouseWheel>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
+    puzzle_image: Option<Res<PuzzleImage>>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
     let start_time = perf_monitor.start_system_timing("handle_camera_zoom");
@@ -89,13 +126,41 @@ pub fn handle_camera_zoom(
         for mut transform in camera_query.iter_mut() {
             let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
             
-            // ズーム制限 (0.1倍から10.0倍まで - 大きな画像に対応)
+            // 解像度に応じた適応的ズーム制限
+            let (min_zoom, max_zoom) = if let Some(puzzle_image) = puzzle_image.as_ref() {
+                let resolution_factor = (puzzle_image.size.x * puzzle_image.size.y) / (1920.0 * 1080.0);
+                
+                if resolution_factor > 4.0 {
+                    // 4K以上の高解像度画像
+                    (0.05, 15.0)
+                } else if resolution_factor > 2.0 {
+                    // 2K-4K画像
+                    (0.1, 12.0)
+                } else if resolution_factor > 1.0 {
+                    // Full HD以上
+                    (0.2, 10.0)
+                } else {
+                    // HD以下
+                    (0.3, 8.0)
+                }
+            } else {
+                // デフォルト値
+                (0.1, 10.0)
+            };
+            
             let current_scale = transform.scale.x;
-            let new_scale = (current_scale * zoom_factor).clamp(0.1, 10.0);
+            let new_scale = (current_scale * zoom_factor).clamp(min_zoom, max_zoom);
             
             transform.scale = Vec3::splat(new_scale);
             
-            println!("Camera zoom: {:.2}", new_scale);
+            // デバッグ出力（頻度制限）
+            static mut ZOOM_LOG_COUNT: usize = 0;
+            unsafe {
+                ZOOM_LOG_COUNT += 1;
+                if ZOOM_LOG_COUNT % 5 == 0 {
+                    println!("🔍 Camera zoom: {:.2} (limits: {:.2}-{:.1})", new_scale, min_zoom, max_zoom);
+                }
+            }
         }
     }
     
