@@ -172,12 +172,17 @@ pub fn handle_camera_drag(
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("handle_camera_drag");
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Right);
     let mouse_pressed = mouse_input.pressed(MouseButton::Right);
     let mouse_just_released = mouse_input.just_released(MouseButton::Right);
     
-    let Ok(window) = windows.single() else { return; };
+    let Ok(window) = windows.single() else { 
+        perf_monitor.end_system_timing("handle_camera_drag", start_time);
+        return; 
+    };
     
     // 右クリックでカメラドラッグ開始
     if mouse_just_pressed {
@@ -214,4 +219,6 @@ pub fn handle_camera_drag(
         input_state.is_camera_dragging = false;
         input_state.last_cursor_position = None;
     }
+    
+    perf_monitor.end_system_timing("handle_camera_drag", start_time);
 }

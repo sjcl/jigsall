@@ -37,7 +37,9 @@ pub fn check_piece_placement_event_driven(
     mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
     puzzle_config: Res<PuzzleConfig>,
     mut move_events: EventReader<PieceMoveCompleted>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("check_piece_placement_event_driven");
     
     // 移動完了したピースのみをチェック（イベントドリブン）
     for move_event in move_events.read() {
@@ -68,6 +70,8 @@ pub fn check_piece_placement_event_driven(
             }
         }
     }
+    
+    perf_monitor.end_system_timing("check_piece_placement_event_driven", start_time);
 }
 
 /// レガシー版のピース配置チェック（後方互換性のため保持）
@@ -131,7 +135,9 @@ pub fn update_game_state(
     mut game_state: ResMut<GameData>,
     piece_query: Query<&PuzzlePiece>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("update_game_state");
     let total_pieces = piece_query.iter().count();
     let placed_pieces = piece_query.iter().filter(|p| p.is_placed).count();
     
@@ -144,5 +150,7 @@ pub fn update_game_state(
             next_state.set(AppState::GameComplete);
         }
     }
+    
+    perf_monitor.end_system_timing("update_game_state", start_time);
 }
 

@@ -210,14 +210,19 @@ pub fn handle_piece_dragging_hybrid_legacy(
     game_state: Res<GameData>,
     cache: Res<PieceSelectionCache>,
     mut move_events: EventWriter<PieceMoveCompleted>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("handle_piece_dragging_hybrid_legacy");
+    
     // ゲーム内メニューが表示されている間はピースドラッグを無効化
     if game_state.current_screen == GameScreen::InGameMenu {
+        perf_monitor.end_system_timing("handle_piece_dragging_hybrid_legacy", start_time);
         return;
     }
     
     // 新しいマルチ選択システムが有効な場合は無効化
     if !matches!(input_state.selection_mode, SelectionMode::Single) || !input_state.selected_pieces.is_empty() {
+        perf_monitor.end_system_timing("handle_piece_dragging_hybrid_legacy", start_time);
         return;
     }
     
@@ -354,6 +359,8 @@ pub fn handle_piece_dragging_hybrid_legacy(
         
         input_state.selected_piece = None;
     }
+    
+    perf_monitor.end_system_timing("handle_piece_dragging_hybrid_legacy", start_time);
 }
 
 pub fn handle_box_selection(
@@ -603,14 +610,19 @@ pub fn handle_multi_piece_drag(
     mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece), With<SelectedPiece>>,
     game_state: Res<GameData>,
     mut move_events: EventWriter<PieceMoveCompleted>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("handle_multi_piece_drag");
+    
     // ゲーム内メニューが表示されている間は無効化
     if game_state.current_screen != GameScreen::InGame {
+        perf_monitor.end_system_timing("handle_multi_piece_drag", start_time);
         return;
     }
     
     // MultiDragモードでない場合は何もしない
     if !matches!(input_state.selection_mode, SelectionMode::MultiDrag) {
+        perf_monitor.end_system_timing("handle_multi_piece_drag", start_time);
         return;
     }
     
@@ -653,6 +665,8 @@ pub fn handle_multi_piece_drag(
         
         println!("🎯 Multi-piece drag completed");
     }
+    
+    perf_monitor.end_system_timing("handle_multi_piece_drag", start_time);
 }
 
 pub fn render_selection_box(
@@ -662,7 +676,9 @@ pub fn render_selection_box(
     input_state: Res<InputState>,
     _camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
     selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
+    mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let start_time = perf_monitor.start_system_timing("render_selection_box");
     
     // 既存の選択ボックスを削除
     let existing_box_count = selection_box_query.iter().count();
@@ -696,6 +712,8 @@ pub fn render_selection_box(
             println!("🖼️ Created selection box {:?}", selection_box_entity);
         }
     }
+    
+    perf_monitor.end_system_timing("render_selection_box", start_time);
 }
 
 /// 枠線表示のためのシンプルなアプローチ - 元のメッシュをそのまま使用
