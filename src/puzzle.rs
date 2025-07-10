@@ -64,7 +64,7 @@ pub fn generate_placement_grid(
     positions
 }
 
-/// 中心からの渦巻き状配置でピース位置を生成（グリッド回避）
+/// 同心円レイヤー方式でピース位置を生成（グリッド回避）
 fn generate_spiral_positions(
     num_pieces: usize,
     piece_width: f32,
@@ -76,17 +76,14 @@ fn generate_spiral_positions(
     let mut positions = Vec::new();
     let (puzzle_min, puzzle_max) = puzzle_area;
     
-    // パズルの中心を渦巻きの中心とする
-    let center = Vec2::new(
-        (puzzle_min.x + puzzle_max.x) / 2.0,
-        (puzzle_min.y + puzzle_max.y) / 2.0
-    );
+    // パズルの中心を配置の中心とする（画像の中心 = 原点）
+    let center = Vec2::new(0.0, 0.0);
     
     // 除外エリアのサイズを計算
     let exclusion_width = puzzle_max.x - puzzle_min.x;
     let exclusion_height = puzzle_max.y - puzzle_min.y;
     
-    // マージンを除外エリアサイズに応じて調整
+    // ピースサイズとマージン設定
     let piece_size = piece_width.max(piece_height);
     let margin_factor = if piece_size > 500.0 { 0.3 } else { 0.5 };
     let margin_x = piece_width * margin_factor;
@@ -94,109 +91,127 @@ fn generate_spiral_positions(
     let effective_piece_width = piece_width + margin_x;
     let effective_piece_height = piece_height + margin_y;
     
-    // 初期半径を楕円的に計算（横長・縦長の画像に対応）
-    // パズルの四隅までの最小距離を基準にする
-    let corner_distance_x = exclusion_width / 2.0;
-    let corner_distance_y = exclusion_height / 2.0;
-    let min_clearance_distance = (corner_distance_x.min(corner_distance_y)) + piece_size * 0.5;
+    // 初期半径を除外エリアの外側から開始
+    let exclusion_half_width = exclusion_width / 2.0;
+    let exclusion_half_height = exclusion_height / 2.0;
+    let exclusion_diagonal = (exclusion_half_width * exclusion_half_width + exclusion_half_height * exclusion_half_height).sqrt();
+    let initial_radius = exclusion_diagonal + piece_size;
     
-    // 渦巻きパラメータを除外エリアサイズに基づいて動的計算
-    let mut radius = min_clearance_distance; // 最小クリアランス距離から開始
-    let mut angle: f32 = 0.0;
+    // レイヤー間隔とピース間隔
+    let layer_spacing = piece_size * 1.1; // レイヤー間の距離
+    let piece_spacing = piece_size * 0.9; // 同じレイヤー内のピース間距離
     
-    // 角度ステップと半径成長率を適応的に計算
-    // ピース数とサイズの両方を考慮して、重なりを防ぐ
+    println!("🎯 Generating concentric circle layers from center ({:.1}, {:.1})", center.x, center.y);
+    println!("   📊 Exclusion area: ({:.1}, {:.1}) to ({:.1}, {:.1}), size: {:.1}x{:.1}", 
+        puzzle_min.x, puzzle_min.y, puzzle_max.x, puzzle_max.y, exclusion_width, exclusion_height);
+    println!("   🎯 Initial radius: {:.1}, Layer spacing: {:.1}, Piece spacing: {:.1}", 
+        initial_radius, layer_spacing, piece_spacing);
     
-    // 螺旋の1周あたりに配置できる理論上のピース数を計算
-    let circumference = 2.0 * std::f32::consts::PI * radius;
-    let pieces_per_revolution = (circumference / piece_size).max(6.0); // 最低6個は確保
+    let mut current_layer = 0;
+    let mut radius = initial_radius;
+    let max_screen_distance = (display_width.max(display_height)) * 2.0;
     
-    // 角度ステップ：1周あたりのピース数から計算
-    let mut angle_step = (2.0 * std::f32::consts::PI) / pieces_per_revolution;
-    
-    // 半径成長率：ピースが重ならないように調整
-    let radius_growth = if piece_size > 300.0 {
-        // 大きなピース：角度ステップに応じて適切に成長
-        piece_size * angle_step / (2.0 * std::f32::consts::PI) * 0.8
-    } else if piece_size > 150.0 {
-        // 中サイズピース
-        piece_size * angle_step / (2.0 * std::f32::consts::PI) * 0.9
-    } else {
-        // 小さなピース：元の固定値を使用
-        0.03
-    };
-    
-    // ピース数が少ない場合でも、最小の成長率を確保
-    let radius_growth = radius_growth.max(piece_size * 0.01);
-    
-    // 最大試行回数（元のコードと同じ計算）
-    let max_attempts = num_pieces * 100;
-    
-    println!("🌀 Generating spiral placement from center ({:.1}, {:.1})", center.x, center.y);
-    println!("   📊 Exclusion area: {:.1}x{:.1}, Min clearance: {:.1}, Initial radius: {:.1}", 
-        exclusion_width, exclusion_height, min_clearance_distance, radius);
-    println!("   ⚙️ Pieces per revolution: {:.1}, Angle step: {:.3}, Radius growth: {:.4}", 
-        pieces_per_revolution, angle_step, radius_growth);
-    let mut attempts = 0;
-    
-    while positions.len() < num_pieces && attempts < max_attempts {
-        // 渦巻き座標を計算
-        let x = center.x + radius * angle.cos();
-        let y = center.y + radius * angle.sin();
-        let position = Vec2::new(x, y);
+    // 各レイヤーを順次生成
+    while positions.len() < num_pieces && radius <= max_screen_distance {
+        let layer_positions = generate_circle_layer(
+            center,
+            radius,
+            piece_spacing,
+            puzzle_area,
+            effective_piece_width,
+            effective_piece_height,
+            &positions,
+            max_screen_distance,
+            current_layer
+        );
         
-        // 画面境界チェック（表示領域の2倍まで許可）
-        let max_screen_distance = (display_width.max(display_height)) * 1.5;
-        let distance_from_center = position.distance(Vec2::ZERO);
+        let placed_count = layer_positions.len();
+        positions.extend(layer_positions);
         
-        if distance_from_center <= max_screen_distance {
-            // グリッド領域内でないかチェック
-            if !is_in_grid_area(position, puzzle_area, effective_piece_width, effective_piece_height) {
-                // 他のピースと重複していないかチェック
-                if !is_overlapping_with_existing(position, &positions, effective_piece_width, effective_piece_height) {
-                    positions.push(position);
-                    
-                    // 進捗ログ（10個ごと）
-                    if positions.len() % 10 == 0 || positions.len() <= 5 {
-                        println!("   📍 Placed piece #{} at ({:.1}, {:.1}), radius: {:.1}", 
-                            positions.len(), x, y, radius);
-                    }
-                }
-            }
-        }
+        println!("   ⭕ Layer {}: radius {:.1}, placed {} pieces, total: {}/{}", 
+            current_layer, radius, placed_count, positions.len(), num_pieces);
         
-        // 渦巻きパラメータを更新
-        angle += angle_step;
-        radius += radius_growth;
-        attempts += 1;
+        // 次のレイヤーに移動
+        current_layer += 1;
+        radius += layer_spacing;
         
-        // 半径が大きくなったら角度ステップを再計算（より多くのピースが配置できる）
-        if angle >= 2.0 * std::f32::consts::PI {
-            angle -= 2.0 * std::f32::consts::PI;
-            // 新しい周での角度ステップを再計算
-            let new_circumference = 2.0 * std::f32::consts::PI * radius;
-            let new_pieces_per_revolution = (new_circumference / piece_size).max(6.0);
-            angle_step = (2.0 * std::f32::consts::PI) / new_pieces_per_revolution;
-        }
-        
-        // 定期的な進捗ログ（大きな除外エリアの場合）
-        if exclusion_width.max(exclusion_height) > 2000.0 && attempts % 1000 == 0 {
-            println!("   🔄 Spiral attempt #{}, placed: {}/{}, radius: {:.1}", 
-                attempts, positions.len(), num_pieces, radius);
+        // 安全チェック：レイヤー数が多すぎる場合は停止
+        if current_layer > 50 {
+            println!("⚠️ Maximum layer count reached, stopping");
+            break;
         }
     }
     
     if positions.len() < num_pieces {
-        println!("⚠️ Could only place {} of {} pieces in spiral (tried {} attempts)", 
-            positions.len(), num_pieces, attempts);
+        println!("⚠️ Could only place {} of {} pieces in {} layers", 
+            positions.len(), num_pieces, current_layer);
         println!("   📐 May need fallback placement for remaining {} pieces", 
             num_pieces - positions.len());
     } else {
-        println!("✅ Successfully placed {} pieces in spiral pattern ({} attempts)", 
-            positions.len(), attempts);
+        println!("✅ Successfully placed {} pieces in {} concentric layers", 
+            positions.len(), current_layer);
     }
     
     positions
+}
+
+/// 指定半径の円周上にピースを配置する
+fn generate_circle_layer(
+    center: Vec2,
+    radius: f32,
+    piece_spacing: f32,
+    puzzle_area: &(Vec2, Vec2),
+    effective_piece_width: f32,
+    effective_piece_height: f32,
+    existing_positions: &[Vec2],
+    max_screen_distance: f32,
+    layer_index: usize,
+) -> Vec<Vec2> {
+    let mut layer_positions = Vec::new();
+    
+    // 円周の長さを計算
+    let circumference = 2.0 * std::f32::consts::PI * radius;
+    
+    // この円周に配置できるピースの概算数
+    let estimated_pieces = (circumference / piece_spacing) as usize;
+    
+    if estimated_pieces == 0 {
+        return layer_positions;
+    }
+    
+    // 実際の角度ステップを計算
+    let angle_step = (2.0 * std::f32::consts::PI) / estimated_pieces as f32;
+    
+    // レイヤーごとに開始角度を少しずらす（均等分散のため）
+    let start_angle = (layer_index as f32 * 0.1) % (2.0 * std::f32::consts::PI);
+    
+    // 円周上の各位置にピースを配置試行
+    for i in 0..estimated_pieces {
+        let angle = start_angle + (i as f32 * angle_step);
+        let x = center.x + radius * angle.cos();
+        let y = center.y + radius * angle.sin();
+        let position = Vec2::new(x, y);
+        
+        // 各種チェック
+        let distance_from_center = position.distance(Vec2::ZERO);
+        if distance_from_center <= max_screen_distance {
+            if !is_in_grid_area(position, puzzle_area, effective_piece_width, effective_piece_height) {
+                if !is_overlapping_with_existing(position, existing_positions, effective_piece_width, effective_piece_height) {
+                    if !is_overlapping_with_existing(position, &layer_positions, effective_piece_width, effective_piece_height) {
+                        layer_positions.push(position);
+                        
+                        // 最初のいくつかのピースの詳細ログ
+                        if layer_positions.len() <= 5 {
+                            println!("     📍 Layer {} piece #{} at ({:.1}, {:.1}), angle: {:.1}°", 
+                                layer_index, layer_positions.len(), x, y, angle.to_degrees());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    layer_positions
 }
 
 /// 指定位置がグリッド領域内かどうかをチェック
@@ -233,8 +248,8 @@ fn is_overlapping_with_existing(
     piece_width: f32,
     piece_height: f32
 ) -> bool {
-    // 元のコードと同じ：ピースサイズそのものを最小距離とする
-    let min_distance = piece_width.max(piece_height);
+    // 最小距離を少し緩和（90%）
+    let min_distance = piece_width.max(piece_height) * 0.9;
     
     for existing_pos in existing_positions {
         let distance = position.distance(*existing_pos);
