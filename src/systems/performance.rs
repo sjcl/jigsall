@@ -108,14 +108,14 @@ pub fn performance_frame_end(
     }
 }
 
+/// F12キーが押されたかチェックするRun Condition
+pub fn f12_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
+    keyboard_input.just_pressed(KeyCode::F12)
+}
+
 /// パフォーマンス計測のトグルシステム（F12キー）
-pub fn performance_toggle_system(
-    mut perf_monitor: ResMut<PerformanceMonitor>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-) {
-    if keyboard_input.just_pressed(KeyCode::F12) {
-        perf_monitor.toggle_debug_level();
-    }
+pub fn toggle_performance_debug(mut perf_monitor: ResMut<PerformanceMonitor>) {
+    perf_monitor.toggle_debug_level();
 }
 
 /// パフォーマンスレポート生成システム

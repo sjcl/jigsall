@@ -2,6 +2,35 @@ use bevy::prelude::*;
 use crate::components::*;
 use crate::resources::*;
 
+/// ESCキーが押されたかチェックするRun Condition
+pub fn escape_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
+    keyboard_input.just_pressed(KeyCode::Escape)
+}
+
+/// InGame状態かつゲーム画面でのESCキー処理
+pub fn toggle_game_menu(
+    mut game_state: ResMut<GameData>,
+    mut next_sub_state: ResMut<NextState<GameSubState>>,
+) {
+    match game_state.current_screen {
+        GameScreen::InGame => {
+            // ゲーム中にESCキーが押されたらメニューを表示
+            game_state.current_screen = GameScreen::InGameMenu;
+            next_sub_state.set(GameSubState::Paused);
+            println!("🎮 Opening in-game menu");
+        },
+        GameScreen::InGameMenu => {
+            // メニュー表示中にESCキーが押されたらゲームに戻る
+            game_state.current_screen = GameScreen::InGame;
+            next_sub_state.set(GameSubState::Playing);
+            println!("🎮 Resuming game");
+        },
+        _ => {
+            // 他の画面では何もしない
+        }
+    }
+}
+
 /// ピースの配置チェック - 正しい位置に近い場合にスナップする
 pub fn check_piece_placement(
     mut commands: Commands,
@@ -78,33 +107,3 @@ pub fn update_game_state(
     }
 }
 
-/// ESCキー入力でゲーム内メニューの表示/非表示を切り替え
-pub fn handle_escape_input(
-    mut game_state: ResMut<GameData>,
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut next_sub_state: ResMut<NextState<GameSubState>>,
-    app_state: Res<State<AppState>>,
-) {
-    if keyboard_input.just_pressed(KeyCode::Escape) {
-        // AppStateがInGameの場合のみESCキーを処理
-        if *app_state.get() == AppState::InGame {
-            match game_state.current_screen {
-                GameScreen::InGame => {
-                    // ゲーム中にESCキーが押されたらメニューを表示
-                    game_state.current_screen = GameScreen::InGameMenu;
-                    next_sub_state.set(GameSubState::Paused);
-                    println!("🎮 Opening in-game menu");
-                },
-                GameScreen::InGameMenu => {
-                    // メニュー表示中にESCキーが押されたらゲームに戻る
-                    game_state.current_screen = GameScreen::InGame;
-                    next_sub_state.set(GameSubState::Playing);
-                    println!("🎮 Resuming game");
-                },
-                _ => {
-                    // 他の画面では何もしない
-                }
-            }
-        }
-    }
-}

@@ -55,10 +55,10 @@ impl Plugin for GamePlugin {
                 handle_camera_zoom,
                 handle_camera_drag,
                 frustum_culling_system,
-                handle_escape_input,
+                toggle_game_menu.run_if(escape_just_pressed),
                 
                 // パフォーマンス計測システム
-                performance_toggle_system,
+                toggle_performance_debug.run_if(f12_just_pressed),
                 performance_report_system,
             ).run_if(in_state(AppState::InGame)))
             .add_systems(Last, performance_frame_end);

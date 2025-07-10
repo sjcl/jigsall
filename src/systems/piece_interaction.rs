@@ -403,21 +403,6 @@ pub fn handle_box_selection(
     let mouse_pressed = mouse_input.pressed(MouseButton::Left);
     let mouse_just_released = mouse_input.just_released(MouseButton::Left);
     
-    // ESCキーで選択解除
-    if keyboard_input.just_pressed(KeyCode::Escape) {
-        // 全ての選択を解除
-        for entity in selected_query.iter() {
-            commands.entity(entity).remove::<SelectedPiece>();
-        }
-        input_state.selected_pieces.clear();
-        input_state.selected_pieces_set.clear();
-        input_state.selection_mode = SelectionMode::Single;
-        input_state.selection_start = None;
-        input_state.selection_current = None;
-        input_state.last_selection_rect = None;
-        println!("🔄 Selection cleared");
-        return;
-    }
     
     match input_state.selection_mode {
         SelectionMode::Single => {
