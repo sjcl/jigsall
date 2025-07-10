@@ -49,7 +49,7 @@ impl Plugin for GamePlugin {
                 
                 // レガシー & ハイライト
                 handle_piece_dragging_hybrid_legacy,
-                highlight_selected_pieces,
+                highlight_selected_pieces.run_if(has_selected_pieces),
                 
                 // ゲームロジック
                 check_piece_placement,

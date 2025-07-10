@@ -845,3 +845,12 @@ pub fn highlight_selected_pieces(
     
     perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
 }
+
+/// システム条件: 選択されたピースまたはプレビューピースがあるかチェック
+/// パフォーマンス最適化: 選択中のピースがない場合はhighlight_selected_piecesシステムをスキップ
+pub fn has_selected_pieces(
+    selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
+    preview_pieces_query: Query<Entity, (With<SelectionPreview>, With<PuzzlePiece>)>,
+) -> bool {
+    !selected_pieces_query.is_empty() || !preview_pieces_query.is_empty()
+}
