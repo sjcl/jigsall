@@ -88,22 +88,20 @@ pub fn performance_frame_end(
     // Bevyの実際のフレーム時間を使用
     let delta_time = time.delta();
     
-    if perf_monitor.enabled {
-        perf_monitor.frame_times.push(delta_time);
-        
-        // 古いフレームデータを削除
-        if perf_monitor.frame_times.len() > perf_monitor.max_stored_frames {
-            perf_monitor.frame_times.remove(0);
-        }
-        
-        perf_monitor.frame_count += 1;
-        
-        // デバッグ: 異常に高速なフレームを検出
-        if perf_monitor.debug_level == PerformanceDebugLevel::High {
-            if delta_time.as_nanos() < 100_000 { // 0.1ms未満
-                println!("⚠️  WARNING: Extremely fast frame detected: {:.3}ms", 
-                    delta_time.as_secs_f32() * 1000.0);
-            }
+    perf_monitor.frame_times.push(delta_time);
+    
+    // 古いフレームデータを削除
+    if perf_monitor.frame_times.len() > perf_monitor.max_stored_frames {
+        perf_monitor.frame_times.remove(0);
+    }
+    
+    perf_monitor.frame_count += 1;
+    
+    // デバッグ: 異常に高速なフレームを検出
+    if perf_monitor.debug_level == PerformanceDebugLevel::High {
+        if delta_time.as_nanos() < 100_000 { // 0.1ms未満
+            println!("⚠️  WARNING: Extremely fast frame detected: {:.3}ms", 
+                delta_time.as_secs_f32() * 1000.0);
         }
     }
 }
@@ -118,6 +116,16 @@ pub fn toggle_performance_debug(mut perf_monitor: ResMut<PerformanceMonitor>) {
     perf_monitor.toggle_debug_level();
 }
 
+/// パフォーマンス計測が有効かチェックするRun Condition
+pub fn performance_monitoring_enabled(perf_monitor: Res<PerformanceMonitor>) -> bool {
+    perf_monitor.debug_level != PerformanceDebugLevel::Off
+}
+
+/// パフォーマンス報告すべきかチェックするRun Condition
+pub fn should_report_performance(perf_monitor: Res<PerformanceMonitor>) -> bool {
+    perf_monitor.should_report()
+}
+
 /// パフォーマンスレポート生成システム
 pub fn performance_report_system(
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -125,9 +133,6 @@ pub fn performance_report_system(
     cache: Res<PieceSelectionCache>,
     time: Res<Time>,
 ) {
-    if !perf_monitor.should_report() {
-        return;
-    }
 
     let piece_count = piece_query.iter().count();
     

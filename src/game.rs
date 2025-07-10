@@ -20,7 +20,7 @@ impl Plugin for GamePlugin {
             .insert_state(AppState::Loading)
             .insert_state(GameSubState::Initializing)
             .add_systems(Startup, (setup_game, setup_highlight_materials))
-            .add_systems(First, performance_frame_start)
+            .add_systems(First, performance_frame_start.run_if(performance_monitoring_enabled))
             // State transition systems
             .add_systems(OnEnter(AppState::Loading), transition_to_menu)
             .add_systems(OnEnter(AppState::InGame), (initialize_game, auto_adjust_camera_zoom))
@@ -29,7 +29,11 @@ impl Plugin for GamePlugin {
             .add_systems(Update, (
                 update_puzzle_image_size,
             ).run_if(in_state(AppState::GameSetup)))
-            // InGame state systems
+            // InGame state systems - パズル生成中のみ実行
+            .add_systems(Update, (
+                spawn_puzzle_pieces_progressive,
+            ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Initializing))))
+            // InGame state systems - プレイ中に実行
             .add_systems(Update, (
                 // 基本システム
                 update_input_state,
@@ -47,20 +51,25 @@ impl Plugin for GamePlugin {
                 // ゲームロジック
                 check_piece_placement,
                 update_game_state,
-                spawn_puzzle_pieces,
                 
-                // パズル生成とカメラ
-                spawn_puzzle_pieces_progressive,
+                // カメラ
                 handle_camera_zoom,
                 handle_camera_drag,
                 frustum_culling_system,
+                
+                // パフォーマンス計測システム
+                toggle_performance_debug.run_if(f12_just_pressed),
+                performance_report_system.run_if(should_report_performance),
+            ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Playing))))
+            // InGame state systems - ポーズ中に実行
+            .add_systems(Update, (
                 toggle_game_menu.run_if(escape_just_pressed),
                 
                 // パフォーマンス計測システム
                 toggle_performance_debug.run_if(f12_just_pressed),
-                performance_report_system,
-            ).run_if(in_state(AppState::InGame)))
-            .add_systems(Last, performance_frame_end);
+                performance_report_system.run_if(should_report_performance),
+            ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Paused))))
+            .add_systems(Last, performance_frame_end.run_if(performance_monitoring_enabled));
     }
 }
 

@@ -6,89 +6,7 @@ use crate::puzzle::*;
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use std::path::Path;
 
-pub fn spawn_puzzle_pieces(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    puzzle_config: Res<PuzzleConfig>,
-    puzzle_image: Option<Res<PuzzleImage>>,
-    game_state: Res<GameData>,
-    existing_pieces: Query<&PuzzlePiece>,
-    _existing_grid_ref: Query<&GridReference>,
-    _images: Res<Assets<Image>>,
-    _meshes: ResMut<Assets<Mesh>>,
-    _materials: ResMut<Assets<ColorMaterial>>,
-    _progress: ResMut<PieceGenerationProgress>,
-) {
-    if game_state.current_screen == GameScreen::InGame && existing_pieces.is_empty() {
-        // 画像パスが設定されている場合
-        if !puzzle_config.image_path.is_empty() {
-            // PuzzleImageリソースがまだない場合は作成
-            if puzzle_image.is_none() {
-                // ファイルの存在確認
-                if !std::path::Path::new(&puzzle_config.image_path).exists() {
-                    println!("Error: Image file does not exist: {}", puzzle_config.image_path);
-                    return;
-                }
-                
-                // Bevyアセットシステム用のパス変換
-                let asset_path = if Path::new(&puzzle_config.image_path).is_absolute() {
-                    // 絶対パスの場合は、assetsフォルダにコピーして相対パスを使用
-                    let source_path = Path::new(&puzzle_config.image_path);
-                    let file_name = source_path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("puzzle_image.png");
-                    
-                    let assets_dir = Path::new("assets");
-                    let dest_path = assets_dir.join(file_name);
-                    
-                    // assetsディレクトリが存在しない場合は作成
-                    if !assets_dir.exists() {
-                        if let Err(e) = std::fs::create_dir_all(assets_dir) {
-                            println!("Failed to create assets directory: {}", e);
-                            return;
-                        }
-                    }
-                    
-                    // ファイルをassetsフォルダにコピー
-                    if let Err(e) = std::fs::copy(source_path, &dest_path) {
-                        println!("Failed to copy image to assets folder: {}", e);
-                        return;
-                    }
-                    
-                    println!("Copied image to: {:?}", dest_path);
-                    file_name.to_string()
-                } else {
-                    puzzle_config.image_path.clone()
-                };
-                
-                println!("Original path: {}", puzzle_config.image_path);
-                println!("Asset path: {}", asset_path);
-                
-                let image_handle = asset_server.load(&asset_path);
-                println!("Loading image with handle: {:?}", image_handle);
-                
-                // 読み込み直後の状態もチェック
-                let initial_state = asset_server.load_state(&image_handle);
-                println!("Initial load state: {:?}", initial_state);
-                
-                commands.insert_resource(PuzzleImage {
-                    handle: image_handle,
-                    size: Vec2::new(1920.0, 1080.0), // 16:9の仮定値（update_puzzle_image_sizeで実際のサイズに更新される）
-                });
-                return; // 次フレームで再実行
-            }
-            
-            // プログレッシブ生成システムが処理するので、ここでは何もしない
-            // spawn_puzzle_pieces_progressiveシステムが実際の生成を行う
-        } else {
-            // 画像が選択されていない場合はエラーメッセージ
-            println!("⚠️ No image selected for puzzle creation! Current screen: {:?}, image_path: '{}'", 
-                game_state.current_screen, puzzle_config.image_path);
-            return;
-        }
-    }
-}
+
 
 fn spawn_grid_reference(
     commands: &mut Commands,
@@ -194,7 +112,7 @@ pub fn spawn_puzzle_pieces_progressive(
     asset_server: Res<AssetServer>,
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
-    game_state: Res<GameData>,
+    _game_state: Res<GameData>,
     existing_pieces: Query<&PuzzlePiece>,
     existing_grid_ref: Query<&GridReference>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -203,6 +121,7 @@ pub fn spawn_puzzle_pieces_progressive(
     mut stroke_cache: ResMut<StrokeMeshCache>,
     mut piece_cache: ResMut<PieceSelectionCache>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
     let start_time = perf_monitor.start_system_timing("spawn_puzzle_pieces_progressive");
     
@@ -216,27 +135,15 @@ pub fn spawn_puzzle_pieces_progressive(
         }
     }
     
-    // ゲーム画面でない場合は何もしない
-    if game_state.current_screen != GameScreen::InGame {
-        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
-        return;
-    }
-    
     // 生成中でない場合で、かつ既にピースがある場合は何もしない
     if !progress.is_generating && !existing_pieces.is_empty() {
         perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     }
 
-    // 画像が選択されていない場合
-    if puzzle_config.image_path.is_empty() {
-        println!("⚠️ No image selected for puzzle creation!");
-        perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
-        return;
-    }
-
-    // PuzzleImageがまだない場合は待機
+    // PuzzleImageが準備されていない場合は待機
     let Some(ref puzzle_image) = puzzle_image else {
+        println!("⚠️ PuzzleImage not ready yet, waiting for GameSetup to complete asset loading...");
         perf_monitor.end_system_timing("spawn_puzzle_pieces_progressive", start_time);
         return;
     };
@@ -464,6 +371,10 @@ pub fn spawn_puzzle_pieces_progressive(
             progress.bg_thread_receiver = None;
             progress.piece_thread_receiver = None;
             progress.progress_receiver = None;
+            
+            // GameSubStateをPlayingに遷移（パズル生成完了）
+            next_sub_state.set(GameSubState::Playing);
+            println!("🎮 Transitioned to Playing state - puzzle generation completed");
             
             // 大量パズルの場合: パフォーマンス確認
             if progress.total_pieces > 1000 {
