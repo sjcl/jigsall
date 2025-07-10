@@ -38,6 +38,9 @@ impl Plugin for GamePlugin {
                 // 基本システム
                 update_input_state,
                 
+                // メニュー操作（プレイ中にESCを検出してポーズに移行）
+                toggle_game_menu.run_if(escape_just_pressed),
+                
                 // 選択システム
                 update_piece_cache,
                 handle_box_selection,
@@ -63,9 +66,10 @@ impl Plugin for GamePlugin {
             ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Playing))))
             // InGame state systems - ポーズ中に実行
             .add_systems(Update, (
+                // メニュー操作（ポーズ中にESCを検出してプレイに復帰）
                 toggle_game_menu.run_if(escape_just_pressed),
                 
-                // パフォーマンス計測システム
+                // パフォーマンス計測システム（ポーズ中でも利用可能）
                 toggle_performance_debug.run_if(f12_just_pressed),
                 performance_report_system.run_if(should_report_performance),
             ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Paused))))
