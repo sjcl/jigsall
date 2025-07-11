@@ -24,8 +24,7 @@ pub struct Draggable {
 // Picking system用の新しいコンポーネント
 #[derive(Component)]
 pub struct PickablePiece {
-    pub drag_offset: Vec2,         // ワールド座標でのオフセット
-    pub screen_drag_offset: Vec2,  // スクリーン座標でのオフセット（エッジスクロール対応）
+    pub drag_offset: Vec2,
 }
 
 #[derive(Component)]
