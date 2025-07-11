@@ -26,22 +26,82 @@ pub fn draw_game_ui(
             
             ui.separator();
             ui.label("Click and drag puzzle pieces to move them");
+            ui.separator();
+            ui.label("Hold Tab to view players");
         });
     });
+}
+
+/// プレイヤー一覧オーバーレイ（Tabキーで表示）
+pub fn draw_players_overlay(
+    mut contexts: EguiContexts,
+    game_state: Res<GameData>,
+) {
+    let _span = info_span!("draw_players_overlay").entered();
+    if game_state.current_screen != GameScreen::InGame {
+        return;
+    }
     
-    egui::SidePanel::right("players").show(ctx, |ui| {
-        ui.heading("Players");
-        ui.separator();
-        
-        for player in &game_state.players {
-            ui.horizontal(|ui| {
-                ui.label(&player.name);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("Score: {}", player.score));
+    let Ok(ctx) = contexts.ctx_mut() else { return; };
+    
+    // 半透明の背景を表示
+    egui::Area::new(egui::Id::new("players_overlay_background"))
+        .fixed_pos(egui::pos2(0.0, 0.0))
+        .show(ctx, |ui| {
+            let screen_rect = ctx.screen_rect();
+            ui.allocate_ui_with_layout(
+                screen_rect.size(),
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    // 背景全体を半透明の黒で覆う
+                    ui.painter().rect_filled(
+                        screen_rect,
+                        egui::CornerRadius::ZERO,
+                        egui::Color32::from_black_alpha(100), // 少し薄めの半透明
+                    );
+                },
+            );
+        });
+    
+    // プレイヤー一覧を画面上部中央に表示（上部UIの下に配置）
+    egui::Window::new("Players")
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 120.0)) // 上部UIを避けて配置
+        .collapsible(false)
+        .resizable(false)
+        .title_bar(true)
+        .show(ctx, |ui| {
+            ui.set_min_width(400.0);
+            
+            // ウィンドウの高さを画面の半分に制限
+            let screen_height = ctx.screen_rect().height();
+            let max_height = screen_height * 0.5;
+            
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        
+                        if game_state.players.is_empty() {
+                            ui.centered_and_justified(|ui| {
+                                ui.label("No players connected");
+                            });
+                        } else {
+                            // プレイヤー一覧
+                            for player in &game_state.players {
+                                ui.group(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(&player.name);
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.label(format!("Score: {}", player.score));
+                                        });
+                                    });
+                                });
+                            }
+                        }
+                    });
                 });
-            });
-        }
-    });
+        });
 }
 
 /// ゲーム完了UI

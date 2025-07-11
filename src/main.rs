@@ -14,6 +14,7 @@ use game::GamePlugin;
 // use networking::NetworkingPlugin;
 use resources::AppState;
 use ui::*;
+use systems::tab_pressed;
 
 fn main() {
     App::new()
@@ -34,6 +35,7 @@ fn main() {
                 
                 // InGame state UI
                 draw_game_ui.run_if(in_state(AppState::InGame)),
+                draw_players_overlay.run_if(in_state(AppState::InGame).and(tab_pressed)),
                 draw_in_game_menu_ui.run_if(in_state(AppState::InGame)),
                 draw_generation_progress_ui.run_if(in_state(AppState::InGame)),
                 

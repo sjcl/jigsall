@@ -7,6 +7,11 @@ pub fn escape_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
     keyboard_input.just_pressed(KeyCode::Escape)
 }
 
+/// Tabキーが押されているかチェックするRun Condition
+pub fn tab_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
+    keyboard_input.pressed(KeyCode::Tab)
+}
+
 /// InGame状態かつゲーム画面でのESCキー処理
 pub fn toggle_game_menu(
     mut game_state: ResMut<GameData>,
