@@ -78,7 +78,7 @@ fn find_clicked_piece_for_legacy(
 fn find_clicked_piece_for_box_selection(
     world_pos: Vec2,
     cache: &PieceSelectionCache,
-    piece_query: &Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
+    piece_query: &Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
 ) -> Option<Entity> {
     let mut clicked_piece = None;
     let mut highest_z = f32::NEG_INFINITY;
@@ -91,7 +91,7 @@ fn find_clicked_piece_for_box_selection(
                world_pos.y >= min_bound.y && world_pos.y <= max_bound.y {
                 
                 // 実際のジグソー形状内かチェック
-                if let Ok((_, transform, _piece, shape)) = piece_query.get(entity) {
+                if let Ok((_, transform, _, _piece, shape)) = piece_query.get(entity) {
                     let local_pos = world_pos - transform.translation.truncate();
                     
                     if point_in_mesh(&shape.vertices, &shape.indices, local_pos) {
@@ -368,7 +368,7 @@ pub fn handle_box_selection(
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
-    piece_query: Query<(Entity, &mut Transform, &PuzzlePiece, &PieceShape), With<PickablePiece>>,
+    mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
     selected_query: Query<Entity, With<SelectedPiece>>,
     selection_box_query: Query<Entity, With<SelectionBox>>,
     mut cache: ResMut<PieceSelectionCache>,
@@ -386,7 +386,7 @@ pub fn handle_box_selection(
         cache.piece_bounds.clear();
         
         let mut cache_piece_count = 0;
-        for (entity, transform, piece, _) in piece_query.iter() {
+        for (entity, transform, _, piece, _) in piece_query.iter() {
             let position = transform.translation.truncate();
             cache.all_pieces.push(entity);
             cache.piece_positions.insert(entity, position);
@@ -455,10 +455,17 @@ pub fn handle_box_selection(
                         input_state.selected_pieces_set.clear();
                         input_state.multi_drag_offset.clear();
                         
+                        // 単一ピースドラッグ用にdrag_offsetを計算
+                        if let Ok((_, transform, mut pickable, _, _)) = piece_query.get_mut(piece_entity) {
+                            let piece_world_pos = transform.translation.truncate();
+                            pickable.drag_offset = piece_world_pos - world_pos;
+                            
+                            println!("🎯 Started single piece drag - offset: ({:.1}, {:.1})", 
+                                pickable.drag_offset.x, pickable.drag_offset.y);
+                        }
+                        
                         // レガシーシステムに処理を委譲（単一ピースドラッグ）
                         input_state.selected_piece = Some(piece_entity);
-                        
-                        println!("🎯 Started single piece drag");
                     }
                 } else {
                     // 空の場所をクリック
