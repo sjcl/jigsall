@@ -288,6 +288,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
         // ピースをクリックした場合、そのピースを選択
         if let Some(entity) = clicked_piece {
             input_state.selected_piece = Some(entity);
+            input_state.is_dragging_piece = true; // エッジスクロール用フラグ
             // 即座にドラッグ開始
             for (e, mut transform, mut pickable, piece, _shape) in piece_query.iter_mut() {
                 if e == entity {
@@ -323,6 +324,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
         } else {
             // 何もクリックしなかった場合、選択解除
             input_state.selected_piece = None;
+            input_state.is_dragging_piece = false;
         }
     }
     
@@ -360,6 +362,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
         }
         
         input_state.selected_piece = None;
+        input_state.is_dragging_piece = false;
     }
     
     perf_monitor.end_system_timing("handle_piece_dragging_hybrid_legacy", start_time);
@@ -436,6 +439,7 @@ pub fn handle_box_selection(
                     if input_state.selected_pieces_set.contains(&piece_entity) {
                         // 既に選択済み → 複数ピース移動モードに移行
                         input_state.selection_mode = SelectionMode::MultiDrag;
+                        input_state.is_dragging_piece = true;
                         
                         // 各ピースのドラッグオフセットを計算（キャッシュ使用）
                         input_state.multi_drag_offset.clear();
@@ -469,6 +473,7 @@ pub fn handle_box_selection(
                         
                         // レガシーシステムに処理を委譲（単一ピースドラッグ）
                         input_state.selected_piece = Some(piece_entity);
+                        input_state.is_dragging_piece = true;
                     }
                 } else {
                     // 空の場所をクリック
@@ -660,6 +665,7 @@ pub fn handle_multi_piece_drag(
         // ドラッグ終了 - MultiDragモードを終了
         input_state.selection_mode = SelectionMode::Single;
         input_state.multi_drag_offset.clear();
+        input_state.is_dragging_piece = false;
         
         // ドラッグ終了時にZ-orderを調整し、各ピースの移動完了イベントを発火
         for (entity, mut transform, _) in piece_query.iter_mut() {

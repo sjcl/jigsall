@@ -60,6 +60,7 @@ impl Plugin for GamePlugin {
                 // カメラ
                 handle_camera_zoom,
                 handle_camera_drag,
+                handle_edge_scrolling,
                 
                 // パフォーマンス計測システム
                 toggle_performance_debug.run_if(f12_just_pressed),

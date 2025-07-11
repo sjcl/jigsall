@@ -171,6 +171,10 @@ pub struct InputState {
     pub selected_pieces_set: HashSet<Entity>,  // 高速な選択状態チェック用
     pub last_selection_rect: Option<(Vec2, Vec2)>,  // 前回の選択範囲
     pub cached_drag_entity: Option<Entity>,  // ドラッグ中のエンティティキャッシュ
+    
+    // エッジスクロール用
+    pub cursor_screen_position: Option<Vec2>,  // スクリーン座標でのカーソル位置
+    pub is_dragging_piece: bool,  // ピースをドラッグ中かどうか
 }
 
 impl Default for InputState {
@@ -195,6 +199,10 @@ impl Default for InputState {
             selected_pieces_set: HashSet::new(),
             last_selection_rect: None,
             cached_drag_entity: None,
+            
+            // エッジスクロール用の初期化
+            cursor_screen_position: None,
+            is_dragging_piece: false,
         }
     }
 }

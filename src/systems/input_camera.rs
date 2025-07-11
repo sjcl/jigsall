@@ -26,6 +26,9 @@ pub fn update_input_state(
     input_state.last_mouse_position = input_state.mouse_position;
     
     if let Some(cursor_pos) = window.cursor_position() {
+        // スクリーン座標を保存
+        input_state.cursor_screen_position = Some(cursor_pos);
+        
         if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
             input_state.mouse_position = world_pos;
             // デバッグ: マウス座標変換を確認（頻繁すぎるので制限）
@@ -34,6 +37,8 @@ pub fn update_input_state(
                     cursor_pos.x, cursor_pos.y, world_pos.x, world_pos.y);
             }
         }
+    } else {
+        input_state.cursor_screen_position = None;
     }
     
     input_state.is_mouse_pressed = mouse_input.pressed(MouseButton::Left);
@@ -225,4 +230,68 @@ pub fn handle_camera_drag(
     }
     
     perf_monitor.end_system_timing("handle_camera_drag", start_time);
+}
+
+/// ピースドラッグ中の画面端カメラスクロール
+pub fn handle_edge_scrolling(
+    input_state: Res<InputState>,
+    mut camera_query: Query<&mut Transform, With<MainCamera>>,
+    windows: Query<&Window>,
+    time: Res<Time>,
+) {
+    let _span = info_span!("handle_edge_scrolling").entered();
+    
+    // ピースをドラッグ中でない場合はスキップ
+    if !input_state.is_dragging_piece {
+        return;
+    }
+    
+    // カーソルのスクリーン座標が無い場合はスキップ
+    let Some(cursor_pos) = input_state.cursor_screen_position else {
+        return;
+    };
+    
+    let Ok(window) = windows.single() else { return; };
+    let Ok(mut camera_transform) = camera_query.single_mut() else { return; };
+    
+    // エッジ検出のマージン（ピクセル）
+    const EDGE_MARGIN: f32 = 50.0;
+    // 最大スクロール速度（ピクセル/秒）
+    const MAX_SCROLL_SPEED: f32 = 500.0;
+    
+    let window_width = window.width();
+    let window_height = window.height();
+    
+    let mut scroll_velocity = Vec2::ZERO;
+    
+    // 左端
+    if cursor_pos.x < EDGE_MARGIN {
+        let factor = 1.0 - (cursor_pos.x / EDGE_MARGIN);
+        scroll_velocity.x = -MAX_SCROLL_SPEED * factor;
+    }
+    // 右端
+    else if cursor_pos.x > window_width - EDGE_MARGIN {
+        let factor = (cursor_pos.x - (window_width - EDGE_MARGIN)) / EDGE_MARGIN;
+        scroll_velocity.x = MAX_SCROLL_SPEED * factor;
+    }
+    
+    // 上端（Y座標は下が正）
+    if cursor_pos.y < EDGE_MARGIN {
+        let factor = 1.0 - (cursor_pos.y / EDGE_MARGIN);
+        scroll_velocity.y = MAX_SCROLL_SPEED * factor;
+    }
+    // 下端
+    else if cursor_pos.y > window_height - EDGE_MARGIN {
+        let factor = (cursor_pos.y - (window_height - EDGE_MARGIN)) / EDGE_MARGIN;
+        scroll_velocity.y = -MAX_SCROLL_SPEED * factor;
+    }
+    
+    // スクロール速度が0でない場合のみカメラを移動
+    if scroll_velocity.length_squared() > 0.0 {
+        let scale_factor = camera_transform.scale.x;
+        let movement = scroll_velocity * scale_factor * time.delta_secs();
+        
+        camera_transform.translation.x += movement.x;
+        camera_transform.translation.y += movement.y;
+    }
 }
