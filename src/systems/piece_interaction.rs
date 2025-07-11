@@ -207,7 +207,8 @@ pub fn handle_piece_dragging_hybrid_legacy(
     mouse_input: Res<ButtonInput<MouseButton>>,
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
-    camera_query: Query<&Transform, (With<MainCamera>, Without<PuzzlePiece>)>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    windows: Query<&Window>,
     game_state: Res<GameData>,
     cache: Res<PieceSelectionCache>,
     mut move_events: EventWriter<PieceMoveCompleted>,
@@ -232,12 +233,18 @@ pub fn handle_piece_dragging_hybrid_legacy(
     let mouse_pressed = mouse_input.pressed(MouseButton::Left);
     let mouse_just_released = mouse_input.just_released(MouseButton::Left);
     
-    // Camera transform for debugging
-    let camera_info = if let Ok(camera_transform) = camera_query.single() {
-        Some((camera_transform.scale.x, camera_transform.translation.truncate()))
-    } else {
-        None
+    // Get camera and window for screen coordinate conversion
+    let Ok((camera, camera_transform)) = camera_query.single() else {
+        perf_monitor.end_system_timing("handle_piece_dragging_hybrid_legacy", start_time);
+        return;
     };
+    let Ok(window) = windows.single() else {
+        perf_monitor.end_system_timing("handle_piece_dragging_hybrid_legacy", start_time);
+        return;
+    };
+    
+    // Camera info for debugging
+    let camera_info = Some((camera_transform.scale().x, camera_transform.translation().truncate()));
     
     // 現在ドラッグ中のピースがあるかチェック（キャッシュ使用）
     let current_dragging_piece = input_state.cached_drag_entity;
@@ -295,6 +302,14 @@ pub fn handle_piece_dragging_hybrid_legacy(
                     let piece_world_pos = transform.translation.truncate();
                     pickable.drag_offset = piece_world_pos - world_pos;
                     
+                    // スクリーン座標でのオフセットを計算
+                    if let (Some(cursor_screen_pos), Ok(piece_screen_pos)) = (
+                        input_state.cursor_screen_position,
+                        camera.world_to_viewport(camera_transform, transform.translation)
+                    ) {
+                        pickable.screen_drag_offset = piece_screen_pos - cursor_screen_pos;
+                    }
+                    
                     // Z-orderを更新（ドラッグ中のピースが最前面に）
                     transform.translation.z = input_state.next_z_order;
                     input_state.next_z_order += 0.1;
@@ -330,12 +345,30 @@ pub fn handle_piece_dragging_hybrid_legacy(
     
     // ドラッグ中の処理（現在選択されているピースのみ）
     if mouse_pressed && current_dragging_piece.is_some() {
-        let world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
-        
-        for (entity, mut transform, pickable, _piece, _shape) in piece_query.iter_mut() {
-            if input_state.selected_piece == Some(entity) {
-                let new_position = world_pos + pickable.drag_offset;
-                transform.translation = new_position.extend(transform.translation.z);
+        // エッジスクロール中はスクリーン座標を使用
+        if input_state.is_dragging_piece && input_state.cursor_screen_position.is_some() {
+            let cursor_screen_pos = input_state.cursor_screen_position.unwrap();
+            
+            for (entity, mut transform, pickable, _piece, _shape) in piece_query.iter_mut() {
+                if input_state.selected_piece == Some(entity) {
+                    // スクリーン座標で新しい位置を計算
+                    let target_screen_pos = cursor_screen_pos + pickable.screen_drag_offset;
+                    
+                    // スクリーン座標をワールド座標に変換
+                    if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, target_screen_pos) {
+                        transform.translation = world_pos.extend(transform.translation.z);
+                    }
+                }
+            }
+        } else {
+            // 通常のドラッグ（ワールド座標を使用）
+            let world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
+            
+            for (entity, mut transform, pickable, _piece, _shape) in piece_query.iter_mut() {
+                if input_state.selected_piece == Some(entity) {
+                    let new_position = world_pos + pickable.drag_offset;
+                    transform.translation = new_position.extend(transform.translation.z);
+                }
             }
         }
     }
@@ -376,6 +409,8 @@ pub fn handle_box_selection(
     mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
     selected_query: Query<Entity, With<SelectedPiece>>,
     selection_box_query: Query<Entity, With<SelectionBox>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    windows: Query<&Window>,
     mut cache: ResMut<PieceSelectionCache>,
     game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -443,11 +478,27 @@ pub fn handle_box_selection(
                         
                         // 各ピースのドラッグオフセットを計算（キャッシュ使用）
                         input_state.multi_drag_offset.clear();
+                        input_state.multi_screen_drag_offset.clear();
                         let selected_pieces = input_state.selected_pieces.clone();
-                        for selected_entity in &selected_pieces {
-                            if let Some(cached_pos) = cache.piece_positions.get(selected_entity) {
-                                let offset = *cached_pos - world_pos;
-                                input_state.multi_drag_offset.insert(*selected_entity, offset);
+                        
+                        // カメラ取得
+                        if let (Ok((camera, camera_transform)), Ok(_window)) = (camera_query.single(), windows.single()) {
+                            if let Some(cursor_screen_pos) = input_state.cursor_screen_position {
+                                for selected_entity in &selected_pieces {
+                                    // ワールド座標オフセット
+                                    if let Some(cached_pos) = cache.piece_positions.get(selected_entity) {
+                                        let offset = *cached_pos - world_pos;
+                                        input_state.multi_drag_offset.insert(*selected_entity, offset);
+                                    }
+                                    
+                                    // スクリーン座標オフセット
+                                    if let Ok((_, transform, _, _, _)) = piece_query.get(*selected_entity) {
+                                        if let Ok(piece_screen_pos) = camera.world_to_viewport(camera_transform, transform.translation) {
+                                            let screen_offset = piece_screen_pos - cursor_screen_pos;
+                                            input_state.multi_screen_drag_offset.insert(*selected_entity, screen_offset);
+                                        }
+                                    }
+                                }
                             }
                         }
                         println!("🎯 Started multi-piece drag with {} pieces", input_state.selected_pieces.len());
@@ -466,6 +517,16 @@ pub fn handle_box_selection(
                         if let Ok((_, transform, mut pickable, _, _)) = piece_query.get_mut(piece_entity) {
                             let piece_world_pos = transform.translation.truncate();
                             pickable.drag_offset = piece_world_pos - world_pos;
+                            
+                            // スクリーン座標でのオフセットを計算
+                            if let (Ok((camera, camera_transform)), Ok(window)) = (camera_query.single(), windows.single()) {
+                                if let (Some(cursor_screen_pos), Ok(piece_screen_pos)) = (
+                                    input_state.cursor_screen_position,
+                                    camera.world_to_viewport(camera_transform, transform.translation)
+                                ) {
+                                    pickable.screen_drag_offset = piece_screen_pos - cursor_screen_pos;
+                                }
+                            }
                             
                             println!("🎯 Started single piece drag - offset: ({:.1}, {:.1})", 
                                 pickable.drag_offset.x, pickable.drag_offset.y);
@@ -623,6 +684,8 @@ pub fn handle_multi_piece_drag(
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece), With<SelectedPiece>>,
+    camera_query: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+    windows: Query<&Window>,
     game_state: Res<GameData>,
     mut move_events: EventWriter<PieceMoveCompleted>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -645,13 +708,32 @@ pub fn handle_multi_piece_drag(
     let mouse_just_released = mouse_input.just_released(MouseButton::Left);
     
     if mouse_pressed {
-        // ドラッグ中 - 全ての選択されたピースを移動
-        let current_world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
-        
-        for (entity, mut transform, _piece) in piece_query.iter_mut() {
-            if let Some(offset) = input_state.multi_drag_offset.get(&entity) {
-                let new_position = current_world_pos + *offset;
-                transform.translation = new_position.extend(input_state.next_z_order);
+        // エッジスクロール中はスクリーン座標を使用
+        if input_state.is_dragging_piece && input_state.cursor_screen_position.is_some() {
+            if let (Ok((camera, camera_transform)), Ok(_window)) = (camera_query.single(), windows.single()) {
+                let cursor_screen_pos = input_state.cursor_screen_position.unwrap();
+                
+                for (entity, mut transform, _piece) in piece_query.iter_mut() {
+                    if let Some(screen_offset) = input_state.multi_screen_drag_offset.get(&entity) {
+                        // スクリーン座標で新しい位置を計算
+                        let target_screen_pos = cursor_screen_pos + *screen_offset;
+                        
+                        // スクリーン座標をワールド座標に変換
+                        if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, target_screen_pos) {
+                            transform.translation = world_pos.extend(input_state.next_z_order);
+                        }
+                    }
+                }
+            }
+        } else {
+            // 通常のドラッグ（ワールド座標を使用）
+            let current_world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
+            
+            for (entity, mut transform, _piece) in piece_query.iter_mut() {
+                if let Some(offset) = input_state.multi_drag_offset.get(&entity) {
+                    let new_position = current_world_pos + *offset;
+                    transform.translation = new_position.extend(input_state.next_z_order);
+                }
             }
         }
         
@@ -665,6 +747,7 @@ pub fn handle_multi_piece_drag(
         // ドラッグ終了 - MultiDragモードを終了
         input_state.selection_mode = SelectionMode::Single;
         input_state.multi_drag_offset.clear();
+        input_state.multi_screen_drag_offset.clear();
         input_state.is_dragging_piece = false;
         
         // ドラッグ終了時にZ-orderを調整し、各ピースの移動完了イベントを発火

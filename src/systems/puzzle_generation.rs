@@ -332,6 +332,7 @@ pub fn spawn_puzzle_pieces_progressive(
                 piece_data.piece_shape,
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
+                    screen_drag_offset: Vec2::ZERO,
                 },
                 Draggable {
                     is_dragging: false,

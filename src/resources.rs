@@ -166,6 +166,7 @@ pub struct InputState {
     pub selection_current: Option<Vec2>,
     pub selected_pieces: Vec<Entity>,
     pub multi_drag_offset: HashMap<Entity, Vec2>,
+    pub multi_screen_drag_offset: HashMap<Entity, Vec2>,  // スクリーン座標でのマルチドラッグオフセット
     
     // パフォーマンス最適化用のキャッシュ
     pub selected_pieces_set: HashSet<Entity>,  // 高速な選択状態チェック用
@@ -194,6 +195,7 @@ impl Default for InputState {
             selection_current: None,
             selected_pieces: Vec::new(),
             multi_drag_offset: HashMap::new(),
+            multi_screen_drag_offset: HashMap::new(),
             
             // パフォーマンス最適化用のキャッシュの初期化
             selected_pieces_set: HashSet::new(),
