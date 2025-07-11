@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::resources::*;
 use crate::puzzle_utils::calculate_grid_from_config;
+use crate::asset_reader::{ExternalFileRegistry, load_external_image};
 
 /// ホストゲーム設定UI
 pub fn draw_host_setup_ui(
@@ -12,6 +13,8 @@ pub fn draw_host_setup_ui(
     mut commands: Commands,
     puzzle_image: Option<Res<PuzzleImage>>,
     asset_server: Res<AssetServer>,
+    file_registry: Res<ExternalFileRegistry>,
+    mut images: ResMut<Assets<Image>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::HostSetup {
@@ -546,8 +549,16 @@ pub fn draw_host_setup_ui(
                                                     .strong()
                                             );
                                         } else {
+                                            // 外部ファイルの場合はオリジナルのファイル名を表示
+                                            let display_name = if file_registry.is_external_image_path(&puzzle_config.image_path) {
+                                                file_registry.get_original_filename(&puzzle_config.image_path)
+                                                    .unwrap_or_else(|| puzzle_config.image_path.clone())
+                                            } else {
+                                                puzzle_config.image_path.clone()
+                                            };
+                                            
                                             ui.label(
-                                                egui::RichText::new(&puzzle_config.image_path)
+                                                egui::RichText::new(&display_name)
                                                     .size(14.0)
                                                     .color(egui::Color32::LIGHT_GREEN)
                                                     .strong()
@@ -575,33 +586,20 @@ pub fn draw_host_setup_ui(
                                             println!("File exists: {}", std::path::Path::new(&original_path).exists());
                                             println!("File metadata: {:?}", std::fs::metadata(&original_path));
                                             
-                                            // 画像をassetsフォルダにコピー
-                                            if let Some(filename) = path.file_name() {
-                                                let assets_path = format!("assets/{}", filename.to_string_lossy());
-                                                
-                                                // assetsディレクトリが存在しない場合は作成
-                                                std::fs::create_dir_all("assets").ok();
-                                                
-                                                // ファイルをコピー
-                                                if let Err(e) = std::fs::copy(&original_path, &assets_path) {
-                                                    println!("Failed to copy image to assets folder: {}", e);
-                                                    puzzle_config.image_path = original_path; // オリジナルパスを使用
-                                                } else {
-                                                    puzzle_config.image_path = filename.to_string_lossy().to_string(); // assets内の相対パスを使用
-                                                    println!("Image copied to: {}", assets_path);
-                                                }
-                                            } else {
-                                                puzzle_config.image_path = original_path;
-                                            }
+                                            // 外部ファイルとして登録（コピーなし）
+                                            let virtual_path = file_registry.register_file(&original_path);
+                                            puzzle_config.image_path = virtual_path.clone();
                                             
-                                            // 画像選択時に即座にロードを開始
-                                            let image_handle = asset_server.load(&puzzle_config.image_path);
+                                            // 外部ファイル読み込み関数を使用
+                                            let image_handle = load_external_image(&file_registry, &asset_server, &mut images, &virtual_path);
                                             
                                             // PuzzleImageリソースを作成または更新
                                             commands.insert_resource(PuzzleImage {
                                                 handle: image_handle,
                                                 size: Vec2::new(1.0, 1.0), // 小さな値で初期化、読み込み中を示す
                                             });
+                                            
+                                            println!("🎯 Image registered as external asset: {} -> {}", virtual_path, original_path);
                                         }
                                     }
                                     #[cfg(not(target_os = "windows"))]
@@ -610,7 +608,7 @@ pub fn draw_host_setup_ui(
                                         puzzle_config.image_path = "test_image.png".to_string();
                                         println!("Using test image: {}", puzzle_config.image_path);
                                         
-                                        // 画像選択時に即座にロードを開始
+                                        // 通常のアセット読み込み
                                         let image_handle = asset_server.load(&puzzle_config.image_path);
                                         
                                         // PuzzleImageリソースを作成または更新

@@ -4,50 +4,40 @@ use crate::components::*;
 use crate::resources::*;
 use crate::puzzle::*;
 use crate::jigsaw_shapes::JigsawShapeGenerator;
-use std::path::Path;
 
 
 
 fn spawn_grid_reference(
     commands: &mut Commands,
-    asset_server: &Res<AssetServer>,
     puzzle_config: &PuzzleConfig,
     puzzle_image: Option<&Res<PuzzleImage>>,
 ) {
     // 選択された画像を半透明で表示
     if !puzzle_config.image_path.is_empty() {
-        // メインの画像読み込みと同じパス変換処理を適用
-        let asset_path = if Path::new(&puzzle_config.image_path).is_absolute() {
-            // 絶対パスの場合は、ファイル名のみを使用（既にassetsフォルダにコピー済み）
-            Path::new(&puzzle_config.image_path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("puzzle_image.png")
-                .to_string()
+        if let Some(puzzle_img) = puzzle_image {
+            println!("📖 Spawning grid reference with existing image handle: {:?}", puzzle_img.handle.id());
+            
+            // 既に読み込み済みのImageハンドルを使用
+            let texture_handle = puzzle_img.handle.clone();
+            
+            // Use the same size calculation as pieces to ensure alignment
+            let custom_size = Some(puzzle_img.size);
+            
+            commands.spawn((
+                Sprite {
+                    color: Color::srgb(1.0, 1.0, 1.0).with_alpha(0.3), // 半透明
+                    image: texture_handle,
+                    custom_size, // Match the size used for piece calculations
+                    ..default()
+                },
+                Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
+                // 参照画像としてマーク
+                GridReference,
+            ));
+            
+            println!("✅ Grid reference spawned with size: ({:.1}, {:.1})", puzzle_img.size.x, puzzle_img.size.y);
         } else {
-            puzzle_config.image_path.clone()
-        };
-        
-        println!("Loading grid reference image: {}", asset_path);
-        let texture_handle = asset_server.load(&asset_path);
-        
-        // Use the same size calculation as pieces to ensure alignment
-        let custom_size = puzzle_image.map(|img| img.size);
-        
-        commands.spawn((
-            Sprite {
-                color: Color::srgb(1.0, 1.0, 1.0).with_alpha(0.3), // 半透明
-                image: texture_handle,
-                custom_size, // Match the size used for piece calculations
-                ..default()
-            },
-            Transform::from_translation(Vec3::new(0.0, 0.0, -10.0)), // 背景に配置
-            // 参照画像としてマーク
-            GridReference,
-        ));
-        
-        if let Some(img) = puzzle_image {
-            println!("Grid reference spawned with size: ({:.1}, {:.1})", img.size.x, img.size.y);
+            println!("⚠️ Cannot spawn grid reference: PuzzleImage resource not available");
         }
     }
 }
@@ -157,7 +147,7 @@ pub fn spawn_puzzle_pieces_progressive(
 
     // グリッド背景を表示（まだない場合）
     if existing_grid_ref.is_empty() && !progress.is_generating {
-        spawn_grid_reference(&mut commands, &asset_server, &puzzle_config, Some(puzzle_image));
+        spawn_grid_reference(&mut commands, &puzzle_config, Some(puzzle_image));
     }
 
     // 生成を開始
