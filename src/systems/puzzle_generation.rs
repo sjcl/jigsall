@@ -123,6 +123,7 @@ pub fn spawn_puzzle_pieces_progressive(
     mut perf_monitor: ResMut<PerformanceMonitor>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
+    let _span = info_span!("spawn_puzzle_pieces_progressive").entered();
     let start_time = perf_monitor.start_system_timing("spawn_puzzle_pieces_progressive");
     
     // システム実行のデバッグログ（スポーン中のみ）

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = { version = "0.16.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_asset", "bevy_ui", "bevy_text", "bevy_picking", "bevy_state", "png", "jpeg", "webp", "bmp", "x11"] }
+bevy = { version = "0.16.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_asset", "bevy_ui", "bevy_text", "bevy_picking", "bevy_state", "png", "jpeg", "webp", "bmp", "x11", "trace"] }
 # bevy_renet = "1.0.0" # 一時的に無効化
 # renet = "1.0.0" # 一時的に無効化
 bevy_egui = "0.35"
@@ -20,3 +20,11 @@ lyon_tessellation = "1.0"
 svgtypes = "0.15"
 crossbeam = "0.8"
 instant = "0.1"
+
+# プロファイリング用の設定
+[features]
+default = []
+# Tracy Profilerを使用する場合（高度なプロファイリング）
+tracy = ["bevy/trace_tracy"]
+# Chrome Tracingを使用する場合（ブラウザでの分析）
+chrome = ["bevy/trace_chrome"]

@@ -40,6 +40,7 @@ pub fn check_piece_placement_event_driven(
     mut placed_events: EventWriter<PiecePlacedEvent>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("check_piece_placement_event_driven").entered();
     let start_time = perf_monitor.start_system_timing("check_piece_placement_event_driven");
     
     // 移動完了したピースのみをチェック（イベントドリブン）
@@ -146,6 +147,7 @@ pub fn update_game_state_event_driven(
     mut placed_events: EventReader<PiecePlacedEvent>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("update_game_state_event_driven").entered();
     let start_time = perf_monitor.start_system_timing("update_game_state_event_driven");
     
     // ピース配置イベントがある場合のみ更新

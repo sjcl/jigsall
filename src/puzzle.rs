@@ -73,6 +73,7 @@ fn generate_spiral_positions(
     display_width: f32,
     display_height: f32
 ) -> Vec<Vec2> {
+    let _span = info_span!("generate_spiral_positions").entered();
     let mut positions = Vec::new();
     let (puzzle_min, puzzle_max) = puzzle_area;
     
@@ -550,6 +551,7 @@ pub fn update_puzzle_image_size(
     images: Res<Assets<Image>>,
     asset_server: Res<AssetServer>,
 ) {
+    let _span = info_span!("update_puzzle_image_size").entered();
     if let Some(mut puzzle_image) = puzzle_image {
         // Asset loading状態をチェック
         let load_state = asset_server.load_state(&puzzle_image.handle);

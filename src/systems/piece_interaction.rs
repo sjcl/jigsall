@@ -11,6 +11,7 @@ pub fn update_piece_cache(
     piece_query: Query<(Entity, &Transform, &PuzzlePiece), (With<PickablePiece>, Changed<Transform>)>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("update_piece_cache").entered();
     let start_time = perf_monitor.start_system_timing("update_piece_cache");
     
     // Transformが変更されたピースのみキャッシュ更新
@@ -212,6 +213,7 @@ pub fn handle_piece_dragging_hybrid_legacy(
     mut move_events: EventWriter<PieceMoveCompleted>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("handle_piece_dragging_hybrid_legacy").entered();
     let start_time = perf_monitor.start_system_timing("handle_piece_dragging_hybrid_legacy");
     
     // ゲーム内メニューが表示されている間はピースドラッグを無効化
@@ -375,6 +377,7 @@ pub fn handle_box_selection(
     game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("handle_box_selection").entered();
     let start_time = perf_monitor.start_system_timing("handle_box_selection");
     
     // キャッシュ更新が必要な場合のみ更新

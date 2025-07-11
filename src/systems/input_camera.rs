@@ -10,6 +10,7 @@ pub fn update_input_state(
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("update_input_state").entered();
     let start_time = perf_monitor.start_system_timing("update_input_state");
     
     let Ok(window) = windows.single() else { 
@@ -46,6 +47,7 @@ pub fn auto_adjust_camera_zoom(
     puzzle_image: Option<Res<PuzzleImage>>,
     windows: Query<&Window>,
 ) {
+    let _span = info_span!("auto_adjust_camera_zoom").entered();
     if let Some(puzzle_image) = puzzle_image.as_ref() {
         if let Ok(window) = windows.single() {
             for mut transform in camera_query.iter_mut() {
@@ -120,6 +122,7 @@ pub fn handle_camera_zoom(
     puzzle_image: Option<Res<PuzzleImage>>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("handle_camera_zoom").entered();
     let start_time = perf_monitor.start_system_timing("handle_camera_zoom");
     
     for ev in scroll_evr.read() {
@@ -174,6 +177,7 @@ pub fn handle_camera_drag(
     windows: Query<&Window>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
+    let _span = info_span!("handle_camera_drag").entered();
     let start_time = perf_monitor.start_system_timing("handle_camera_drag");
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Right);
     let mouse_pressed = mouse_input.pressed(MouseButton::Right);

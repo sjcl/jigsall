@@ -7,6 +7,7 @@ pub fn draw_game_ui(
     mut contexts: EguiContexts,
     game_state: Res<GameData>,
 ) {
+    let _span = info_span!("draw_game_ui").entered();
     if game_state.current_screen != GameScreen::InGame {
         return;
     }
