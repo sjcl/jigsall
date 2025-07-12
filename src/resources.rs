@@ -8,6 +8,332 @@ use crate::jigsaw_shapes::JigsawShapeGenerator;
 use crate::components::{PuzzlePiece, PieceShape};
 use instant::Instant;
 
+/// ピースの一意識別子（将来的にバッチング対応）
+pub type PieceId = Uuid;
+
+/// ピースの当たり判定データ（CPU側で管理）
+#[derive(Debug, Clone)]
+pub struct PieceCollisionData {
+    pub piece_id: PieceId,
+    pub position: Vec2,
+    pub bounding_box: Rect,
+    pub vertices: Vec<Vec2>,    // 精密判定用のポリゴン頂点（ローカル座標）
+    pub indices: Vec<u32>,     // トライアングル頂点インデックス
+}
+
+/// QuadTree ノード（空間分割用）
+#[derive(Debug, Clone)]
+pub struct QuadTreeNode {
+    pub bounds: Rect,
+    pub pieces: Vec<PieceId>,
+    pub children: Option<Box<[QuadTreeNode; 4]>>,
+    pub max_pieces: usize,
+    pub max_depth: usize,
+    pub current_depth: usize,
+}
+
+impl QuadTreeNode {
+    pub fn new(bounds: Rect, max_pieces: usize, max_depth: usize, current_depth: usize) -> Self {
+        Self {
+            bounds,
+            pieces: Vec::new(),
+            children: None,
+            max_pieces,
+            max_depth,
+            current_depth,
+        }
+    }
+
+    pub fn insert(&mut self, piece_id: PieceId, piece_bounds: Rect) {
+        if self.bounds.intersect(piece_bounds).is_empty() {
+            return;
+        }
+
+        if self.children.is_none() {
+            self.pieces.push(piece_id);
+
+            if self.pieces.len() > self.max_pieces && self.current_depth < self.max_depth {
+                self.subdivide();
+            }
+        } else if let Some(ref mut children) = self.children {
+            for child in children.iter_mut() {
+                child.insert(piece_id, piece_bounds);
+            }
+        }
+    }
+
+    fn subdivide(&mut self) {
+        let half_width = self.bounds.width() / 2.0;
+        let half_height = self.bounds.height() / 2.0;
+        let center_x = self.bounds.min.x + half_width;
+        let center_y = self.bounds.min.y + half_height;
+
+        let children = [
+            QuadTreeNode::new(
+                Rect::new(self.bounds.min.x, self.bounds.min.y, center_x, center_y),
+                self.max_pieces,
+                self.max_depth,
+                self.current_depth + 1,
+            ),
+            QuadTreeNode::new(
+                Rect::new(center_x, self.bounds.min.y, self.bounds.max.x, center_y),
+                self.max_pieces,
+                self.max_depth,
+                self.current_depth + 1,
+            ),
+            QuadTreeNode::new(
+                Rect::new(self.bounds.min.x, center_y, center_x, self.bounds.max.y),
+                self.max_pieces,
+                self.max_depth,
+                self.current_depth + 1,
+            ),
+            QuadTreeNode::new(
+                Rect::new(center_x, center_y, self.bounds.max.x, self.bounds.max.y),
+                self.max_pieces,
+                self.max_depth,
+                self.current_depth + 1,
+            ),
+        ];
+
+        self.children = Some(Box::new(children));
+        
+        // 注意: subdivide では piece_bounds が取得できないため、
+        // 実際のピース再配置は PieceCollisionSystem::rebuild_quad_tree で行う
+        // ここでは子ノードの準備のみ
+        self.pieces.clear();
+    }
+
+    pub fn query(&self, query_bounds: Rect, results: &mut Vec<PieceId>) {
+        if self.bounds.intersect(query_bounds).is_empty() {
+            return;
+        }
+
+        for &piece_id in &self.pieces {
+            results.push(piece_id);
+        }
+
+        if let Some(ref children) = self.children {
+            for child in children.iter() {
+                child.query(query_bounds, results);
+            }
+        }
+    }
+}
+
+/// IDベースの当たり判定システム
+#[derive(Resource, Default)]
+pub struct PieceCollisionSystem {
+    pub pieces: HashMap<PieceId, PieceCollisionData>,
+    pub quad_tree: Option<QuadTreeNode>,
+    pub need_rebuild: bool,
+    pub world_bounds: Rect,
+}
+
+impl PieceCollisionSystem {
+    pub fn new() -> Self {
+        Self {
+            pieces: HashMap::new(),
+            quad_tree: None,
+            need_rebuild: true,
+            world_bounds: Rect::new(-2000.0, -2000.0, 2000.0, 2000.0), // 初期の大きな範囲
+        }
+    }
+
+    pub fn add_piece(&mut self, collision_data: PieceCollisionData) {
+        self.pieces.insert(collision_data.piece_id, collision_data);
+        self.need_rebuild = true;
+    }
+
+    pub fn remove_piece(&mut self, piece_id: PieceId) {
+        self.pieces.remove(&piece_id);
+        self.need_rebuild = true;
+    }
+
+    pub fn update_piece_position(&mut self, piece_id: PieceId, new_position: Vec2) {
+        if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
+            // 位置の変化量を計算
+            let offset = new_position - piece_data.position;
+            piece_data.position = new_position;
+            
+            // バウンディングボックスを更新
+            piece_data.bounding_box = Rect::new(
+                piece_data.bounding_box.min.x + offset.x,
+                piece_data.bounding_box.min.y + offset.y,
+                piece_data.bounding_box.max.x + offset.x,
+                piece_data.bounding_box.max.y + offset.y,
+            );
+            self.need_rebuild = true;
+        }
+    }
+
+    pub fn rebuild_quad_tree(&mut self) {
+        if !self.need_rebuild {
+            return;
+        }
+
+        self.quad_tree = Some(QuadTreeNode::new(self.world_bounds, 8, 5, 0));
+
+        if let Some(ref mut quad_tree) = self.quad_tree {
+            for (piece_id, piece_data) in &self.pieces {
+                quad_tree.insert(*piece_id, piece_data.bounding_box);
+            }
+        }
+
+        self.need_rebuild = false;
+    }
+
+    pub fn query_pieces_in_rect(&mut self, query_rect: Rect) -> Vec<PieceId> {
+        self.rebuild_quad_tree();
+
+        let mut results = Vec::new();
+        if let Some(ref quad_tree) = self.quad_tree {
+            quad_tree.query(query_rect, &mut results);
+        }
+        results
+    }
+
+    pub fn ray_cast(&mut self, ray_origin: Vec2, ray_direction: Vec2) -> Option<PieceId> {
+        // 簡単なレイキャスト実装（バウンディングボックスのみ）
+        let ray_end = ray_origin + ray_direction * 10000.0; // 十分大きな距離
+        let ray_rect = Rect::from_corners(ray_origin, ray_end);
+
+        let candidate_pieces = self.query_pieces_in_rect(ray_rect);
+
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                if piece_data.bounding_box.contains(ray_origin) {
+                    return Some(piece_id);
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn get_piece_data(&self, piece_id: PieceId) -> Option<&PieceCollisionData> {
+        self.pieces.get(&piece_id)
+    }
+
+    /// マウス位置でのピース検索（ドラッグ用API）
+    pub fn find_piece_at_position(&mut self, position: Vec2) -> Option<PieceId> {
+        // 小さな範囲でクエリ
+        let query_size = 1.0;
+        let query_rect = Rect::new(
+            position.x - query_size,
+            position.y - query_size,
+            position.x + query_size,
+            position.y + query_size,
+        );
+
+        let candidate_pieces = self.query_pieces_in_rect(query_rect);
+
+        // バウンディングボックスでフィルタリング
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                if piece_data.bounding_box.contains(position) {
+                    return Some(piece_id);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// 矩形範囲内のピース検索（範囲選択用API）
+    pub fn find_pieces_in_rect(&mut self, rect: Rect) -> Vec<PieceId> {
+        let candidate_pieces = self.query_pieces_in_rect(rect);
+        let mut result = Vec::new();
+
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                // バウンディングボックスが範囲と重なるかチェック
+                if !piece_data.bounding_box.intersect(rect).is_empty() {
+                    result.push(piece_id);
+                }
+            }
+        }
+
+        result
+    }
+
+    /// 精密なポリゴン当たり判定API
+    pub fn precise_point_in_piece(&self, piece_id: PieceId, world_position: Vec2) -> bool {
+        if let Some(piece_data) = self.pieces.get(&piece_id) {
+            // まずバウンディングボックスでチェック
+            if !piece_data.bounding_box.contains(world_position) {
+                return false;
+            }
+
+            // ローカル座標に変換
+            let local_position = world_position - piece_data.position;
+
+            // 簡単なポリゴン内判定（レイキャスト法）
+            self.point_in_polygon(local_position, &piece_data.vertices)
+        } else {
+            false
+        }
+    }
+
+    /// ポリゴン内判定（レイキャスト法）
+    fn point_in_polygon(&self, point: Vec2, vertices: &[Vec2]) -> bool {
+        if vertices.len() < 3 {
+            return false;
+        }
+
+        let mut intersections = 0;
+        let ray_y = point.y;
+
+        for i in 0..vertices.len() {
+            let j = (i + 1) % vertices.len();
+            let v1 = vertices[i];
+            let v2 = vertices[j];
+
+            // 水平レイが線分と交差するかチェック
+            if ((v1.y > ray_y) != (v2.y > ray_y)) &&
+               (point.x < (v2.x - v1.x) * (ray_y - v1.y) / (v2.y - v1.y) + v1.x) {
+                intersections += 1;
+            }
+        }
+
+        intersections % 2 == 1
+    }
+
+    /// デバッグ用：統計情報取得
+    pub fn get_debug_stats(&self) -> (usize, bool, bool) {
+        (
+            self.pieces.len(),
+            self.quad_tree.is_some(),
+            self.need_rebuild
+        )
+    }
+
+    /// パフォーマンス統計取得
+    pub fn get_performance_stats(&self) -> String {
+        let quad_tree_nodes = if let Some(ref qt) = self.quad_tree {
+            self.count_quad_tree_nodes(qt)
+        } else {
+            0
+        };
+
+        format!(
+            "Collision System Stats:\n  Pieces: {}\n  QuadTree nodes: {}\n  Needs rebuild: {}",
+            self.pieces.len(),
+            quad_tree_nodes,
+            self.need_rebuild
+        )
+    }
+
+    fn count_quad_tree_nodes(&self, node: &QuadTreeNode) -> usize {
+        let mut count = 1;
+        if let Some(ref children) = node.children {
+            for child in children.iter() {
+                count += self.count_quad_tree_nodes(child);
+            }
+        }
+        count
+    }
+}
+
 /// ストロークメッシュのキャッシュリソース
 #[derive(Resource, Default)]
 pub struct StrokeMeshCache {
@@ -38,6 +364,77 @@ pub struct PieceSelectionCache {
     pub piece_positions: HashMap<Entity, Vec2>,  // ピース位置のキャッシュ
     pub piece_bounds: HashMap<Entity, (Vec2, Vec2)>,  // ピース境界ボックスのキャッシュ
     pub need_refresh: bool,  // キャッシュ更新が必要か
+}
+
+/// ID管理とEntity関連付けシステム（将来的なバッチング対応）
+#[derive(Resource, Default)]
+pub struct PieceIdManager {
+    /// ID → Entity の関連付け
+    id_to_entity: HashMap<PieceId, Entity>,
+    /// Entity → ID の関連付け（逆引き用）
+    entity_to_id: HashMap<Entity, PieceId>,
+    /// 次に使用可能なID（Uuidの代替案として、デバッグ用）
+    next_id_counter: u32,
+}
+
+impl PieceIdManager {
+    /// 新しいピースIDを生成してEntityと関連付け
+    pub fn register_piece(&mut self, entity: Entity, existing_id: Option<PieceId>) -> PieceId {
+        let piece_id = existing_id.unwrap_or_else(|| Uuid::new_v4());
+        
+        // 既存の関連付けを削除
+        if let Some(old_id) = self.entity_to_id.remove(&entity) {
+            self.id_to_entity.remove(&old_id);
+        }
+        
+        // 新しい関連付けを登録
+        self.id_to_entity.insert(piece_id, entity);
+        self.entity_to_id.insert(entity, piece_id);
+        
+        piece_id
+    }
+    
+    /// EntityからピースIDを取得
+    pub fn get_piece_id(&self, entity: Entity) -> Option<PieceId> {
+        self.entity_to_id.get(&entity).copied()
+    }
+    
+    /// ピースIDからEntityを取得
+    pub fn get_entity(&self, piece_id: PieceId) -> Option<Entity> {
+        self.id_to_entity.get(&piece_id).copied()
+    }
+    
+    /// Entity削除時のクリーンアップ
+    pub fn unregister_entity(&mut self, entity: Entity) -> Option<PieceId> {
+        if let Some(piece_id) = self.entity_to_id.remove(&entity) {
+            self.id_to_entity.remove(&piece_id);
+            Some(piece_id)
+        } else {
+            None
+        }
+    }
+    
+    /// 将来的なバッチング対応：複数ピースを1つのEntityに関連付け
+    pub fn register_batch(&mut self, entity: Entity, piece_ids: Vec<PieceId>) {
+        for piece_id in piece_ids {
+            self.id_to_entity.insert(piece_id, entity);
+            // 注意：entity_to_id は1対1のため、バッチング時は別のマップが必要
+        }
+    }
+    
+    /// 統計情報取得（デバッグ用）
+    pub fn get_stats(&self) -> (usize, usize, u32) {
+        (
+            self.id_to_entity.len(),
+            self.entity_to_id.len(),
+            self.next_id_counter
+        )
+    }
+    
+    /// 全てのピースIDを取得
+    pub fn get_all_piece_ids(&self) -> Vec<PieceId> {
+        self.id_to_entity.keys().copied().collect()
+    }
 }
 
 #[derive(Resource, Default)]

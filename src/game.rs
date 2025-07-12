@@ -17,6 +17,8 @@ impl Plugin for GamePlugin {
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<StrokeMeshCache>()
             .init_resource::<PieceSelectionCache>()
+            .init_resource::<PieceIdManager>()
+            .init_resource::<PieceCollisionSystem>()
             .init_resource::<PerformanceMonitor>()
             .init_resource::<HighlightState>()
             .insert_state(AppState::Loading)
@@ -35,8 +37,10 @@ impl Plugin for GamePlugin {
             // InGame state systems - パズル生成中のみ実行
             .add_systems(Update, (
                 spawn_puzzle_pieces_progressive,
+                register_new_pieces_to_id_manager,
+                register_new_pieces_to_collision_system,
             ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Initializing))))
-            // InGame state systems - プレイ中に実行
+            // InGame state systems - プレイ中に実行（基本システム）
             .add_systems(Update, (
                 // 基本システム
                 update_input_state,
@@ -62,6 +66,21 @@ impl Plugin for GamePlugin {
                 handle_camera_zoom,
                 handle_camera_drag,
                 handle_edge_scrolling,
+            ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Playing))))
+            // InGame state systems - プレイ中に実行（管理システム）
+            .add_systems(Update, (
+                // ID管理システム
+                cleanup_removed_pieces_from_id_manager,
+                debug_id_manager_stats,
+                
+                // コリジョンシステム
+                update_collision_system_positions,
+                cleanup_removed_pieces_from_collision_system,
+                debug_collision_system_stats,
+                optimize_collision_system,
+                test_ray_casting,
+                test_collision_api,
+                performance_test_collision_system,
                 
                 // パフォーマンス計測システム
                 toggle_performance_debug.run_if(f12_just_pressed),
