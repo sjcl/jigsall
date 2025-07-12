@@ -44,6 +44,7 @@ pub fn check_piece_placement_event_driven(
     mut move_events: EventReader<PieceMoveCompleted>,
     mut placed_events: EventWriter<PiecePlacedEvent>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut input_state: ResMut<InputState>,
 ) {
     let _span = info_span!("check_piece_placement_event_driven").entered();
     let start_time = perf_monitor.start_system_timing("check_piece_placement_event_driven");
@@ -78,6 +79,17 @@ pub fn check_piece_placement_event_driven(
                     // PickablePieceコンポーネントを削除して移動不可にする
                     commands.entity(entity).remove::<PickablePiece>();
                     
+                    // SelectedPieceコンポーネントも削除して選択状態を解除
+                    commands.entity(entity).remove::<SelectedPiece>();
+                    
+                    // InputStateからも削除
+                    input_state.selected_pieces.retain(|&e| e != entity);
+                    input_state.selected_pieces_set.remove(&entity);
+                    input_state.multi_drag_offset.remove(&entity);
+                    if input_state.selected_piece == Some(entity) {
+                        input_state.selected_piece = None;
+                    }
+                    
                     println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
                         piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
                 }
@@ -94,7 +106,7 @@ pub fn check_piece_placement(
     mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
     selected_pieces_query: Query<Entity, With<SelectedPiece>>,
     puzzle_config: Res<PuzzleConfig>,
-    input_state: Res<InputState>,
+    mut input_state: ResMut<InputState>,
 ) {
     // 複数選択中または複数ドラッグ中の場合はスナップを無効化
     let is_multi_selection_active = matches!(input_state.selection_mode, SelectionMode::BoxSelection | SelectionMode::MultiDrag);
@@ -136,6 +148,17 @@ pub fn check_piece_placement(
                 
                 // PickablePieceコンポーネントを削除して移動不可にする
                 commands.entity(entity).remove::<PickablePiece>();
+                
+                // SelectedPieceコンポーネントも削除して選択状態を解除
+                commands.entity(entity).remove::<SelectedPiece>();
+                
+                // InputStateからも削除
+                input_state.selected_pieces.retain(|&e| e != entity);
+                input_state.selected_pieces_set.remove(&entity);
+                input_state.multi_drag_offset.remove(&entity);
+                if input_state.selected_piece == Some(entity) {
+                    input_state.selected_piece = None;
+                }
                 
                 println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
                     piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
