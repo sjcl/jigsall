@@ -99,10 +99,8 @@ pub fn reset_puzzle(
 
 pub fn spawn_puzzle_pieces_progressive(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     puzzle_config: Res<PuzzleConfig>,
     puzzle_image: Option<Res<PuzzleImage>>,
-    _game_state: Res<GameData>,
     existing_pieces: Query<&PuzzlePiece>,
     existing_grid_ref: Query<&GridReference>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -246,7 +244,7 @@ pub fn spawn_puzzle_pieces_progressive(
             let total_pieces = result.total_pieces;
             let display_width = puzzle_image.size.x;
             let display_height = puzzle_image.size.y;
-            let image_handle = puzzle_image.handle.clone();
+            let _image_handle = puzzle_image.handle.clone();
             
             let (piece_sender, piece_receiver) = crossbeam::channel::unbounded();
             
@@ -261,7 +259,6 @@ pub fn spawn_puzzle_pieces_progressive(
                     total_pieces,
                     display_width,
                     display_height,
-                    image_handle,
                 );
                 
                 if let Err(e) = piece_sender.send(result) {
@@ -323,10 +320,6 @@ pub fn spawn_puzzle_pieces_progressive(
                 PickablePiece {
                     drag_offset: Vec2::ZERO,
                 },
-                Draggable {
-                    is_dragging: false,
-                    drag_offset: Vec2::ZERO,
-                },
             ));
             
             spawned_count += 1;
@@ -385,12 +378,10 @@ fn create_all_pieces_sync(
     total_pieces: usize,
     display_width: f32,
     display_height: f32,
-    _image_handle: Handle<Image>,
 ) -> PieceCreationResult {
     use crate::jigsaw_shapes::clone_mesh_from_shape;
     use crate::components::*;
     use uuid::Uuid;
-    use bevy::sprite::ColorMaterial;
     
     let mut pieces = Vec::with_capacity(total_pieces);
     let piece_width = display_width / grid_width as f32;
@@ -459,8 +450,7 @@ fn create_all_pieces_sync(
             }
             let piece_shape = extract_shape_data_from_jigsaw_shape(shape);
             
-            // マテリアルハンドルを作成（Bevyアセットは非同期では作成できないため、ハンドルのみ）
-            let material_handle = Handle::<ColorMaterial>::default(); // 後でメインスレッドで設定
+            // マテリアルハンドルは使用しないため削除
             
             let transform = Transform::from_translation(start_position.extend(z_offset));
             
@@ -470,7 +460,6 @@ fn create_all_pieces_sync(
                 piece_component,
                 piece_shape,
                 transform,
-                material_handle, // 一時的な値
             });
         }
         

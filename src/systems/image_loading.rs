@@ -11,6 +11,9 @@ pub fn setup_image_load_system(mut commands: Commands) {
     // Bevyシステム側のチャネルをリソースとして追加
     commands.insert_resource(ImageLoadChannels {
         rx_results,
+    });
+    
+    commands.insert_resource(ImageLoadSender {
         tx_results,
     });
     

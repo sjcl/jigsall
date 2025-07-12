@@ -375,7 +375,6 @@ pub fn handle_box_selection(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
     selected_query: Query<Entity, With<SelectedPiece>>,
-    _selection_box_query: Query<Entity, With<SelectionBox>>,
     mut cache: ResMut<PieceSelectionCache>,
     game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -682,7 +681,6 @@ pub fn render_selection_box(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     input_state: Res<InputState>,
-    _camera_query: Query<&Transform, (With<MainCamera>, Without<SelectionBox>)>,
     selection_box_query: Query<(Entity, &mut Transform), (With<SelectionBox>, Without<MainCamera>)>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
@@ -727,7 +725,6 @@ pub fn highlight_selected_pieces(
     mut commands: Commands,
     selected_pieces_query: Query<Entity, (With<SelectedPiece>, With<PuzzlePiece>)>,
     preview_pieces_query: Query<Entity, (With<SelectionPreview>, With<PuzzlePiece>)>,
-    _all_pieces_query: Query<Entity, With<PuzzlePiece>>,
     mut piece_query: Query<&mut MeshMaterial2d<ColorMaterial>, With<PuzzlePiece>>,
     piece_transform_query: Query<&Transform, With<PuzzlePiece>>,
     piece_shape_query: Query<&PieceShape, With<PuzzlePiece>>,

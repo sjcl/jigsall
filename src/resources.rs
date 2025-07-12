@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
-use bevy::tasks::Task;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crossbeam::channel;
@@ -38,7 +37,6 @@ pub struct PieceSelectionCache {
     pub all_pieces: Vec<Entity>,  // 全ピースのキャッシュリスト
     pub piece_positions: HashMap<Entity, Vec2>,  // ピース位置のキャッシュ
     pub piece_bounds: HashMap<Entity, (Vec2, Vec2)>,  // ピース境界ボックスのキャッシュ
-    pub last_update_frame: u64,  // 最終更新フレーム
     pub need_refresh: bool,  // キャッシュ更新が必要か
 }
 
@@ -70,7 +68,7 @@ pub enum GameSubState {
     Initializing, // パズル生成中
     Playing,      // プレイ中
     Paused,       // ポーズ中（ESCメニュー）
-    Complete,     // 完了（結果表示）
+    // Complete is removed as it's unused
 }
 
 /// 従来のGameScreen（後で削除予定）
@@ -232,7 +230,6 @@ pub struct PieceData {
     pub piece_component: PuzzlePiece,
     pub piece_shape: PieceShape,
     pub transform: Transform,
-    pub material_handle: Handle<ColorMaterial>,
 }
 
 // ピース作成の非同期タスク結果
@@ -481,49 +478,14 @@ impl PerformanceMonitor {
         }
     }
 
-    pub fn reset_statistics(&mut self) {
-        self.frame_times.clear();
-        for timing in self.system_timings.values_mut() {
-            timing.reset();
-        }
-        self.frame_count = 0;
-    }
+    // reset_statistics method removed - never used
 }
 
-/// 画像読み込みタスクの状態
-#[derive(Debug, Clone, PartialEq)]
-pub enum ImageLoadingStatus {
-    /// 読み込み中
-    Loading { 
-        /// 読み込み開始時刻
-        started_at: Instant,
-        /// ファイルサイズ（バイト）
-        file_size: Option<u64>,
-    },
-    /// 読み込み完了
-    Completed,
-    /// エラーで失敗
-    Failed(String),
-}
+// ImageLoadingStatus removed - unused with new thread-based implementation
 
-/// 非同期画像読み込みタスク
-pub struct ImageLoadingTask {
-    /// 仮想キー（external_file_1.jpg など）
-    pub virtual_key: String,
-    /// 実際のファイルパス
-    pub file_path: String,
-    /// 非同期タスク
-    pub task: Task<Result<Image, String>>,
-    /// 現在の状態
-    pub status: ImageLoadingStatus,
-}
+// ImageLoadingTask removed - unused with new thread-based implementation
 
-/// 画像読み込みタスクのコレクション
-#[derive(Resource, Default)]
-pub struct ImageLoadingTasks {
-    /// アクティブなタスクのリスト
-    pub tasks: Vec<ImageLoadingTask>,
-}
+// ImageLoadingTasks removed - unused with new thread-based implementation
 
 
 /// 画像読み込みチャネル（crossbeam-channel）
@@ -531,7 +493,11 @@ pub struct ImageLoadingTasks {
 pub struct ImageLoadChannels {
     /// 画像読み込み結果を受信するチャネル
     pub rx_results: crossbeam::channel::Receiver<crate::asset_reader::ImageLoadResult>,
-    /// 画像読み込み結果を送信するチャネル（スレッド用）
+}
+
+/// 画像読み込み送信チャネル（スレッド間通信用）
+#[derive(Resource)]
+pub struct ImageLoadSender {
     pub tx_results: crossbeam::channel::Sender<crate::asset_reader::ImageLoadResult>,
 }
 

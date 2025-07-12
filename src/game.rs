@@ -124,7 +124,6 @@ fn transition_to_menu(mut next_state: ResMut<NextState<AppState>>) {
 
 /// ゲーム開始時の初期化
 fn initialize_game(
-    _commands: Commands,
     mut game_data: ResMut<GameData>,
     mut input_state: ResMut<InputState>,
     mut piece_cache: ResMut<PieceSelectionCache>,

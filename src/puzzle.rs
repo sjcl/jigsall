@@ -20,7 +20,7 @@ pub fn generate_placement_grid(
     
     // パズルグリッド領域を計算
     let puzzle_area = calculate_puzzle_grid_area(
-        grid_width, grid_height, piece_width, piece_height,
+        piece_width, piece_height,
         display_width, display_height
     );
     
@@ -454,8 +454,6 @@ fn is_overlapping_with_all(
 
 /// パズルグリッド領域を計算（除外エリア）
 fn calculate_puzzle_grid_area(
-    _grid_width: usize,
-    _grid_height: usize,
     piece_width: f32,
     piece_height: f32,
     display_width: f32,

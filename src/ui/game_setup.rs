@@ -14,8 +14,7 @@ pub fn draw_host_setup_ui(
     puzzle_image: Option<Res<PuzzleImage>>,
     asset_server: Res<AssetServer>,
     file_registry: Res<ExternalFileRegistry>,
-    _images: ResMut<Assets<Image>>,
-    image_channels: Res<ImageLoadChannels>,
+    image_sender: Res<ImageLoadSender>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::HostSetup {
@@ -616,7 +615,7 @@ pub fn draw_host_setup_ui(
                                             start_thread_image_load(
                                                 virtual_path.clone(),
                                                 file_path,
-                                                image_channels.tx_results.clone(),
+                                                image_sender.tx_results.clone(),
                                             );
                                             println!("🔍 MAIN THREAD [{:?}]: Worker thread started", std::thread::current().id());
                                             
@@ -657,7 +656,6 @@ pub fn draw_join_game_ui(
     mut contexts: EguiContexts,
     mut game_state: ResMut<GameData>,
     mut network_info: ResMut<NetworkInfo>,
-    _commands: Commands,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::JoinGame {

@@ -15,11 +15,6 @@ pub struct PuzzlePiece {
     pub bounds: Rect,  // 実際のジグソー形状のバウンディングボックス
 }
 
-#[derive(Component)]
-pub struct Draggable {
-    pub is_dragging: bool,
-    pub drag_offset: Vec2,
-}
 
 // Picking system用の新しいコンポーネント
 #[derive(Component)]
@@ -36,7 +31,6 @@ pub struct PieceShape {
 
 #[derive(Component)]
 pub struct Player {
-    pub score: u32,
 }
 
 #[derive(Component)]
@@ -78,10 +72,11 @@ pub struct PieceMoveCompleted {
     pub new_position: Vec2,
 }
 
-/// ピース配置完了イベント
+/// ピース配置イベント
 #[derive(Event)]
 pub struct PiecePlacedEvent {
     pub entity: Entity,
     pub grid_x: usize,
     pub grid_y: usize,
 }
+

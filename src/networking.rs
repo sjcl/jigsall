@@ -31,7 +31,6 @@ const CHANNEL_ID: u8 = 0;
 
 pub fn start_server(
     commands: &mut Commands,
-    _network_info: &NetworkInfo,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection_config = ConnectionConfig::default();
     let server = RenetServer::new(connection_config);
@@ -43,7 +42,6 @@ pub fn start_server(
 
 pub fn start_client(
     commands: &mut Commands,
-    _network_info: &NetworkInfo,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let connection_config = ConnectionConfig::default();
     let client = RenetClient::new(connection_config);
