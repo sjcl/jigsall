@@ -33,8 +33,7 @@ fn main() {
                 draw_menu_ui.run_if(in_state(AppState::Menu)),
                 
                 // GameSetup state UI
-                draw_host_setup_ui.run_if(in_state(AppState::GameSetup)),
-                draw_join_game_ui.run_if(in_state(AppState::GameSetup)),
+                (draw_host_setup_ui, draw_join_game_ui).run_if(in_state(AppState::GameSetup)),
                 
                 // InGame state UI
                 draw_game_ui.run_if(in_state(AppState::InGame)),

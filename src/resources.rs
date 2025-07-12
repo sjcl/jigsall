@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy::sprite::ColorMaterial;
+use bevy::tasks::Task;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use crossbeam::channel;
@@ -487,6 +488,51 @@ impl PerformanceMonitor {
         }
         self.frame_count = 0;
     }
+}
+
+/// 画像読み込みタスクの状態
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImageLoadingStatus {
+    /// 読み込み中
+    Loading { 
+        /// 読み込み開始時刻
+        started_at: Instant,
+        /// ファイルサイズ（バイト）
+        file_size: Option<u64>,
+    },
+    /// 読み込み完了
+    Completed,
+    /// エラーで失敗
+    Failed(String),
+}
+
+/// 非同期画像読み込みタスク
+pub struct ImageLoadingTask {
+    /// 仮想キー（external_file_1.jpg など）
+    pub virtual_key: String,
+    /// 実際のファイルパス
+    pub file_path: String,
+    /// 非同期タスク
+    pub task: Task<Result<Image, String>>,
+    /// 現在の状態
+    pub status: ImageLoadingStatus,
+}
+
+/// 画像読み込みタスクのコレクション
+#[derive(Resource, Default)]
+pub struct ImageLoadingTasks {
+    /// アクティブなタスクのリスト
+    pub tasks: Vec<ImageLoadingTask>,
+}
+
+
+/// 画像読み込みチャネル（crossbeam-channel）
+#[derive(Resource)]
+pub struct ImageLoadChannels {
+    /// 画像読み込み結果を受信するチャネル
+    pub rx_results: crossbeam::channel::Receiver<crate::asset_reader::ImageLoadResult>,
+    /// 画像読み込み結果を送信するチャネル（スレッド用）
+    pub tx_results: crossbeam::channel::Sender<crate::asset_reader::ImageLoadResult>,
 }
 
 // バックグラウンドスレッド版の完了

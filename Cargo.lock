@@ -5402,7 +5402,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f9612d9503675b07b244922ea6f6f3cdd88c43add1b3498084613fc88cdf69d"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]

@@ -76,82 +76,82 @@ impl Plugin for DirectFileAssetPlugin {
     }
 }
 
-/// 外部ファイルまたは通常のアセットを読み込む
-/// 外部ファイルは直接読み込んでImage assetとして登録
-pub fn load_external_image(
-    file_registry: &ExternalFileRegistry,
-    asset_server: &AssetServer,
-    images: &mut ResMut<Assets<Image>>,
-    virtual_key: &str,
-) -> Handle<Image> {
-    if file_registry.is_external_key(virtual_key) {
-        // 外部ファイルの場合：実際のパスを解決して直接イメージデータを読み込み
-        if let Some(real_path) = file_registry.resolve_path(virtual_key) {
-            println!("📖 Loading external image directly: {} -> {}", virtual_key, real_path.display());
-            
-            // ファイルからイメージデータを直接読み込み
-            match load_image_from_file(&real_path) {
-                Ok(image) => {
-                    // サイズ情報を先に取得
-                    let image_size = image.size();
-                    
-                    // Imageアセットとして登録
-                    let handle = images.add(image);
-                    println!("✅ Successfully loaded external image: {} (size: {}x{})", 
-                        real_path.display(), image_size.x, image_size.y);
-                    println!("📝 External image handle: {:?}", handle.id());
-                    handle
-                }
-                Err(e) => {
-                    println!("❌ Failed to load external image {}: {}", real_path.display(), e);
-                    // フォールバック：空のイメージを作成
-                    let fallback_image = Image::default();
-                    let handle = images.add(fallback_image);
-                    println!("📝 Fallback image handle: {:?}", handle.id());
-                    handle
-                }
-            }
-        } else {
-            println!("❌ External file path not found for key: {}", virtual_key);
-            // フォールバック：空のイメージを作成
-            images.add(Image::default())
-        }
-    } else {
-        // 通常のアセットパスの場合
-        asset_server.load(virtual_key)
-    }
+
+/// 画像読み込み結果
+#[derive(Debug)]
+pub struct ImageLoadResult {
+    pub virtual_key: String,
+    pub image: Result<Image, String>,
 }
 
-/// ファイルパスから直接Imageを読み込む
-fn load_image_from_file(file_path: &Path) -> Result<Image, Box<dyn std::error::Error>> {
-    // ファイルの拡張子を確認
-    let extension = file_path.extension()
-        .and_then(|ext| ext.to_str())
-        .ok_or("Invalid file extension")?;
+/// std::thread::spawnを使った画像読み込みスレッドを開始
+pub fn start_thread_image_load(
+    virtual_key: String,
+    file_path: PathBuf,
+    sender: crossbeam::channel::Sender<ImageLoadResult>,
+) {
+    println!("🔄 MAIN THREAD [{:?}]: Starting thread image load for: {}", std::thread::current().id(), file_path.display());
     
-    // ファイルデータを読み込み
-    let image_bytes = std::fs::read(file_path)?;
+    // ネイティブスレッドを起動
+    std::thread::spawn(move || {
+        println!("🔍 WORKER THREAD [{:?}]: Starting image processing...", std::thread::current().id());
+        
+        // ファイル読み込みからImage作成まで全て同期的に実行
+        let result = (|| -> Result<Image, String> {
+            // ファイルメタデータ取得
+            println!("🔍 WORKER THREAD [{:?}]: Getting file metadata...", std::thread::current().id());
+            let metadata = std::fs::metadata(&file_path)
+                .map_err(|e| format!("Failed to get file metadata: {}", e))?;
+            let file_size = metadata.len();
+            println!("📂 WORKER THREAD [{:?}]: Starting file read: {} ({} MB)", std::thread::current().id(), file_path.display(), file_size / 1024 / 1024);
+            
+            // ファイル読み込み
+            let image_bytes = std::fs::read(&file_path)
+                .map_err(|e| format!("Failed to read file: {}", e))?;
+            println!("📊 WORKER THREAD [{:?}]: Read {} bytes ({} MB) from {}", std::thread::current().id(), image_bytes.len(), file_size / 1024 / 1024, file_path.display());
+            
+            // 画像デコード
+            println!("🎨 WORKER THREAD [{:?}]: Starting image decode...", std::thread::current().id());
+            let dynamic_image = image::load_from_memory(&image_bytes)
+                .map_err(|e| format!("Failed to decode image: {}", e))?;
+            
+            // RGBA変換
+            println!("🎨 WORKER THREAD [{:?}]: Image decode complete, starting RGBA conversion...", std::thread::current().id());
+            let rgba_image = dynamic_image.to_rgba8();
+            let (width, height) = rgba_image.dimensions();
+            let rgba_data = rgba_image.into_raw();
+            
+            // BevyのImageを作成
+            let image = Image::new(
+                bevy::render::render_resource::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                bevy::render::render_resource::TextureDimension::D2,
+                rgba_data,
+                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                bevy::render::render_asset::RenderAssetUsages::all(),
+            );
+            
+            println!("✅ WORKER THREAD [{:?}]: Image processing complete: {}x{} pixels", std::thread::current().id(), width, height);
+            Ok(image)
+        })();
+        
+        // 結果をチャネルに送信
+        let load_result = ImageLoadResult {
+            virtual_key: virtual_key.clone(),
+            image: result,
+        };
+        
+        println!("🔍 WORKER THREAD [{:?}]: Sending result to main thread...", std::thread::current().id());
+        match sender.send(load_result) {
+            Ok(()) => println!("📤 WORKER THREAD [{:?}]: Result sent successfully", std::thread::current().id()),
+            Err(e) => println!("❌ WORKER THREAD [{:?}]: Failed to send result: {:?}", std::thread::current().id(), e),
+        }
+        println!("🔍 WORKER THREAD [{:?}]: Thread completing", std::thread::current().id());
+    });
     
-    // image crateを使用してデコード
-    let dynamic_image = image::load_from_memory(&image_bytes)?;
-    
-    // RGBAフォーマットに変換
-    let rgba_image = dynamic_image.to_rgba8();
-    let (width, height) = rgba_image.dimensions();
-    
-    // BevyのImageを作成
-    let image = Image::new(
-        bevy::render::render_resource::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        bevy::render::render_resource::TextureDimension::D2,
-        rgba_image.into_raw(),
-        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-        bevy::render::render_asset::RenderAssetUsages::all(),
-    );
-    
-    println!("🖼️ Decoded image: {}x{} pixels", width, height);
-    Ok(image)
+    println!("🔍 MAIN THREAD [{:?}]: Worker thread spawned", std::thread::current().id());
 }
+

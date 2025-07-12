@@ -21,16 +21,17 @@ impl Plugin for GamePlugin {
             .init_resource::<HighlightState>()
             .insert_state(AppState::Loading)
             .insert_state(GameSubState::Initializing)
-            .add_systems(Startup, (setup_game, setup_highlight_materials))
+            .add_systems(Startup, (setup_game, setup_highlight_materials, setup_image_load_system))
             .add_systems(First, performance_frame_start.run_if(performance_monitoring_enabled))
             // State transition systems
             .add_systems(OnEnter(AppState::Loading), transition_to_menu)
             .add_systems(OnEnter(AppState::InGame), (initialize_game, auto_adjust_camera_zoom))
             .add_systems(OnExit(AppState::InGame), cleanup_game)
             // GameSetup state systems
-            .add_systems(Update, (
-                update_puzzle_image_size,
-            ).run_if(in_state(AppState::GameSetup)))
+            .add_systems(Update, 
+                (handle_image_load_results, update_puzzle_image_size)
+                .run_if(in_state(AppState::GameSetup))
+            )
             // InGame state systems - パズル生成中のみ実行
             .add_systems(Update, (
                 spawn_puzzle_pieces_progressive,
@@ -123,7 +124,7 @@ fn transition_to_menu(mut next_state: ResMut<NextState<AppState>>) {
 
 /// ゲーム開始時の初期化
 fn initialize_game(
-    mut commands: Commands,
+    _commands: Commands,
     mut game_data: ResMut<GameData>,
     mut input_state: ResMut<InputState>,
     mut piece_cache: ResMut<PieceSelectionCache>,

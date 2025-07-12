@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use crate::resources::*;
 use crate::puzzle_utils::calculate_grid_from_config;
-use crate::asset_reader::{ExternalFileRegistry, load_external_image};
+use crate::asset_reader::ExternalFileRegistry;
 
 /// ホストゲーム設定UI
 pub fn draw_host_setup_ui(
@@ -14,7 +14,8 @@ pub fn draw_host_setup_ui(
     puzzle_image: Option<Res<PuzzleImage>>,
     asset_server: Res<AssetServer>,
     file_registry: Res<ExternalFileRegistry>,
-    mut images: ResMut<Assets<Image>>,
+    _images: ResMut<Assets<Image>>,
+    image_channels: Res<ImageLoadChannels>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     if game_state.current_screen != GameScreen::HostSetup {
@@ -115,6 +116,64 @@ pub fn draw_host_setup_ui(
                         let image_loaded = puzzle_image.as_ref()
                             .map(|img| img.size.x > 10.0 && img.size.y > 10.0)
                             .unwrap_or(false);
+                        
+                        // 読み込み状態を簡易チェック（画像が設定されているが、まだ読み込まれていない）
+                        let is_loading = !puzzle_config.image_path.is_empty() && !image_loaded;
+                        
+                        // Loading Status Display
+                        if is_loading {
+                            ui.group(|ui| {
+                                ui.set_min_width(550.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("⏳ Loading Image...")
+                                            .size(18.0)
+                                            .color(egui::Color32::YELLOW)
+                                            .strong()
+                                    );
+                                    ui.add_space(5.0);
+                                    
+                                    // 簡易ローディング表示
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Loading:")
+                                                .size(14.0)
+                                                .color(egui::Color32::LIGHT_GRAY)
+                                        );
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            ui.colored_label(
+                                                egui::Color32::LIGHT_GREEN,
+                                                egui::RichText::new(&puzzle_config.image_path)
+                                                    .size(14.0)
+                                                    .strong()
+                                            );
+                                        });
+                                    });
+                                    
+                                    // プログレスバー（無限）
+                                    ui.add(egui::ProgressBar::new(0.0).show_percentage());
+                                });
+                            });
+                            
+                            ui.add_space(5.0);
+                        }
+                        
+                        // 画像読み込み状態の表示（簡略化）
+                        if puzzle_image.is_none() && !puzzle_config.image_path.is_empty() {
+                            ui.group(|ui| {
+                                ui.set_min_width(550.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("📤 Loading Image...")
+                                            .size(18.0)
+                                            .color(egui::Color32::YELLOW)
+                                            .strong()
+                                    );
+                                    ui.label(format!("Loading: {}", puzzle_config.image_path));
+                                });
+                            });
+                            ui.add_space(5.0);
+                        }
                         
                         // Image Information Section
                         if image_loaded {
@@ -569,37 +628,50 @@ pub fn draw_host_setup_ui(
                                 
                                 ui.add_space(8.0);
                                 
-                                if ui.add_sized([200.0, 35.0], 
-                                    egui::Button::new(
-                                        egui::RichText::new("📁 Select Puzzle Image")
-                                            .size(16.0)
-                                    )).clicked() {
-                                    // WSL環境でのGTK問題回避のため、テスト用画像パスを使用
+                                // シンプルなボタン表示
+                                let button_text = "📁 Select Puzzle Image";
+                                
+                                {
+                                    if ui.add_sized([200.0, 35.0], 
+                                        egui::Button::new(
+                                            egui::RichText::new(button_text)
+                                                .size(16.0)
+                                        )
+                                    ).clicked() {
+                                    // 同期的ファイルダイアログを開く
                                     #[cfg(target_os = "windows")]
                                     {
-                                        if let Some(path) = rfd::FileDialog::new()
+                                        println!("🔍 MAIN THREAD [{:?}]: About to open file dialog...", std::thread::current().id());
+                                        let result = rfd::FileDialog::new()
                                             .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif", "webp"])
-                                            .pick_file()
-                                        {
-                                            let original_path = path.to_string_lossy().to_string();
-                                            println!("Selected image: {}", original_path);
-                                            println!("File exists: {}", std::path::Path::new(&original_path).exists());
-                                            println!("File metadata: {:?}", std::fs::metadata(&original_path));
+                                            .pick_file();
+                                        println!("🔍 MAIN THREAD [{:?}]: File dialog returned result", std::thread::current().id());
+                                        
+                                        if let Some(file_path) = result {
+                                            println!("✅ MAIN THREAD [{:?}]: File selected: {}", std::thread::current().id(), file_path.display());
                                             
-                                            // 外部ファイルとして登録（コピーなし）
-                                            let virtual_path = file_registry.register_file(&original_path);
+                                            // 外部ファイルとして登録
+                                            println!("🔍 MAIN THREAD [{:?}]: About to register file...", std::thread::current().id());
+                                            let virtual_path = file_registry.register_file(&file_path);
+                                            println!("🔍 MAIN THREAD [{:?}]: File registered as: {}", std::thread::current().id(), virtual_path);
                                             puzzle_config.image_path = virtual_path.clone();
                                             
-                                            // 外部ファイル読み込み関数を使用
-                                            let image_handle = load_external_image(&file_registry, &asset_server, &mut images, &virtual_path);
+                                            // 画像読み込みをネイティブスレッドで開始
+                                            println!("🔍 MAIN THREAD [{:?}]: About to start worker thread...", std::thread::current().id());
+                                            use crate::asset_reader::start_thread_image_load;
+                                            start_thread_image_load(
+                                                virtual_path.clone(),
+                                                file_path,
+                                                image_channels.tx_results.clone(),
+                                            );
+                                            println!("🔍 MAIN THREAD [{:?}]: Worker thread started", std::thread::current().id());
                                             
-                                            // PuzzleImageリソースを作成または更新
-                                            commands.insert_resource(PuzzleImage {
-                                                handle: image_handle,
-                                                size: Vec2::new(1.0, 1.0), // 小さな値で初期化、読み込み中を示す
-                                            });
+                                            // PuzzleImageリソースを削除（読み込み完了時に再作成される）
+                                            commands.remove_resource::<PuzzleImage>();
                                             
-                                            println!("🎯 Image registered as external asset: {} -> {}", virtual_path, original_path);
+                                            println!("🚀 MAIN THREAD [{:?}]: Started async image loading: {}", std::thread::current().id(), virtual_path);
+                                        } else {
+                                            println!("🚫 MAIN THREAD [{:?}]: File dialog was cancelled", std::thread::current().id());
                                         }
                                     }
                                     #[cfg(not(target_os = "windows"))]
@@ -616,6 +688,7 @@ pub fn draw_host_setup_ui(
                                             handle: image_handle,
                                             size: Vec2::new(1.0, 1.0), // 小さな値で初期化、読み込み中を示す
                                         });
+                                    }
                                     }
                                 }
                             });
