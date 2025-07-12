@@ -375,7 +375,7 @@ pub fn handle_box_selection(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     mut piece_query: Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
     selected_query: Query<Entity, With<SelectedPiece>>,
-    selection_box_query: Query<Entity, With<SelectionBox>>,
+    _selection_box_query: Query<Entity, With<SelectionBox>>,
     mut cache: ResMut<PieceSelectionCache>,
     game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -486,14 +486,7 @@ pub fn handle_box_selection(
                             input_state.selected_pieces.clear();
                             input_state.selected_pieces_set.clear();
                             
-                            // 選択ボックスも削除
-                            let selection_box_count = selection_box_query.iter().count();
-                            for entity in selection_box_query.iter() {
-                                commands.entity(entity).despawn();
-                            }
-                            if selection_box_count > 0 {
-                                println!("🗑️ Deleted {} selection boxes on selection clear", selection_box_count);
-                            }
+                            // 選択ボックスは render_selection_box システムが管理するため、ここでは削除しない
                             
                             println!("🧹 Cleared selection by clicking empty space");
                         }
@@ -600,14 +593,7 @@ pub fn handle_box_selection(
                     commands.entity(entity).remove::<SelectionPreview>();
                 }
                 
-                // 選択ボックスを削除
-                let selection_box_count = selection_box_query.iter().count();
-                for entity in selection_box_query.iter() {
-                    commands.entity(entity).despawn();
-                }
-                if selection_box_count > 0 {
-                    println!("🗑️ Deleted {} selection boxes on box selection completion", selection_box_count);
-                }
+                // 選択ボックスは render_selection_box システムが管理するため、ここでは削除しない
                 
                 // 範囲選択モード終了
                 input_state.selection_mode = SelectionMode::Single;
@@ -702,13 +688,9 @@ pub fn render_selection_box(
 ) {
     let start_time = perf_monitor.start_system_timing("render_selection_box");
     
-    // 既存の選択ボックスを削除
-    let existing_box_count = selection_box_query.iter().count();
+    // 既存の選択ボックスを削除して毎フレーム更新
     for (entity, _) in selection_box_query.iter() {
         commands.entity(entity).despawn();
-    }
-    if existing_box_count > 0 {
-        println!("🖼️ Deleted {} existing selection boxes", existing_box_count);
     }
     
     // 範囲選択中の選択ボックスを描画
@@ -928,7 +910,7 @@ pub fn highlight_selected_pieces(
     perf_monitor.end_system_timing("highlight_selected_pieces", start_time);
 }
 
-/// システム条件: ボックス選択モード中またはボックスエンティティが存在するかチェック
+/// システム条件: ボックス選択モード中、または選択ボックスのクリーンアップが必要
 pub fn should_render_selection_box(
     input_state: Res<InputState>,
     selection_box_query: Query<Entity, With<SelectionBox>>,

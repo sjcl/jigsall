@@ -46,9 +46,9 @@ impl Plugin for GamePlugin {
                 
                 // 選択システム
                 update_piece_cache,
+                render_selection_box.run_if(should_render_selection_box),
                 handle_box_selection,
                 handle_multi_piece_drag,
-                render_selection_box.run_if(should_render_selection_box),
                 
                 // レガシー & ハイライト
                 handle_piece_dragging_hybrid_legacy,
