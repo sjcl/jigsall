@@ -117,61 +117,15 @@ pub fn draw_host_setup_ui(
                             .map(|img| img.size.x > 10.0 && img.size.y > 10.0)
                             .unwrap_or(false);
                         
-                        // 読み込み状態を簡易チェック（画像が設定されているが、まだ読み込まれていない）
-                        let is_loading = !puzzle_config.image_path.is_empty() && !image_loaded;
-                        
-                        // Loading Status Display
-                        if is_loading {
-                            ui.group(|ui| {
-                                ui.set_min_width(550.0);
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("⏳ Loading Image...")
-                                            .size(18.0)
-                                            .color(egui::Color32::YELLOW)
-                                            .strong()
-                                    );
-                                    ui.add_space(5.0);
-                                    
-                                    // 簡易ローディング表示
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("Loading:")
-                                                .size(14.0)
-                                                .color(egui::Color32::LIGHT_GRAY)
-                                        );
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            ui.colored_label(
-                                                egui::Color32::LIGHT_GREEN,
-                                                egui::RichText::new(&puzzle_config.image_path)
-                                                    .size(14.0)
-                                                    .strong()
-                                            );
-                                        });
-                                    });
-                                    
-                                    // プログレスバー（無限）
-                                    ui.add(egui::ProgressBar::new(0.0).show_percentage());
-                                });
-                            });
-                            
-                            ui.add_space(5.0);
-                        }
                         
                         // 画像読み込み状態の表示（簡略化）
                         if puzzle_image.is_none() && !puzzle_config.image_path.is_empty() {
-                            ui.group(|ui| {
-                                ui.set_min_width(550.0);
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("📤 Loading Image...")
-                                            .size(18.0)
-                                            .color(egui::Color32::YELLOW)
-                                            .strong()
-                                    );
-                                    ui.label(format!("Loading: {}", puzzle_config.image_path));
-                                });
-                            });
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                egui::RichText::new("Loading image...")
+                                    .size(14.0)
+                                    .italics()
+                            );
                             ui.add_space(5.0);
                         }
                         
