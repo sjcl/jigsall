@@ -45,6 +45,7 @@ pub fn check_piece_placement_event_driven(
     mut placed_events: EventWriter<PiecePlacedEvent>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
     mut input_state: ResMut<InputState>,
+    mut piece_cache: ResMut<PieceSelectionCache>,
 ) {
     let _span = info_span!("check_piece_placement_event_driven").entered();
     let start_time = perf_monitor.start_system_timing("check_piece_placement_event_driven");
@@ -90,6 +91,9 @@ pub fn check_piece_placement_event_driven(
                         input_state.selected_piece = None;
                     }
                     
+                    // ピースキャッシュの更新をトリガー（配置されたピースを除外するため）
+                    piece_cache.need_refresh = true;
+                    
                     println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
                         piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
                 }
@@ -107,6 +111,7 @@ pub fn check_piece_placement(
     selected_pieces_query: Query<Entity, With<SelectedPiece>>,
     puzzle_config: Res<PuzzleConfig>,
     mut input_state: ResMut<InputState>,
+    mut piece_cache: ResMut<PieceSelectionCache>,
 ) {
     // 複数選択中または複数ドラッグ中の場合はスナップを無効化
     let is_multi_selection_active = matches!(input_state.selection_mode, SelectionMode::BoxSelection | SelectionMode::MultiDrag);
@@ -159,6 +164,9 @@ pub fn check_piece_placement(
                 if input_state.selected_piece == Some(entity) {
                     input_state.selected_piece = None;
                 }
+                
+                // ピースキャッシュの更新をトリガー（配置されたピースを除外するため）
+                piece_cache.need_refresh = true;
                 
                 println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
                     piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);

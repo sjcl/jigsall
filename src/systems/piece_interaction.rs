@@ -540,15 +540,18 @@ pub fn handle_box_selection(
                         
                         // キャッシュされた境界ボックスで高速判定
                         for &entity in &cache.all_pieces {
-                            if let Some((piece_min, piece_max)) = cache.piece_bounds.get(&entity) {
-                                // 矩形の重なり判定
-                                let overlaps = piece_min.x <= select_max_x && 
-                                              piece_max.x >= select_min_x &&
-                                              piece_min.y <= select_max_y && 
-                                              piece_max.y >= select_min_y;
-                                
-                                if overlaps && !input_state.selected_pieces_set.contains(&entity) {
-                                    commands.entity(entity).insert(SelectionPreview);
+                            // PickablePieceコンポーネントを持つピースのみプレビュー可能
+                            if piece_query.get(entity).is_ok() {
+                                if let Some((piece_min, piece_max)) = cache.piece_bounds.get(&entity) {
+                                    // 矩形の重なり判定
+                                    let overlaps = piece_min.x <= select_max_x && 
+                                                  piece_max.x >= select_min_x &&
+                                                  piece_min.y <= select_max_y && 
+                                                  piece_max.y >= select_min_y;
+                                    
+                                    if overlaps && !input_state.selected_pieces_set.contains(&entity) {
+                                        commands.entity(entity).insert(SelectionPreview);
+                                    }
                                 }
                             }
                         }
@@ -569,18 +572,21 @@ pub fn handle_box_selection(
                     
                     // キャッシュされた境界ボックスで高速判定
                     for &entity in &cache.all_pieces {
-                        if let Some((piece_min, piece_max)) = cache.piece_bounds.get(&entity) {
-                            // 矩形の重なり判定
-                            let overlaps = piece_min.x <= select_max_x && 
-                                          piece_max.x >= select_min_x &&
-                                          piece_min.y <= select_max_y && 
-                                          piece_max.y >= select_min_y;
-                            
-                            if overlaps {
-                                commands.entity(entity).insert(SelectedPiece);
-                                input_state.selected_pieces.push(entity);
-                                input_state.selected_pieces_set.insert(entity);
-                                newly_selected += 1;
+                        // PickablePieceコンポーネントを持つピースのみ選択可能
+                        if piece_query.get(entity).is_ok() {
+                            if let Some((piece_min, piece_max)) = cache.piece_bounds.get(&entity) {
+                                // 矩形の重なり判定
+                                let overlaps = piece_min.x <= select_max_x && 
+                                              piece_max.x >= select_min_x &&
+                                              piece_min.y <= select_max_y && 
+                                              piece_max.y >= select_min_y;
+                                
+                                if overlaps {
+                                    commands.entity(entity).insert(SelectedPiece);
+                                    input_state.selected_pieces.push(entity);
+                                    input_state.selected_pieces_set.insert(entity);
+                                    newly_selected += 1;
+                                }
                             }
                         }
                     }
