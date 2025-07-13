@@ -20,6 +20,7 @@ lyon_tessellation = "1.0"
 svgtypes = "0.15"
 crossbeam = "0.8"
 instant = "0.1"
+rstar = "0.12"
 
 # プロファイリング用の設定
 [features]

@@ -7,11 +7,20 @@ pub fn register_new_pieces_to_id_manager(
     mut id_manager: ResMut<PieceIdManager>,
     new_pieces: Query<(Entity, &PuzzlePiece), Added<PuzzlePiece>>,
 ) {
+    let mut count = 0;
     for (entity, puzzle_piece) in new_pieces.iter() {
         // PuzzlePieceコンポーネントのIDを使用してPieceIdManagerに登録
         let piece_id = id_manager.register_piece(entity, Some(puzzle_piece.id));
+        count += 1;
         
-        println!("📝 Registered piece {} (Entity: {:?}) to ID manager", piece_id, entity);
+        // 最初の数個と最後のピースのみログ出力
+        if count <= 5 || new_pieces.iter().count() - count < 5 {
+            println!("📝 Registered piece {} (Entity: {:?}) to ID manager", piece_id, entity);
+        }
+    }
+    
+    if count > 0 {
+        println!("📝 Total {} pieces registered to ID manager this frame", count);
     }
 }
 

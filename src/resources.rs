@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use crate::components::{PuzzlePiece, PieceShape};
 use instant::Instant;
+use rstar::{RTree, RTreeObject, AABB};
 
 /// ピースの一意識別子（将来的にバッチング対応）
 pub type PieceId = Uuid;
@@ -21,121 +22,33 @@ pub struct PieceCollisionData {
     pub indices: Vec<u32>,     // トライアングル頂点インデックス
 }
 
-/// QuadTree ノード（空間分割用）
-#[derive(Debug, Clone)]
-pub struct QuadTreeNode {
-    pub bounds: Rect,
-    pub pieces: Vec<PieceId>,
-    pub children: Option<Box<[QuadTreeNode; 4]>>,
-    pub max_pieces: usize,
-    pub max_depth: usize,
-    pub current_depth: usize,
-}
+/// rstar R-tree用のトレイト実装
+impl RTreeObject for PieceCollisionData {
+    type Envelope = AABB<[f32; 2]>;
 
-impl QuadTreeNode {
-    pub fn new(bounds: Rect, max_pieces: usize, max_depth: usize, current_depth: usize) -> Self {
-        Self {
-            bounds,
-            pieces: Vec::new(),
-            children: None,
-            max_pieces,
-            max_depth,
-            current_depth,
-        }
-    }
-
-    pub fn insert(&mut self, piece_id: PieceId, piece_bounds: Rect) {
-        if self.bounds.intersect(piece_bounds).is_empty() {
-            return;
-        }
-
-        if self.children.is_none() {
-            self.pieces.push(piece_id);
-
-            if self.pieces.len() > self.max_pieces && self.current_depth < self.max_depth {
-                self.subdivide();
-            }
-        } else if let Some(ref mut children) = self.children {
-            for child in children.iter_mut() {
-                child.insert(piece_id, piece_bounds);
-            }
-        }
-    }
-
-    fn subdivide(&mut self) {
-        let half_width = self.bounds.width() / 2.0;
-        let half_height = self.bounds.height() / 2.0;
-        let center_x = self.bounds.min.x + half_width;
-        let center_y = self.bounds.min.y + half_height;
-
-        let children = [
-            QuadTreeNode::new(
-                Rect::new(self.bounds.min.x, self.bounds.min.y, center_x, center_y),
-                self.max_pieces,
-                self.max_depth,
-                self.current_depth + 1,
-            ),
-            QuadTreeNode::new(
-                Rect::new(center_x, self.bounds.min.y, self.bounds.max.x, center_y),
-                self.max_pieces,
-                self.max_depth,
-                self.current_depth + 1,
-            ),
-            QuadTreeNode::new(
-                Rect::new(self.bounds.min.x, center_y, center_x, self.bounds.max.y),
-                self.max_pieces,
-                self.max_depth,
-                self.current_depth + 1,
-            ),
-            QuadTreeNode::new(
-                Rect::new(center_x, center_y, self.bounds.max.x, self.bounds.max.y),
-                self.max_pieces,
-                self.max_depth,
-                self.current_depth + 1,
-            ),
-        ];
-
-        self.children = Some(Box::new(children));
-        
-        // 注意: subdivide では piece_bounds が取得できないため、
-        // 実際のピース再配置は PieceCollisionSystem::rebuild_quad_tree で行う
-        // ここでは子ノードの準備のみ
-        self.pieces.clear();
-    }
-
-    pub fn query(&self, query_bounds: Rect, results: &mut Vec<PieceId>) {
-        if self.bounds.intersect(query_bounds).is_empty() {
-            return;
-        }
-
-        for &piece_id in &self.pieces {
-            results.push(piece_id);
-        }
-
-        if let Some(ref children) = self.children {
-            for child in children.iter() {
-                child.query(query_bounds, results);
-            }
-        }
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_corners(
+            [self.bounding_box.min.x, self.bounding_box.min.y],
+            [self.bounding_box.max.x, self.bounding_box.max.y],
+        )
     }
 }
+
 
 /// IDベースの当たり判定システム
 #[derive(Resource, Default)]
 pub struct PieceCollisionSystem {
     pub pieces: HashMap<PieceId, PieceCollisionData>,
-    pub quad_tree: Option<QuadTreeNode>,
+    pub rtree: RTree<PieceCollisionData>,
     pub need_rebuild: bool,
-    pub world_bounds: Rect,
 }
 
 impl PieceCollisionSystem {
     pub fn new() -> Self {
         Self {
             pieces: HashMap::new(),
-            quad_tree: None,
+            rtree: RTree::new(),
             need_rebuild: true,
-            world_bounds: Rect::new(-2000.0, -2000.0, 2000.0, 2000.0), // 初期の大きな範囲
         }
     }
 
@@ -166,58 +79,168 @@ impl PieceCollisionSystem {
         }
     }
 
-    pub fn rebuild_quad_tree(&mut self) {
+    pub fn rebuild_rtree(&mut self) {
         if !self.need_rebuild {
             return;
         }
 
-        self.quad_tree = Some(QuadTreeNode::new(self.world_bounds, 8, 5, 0));
-
-        if let Some(ref mut quad_tree) = self.quad_tree {
-            for (piece_id, piece_data) in &self.pieces {
-                quad_tree.insert(*piece_id, piece_data.bounding_box);
+        // R-treeを再構築 - bulk_loadを使用して効率的に構築
+        let pieces_vec: Vec<PieceCollisionData> = self.pieces.values().cloned().collect();
+        
+        if !pieces_vec.is_empty() {
+            println!("🌳 Rebuilding R-tree with {} pieces", pieces_vec.len());
+            
+            // デバッグ用: カーソル周辺のピースをログ出力
+            for piece_data in &pieces_vec {
+                let is_near_cursor = piece_data.position.distance(Vec2::new(3173.0, -1451.2)) < 500.0;
+                
+                if is_near_cursor {
+                    println!("🎯 CURSOR AREA PIECE: {} with bbox ({:.1}, {:.1}) to ({:.1}, {:.1})", 
+                        piece_data.piece_id, 
+                        piece_data.bounding_box.min.x, piece_data.bounding_box.min.y,
+                        piece_data.bounding_box.max.x, piece_data.bounding_box.max.y);
+                    println!("   📍 Center: ({:.1}, {:.1}), Distance: {:.1}px", 
+                        piece_data.position.x, piece_data.position.y,
+                        piece_data.position.distance(Vec2::new(3173.0, -1451.2)));
+                }
             }
+            
+            self.rtree = RTree::bulk_load(pieces_vec);
+        } else {
+            self.rtree = RTree::new();
         }
 
         self.need_rebuild = false;
+        println!("✅ R-tree rebuilt successfully");
     }
 
     pub fn query_pieces_in_rect(&mut self, query_rect: Rect) -> Vec<PieceId> {
-        self.rebuild_quad_tree();
+        self.rebuild_rtree();
 
-        let mut results = Vec::new();
-        if let Some(ref quad_tree) = self.quad_tree {
-            quad_tree.query(query_rect, &mut results);
-        }
-        results
+        // R-treeを使用して範囲内のピースを検索
+        let envelope = rstar::AABB::from_corners(
+            [query_rect.min.x, query_rect.min.y],
+            [query_rect.max.x, query_rect.max.y],
+        );
+        
+        self.rtree.locate_in_envelope_intersecting(&envelope)
+            .map(|piece_data| piece_data.piece_id)
+            .collect()
     }
 
-    pub fn ray_cast(&mut self, ray_origin: Vec2, ray_direction: Vec2) -> Option<PieceId> {
-        // 簡単なレイキャスト実装（バウンディングボックスのみ）
-        let ray_end = ray_origin + ray_direction * 10000.0; // 十分大きな距離
-        let ray_rect = Rect::from_corners(ray_origin, ray_end);
+    /// デバッグ用のR-treeクエリ（詳細ログ付き）
+    pub fn query_pieces_in_rect_debug(&mut self, query_rect: Rect) -> (Vec<PieceId>, String) {
+        self.rebuild_rtree();
 
-        let candidate_pieces = self.query_pieces_in_rect(ray_rect);
-
-        for piece_id in candidate_pieces {
-            if let Some(piece_data) = self.pieces.get(&piece_id) {
-                if piece_data.bounding_box.contains(ray_origin) {
-                    return Some(piece_id);
+        let mut debug_info = format!("🌳 R-tree Query Debug:\n");
+        debug_info.push_str(&format!("📍 Query rect: ({:.1}, {:.1}) to ({:.1}, {:.1}) [{}x{}]\n", 
+            query_rect.min.x, query_rect.min.y, query_rect.max.x, query_rect.max.y,
+            query_rect.width() as i32, query_rect.height() as i32));
+        
+        // R-treeを使用して範囲内のピースを検索
+        let envelope = rstar::AABB::from_corners(
+            [query_rect.min.x, query_rect.min.y],
+            [query_rect.max.x, query_rect.max.y],
+        );
+        
+        let results: Vec<PieceId> = self.rtree.locate_in_envelope_intersecting(&envelope)
+            .map(|piece_data| piece_data.piece_id)
+            .collect();
+        
+        debug_info.push_str(&format!("🎯 R-tree found {} pieces\n", results.len()));
+        debug_info.push_str(&format!("🌍 Total pieces in system: {}\n", self.pieces.len()));
+        
+        // 最も近いピースがなぜ見つからないのかをチェック
+        if let Some((nearest_id, nearest_distance)) = self.find_nearest_piece(query_rect.center(), 500.0) {
+            if let Some(nearest_data) = self.pieces.get(&nearest_id) {
+                debug_info.push_str(&format!("\n🎯 Nearest piece analysis ({})\n", nearest_id));
+                debug_info.push_str(&format!("   📦 Nearest BBox: ({:.1}, {:.1}) to ({:.1}, {:.1})\n",
+                    nearest_data.bounding_box.min.x, nearest_data.bounding_box.min.y,
+                    nearest_data.bounding_box.max.x, nearest_data.bounding_box.max.y));
+                debug_info.push_str(&format!("   📍 Distance: {:.1}px\n", nearest_distance));
+                
+                let intersects = !query_rect.intersect(nearest_data.bounding_box).is_empty();
+                debug_info.push_str(&format!("   🔄 Intersects with query: {}\n", intersects));
+                
+                let found_in_results = results.contains(&nearest_id);
+                debug_info.push_str(&format!("   ✅ Found in results: {}\n", found_in_results));
+                
+                if intersects && !found_in_results {
+                    debug_info.push_str("   ❌ ERROR: Should be found but missing from results!\n");
+                    debug_info.push_str("   🚨 This indicates an R-tree query issue!\n");
                 }
             }
         }
+        
+        (results, debug_info)
+    }
 
-        None
+    pub fn ray_cast(&mut self, ray_origin: Vec2, ray_direction: Vec2) -> Option<PieceId> {
+        // より効率的なポイント検索を使用
+        // レイキャストよりもマウス位置での直接検索の方が適している
+        self.find_piece_at_position(ray_origin)
+    }
+
+    /// デバッグ用の詳細レイキャスト
+    pub fn ray_cast_debug(&mut self, ray_origin: Vec2, ray_direction: Vec2) -> (Option<PieceId>, String) {
+        println!("🔍 Ray cast debug: origin={:?}, direction={:?}", ray_origin, ray_direction);
+        println!("🔍 Collision system has {} pieces", self.pieces.len());
+        
+        if self.pieces.is_empty() {
+            return (None, "No pieces in collision system".to_string());
+        }
+
+        // R-treeの状態確認
+        if self.rtree.size() == 0 {
+            println!("⚠️ R-tree not initialized, rebuilding...");
+            self.rebuild_rtree();
+        }
+
+        // 1. 詳細なポイント検索（100px範囲）
+        let (result, detailed_debug) = self.find_piece_at_position_debug(ray_origin);
+        
+        // 2. 最も近いピース検索（1000px範囲）
+        let nearest = self.find_nearest_piece(ray_origin, 1000.0);
+        
+        // 3. 広範囲検索（500px範囲）
+        let large_area_pieces = self.find_pieces_in_large_area(ray_origin, 500.0);
+        
+        // 4. 精密形状判定での検索
+        let precise_hits = self.find_pieces_with_precise_hit(ray_origin, 100.0);
+        
+        // 4. ピース位置の範囲分析
+        let mut min_pos = Vec2::new(f32::INFINITY, f32::INFINITY);
+        let mut max_pos = Vec2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);
+        
+        for piece_data in self.pieces.values() {
+            min_pos.x = min_pos.x.min(piece_data.position.x);
+            min_pos.y = min_pos.y.min(piece_data.position.y);
+            max_pos.x = max_pos.x.max(piece_data.position.x);
+            max_pos.y = max_pos.y.max(piece_data.position.y);
+        }
+        
+        let debug_info = format!(
+            "📍 Direct search (100px): {:?}\n📍 Nearest piece: {:?}\n📍 Large area (500px): {} pieces\n📍 Precise hits (100px): {} pieces\n📊 Piece position range: ({:.1}, {:.1}) to ({:.1}, {:.1})\n📏 Cursor distance from center: {:.1}px\n\n🔍 Detailed search:\n{}",
+            result,
+            nearest,
+            large_area_pieces.len(),
+            precise_hits.len(),
+            min_pos.x, min_pos.y, max_pos.x, max_pos.y,
+            ray_origin.distance(Vec2::ZERO),
+            detailed_debug
+        );
+
+        (result, debug_info)
     }
 
     pub fn get_piece_data(&self, piece_id: PieceId) -> Option<&PieceCollisionData> {
         self.pieces.get(&piece_id)
     }
 
-    /// マウス位置でのピース検索（ドラッグ用API）
+    /// マウス位置でのピース検索（精密な形状判定付き）
     pub fn find_piece_at_position(&mut self, position: Vec2) -> Option<PieceId> {
-        // 小さな範囲でクエリ
-        let query_size = 1.0;
+        // 大幅に拡大された範囲でクエリ（座標範囲問題の対処）
+        let query_size = 100.0;
         let query_rect = Rect::new(
             position.x - query_size,
             position.y - query_size,
@@ -227,16 +250,188 @@ impl PieceCollisionSystem {
 
         let candidate_pieces = self.query_pieces_in_rect(query_rect);
 
-        // バウンディングボックスでフィルタリング
+        // 2段階判定: バウンディングボックス → 精密ポリゴン判定
         for piece_id in candidate_pieces {
             if let Some(piece_data) = self.pieces.get(&piece_id) {
+                // 1段階目: バウンディングボックスでの高速フィルタリング
                 if piece_data.bounding_box.contains(position) {
-                    return Some(piece_id);
+                    // 2段階目: 精密なポリゴン内判定
+                    if self.precise_point_in_piece(piece_id, position) {
+                        return Some(piece_id);
+                    }
                 }
             }
         }
 
         None
+    }
+
+    /// デバッグ用の詳細な位置検索（各段階の結果を表示）
+    pub fn find_piece_at_position_debug(&mut self, position: Vec2) -> (Option<PieceId>, String) {
+        let query_size = 100.0;
+        let query_rect = Rect::new(
+            position.x - query_size,
+            position.y - query_size,
+            position.x + query_size,
+            position.y + query_size,
+        );
+
+        // R-treeデバッグクエリを実行
+        let (candidate_pieces, rtree_debug) = self.query_pieces_in_rect_debug(query_rect);
+        
+        let mut debug_info = format!("🔍 Cursor at: ({:.1}, {:.1})\n", position.x, position.y);
+        debug_info.push_str(&format!("📦 R-tree candidates: {} pieces\n\n", candidate_pieces.len()));
+        
+        // R-treeの詳細ログを追加
+        debug_info.push_str(&rtree_debug);
+        debug_info.push_str("\n📋 Candidate piece analysis:\n");
+
+        for (i, piece_id) in candidate_pieces.iter().enumerate() {
+            if let Some(piece_data) = self.pieces.get(piece_id) {
+                let bbox_contains = piece_data.bounding_box.contains(position);
+                let distance = position.distance(piece_data.position);
+                
+                debug_info.push_str(&format!(
+                    "  {}. {} (distance: {:.1}px)\n",
+                    i + 1, piece_id, distance
+                ));
+                
+                // バウンディングボックスの詳細情報を表示
+                debug_info.push_str(&format!(
+                    "     📦 BBox: ({:.1}, {:.1}) to ({:.1}, {:.1}) [{}x{}]\n",
+                    piece_data.bounding_box.min.x, piece_data.bounding_box.min.y,
+                    piece_data.bounding_box.max.x, piece_data.bounding_box.max.y,
+                    piece_data.bounding_box.width() as i32, piece_data.bounding_box.height() as i32
+                ));
+                
+                // ピースの中心位置
+                debug_info.push_str(&format!(
+                    "     📍 Piece center: ({:.1}, {:.1})\n",
+                    piece_data.position.x, piece_data.position.y
+                ));
+                
+                // カーソルとバウンディングボックスの各辺との距離
+                let cursor_to_left = position.x - piece_data.bounding_box.min.x;
+                let cursor_to_right = piece_data.bounding_box.max.x - position.x;
+                let cursor_to_bottom = position.y - piece_data.bounding_box.min.y;
+                let cursor_to_top = piece_data.bounding_box.max.y - position.y;
+                
+                debug_info.push_str(&format!(
+                    "     📏 Cursor to bbox edges: L:{:.1} R:{:.1} B:{:.1} T:{:.1}\n",
+                    cursor_to_left, cursor_to_right, cursor_to_bottom, cursor_to_top
+                ));
+                
+                debug_info.push_str(&format!("     ✅ BBox contains cursor: {}\n", bbox_contains));
+                
+                if bbox_contains {
+                    let precise_hit = self.precise_point_in_piece(*piece_id, position);
+                    debug_info.push_str(&format!("     🎯 Precise polygon hit: {}\n", precise_hit));
+                    
+                    if precise_hit {
+                        debug_info.push_str("     🎉 FOUND PIECE!\n");
+                        return (Some(*piece_id), debug_info);
+                    } else {
+                        debug_info.push_str("     ⚠️ Inside bbox but outside polygon\n");
+                    }
+                } else {
+                    debug_info.push_str("     ❌ Outside bounding box - precise test skipped\n");
+                }
+                
+                debug_info.push_str("\n");
+            }
+        }
+        
+        // 最も近いピースの情報も表示
+        if let Some((nearest_id, nearest_distance)) = self.find_nearest_piece(position, 500.0) {
+            debug_info.push_str(&format!("\n🎯 Nearest piece within 500px: {} (distance: {:.1}px)\n", nearest_id, nearest_distance));
+            
+            if let Some(nearest_data) = self.pieces.get(&nearest_id) {
+                debug_info.push_str(&format!(
+                    "   📦 Nearest BBox: ({:.1}, {:.1}) to ({:.1}, {:.1})\n",
+                    nearest_data.bounding_box.min.x, nearest_data.bounding_box.min.y,
+                    nearest_data.bounding_box.max.x, nearest_data.bounding_box.max.y
+                ));
+                debug_info.push_str(&format!(
+                    "   📍 Nearest center: ({:.1}, {:.1})\n",
+                    nearest_data.position.x, nearest_data.position.y
+                ));
+            }
+        }
+
+        (None, debug_info)
+    }
+
+    /// 最も近いピースを検索（緊急対処用）
+    pub fn find_nearest_piece(&self, position: Vec2, max_distance: f32) -> Option<(PieceId, f32)> {
+        let mut nearest_piece = None;
+        let mut nearest_distance = max_distance;
+
+        for (piece_id, piece_data) in &self.pieces {
+            let distance = position.distance(piece_data.position);
+            if distance < nearest_distance {
+                nearest_distance = distance;
+                nearest_piece = Some(*piece_id);
+            }
+        }
+
+        nearest_piece.map(|id| (id, nearest_distance))
+    }
+
+    /// 広範囲検索（精密判定付き）
+    pub fn find_pieces_in_large_area(&mut self, position: Vec2, radius: f32) -> Vec<(PieceId, f32)> {
+        let query_rect = Rect::new(
+            position.x - radius,
+            position.y - radius,
+            position.x + radius,
+            position.y + radius,
+        );
+
+        let candidate_pieces = self.query_pieces_in_rect(query_rect);
+        let mut results = Vec::new();
+
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                let distance = position.distance(piece_data.position);
+                if distance <= radius {
+                    results.push((piece_id, distance));
+                }
+            }
+        }
+
+        // 距離順にソート
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results
+    }
+
+    /// 広範囲検索（精密形状判定付き）- 実際にピース形状内にあるもののみ
+    pub fn find_pieces_with_precise_hit(&mut self, position: Vec2, radius: f32) -> Vec<(PieceId, f32)> {
+        let query_rect = Rect::new(
+            position.x - radius,
+            position.y - radius,
+            position.x + radius,
+            position.y + radius,
+        );
+
+        let candidate_pieces = self.query_pieces_in_rect(query_rect);
+        let mut results = Vec::new();
+
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                let distance = position.distance(piece_data.position);
+                if distance <= radius {
+                    // バウンディングボックス内かつ精密判定通過のもののみ
+                    if piece_data.bounding_box.contains(position) {
+                        if self.precise_point_in_piece(piece_id, position) {
+                            results.push((piece_id, distance));
+                        }
+                    }
+                }
+            }
+        }
+
+        // 距離順にソート
+        results.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        results
     }
 
     /// 矩形範囲内のピース検索（範囲選択用API）
@@ -302,36 +497,23 @@ impl PieceCollisionSystem {
     pub fn get_debug_stats(&self) -> (usize, bool, bool) {
         (
             self.pieces.len(),
-            self.quad_tree.is_some(),
+            self.rtree.size() > 0,
             self.need_rebuild
         )
     }
 
     /// パフォーマンス統計取得
     pub fn get_performance_stats(&self) -> String {
-        let quad_tree_nodes = if let Some(ref qt) = self.quad_tree {
-            self.count_quad_tree_nodes(qt)
-        } else {
-            0
-        };
+        let rtree_size = self.rtree.size();
 
         format!(
-            "Collision System Stats:\n  Pieces: {}\n  QuadTree nodes: {}\n  Needs rebuild: {}",
+            "Collision System Stats:\n  Pieces: {}\n  R-tree size: {}\n  Needs rebuild: {}",
             self.pieces.len(),
-            quad_tree_nodes,
+            rtree_size,
             self.need_rebuild
         )
     }
 
-    fn count_quad_tree_nodes(&self, node: &QuadTreeNode) -> usize {
-        let mut count = 1;
-        if let Some(ref children) = node.children {
-            for child in children.iter() {
-                count += self.count_quad_tree_nodes(child);
-            }
-        }
-        count
-    }
 }
 
 /// ストロークメッシュのキャッシュリソース

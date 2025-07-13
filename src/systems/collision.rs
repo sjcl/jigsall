@@ -47,7 +47,8 @@ pub fn register_new_pieces_to_collision_system(
             
             collision_system.add_piece(collision_data);
             
-            println!("📝 Registered piece {} to collision system", piece_id);
+            println!("📝 Registered piece {} to collision system (pos: {:?}, bounds: {:?})", 
+                    piece_id, position, bounding_box);
         }
     }
 }
@@ -88,9 +89,35 @@ pub fn cleanup_removed_pieces_from_collision_system(
 pub fn debug_collision_system_stats(
     collision_system: Res<PieceCollisionSystem>,
     input: Res<ButtonInput<KeyCode>>,
+    puzzle_pieces_query: Query<Entity, With<PuzzlePiece>>,
+    id_manager: Res<PieceIdManager>,
 ) {
     if input.just_pressed(KeyCode::F11) {
-        println!("🔍 {}", collision_system.get_performance_stats());
+        println!("🔍 === Collision System Debug Stats ===");
+        println!("{}", collision_system.get_performance_stats());
+        
+        let bevy_piece_count = puzzle_pieces_query.iter().count();
+        let id_manager_count = id_manager.get_all_piece_ids().len();
+        
+        println!("📊 Cross-system comparison:");
+        println!("  Bevy ECS pieces: {}", bevy_piece_count);
+        println!("  ID Manager pieces: {}", id_manager_count);
+        println!("  Collision system pieces: {}", collision_system.pieces.len());
+        
+        if collision_system.pieces.len() != bevy_piece_count {
+            println!("⚠️ WARNING: Piece count mismatch detected!");
+            println!("   This suggests pieces are not being registered to collision system");
+        }
+        
+        if !collision_system.pieces.is_empty() {
+            println!("📦 Sample piece data:");
+            let sample_piece = collision_system.pieces.iter().next().unwrap();
+            println!("   ID: {}", sample_piece.0);
+            println!("   Position: {:?}", sample_piece.1.position);
+            println!("   Bounds: {:?}", sample_piece.1.bounding_box);
+        }
+        
+        println!("🔍 === End Debug Stats ===");
     }
 }
 
@@ -138,7 +165,7 @@ pub fn performance_test_collision_system(
         // 3. QuadTree再構築パフォーマンステスト
         let start = Instant::now();
         collision_system.need_rebuild = true;
-        collision_system.rebuild_quad_tree();
+        collision_system.rebuild_rtree();
         let rebuild_time = start.elapsed();
         
         println!("📊 Performance Test Results:");
@@ -167,13 +194,13 @@ pub fn optimize_collision_system(
         
         // QuadTreeの再構築を強制
         collision_system.need_rebuild = true;
-        collision_system.rebuild_quad_tree();
+        collision_system.rebuild_rtree();
         
         println!("🔧 Collision system optimized - QuadTree rebuilt");
     }
 }
 
-/// レイキャスティングのテストシステム（デバッグ用）
+/// レイキャスティングのテストシステム（詳細デバッグ付き）
 pub fn test_ray_casting(
     mut collision_system: ResMut<PieceCollisionSystem>,
     input: Res<ButtonInput<KeyCode>>,
@@ -181,22 +208,51 @@ pub fn test_ray_casting(
     windows: Query<&Window>,
 ) {
     if input.just_pressed(KeyCode::KeyR) {
+        println!("🔍 === Ray Casting Debug Test ===");
+        
         if let Ok(window) = windows.single() {
             if let Some(cursor_position) = window.cursor_position() {
+                println!("🖱️ Cursor screen position: {:?}", cursor_position);
+                
                 if let Ok((camera, camera_transform)) = camera_query.single() {
                     if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
-                        // マウス位置から下向きのレイキャスト
-                        let ray_direction = Vec2::new(0.0, -1.0);
+                        println!("🌍 World position: {:?}", world_position);
                         
-                        if let Some(hit_piece) = collision_system.ray_cast(world_position, ray_direction) {
-                            println!("🎯 Ray hit piece: {}", hit_piece);
+                        // カメラ情報の表示
+                        let camera_translation = camera_transform.translation();
+                        println!("📷 Camera position: {:?}", camera_translation);
+                        println!("📷 Camera scale: {:?}", camera_transform.scale());
+                        
+                        // 詳細なバウンディングボックスデバッグを実行
+                        let (detailed_hit, detailed_debug) = collision_system.find_piece_at_position_debug(world_position);
+                        
+                        if let Some(piece_id) = detailed_hit {
+                            println!("✅ DETAILED SEARCH HIT piece: {}", piece_id);
                         } else {
-                            println!("🎯 Ray missed all pieces");
+                            println!("❌ DETAILED SEARCH MISSED - no piece at cursor position");
                         }
+                        
+                        println!("📊 Detailed Debug Info:\n{}", detailed_debug);
+                        
+                        // 従来のレイキャストも実行して比較
+                        let ray_direction = Vec2::new(0.0, -1.0);
+                        let (hit_piece, ray_debug_info) = collision_system.ray_cast_debug(world_position, ray_direction);
+                        
+                        println!("\n📊 Ray Cast Debug Info:\n{}", ray_debug_info);
+                    } else {
+                        println!("❌ Failed to convert cursor to world position");
                     }
+                } else {
+                    println!("❌ Camera not found");
                 }
+            } else {
+                println!("❌ Cursor position not available");
             }
+        } else {
+            println!("❌ Window not found");
         }
+        
+        println!("🔍 === End Ray Casting Debug ===");
     }
 }
 
@@ -212,18 +268,48 @@ pub fn test_collision_api(
             if let Some(cursor_position) = window.cursor_position() {
                 if let Ok((camera, camera_transform)) = camera_query.single() {
                     if let Ok(world_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) {
-                        // マウス位置でのピース検索テスト
-                        if let Some(piece_id) = collision_system.find_piece_at_position(world_position) {
+                        println!("🔍 === Collision API Test ===");
+                        println!("🌍 World position: {:?}", world_position);
+                        
+                        // 1. 詳細なピース検索テスト（バウンディングボックスデバッグ付き）
+                        let (detailed_hit, detailed_debug) = collision_system.find_piece_at_position_debug(world_position);
+                        
+                        if let Some(piece_id) = detailed_hit {
                             println!("🔍 Found piece at cursor: {}", piece_id);
-                            
-                            // 精密な当たり判定テスト
-                            let precise_hit = collision_system.precise_point_in_piece(piece_id, world_position);
-                            println!("🎯 Precise hit test: {}", precise_hit);
                         } else {
                             println!("🔍 No piece found at cursor position");
                         }
                         
-                        // 範囲選択テスト（カーソル周辺100x100の範囲）
+                        println!("📊 Detailed Debug:\n{}", detailed_debug);
+                        
+                        // 2. 最も近いピース検索（1000px範囲）
+                        if let Some((nearest_id, distance)) = collision_system.find_nearest_piece(world_position, 1000.0) {
+                            println!("🎯 Nearest piece within 1000px: {} (distance: {:.1}px)", nearest_id, distance);
+                        } else {
+                            println!("🎯 No pieces within 1000px");
+                        }
+                        
+                        // 3. 広範囲検索（500px範囲）
+                        let large_area_pieces = collision_system.find_pieces_in_large_area(world_position, 500.0);
+                        println!("📦 Pieces in 500px radius: {} pieces", large_area_pieces.len());
+                        
+                        // 4. 精密形状判定での検索（100px範囲）
+                        let precise_hits = collision_system.find_pieces_with_precise_hit(world_position, 100.0);
+                        println!("🎯 Precise shape hits (100px): {} pieces", precise_hits.len());
+                        
+                        if !precise_hits.is_empty() {
+                            println!("   Pieces with cursor inside shape:");
+                            for (i, (piece_id, distance)) in precise_hits.iter().take(3).enumerate() {
+                                println!("   {}. {} (distance: {:.1}px)", i + 1, piece_id, distance);
+                            }
+                        } else if !large_area_pieces.is_empty() {
+                            println!("   Top 5 closest pieces (no precise hits):");
+                            for (i, (piece_id, distance)) in large_area_pieces.iter().take(5).enumerate() {
+                                println!("   {}. {} (distance: {:.1}px)", i + 1, piece_id, distance);
+                            }
+                        }
+                        
+                        // 4. 範囲選択テスト（カーソル周辺100x100の範囲）
                         let rect = Rect::new(
                             world_position.x - 50.0,
                             world_position.y - 50.0,
@@ -232,6 +318,8 @@ pub fn test_collision_api(
                         );
                         let pieces_in_rect = collision_system.find_pieces_in_rect(rect);
                         println!("📦 Pieces in 100x100 rect: {} pieces", pieces_in_rect.len());
+                        
+                        println!("🔍 === End API Test ===");
                     }
                 }
             }
@@ -289,5 +377,72 @@ pub fn id_based_rect_selector(
     } else {
         // バウンディングボックスのみ
         candidate_pieces
+    }
+}
+
+/// 手動でコリジョンシステムを再構築するシステム（デバッグ用）
+pub fn manual_rebuild_collision_system(
+    mut collision_system: ResMut<PieceCollisionSystem>,
+    id_manager: Res<PieceIdManager>,
+    pieces_query: Query<(Entity, &PuzzlePiece, &PieceShape, &Transform)>,
+    input: Res<ButtonInput<KeyCode>>,
+) {
+    if input.just_pressed(KeyCode::KeyU) {
+        println!("🔄 Manual collision system rebuild triggered...");
+        
+        // 既存データをクリア
+        collision_system.pieces.clear();
+        collision_system.need_rebuild = true;
+        
+        let mut registered_count = 0;
+        
+        // 全ピースを再登録
+        for (entity, _puzzle_piece, piece_shape, transform) in pieces_query.iter() {
+            if let Some(piece_id) = id_manager.get_piece_id(entity) {
+                // テッセレーション結果から頂点とインデックスを取得
+                let vertices: Vec<Vec2> = piece_shape.vertices.iter()
+                    .map(|&[x, y]| Vec2::new(x, y))
+                    .collect();
+                let indices = piece_shape.indices.clone();
+                
+                // バウンディングボックスを計算
+                let mut min_x = f32::INFINITY;
+                let mut max_x = f32::NEG_INFINITY;
+                let mut min_y = f32::INFINITY;
+                let mut max_y = f32::NEG_INFINITY;
+                
+                for vertex in &vertices {
+                    min_x = min_x.min(vertex.x);
+                    max_x = max_x.max(vertex.x);
+                    min_y = min_y.min(vertex.y);
+                    max_y = max_y.max(vertex.y);
+                }
+                
+                let position = transform.translation.truncate();
+                let bounding_box = Rect::new(
+                    position.x + min_x,
+                    position.y + min_y,
+                    position.x + max_x,
+                    position.y + max_y,
+                );
+                
+                let collision_data = PieceCollisionData {
+                    piece_id,
+                    position,
+                    bounding_box,
+                    vertices,
+                    indices,
+                };
+                
+                collision_system.add_piece(collision_data);
+                registered_count += 1;
+            }
+        }
+        
+        println!("✅ Manual rebuild completed: {} pieces registered", registered_count);
+        
+        // QuadTreeも再構築
+        collision_system.rebuild_rtree();
+        println!("✅ QuadTree rebuilt");
     }
 }

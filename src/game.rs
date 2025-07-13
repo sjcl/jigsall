@@ -3,6 +3,7 @@ use crate::components::*;
 use crate::resources::*;
 use crate::systems::*;
 use crate::puzzle::update_puzzle_image_size;
+use rstar::RTree;
 
 pub struct GamePlugin;
 
@@ -39,7 +40,7 @@ impl Plugin for GamePlugin {
                 spawn_puzzle_pieces_progressive,
                 register_new_pieces_to_id_manager,
                 register_new_pieces_to_collision_system,
-            ).run_if(in_state(AppState::InGame).and(in_state(GameSubState::Initializing))))
+            ).chain().run_if(in_state(AppState::InGame).and(in_state(GameSubState::Initializing))))
             // InGame state systems - プレイ中に実行（基本システム）
             .add_systems(Update, (
                 // 基本システム
@@ -81,6 +82,7 @@ impl Plugin for GamePlugin {
                 test_ray_casting,
                 test_collision_api,
                 performance_test_collision_system,
+                manual_rebuild_collision_system,
                 
                 // パフォーマンス計測システム
                 toggle_performance_debug.run_if(f12_just_pressed),
@@ -147,6 +149,8 @@ fn initialize_game(
     mut input_state: ResMut<InputState>,
     mut piece_cache: ResMut<PieceSelectionCache>,
     mut highlight_state: ResMut<HighlightState>,
+    mut collision_system: ResMut<PieceCollisionSystem>,
+    mut id_manager: ResMut<PieceIdManager>,
     mut game_sub_state: ResMut<NextState<GameSubState>>,
 ) {
     println!("🎮 Initializing game...");
@@ -177,6 +181,14 @@ fn initialize_game(
     highlight_state.selection_changed = false;
     highlight_state.preview_changed = false;
     highlight_state.frame_count = 0;
+    
+    // コリジョンシステムをクリア
+    collision_system.pieces.clear();
+    collision_system.rtree = RTree::new();
+    collision_system.need_rebuild = true;
+    
+    // ID管理システムもクリア（新しいゲーム開始時）
+    *id_manager = PieceIdManager::default();
     
     // ゲームサブ状態を初期化に設定
     game_sub_state.set(GameSubState::Initializing);
