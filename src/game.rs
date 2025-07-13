@@ -77,7 +77,6 @@ impl Plugin for GamePlugin {
                 update_collision_system_positions,
                 cleanup_removed_pieces_from_collision_system,
                 debug_collision_system_stats,
-                optimize_collision_system,
                 test_ray_casting,
                 test_collision_api,
                 performance_test_collision_system,

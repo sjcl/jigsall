@@ -237,24 +237,7 @@ pub fn performance_test_collision_system(
 }
 
 /// QuadTreeの最適化とクリーンアップシステム
-pub fn optimize_collision_system(
-    mut collision_system: ResMut<PieceCollisionSystem>,
-    time: Res<Time>,
-    mut last_optimize_time: Local<f32>,
-) {
-    let current_time = time.elapsed_secs();
-    
-    // 5秒ごとに最適化
-    if current_time - *last_optimize_time > 5.0 {
-        *last_optimize_time = current_time;
-        
-        // QuadTreeの再構築を強制
-        collision_system.need_rebuild = true;
-        collision_system.rebuild_rtree();
-        
-        println!("🔧 Collision system optimized - QuadTree rebuilt");
-    }
-}
+// optimize_collision_system関数を削除 - 不要な定期再構築を防ぐため
 
 /// レイキャスティングのテストシステム（詳細デバッグ付き）
 pub fn test_ray_casting(

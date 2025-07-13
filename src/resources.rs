@@ -88,34 +88,23 @@ impl PieceCollisionSystem {
         let pieces_vec: Vec<PieceCollisionData> = self.pieces.values().cloned().collect();
         
         if !pieces_vec.is_empty() {
-            println!("🌳 Rebuilding R-tree with {} pieces", pieces_vec.len());
-            
-            // デバッグ用: カーソル周辺のピースをログ出力
-            for piece_data in &pieces_vec {
-                let is_near_cursor = piece_data.position.distance(Vec2::new(3173.0, -1451.2)) < 500.0;
-                
-                if is_near_cursor {
-                    println!("🎯 CURSOR AREA PIECE: {} with bbox ({:.1}, {:.1}) to ({:.1}, {:.1})", 
-                        piece_data.piece_id, 
-                        piece_data.bounding_box.min.x, piece_data.bounding_box.min.y,
-                        piece_data.bounding_box.max.x, piece_data.bounding_box.max.y);
-                    println!("   📍 Center: ({:.1}, {:.1}), Distance: {:.1}px", 
-                        piece_data.position.x, piece_data.position.y,
-                        piece_data.position.distance(Vec2::new(3173.0, -1451.2)));
-                }
-            }
-            
             self.rtree = RTree::bulk_load(pieces_vec);
         } else {
             self.rtree = RTree::new();
         }
 
         self.need_rebuild = false;
-        println!("✅ R-tree rebuilt successfully");
+        // デバッグログは必要時のみ表示
+        if pieces_vec.len() > 0 {
+            println!("✅ R-tree rebuilt with {} pieces", pieces_vec.len());
+        }
     }
 
     pub fn query_pieces_in_rect(&mut self, query_rect: Rect) -> Vec<PieceId> {
-        self.rebuild_rtree();
+        // R-tree再構築チェック（必要な場合のみ実行）
+        if self.need_rebuild {
+            self.rebuild_rtree();
+        }
 
         // R-treeを使用して範囲内のピースを検索
         let envelope = rstar::AABB::from_corners(
@@ -130,7 +119,10 @@ impl PieceCollisionSystem {
 
     /// デバッグ用のR-treeクエリ（詳細ログ付き）
     pub fn query_pieces_in_rect_debug(&mut self, query_rect: Rect) -> (Vec<PieceId>, String) {
-        self.rebuild_rtree();
+        // R-tree再構築チェック（必要な場合のみ実行）
+        if self.need_rebuild {
+            self.rebuild_rtree();
+        }
 
         let mut debug_info = format!("🌳 R-tree Query Debug:\n");
         debug_info.push_str(&format!("📍 Query rect: ({:.1}, {:.1}) to ({:.1}, {:.1}) [{}x{}]\n", 
@@ -191,7 +183,7 @@ impl PieceCollisionSystem {
         }
 
         // R-treeの状態確認
-        if self.rtree.size() == 0 {
+        if self.rtree.size() == 0 || self.need_rebuild {
             println!("⚠️ R-tree not initialized, rebuilding...");
             self.rebuild_rtree();
         }
