@@ -371,7 +371,7 @@ pub fn handle_piece_dragging_uuid(
                 pickable.drag_offset = world_position - piece_position;
                 
                 // 🚀 NEW: コリジョンシステムからピースを除外（ドラッグ開始）
-                collision_system.start_dragging_piece(piece.id);
+                collision_system.start_dragging_piece(piece.id, &perf_monitor.debug_level);
                 
                 // 🚀 NEW: ドラッグ状態フラグを設定（コリジョンシステム自動更新を停止）
                 input_state.is_any_piece_dragging = true;
@@ -411,7 +411,7 @@ pub fn handle_piece_dragging_uuid(
         if let Some(entity) = current_dragging_piece {
             if let Ok((_, transform, _pickable, piece, _shape)) = piece_query.get(entity) {
                 // 🚀 NEW: コリジョンシステムにピースを再挿入（ドラッグ終了）
-                collision_system.stop_dragging_piece(piece.id);
+                collision_system.stop_dragging_piece(piece.id, &perf_monitor.debug_level);
                 
                 // ドラッグ完了イベントを送信
                 move_events.write(PieceMoveCompleted {
@@ -670,7 +670,7 @@ pub fn handle_box_selection_uuid(
                         }
                         
                         // 🚀 NEW: 全選択ピースをコリジョンシステムから除外（マルチドラッグ開始）
-                        collision_system.start_dragging_pieces(&piece_ids_to_drag);
+                        collision_system.start_dragging_pieces(&piece_ids_to_drag, &perf_monitor.debug_level);
                         
                         // 🚀 NEW: ドラッグ状態フラグを設定（コリジョンシステム自動更新を停止）
                         input_state.is_any_piece_dragging = true;
@@ -1130,7 +1130,7 @@ pub fn handle_multi_piece_drag(
                 new_position: transform.translation.truncate(),
             });
         }
-        collision_system.stop_dragging_pieces(&piece_ids_to_stop);
+        collision_system.stop_dragging_pieces(&piece_ids_to_stop, &perf_monitor.debug_level);
         
         println!("🎯 Multi-piece drag completed");
     }

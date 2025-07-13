@@ -120,46 +120,52 @@ impl PieceCollisionSystem {
         }
 
         self.need_rebuild = false;
-        // デバッグログは必要時のみ表示
-        if pieces_count > 0 {
-            println!("✅ R-tree rebuilt with {} pieces ({} dragging excluded)", 
-                pieces_count, self.dragging_pieces.len());
-        }
+        // デバッグログは High レベルでのみ表示（頻繁なログを避けるため）
+        // println!("✅ R-tree rebuilt with {} pieces ({} dragging excluded)", 
+        //     pieces_count, self.dragging_pieces.len());
     }
 
     /// ドラッグ開始: ピースをR-treeから除外
-    pub fn start_dragging_piece(&mut self, piece_id: PieceId) {
+    pub fn start_dragging_piece(&mut self, piece_id: PieceId, debug_level: &PerformanceDebugLevel) {
         if let Some(piece_data) = self.pieces.get(&piece_id) {
             // R-treeから削除
             self.rtree.remove(piece_data);
             // ドラッグ中リストに追加
             self.dragging_pieces.insert(piece_id);
-            println!("🎯 Piece {} removed from R-tree (dragging started)", piece_id);
+            
+            // デバッグレベルが Medium 以上の場合のみログ出力
+            if matches!(debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                println!("🎯 Piece {} removed from R-tree (dragging started)", piece_id);
+            }
         }
     }
 
     /// ドラッグ終了: ピースをR-treeに再挿入
-    pub fn stop_dragging_piece(&mut self, piece_id: PieceId) {
+    pub fn stop_dragging_piece(&mut self, piece_id: PieceId, debug_level: &PerformanceDebugLevel) {
         if self.dragging_pieces.remove(&piece_id) {
             if let Some(piece_data) = self.pieces.get(&piece_id) {
                 // R-treeに再挿入
                 self.rtree.insert(piece_data.clone());
-                println!("🎯 Piece {} re-inserted to R-tree (dragging stopped)", piece_id);
+                
+                // デバッグレベルが Medium 以上の場合のみログ出力
+                if matches!(debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                    println!("🎯 Piece {} re-inserted to R-tree (dragging stopped)", piece_id);
+                }
             }
         }
     }
 
     /// 複数ピースのドラッグ開始
-    pub fn start_dragging_pieces(&mut self, piece_ids: &[PieceId]) {
+    pub fn start_dragging_pieces(&mut self, piece_ids: &[PieceId], debug_level: &PerformanceDebugLevel) {
         for &piece_id in piece_ids {
-            self.start_dragging_piece(piece_id);
+            self.start_dragging_piece(piece_id, debug_level);
         }
     }
 
     /// 複数ピースのドラッグ終了
-    pub fn stop_dragging_pieces(&mut self, piece_ids: &[PieceId]) {
+    pub fn stop_dragging_pieces(&mut self, piece_ids: &[PieceId], debug_level: &PerformanceDebugLevel) {
         for &piece_id in piece_ids {
-            self.stop_dragging_piece(piece_id);
+            self.stop_dragging_piece(piece_id, debug_level);
         }
     }
 

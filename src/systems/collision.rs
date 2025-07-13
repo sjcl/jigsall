@@ -58,12 +58,12 @@ pub fn register_new_pieces_to_collision_system(
             
             collision_system.add_piece(collision_data);
             
-            println!("📝 Registered piece {} to collision system (pos: {:?}, bounds: {:?})", 
-                    piece_id, position, bounding_box);
-                    
-            // 追加のデバッグ情報（最初の数個のピースのみ）
+            // 最初の3個のピースのみログ出力（デバッグ用）
             unsafe {
                 if PIECE_COUNT <= 3 {
+                    println!("📝 Registered piece {} to collision system (pos: {:?}, bounds: {:?})", 
+                            piece_id, position, bounding_box);
+                    
                     println!("   📊 First 5 vertices (local coords):");
                     for (i, vertex) in vertices.iter().take(5).enumerate() {
                         println!("      {}. ({:.1}, {:.1})", i, vertex.x, vertex.y);
