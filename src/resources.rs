@@ -13,7 +13,7 @@ use rstar::{RTree, RTreeObject, AABB};
 pub type PieceId = Uuid;
 
 /// ピースの当たり判定データ（CPU側で管理）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PieceCollisionData {
     pub piece_id: PieceId,
     pub position: Vec2,
@@ -40,6 +40,7 @@ impl RTreeObject for PieceCollisionData {
 pub struct PieceCollisionSystem {
     pub pieces: HashMap<PieceId, PieceCollisionData>,
     pub rtree: RTree<PieceCollisionData>,
+    pub dragging_pieces: HashSet<PieceId>,  // ドラッグ中で当たり判定対象外のピース
     pub need_rebuild: bool,
 }
 
@@ -48,6 +49,7 @@ impl PieceCollisionSystem {
         Self {
             pieces: HashMap::new(),
             rtree: RTree::new(),
+            dragging_pieces: HashSet::new(),
             need_rebuild: true,
         }
     }
@@ -64,7 +66,7 @@ impl PieceCollisionSystem {
 
     pub fn update_piece_position(&mut self, piece_id: PieceId, new_position: Vec2) {
         if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
-            // 位置の変化量を計算
+            // HashMap内の位置データは常に更新（表示用データを維持）
             let offset = new_position - piece_data.position;
             piece_data.position = new_position;
             
@@ -75,7 +77,26 @@ impl PieceCollisionSystem {
                 piece_data.bounding_box.max.x + offset.x,
                 piece_data.bounding_box.max.y + offset.y,
             );
-            self.need_rebuild = true;
+            
+            // ドラッグ中のピースはR-tree操作のみスキップ（当たり判定から除外）
+            if !self.dragging_pieces.contains(&piece_id) {
+                // 効率的な動的更新: 古いデータを削除 → 新しいデータを挿入（O(log n)）
+                let old_data_for_rtree = PieceCollisionData {
+                    piece_id,
+                    position: new_position - offset, // 古い位置
+                    bounding_box: Rect::new(
+                        piece_data.bounding_box.min.x - offset.x,
+                        piece_data.bounding_box.min.y - offset.y,
+                        piece_data.bounding_box.max.x - offset.x,
+                        piece_data.bounding_box.max.y - offset.y,
+                    ),
+                    vertices: piece_data.vertices.clone(),
+                    indices: piece_data.indices.clone(),
+                };
+                
+                self.rtree.remove(&old_data_for_rtree);
+                self.rtree.insert(piece_data.clone());
+            }
         }
     }
 
@@ -84,8 +105,13 @@ impl PieceCollisionSystem {
             return;
         }
 
-        // R-treeを再構築 - bulk_loadを使用して効率的に構築
-        let pieces_vec: Vec<PieceCollisionData> = self.pieces.values().cloned().collect();
+        // R-treeを再構築 - ドラッグ中ピースを除外してbulk_loadを使用
+        let pieces_vec: Vec<PieceCollisionData> = self.pieces.values()
+            .filter(|piece_data| !self.dragging_pieces.contains(&piece_data.piece_id))
+            .cloned()
+            .collect();
+        
+        let pieces_count = pieces_vec.len();
         
         if !pieces_vec.is_empty() {
             self.rtree = RTree::bulk_load(pieces_vec);
@@ -95,8 +121,45 @@ impl PieceCollisionSystem {
 
         self.need_rebuild = false;
         // デバッグログは必要時のみ表示
-        if pieces_vec.len() > 0 {
-            println!("✅ R-tree rebuilt with {} pieces", pieces_vec.len());
+        if pieces_count > 0 {
+            println!("✅ R-tree rebuilt with {} pieces ({} dragging excluded)", 
+                pieces_count, self.dragging_pieces.len());
+        }
+    }
+
+    /// ドラッグ開始: ピースをR-treeから除外
+    pub fn start_dragging_piece(&mut self, piece_id: PieceId) {
+        if let Some(piece_data) = self.pieces.get(&piece_id) {
+            // R-treeから削除
+            self.rtree.remove(piece_data);
+            // ドラッグ中リストに追加
+            self.dragging_pieces.insert(piece_id);
+            println!("🎯 Piece {} removed from R-tree (dragging started)", piece_id);
+        }
+    }
+
+    /// ドラッグ終了: ピースをR-treeに再挿入
+    pub fn stop_dragging_piece(&mut self, piece_id: PieceId) {
+        if self.dragging_pieces.remove(&piece_id) {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                // R-treeに再挿入
+                self.rtree.insert(piece_data.clone());
+                println!("🎯 Piece {} re-inserted to R-tree (dragging stopped)", piece_id);
+            }
+        }
+    }
+
+    /// 複数ピースのドラッグ開始
+    pub fn start_dragging_pieces(&mut self, piece_ids: &[PieceId]) {
+        for &piece_id in piece_ids {
+            self.start_dragging_piece(piece_id);
+        }
+    }
+
+    /// 複数ピースのドラッグ終了
+    pub fn stop_dragging_pieces(&mut self, piece_ids: &[PieceId]) {
+        for &piece_id in piece_ids {
+            self.stop_dragging_piece(piece_id);
         }
     }
 
@@ -112,9 +175,11 @@ impl PieceCollisionSystem {
             [query_rect.max.x, query_rect.max.y],
         );
         
-        self.rtree.locate_in_envelope_intersecting(&envelope)
+        let results: Vec<PieceId> = self.rtree.locate_in_envelope_intersecting(&envelope)
             .map(|piece_data| piece_data.piece_id)
-            .collect()
+            .filter(|&piece_id| !self.dragging_pieces.contains(&piece_id)) // 念のため除外
+            .collect();
+        results
     }
 
     /// デバッグ用のR-treeクエリ（詳細ログ付き）
@@ -977,6 +1042,9 @@ pub struct InputState {
     // エッジスクロール用
     pub cursor_screen_position: Option<Vec2>,  // スクリーン座標でのカーソル位置
     pub is_dragging_piece: bool,  // ピースをドラッグ中かどうか
+    
+    // コリジョンシステム制御用
+    pub is_any_piece_dragging: bool,  // 任意のピースがドラッグ中（コリジョンシステム自動更新を停止）
 }
 
 impl Default for InputState {
@@ -1005,6 +1073,9 @@ impl Default for InputState {
             // エッジスクロール用の初期化
             cursor_screen_position: None,
             is_dragging_piece: false,
+            
+            // コリジョンシステム制御用の初期化
+            is_any_piece_dragging: false,
         }
     }
 }

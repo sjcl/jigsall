@@ -361,7 +361,7 @@ pub fn handle_piece_dragging_uuid(
         );
         
         if let Some(entity) = clicked_entity {
-            if let Ok((_, transform, mut pickable, _piece, _shape)) = piece_query.get_mut(entity) {
+            if let Ok((_, transform, mut pickable, piece, _shape)) = piece_query.get_mut(entity) {
                 // ドラッグ開始
                 input_state.selected_piece = Some(entity);
                 input_state.cached_drag_entity = Some(entity);
@@ -369,6 +369,12 @@ pub fn handle_piece_dragging_uuid(
                 // ドラッグオフセットを計算
                 let piece_position = transform.translation.truncate();
                 pickable.drag_offset = world_position - piece_position;
+                
+                // 🚀 NEW: コリジョンシステムからピースを除外（ドラッグ開始）
+                collision_system.start_dragging_piece(piece.id);
+                
+                // 🚀 NEW: ドラッグ状態フラグを設定（コリジョンシステム自動更新を停止）
+                input_state.is_any_piece_dragging = true;
                 
                 println!("🎯 UUID-based drag started: entity {:?} at position {:?}", entity, piece_position);
             }
@@ -382,7 +388,7 @@ pub fn handle_piece_dragging_uuid(
     // ドラッグ中の処理
     if mouse_pressed {
         if let Some(entity) = current_dragging_piece {
-            if let Ok((_, mut transform, pickable, _piece, _shape)) = piece_query.get_mut(entity) {
+            if let Ok((_, mut transform, pickable, piece, _shape)) = piece_query.get_mut(entity) {
                 let world_position = input_state.mouse_position;
                 let new_position = world_position - pickable.drag_offset;
                 
@@ -393,6 +399,9 @@ pub fn handle_piece_dragging_uuid(
                 // 位置を更新
                 transform.translation.x = new_position.x;
                 transform.translation.y = new_position.y;
+                
+                // 🚀 NEW: 手動でコリジョンシステム更新（ドラッグ中のため自動更新がスキップされる）
+                collision_system.update_piece_position(piece.id, new_position);
             }
         }
     }
@@ -400,7 +409,10 @@ pub fn handle_piece_dragging_uuid(
     // マウスリリース時の処理
     if mouse_just_released {
         if let Some(entity) = current_dragging_piece {
-            if let Ok((_, transform, _pickable, _piece, _shape)) = piece_query.get(entity) {
+            if let Ok((_, transform, _pickable, piece, _shape)) = piece_query.get(entity) {
+                // 🚀 NEW: コリジョンシステムにピースを再挿入（ドラッグ終了）
+                collision_system.stop_dragging_piece(piece.id);
+                
                 // ドラッグ完了イベントを送信
                 move_events.write(PieceMoveCompleted {
                     entity,
@@ -414,6 +426,9 @@ pub fn handle_piece_dragging_uuid(
         // ドラッグ状態をリセット
         input_state.selected_piece = None;
         input_state.cached_drag_entity = None;
+        
+        // 🚀 NEW: ドラッグ状態フラグをクリア（コリジョンシステム自動更新を再開）
+        input_state.is_any_piece_dragging = false;
     }
     
     perf_monitor.end_system_timing("handle_piece_dragging_uuid", start_time);
@@ -608,6 +623,12 @@ pub fn handle_box_selection_uuid(
         perf_monitor.end_system_timing("handle_box_selection_uuid", start_time);
         return;
     }
+    
+    // ドラッグ中は処理をスキップ（ドラッグシステムを優先）
+    if input_state.is_any_piece_dragging {
+        perf_monitor.end_system_timing("handle_box_selection_uuid", start_time);
+        return;
+    }
 
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Left);
     let mouse_pressed = mouse_input.pressed(MouseButton::Left);
@@ -638,13 +659,22 @@ pub fn handle_box_selection_uuid(
                         // 各ピースのドラッグオフセットを計算
                         input_state.multi_drag_offset.clear();
                         let selected_pieces = input_state.selected_pieces.clone();
+                        let mut piece_ids_to_drag = Vec::new();
                         for selected_entity in &selected_pieces {
-                            if let Ok((_, transform, _, _, _)) = piece_query.get(*selected_entity) {
+                            if let Ok((_, transform, _, piece, _)) = piece_query.get(*selected_entity) {
                                 let piece_pos = transform.translation.truncate();
                                 let offset = piece_pos - world_pos;
                                 input_state.multi_drag_offset.insert(*selected_entity, offset);
+                                piece_ids_to_drag.push(piece.id);
                             }
                         }
+                        
+                        // 🚀 NEW: 全選択ピースをコリジョンシステムから除外（マルチドラッグ開始）
+                        collision_system.start_dragging_pieces(&piece_ids_to_drag);
+                        
+                        // 🚀 NEW: ドラッグ状態フラグを設定（コリジョンシステム自動更新を停止）
+                        input_state.is_any_piece_dragging = true;
+                        
                         println!("🎯 Started UUID-based multi-piece drag with {} pieces", input_state.selected_pieces.len());
                     } else {
                         // 未選択のピースをクリック → 既存選択をクリアして単一ピースドラッグ
@@ -1031,6 +1061,7 @@ pub fn handle_multi_piece_drag(
     mut input_state: ResMut<InputState>,
     mouse_input: Res<ButtonInput<MouseButton>>,
     mut piece_query: Query<(Entity, &mut Transform, &PuzzlePiece), With<SelectedPiece>>,
+    mut collision_system: ResMut<PieceCollisionSystem>,
     game_state: Res<GameData>,
     mut move_events: EventWriter<PieceMoveCompleted>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -1056,10 +1087,13 @@ pub fn handle_multi_piece_drag(
         // ドラッグ中 - 全ての選択されたピースを移動
         let current_world_pos = input_state.mouse_position; // 既にワールド座標に変換済み
         
-        for (entity, mut transform, _piece) in piece_query.iter_mut() {
+        for (entity, mut transform, piece) in piece_query.iter_mut() {
             if let Some(offset) = input_state.multi_drag_offset.get(&entity) {
                 let new_position = current_world_pos + *offset;
                 transform.translation = new_position.extend(input_state.next_z_order);
+                
+                // 🚀 NEW: 手動でコリジョンシステム更新（ドラッグ中のため自動更新がスキップされる）
+                collision_system.update_piece_position(piece.id, new_position);
             }
         }
         
@@ -1079,10 +1113,16 @@ pub fn handle_multi_piece_drag(
         input_state.selected_piece = None;
         input_state.cached_drag_entity = None;
         
-        // ドラッグ終了時にZ-orderを調整し、各ピースの移動完了イベントを発火
-        for (entity, mut transform, _) in piece_query.iter_mut() {
+        // 🚀 NEW: ドラッグ状態フラグをクリア（コリジョンシステム自動更新を再開）
+        input_state.is_any_piece_dragging = false;
+        
+        // 🚀 NEW: 全選択ピースをコリジョンシステムに再挿入（マルチドラッグ終了）
+        let mut piece_ids_to_stop = Vec::new();
+        for (entity, mut transform, piece) in piece_query.iter_mut() {
             transform.translation.z = input_state.next_z_order;
             input_state.next_z_order += 0.1;
+            
+            piece_ids_to_stop.push(piece.id);
             
             // 各ピースの移動完了イベントを発火
             move_events.write(PieceMoveCompleted {
@@ -1090,6 +1130,7 @@ pub fn handle_multi_piece_drag(
                 new_position: transform.translation.truncate(),
             });
         }
+        collision_system.stop_dragging_pieces(&piece_ids_to_stop);
         
         println!("🎯 Multi-piece drag completed");
     }

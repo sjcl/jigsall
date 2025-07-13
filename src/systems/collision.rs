@@ -111,10 +111,16 @@ pub fn register_new_pieces_to_collision_system(
 
 /// ピース位置が変更されたときにコリジョンシステムを更新するシステム
 pub fn update_collision_system_positions(
+    input_state: Res<InputState>,
     mut collision_system: ResMut<PieceCollisionSystem>,
     id_manager: Res<PieceIdManager>,
     changed_pieces: Query<(Entity, &Transform), (With<PuzzlePiece>, Changed<Transform>)>,
 ) {
+    // ドラッグ中は自動更新をスキップ（手動更新で対応）
+    if input_state.is_any_piece_dragging {
+        return;
+    }
+    
     for (entity, transform) in changed_pieces.iter() {
         if let Some(piece_id) = id_manager.get_piece_id(entity) {
             let new_position = transform.translation.truncate();

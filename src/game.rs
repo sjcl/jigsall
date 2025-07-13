@@ -49,13 +49,15 @@ impl Plugin for GamePlugin {
                 // メニュー操作（プレイ中にESCを検出してポーズに移行）
                 toggle_game_menu.run_if(escape_just_pressed),
                 
-                // 選択システム（UUIDベース）
-                render_selection_box.run_if(should_render_selection_box),
+                // 🚀 PRIORITY: ドラッグシステムを最優先で実行
+                handle_piece_dragging_uuid,
+                
+                // 選択システム（UUIDベース）- ドラッグ後に実行
                 handle_box_selection_uuid,
                 handle_multi_piece_drag,
                 
-                // 新しいUUIDベースのドラッグシステム & ハイライト  
-                handle_piece_dragging_uuid,
+                // UI & 表示システム
+                render_selection_box.run_if(should_render_selection_box),
                 highlight_selected_pieces,
                 
                 // ゲームロジック
@@ -166,6 +168,7 @@ fn initialize_game(
     input_state.multi_drag_offset.clear();
     input_state.last_selection_rect = None;
     input_state.cached_drag_entity = None;
+    input_state.is_any_piece_dragging = false;
     
     // パフォーマンスキャッシュをクリア
     piece_cache.all_pieces.clear();
@@ -183,6 +186,7 @@ fn initialize_game(
     // コリジョンシステムをクリア
     collision_system.pieces.clear();
     collision_system.rtree = RTree::new();
+    collision_system.dragging_pieces.clear();
     collision_system.need_rebuild = true;
     
     // ID管理システムもクリア（新しいゲーム開始時）
@@ -233,6 +237,7 @@ fn cleanup_game(
     input_state.multi_drag_offset.clear();
     input_state.last_selection_rect = None;
     input_state.cached_drag_entity = None;
+    input_state.is_any_piece_dragging = false;
     
     // パフォーマンスキャッシュをクリア
     piece_cache.all_pieces.clear();
