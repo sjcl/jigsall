@@ -266,6 +266,96 @@ impl PieceCollisionSystem {
         None
     }
 
+    /// 矩形と適切に交差するピースを検索（UUIDベース・Entity不要）
+    pub fn find_pieces_intersecting_rect(&mut self, selection_rect: Rect) -> Vec<PieceId> {
+        let candidate_pieces = self.query_pieces_in_rect(selection_rect);
+        let mut intersecting_pieces = Vec::new();
+        
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                // バウンディングボックスが矩形と交差するかチェック
+                if self.rect_intersects_bbox(selection_rect, piece_data.bounding_box) {
+                    intersecting_pieces.push(piece_id);
+                }
+            }
+        }
+        
+        intersecting_pieces
+    }
+    
+    /// より厳密な矩形交差判定（選択矩形の辺またはピースの境界頂点との交差をチェック）
+    pub fn find_pieces_with_detailed_rect_intersection(&mut self, selection_rect: Rect) -> Vec<PieceId> {
+        let candidate_pieces = self.query_pieces_in_rect(selection_rect);
+        let mut intersecting_pieces = Vec::new();
+        
+        for piece_id in candidate_pieces {
+            if let Some(piece_data) = self.pieces.get(&piece_id) {
+                // 1. バウンディングボックスの基本交差チェック
+                if !self.rect_intersects_bbox(selection_rect, piece_data.bounding_box) {
+                    continue;
+                }
+                
+                // 2. より詳細な交差判定
+                if self.detailed_rect_piece_intersection(selection_rect, piece_id) {
+                    intersecting_pieces.push(piece_id);
+                }
+            }
+        }
+        
+        intersecting_pieces
+    }
+    
+    /// 矩形と矩形（バウンディングボックス）の交差判定
+    fn rect_intersects_bbox(&self, rect1: Rect, rect2: Rect) -> bool {
+        rect1.min.x <= rect2.max.x && 
+        rect1.max.x >= rect2.min.x &&
+        rect1.min.y <= rect2.max.y && 
+        rect1.max.y >= rect2.min.y
+    }
+    
+    /// 選択矩形とピースの詳細交差判定（複数の判定方法を組み合わせ）
+    fn detailed_rect_piece_intersection(&self, selection_rect: Rect, piece_id: PieceId) -> bool {
+        if let Some(piece_data) = self.pieces.get(&piece_id) {
+            // 方法1: 選択矩形の角がピース内にあるかチェック
+            let corners = [
+                Vec2::new(selection_rect.min.x, selection_rect.min.y),
+                Vec2::new(selection_rect.max.x, selection_rect.min.y),
+                Vec2::new(selection_rect.min.x, selection_rect.max.y),
+                Vec2::new(selection_rect.max.x, selection_rect.max.y),
+            ];
+            
+            for &corner in &corners {
+                if self.precise_point_in_piece(piece_id, corner) {
+                    return true;
+                }
+            }
+            
+            // 方法2: ピースの頂点が選択矩形内にあるかチェック
+            for vertex in &piece_data.vertices {
+                let world_vertex = Vec2::new(vertex.x, vertex.y) + piece_data.position;
+                if selection_rect.contains(world_vertex) {
+                    return true;
+                }
+            }
+            
+            // 方法3: ピースの中心が選択矩形内にあるかチェック
+            if selection_rect.contains(piece_data.position) {
+                return true;
+            }
+            
+            // 方法4: バウンディングボックスの中心が選択矩形内にあるかチェック
+            let bbox_center = Vec2::new(
+                (piece_data.bounding_box.min.x + piece_data.bounding_box.max.x) / 2.0,
+                (piece_data.bounding_box.min.y + piece_data.bounding_box.max.y) / 2.0,
+            );
+            if selection_rect.contains(bbox_center) {
+                return true;
+            }
+        }
+        
+        false
+    }
+
     /// デバッグ用の詳細な位置検索（各段階の結果を表示）
     pub fn find_piece_at_position_debug(&mut self, position: Vec2) -> (Option<PieceId>, String) {
         let query_size = 100.0;

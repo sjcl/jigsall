@@ -109,49 +109,67 @@ fn find_clicked_piece_for_legacy(
     clicked_piece
 }
 
-/// UUIDベースの範囲選択用ピース検索
-fn find_pieces_in_rect_uuid(
+/// 完全UUIDベースの範囲選択用ピース検索（Entity依存なし）
+fn find_pieces_in_rect_uuid_pure(
     selection_rect: Rect,
     collision_system: &mut PieceCollisionSystem,
     id_manager: &PieceIdManager,
     piece_query: &Query<(Entity, &mut Transform, &mut PickablePiece, &PuzzlePiece, &PieceShape)>,
-    use_precise_detection: bool,
+    selection_quality: SelectionQuality,
 ) -> Vec<Entity> {
-    // R-tree で範囲内のピースを高速検索
-    let candidate_piece_ids = collision_system.find_pieces_in_rect(selection_rect);
-    
-    let mut selected_entities = Vec::new();
-    
-    for piece_id in candidate_piece_ids {
-        if let Some(entity) = id_manager.get_entity(piece_id) {
-            // PickablePiece コンポーネントを持つかチェック
-            if piece_query.get(entity).is_ok() {
-                if use_precise_detection {
-                    // 範囲の各コーナーで精密テスト
-                    let corners = [
-                        Vec2::new(selection_rect.min.x, selection_rect.min.y),
-                        Vec2::new(selection_rect.max.x, selection_rect.min.y),
-                        Vec2::new(selection_rect.min.x, selection_rect.max.y),
-                        Vec2::new(selection_rect.max.x, selection_rect.max.y),
-                    ];
-                    
-                    // 少なくとも1つのコーナーがピース内にあるかチェック
-                    let has_intersection = corners.iter().any(|&corner| {
-                        collision_system.precise_point_in_piece(piece_id, corner)
-                    });
-                    
-                    if has_intersection {
-                        selected_entities.push(entity);
-                    }
-                } else {
-                    // バウンディングボックスのみ
-                    selected_entities.push(entity);
+    let intersecting_piece_ids = match selection_quality {
+        SelectionQuality::BoundingBoxOnly => {
+            // 最速: バウンディングボックス交差のみ
+            collision_system.find_pieces_intersecting_rect(selection_rect)
+        }
+        SelectionQuality::Detailed => {
+            // 高品質: 複数の交差判定方法を組み合わせ
+            collision_system.find_pieces_with_detailed_rect_intersection(selection_rect)
+        }
+        SelectionQuality::StrictCorners => {
+            // 厳密: コーナーがピース内にある場合のみ（従来の方法）
+            let candidate_piece_ids = collision_system.find_pieces_in_rect(selection_rect);
+            let mut strict_pieces = Vec::new();
+            
+            for piece_id in candidate_piece_ids {
+                let corners = [
+                    Vec2::new(selection_rect.min.x, selection_rect.min.y),
+                    Vec2::new(selection_rect.max.x, selection_rect.min.y),
+                    Vec2::new(selection_rect.min.x, selection_rect.max.y),
+                    Vec2::new(selection_rect.max.x, selection_rect.max.y),
+                ];
+                
+                let has_corner_inside = corners.iter().any(|&corner| {
+                    collision_system.precise_point_in_piece(piece_id, corner)
+                });
+                
+                if has_corner_inside {
+                    strict_pieces.push(piece_id);
                 }
+            }
+            strict_pieces
+        }
+    };
+    
+    // UUIDからEntityに変換し、PickablePieceコンポーネントを持つものをフィルタ
+    let mut selected_entities = Vec::new();
+    for piece_id in intersecting_piece_ids {
+        if let Some(entity) = id_manager.get_entity(piece_id) {
+            if piece_query.get(entity).is_ok() {
+                selected_entities.push(entity);
             }
         }
     }
     
     selected_entities
+}
+
+/// 選択品質の設定
+#[derive(Clone, Copy)]
+enum SelectionQuality {
+    BoundingBoxOnly,  // 最速: バウンディングボックス交差のみ
+    Detailed,         // 推奨: 複数の交差判定を組み合わせ
+    StrictCorners,    // 厳密: 選択矩形の角がピース内にある場合のみ
 }
 
 /// 効率的なピースクリック判定（ボックス選択用・レガシー）
@@ -302,8 +320,8 @@ pub fn handle_piece_dragging_uuid(
         return;
     }
     
-    // 新しいマルチ選択システムが有効な場合は無効化
-    if !matches!(input_state.selection_mode, SelectionMode::Single) || !input_state.selected_pieces.is_empty() {
+    // マルチドラッグモードまたはボックス選択モードの場合は無効化
+    if !matches!(input_state.selection_mode, SelectionMode::Single) {
         perf_monitor.end_system_timing("handle_piece_dragging_uuid", start_time);
         return;
     }
@@ -598,23 +616,75 @@ pub fn handle_box_selection_uuid(
 
     match input_state.selection_mode {
         SelectionMode::Single => {
-            if mouse_just_pressed && mouse_input.pressed(MouseButton::Right) {
-                // 右クリックで範囲選択モードに移行
+            if mouse_just_pressed {
+                // 左クリック時の処理 - ピース検出を最初に実行
                 let world_pos = input_state.mouse_position;
                 
-                if !ctrl_pressed {
-                    // 既存選択をクリア
-                    for entity in selected_query.iter() {
-                        commands.entity(entity).remove::<SelectedPiece>();
-                    }
-                    input_state.selected_pieces.clear();
-                    input_state.selected_pieces_set.clear();
-                }
+                // 🚀 NEW: UUIDベースの高精度ピース検索
+                let clicked_entity = find_clicked_piece_uuid(
+                    world_pos,
+                    &mut collision_system,
+                    &id_manager,
+                    &piece_query,
+                    true, // 精密検出を有効
+                );
                 
-                input_state.selection_mode = SelectionMode::BoxSelection;
-                input_state.selection_start = Some(world_pos);
-                input_state.selection_current = Some(world_pos);
-                println!("📦 Started UUID-based box selection");
+                if let Some(piece_entity) = clicked_entity {
+                    // ピース上でのクリック処理
+                    if input_state.selected_pieces_set.contains(&piece_entity) {
+                        // 既に選択済みのピースをクリック → マルチドラッグモードに移行
+                        input_state.selection_mode = SelectionMode::MultiDrag;
+                        
+                        // 各ピースのドラッグオフセットを計算
+                        input_state.multi_drag_offset.clear();
+                        let selected_pieces = input_state.selected_pieces.clone();
+                        for selected_entity in &selected_pieces {
+                            if let Ok((_, transform, _, _, _)) = piece_query.get(*selected_entity) {
+                                let piece_pos = transform.translation.truncate();
+                                let offset = piece_pos - world_pos;
+                                input_state.multi_drag_offset.insert(*selected_entity, offset);
+                            }
+                        }
+                        println!("🎯 Started UUID-based multi-piece drag with {} pieces", input_state.selected_pieces.len());
+                    } else {
+                        // 未選択のピースをクリック → 既存選択をクリアして単一ピースドラッグ
+                        if !ctrl_pressed {
+                            // 既存の選択を全てクリア（Ctrlキー押下でない場合）
+                            for entity in selected_query.iter() {
+                                commands.entity(entity).remove::<SelectedPiece>();
+                            }
+                            input_state.selected_pieces.clear();
+                            input_state.selected_pieces_set.clear();
+                        }
+                        
+                        // 単一ピースドラッグの処理は handle_piece_dragging_uuid が担当
+                        // ここでは何もしない（競合回避）
+                        println!("🎯 Detected single piece click - delegating to drag system");
+                    }
+                } else {
+                    // 空の場所をクリック → 範囲選択開始
+                    if !ctrl_pressed {
+                        // 既存選択をクリア（Ctrlキー押下でない場合）
+                        if !input_state.selected_pieces.is_empty() {
+                            for entity in selected_query.iter() {
+                                commands.entity(entity).remove::<SelectedPiece>();
+                            }
+                            input_state.selected_pieces.clear();
+                            input_state.selected_pieces_set.clear();
+                            println!("🧹 Cleared selection by clicking empty space");
+                        }
+                    }
+                    
+                    // 範囲選択モードに移行
+                    input_state.selection_mode = SelectionMode::BoxSelection;
+                    input_state.selection_start = Some(world_pos);
+                    input_state.selection_current = Some(world_pos);
+                    if ctrl_pressed {
+                        println!("📦 Started UUID-based box selection (keeping existing selection)");
+                    } else {
+                        println!("📦 Started UUID-based box selection");
+                    }
+                }
             }
         }
         
@@ -623,7 +693,7 @@ pub fn handle_box_selection_uuid(
         }
         
         SelectionMode::BoxSelection => {
-            if mouse_pressed && mouse_input.pressed(MouseButton::Right) {
+            if mouse_pressed {
                 // 範囲選択中 - 現在位置を更新
                 let world_pos = input_state.mouse_position;
                 input_state.selection_current = Some(world_pos);
@@ -647,13 +717,13 @@ pub fn handle_box_selection_uuid(
                             start.y.max(end.y),
                         );
                         
-                        // 🚀 NEW: UUIDベースの高速範囲検索
-                        let overlapping_entities = find_pieces_in_rect_uuid(
+                        // 🚀 NEW: 完全UUIDベースの高速範囲検索（プレビュー用）
+                        let overlapping_entities = find_pieces_in_rect_uuid_pure(
                             select_rect,
                             &mut collision_system,
                             &id_manager,
                             &piece_query,
-                            false, // プレビューではバウンディングボックスのみ使用
+                            SelectionQuality::BoundingBoxOnly, // プレビューでは高速な境界判定のみ
                         );
                         
                         // プレビューを追加（既に選択されていないもののみ）
@@ -674,13 +744,13 @@ pub fn handle_box_selection_uuid(
                         start.y.max(end.y),
                     );
                     
-                    // 🚀 NEW: UUIDベースの高精度範囲検索
-                    let selected_entities = find_pieces_in_rect_uuid(
+                    // 🚀 NEW: 完全UUIDベースの高品質範囲検索
+                    let selected_entities = find_pieces_in_rect_uuid_pure(
                         select_rect,
                         &mut collision_system,
                         &id_manager,
                         &piece_query,
-                        true, // 精密検出を有効
+                        SelectionQuality::Detailed, // 高品質な複合交差判定を使用
                     );
                     
                     println!("📦 UUID-based box selection completed: {} pieces selected", selected_entities.len());
@@ -1004,6 +1074,10 @@ pub fn handle_multi_piece_drag(
         input_state.selection_mode = SelectionMode::Single;
         input_state.multi_drag_offset.clear();
         input_state.is_dragging_piece = false;
+        
+        // 🚀 FIX: シングルピースドラッグ状態もクリア（テレポートバグ修正）
+        input_state.selected_piece = None;
+        input_state.cached_drag_entity = None;
         
         // ドラッグ終了時にZ-orderを調整し、各ピースの移動完了イベントを発火
         for (entity, mut transform, _) in piece_query.iter_mut() {
