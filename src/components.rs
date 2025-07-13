@@ -80,3 +80,61 @@ pub struct PiecePlacedEvent {
     pub grid_y: usize,
 }
 
+// ==========================================
+// Mesh Batching System Components
+// ==========================================
+
+/// 結合メッシュエンティティをマークするコンポーネント
+#[derive(Component)]
+pub struct BatchedMeshEntity {
+    pub piece_count: usize,
+    pub last_updated: std::time::Instant,
+}
+
+/// ピースのバッチ状態を管理するコンポーネント
+#[derive(Component, Clone, Debug, PartialEq)]
+pub enum PieceBatchState {
+    /// ピースは結合メッシュに含まれている
+    InBatch,
+    /// ピースは結合メッシュから抽出されて個別エンティティとして存在
+    Extracted,
+    /// ピースは正しい位置に配置され、静的な結合メッシュに含まれている
+    PlacedStatic,
+}
+
+/// バッチ再構築要求イベント
+#[derive(Event)]
+pub struct BatchRebuildRequest {
+    pub reason: BatchRebuildReason,
+    pub affected_pieces: Vec<Uuid>,
+}
+
+/// バッチ再構築の理由
+#[derive(Debug, Clone)]
+pub enum BatchRebuildReason {
+    /// 新しいピースが追加された
+    PieceAdded,
+    /// ピースが選択され、抽出が必要
+    PieceExtracted,
+    /// ピースが選択解除され、バッチに戻す必要
+    PieceReturned,
+    /// ピースが正しい位置に配置された
+    PiecePlaced,
+    /// 手動でバッチ再構築が要求された
+    ManualRebuild,
+}
+
+/// バッチ再構築完了イベント
+#[derive(Event)]
+pub struct BatchRebuildCompleted {
+    pub batched_entity: Entity,
+    pub piece_count: usize,
+    pub rebuild_time: std::time::Duration,
+}
+
+/// アクティブなピース（選択中・ドラッグ中）用の一時エンティティマーカー
+#[derive(Component)]
+pub struct TemporaryPieceEntity {
+    pub piece_id: Uuid,
+}
+

@@ -310,6 +310,8 @@ pub fn handle_piece_dragging_uuid(
     id_manager: Res<PieceIdManager>,
     mut move_events: EventWriter<PieceMoveCompleted>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut batch_manager: ResMut<BatchManager>,
+    mut batch_events: EventWriter<BatchRebuildRequest>,
 ) {
     let _span = info_span!("handle_piece_dragging_uuid").entered();
     let start_time = perf_monitor.start_system_timing("handle_piece_dragging_uuid");
@@ -373,6 +375,18 @@ pub fn handle_piece_dragging_uuid(
                 // 🚀 NEW: コリジョンシステムからピースを除外（ドラッグ開始）
                 collision_system.start_dragging_piece(piece.id, &perf_monitor.debug_level);
                 
+                // 🚀 NEW: バッチからピースを抽出（ドラッグ開始）
+                if batch_manager.extract_piece(piece.id) {
+                    batch_events.write(BatchRebuildRequest {
+                        reason: BatchRebuildReason::PieceExtracted,
+                        affected_pieces: vec![piece.id],
+                    });
+                    
+                    if matches!(perf_monitor.debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                        println!("🎯 Piece {} extracted from batch for dragging", piece.id);
+                    }
+                }
+                
                 // 🚀 NEW: ドラッグ状態フラグを設定（コリジョンシステム自動更新を停止）
                 input_state.is_any_piece_dragging = true;
                 
@@ -412,6 +426,32 @@ pub fn handle_piece_dragging_uuid(
             if let Ok((_, transform, _pickable, piece, _shape)) = piece_query.get(entity) {
                 // 🚀 NEW: コリジョンシステムにピースを再挿入（ドラッグ終了）
                 collision_system.stop_dragging_piece(piece.id, &perf_monitor.debug_level);
+                
+                // 🚀 NEW: ピースをバッチに戻す（正しい位置に配置されていない場合）
+                if !piece.is_placed {
+                    if batch_manager.return_piece(piece.id) {
+                        batch_events.write(BatchRebuildRequest {
+                            reason: BatchRebuildReason::PieceReturned,
+                            affected_pieces: vec![piece.id],
+                        });
+                        
+                        if matches!(perf_monitor.debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                            println!("🎯 Piece {} returned to batch after dragging", piece.id);
+                        }
+                    }
+                } else {
+                    // ピースが正しい位置に配置された場合は静的バッチに移動
+                    if batch_manager.place_piece(piece.id) {
+                        batch_events.write(BatchRebuildRequest {
+                            reason: BatchRebuildReason::PiecePlaced,
+                            affected_pieces: vec![piece.id],
+                        });
+                        
+                        if matches!(perf_monitor.debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                            println!("🎯 Piece {} moved to static batch (placed correctly)", piece.id);
+                        }
+                    }
+                }
                 
                 // ドラッグ完了イベントを送信
                 move_events.write(PieceMoveCompleted {
@@ -614,6 +654,8 @@ pub fn handle_box_selection_uuid(
     id_manager: Res<PieceIdManager>,
     game_state: Res<GameData>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut batch_manager: ResMut<BatchManager>,
+    mut batch_events: EventWriter<BatchRebuildRequest>,
 ) {
     let _span = info_span!("handle_box_selection_uuid").entered();
     let start_time = perf_monitor.start_system_timing("handle_box_selection_uuid");
@@ -671,6 +713,25 @@ pub fn handle_box_selection_uuid(
                         
                         // 🚀 NEW: 全選択ピースをコリジョンシステムから除外（マルチドラッグ開始）
                         collision_system.start_dragging_pieces(&piece_ids_to_drag, &perf_monitor.debug_level);
+                        
+                        // 🚀 NEW: 全選択ピースをバッチから抽出（マルチドラッグ開始）
+                        let mut extracted_count = 0;
+                        for piece_id in &piece_ids_to_drag {
+                            if batch_manager.extract_piece(*piece_id) {
+                                extracted_count += 1;
+                            }
+                        }
+                        
+                        if extracted_count > 0 {
+                            batch_events.write(BatchRebuildRequest {
+                                reason: BatchRebuildReason::PieceExtracted,
+                                affected_pieces: piece_ids_to_drag.clone(),
+                            });
+                            
+                            if matches!(perf_monitor.debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                                println!("🎯 {} pieces extracted from batch for multi-drag", extracted_count);
+                            }
+                        }
                         
                         // 🚀 NEW: ドラッグ状態フラグを設定（コリジョンシステム自動更新を停止）
                         input_state.is_any_piece_dragging = true;
@@ -1065,6 +1126,8 @@ pub fn handle_multi_piece_drag(
     game_state: Res<GameData>,
     mut move_events: EventWriter<PieceMoveCompleted>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut batch_manager: ResMut<BatchManager>,
+    mut batch_events: EventWriter<BatchRebuildRequest>,
 ) {
     let start_time = perf_monitor.start_system_timing("handle_multi_piece_drag");
     
@@ -1131,6 +1194,35 @@ pub fn handle_multi_piece_drag(
             });
         }
         collision_system.stop_dragging_pieces(&piece_ids_to_stop, &perf_monitor.debug_level);
+        
+        // 🚀 NEW: 全選択ピースをバッチに戻す（マルチドラッグ終了）
+        let mut returned_count = 0;
+        let mut placed_count = 0;
+        
+        for (entity, _transform, piece) in piece_query.iter() {
+            if !piece.is_placed {
+                // 正しい位置に配置されていないピースはバッチに戻す
+                if batch_manager.return_piece(piece.id) {
+                    returned_count += 1;
+                }
+            } else {
+                // 正しい位置に配置されたピースは静的バッチに移動
+                if batch_manager.place_piece(piece.id) {
+                    placed_count += 1;
+                }
+            }
+        }
+        
+        if returned_count > 0 || placed_count > 0 {
+            batch_events.write(BatchRebuildRequest {
+                reason: BatchRebuildReason::PieceReturned,
+                affected_pieces: piece_ids_to_stop.clone(),
+            });
+            
+            if matches!(perf_monitor.debug_level, PerformanceDebugLevel::Medium | PerformanceDebugLevel::High) {
+                println!("🎯 Multi-drag end: {} pieces returned to batch, {} pieces placed", returned_count, placed_count);
+            }
+        }
         
         println!("🎯 Multi-piece drag completed");
     }

@@ -110,16 +110,19 @@ pub fn spawn_puzzle_pieces_progressive(
     mut piece_cache: ResMut<PieceSelectionCache>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
+    mut batch_manager: ResMut<BatchManager>,
+    mut batch_events: EventWriter<BatchRebuildRequest>,
+    mut piece_data_store: ResMut<PieceDataStore>,
 ) {
     let _span = info_span!("spawn_puzzle_pieces_progressive").entered();
     let start_time = perf_monitor.start_system_timing("spawn_puzzle_pieces_progressive");
     
-    // システム実行のデバッグログ（スポーン中のみ）
+    // システム実行のデバッグログ（データストア保存中のみ）
     if progress.generation_phase == GenerationPhase::SpawningEntities {
         static mut SYSTEM_CALL_COUNT: usize = 0;
         unsafe {
             SYSTEM_CALL_COUNT += 1;
-            println!("🔄 System call #{}: spawned={}, pending={}", 
+            println!("🔄 System call #{}: stored={}, pending={}", 
                 SYSTEM_CALL_COUNT, progress.pieces_created, progress.pending_pieces.len());
         }
     }
@@ -286,12 +289,12 @@ pub fn spawn_puzzle_pieces_progressive(
         }
     }
 
-    // メインスレッドでのエンティティ生成
+    // メインスレッドでのデータストア保存
     if progress.generation_phase == GenerationPhase::SpawningEntities {
-        let batch_size = 10; // 1フレームあたりのスポーン数
-        let mut spawned_count = 0;
+        let batch_size = 10; // 1フレームあたりの処理数
+        let mut processed_count = 0;
         
-        while spawned_count < batch_size && !progress.pending_pieces.is_empty() {
+        while processed_count < batch_size && !progress.pending_pieces.is_empty() {
             let piece_data = progress.pending_pieces.remove(0);
             
             // メッシュをアセットに追加
@@ -310,19 +313,40 @@ pub fn spawn_puzzle_pieces_progressive(
                 stroke_cache.stroke_meshes.insert(piece_data.piece_shape.shape_hash.clone(), stroke_mesh_handle);
             }
             
-            // エンティティを生成
-            commands.spawn((
-                Mesh2d(mesh_handle),
-                MeshMaterial2d(material_handle),
-                piece_data.transform,
-                piece_data.piece_component,
-                piece_data.piece_shape,
-                PickablePiece {
-                    drag_offset: Vec2::ZERO,
-                },
-            ));
+            // ピースIDを先に取得（moveする前に）
+            let piece_id = piece_data.piece_component.id;
             
-            spawned_count += 1;
+            // 🚀 NEW: 純粋データ駆動アプローチ - エンティティを作らずにデータのみ保存
+            let stored_piece_data = StoredPieceData {
+                id: piece_id,
+                original_position: piece_data.piece_component.original_position,
+                current_position: piece_data.piece_component.current_position,
+                correct_position: piece_data.piece_component.correct_position,
+                texture_coords: piece_data.piece_component.texture_coords,
+                is_placed: piece_data.piece_component.is_placed,
+                grid_x: piece_data.piece_component.grid_x,
+                grid_y: piece_data.piece_component.grid_y,
+                bounds: piece_data.piece_component.bounds,
+                shape: PieceShapeData {
+                    vertices: piece_data.piece_shape.vertices.clone(),
+                    indices: piece_data.piece_shape.indices.clone(),
+                    shape_hash: piece_data.piece_shape.shape_hash.clone(),
+                },
+            };
+            
+            // PieceDataStoreにピース情報を保存（エンティティなし）
+            piece_data_store.add_piece(stored_piece_data, piece_data.transform);
+            
+            // バッチマネージャーにピースを追加（後でバッチレンダリング用）
+            batch_manager.add_piece(piece_id);
+            
+            // デバッグ: 最初の数個のピースでBatchManagerの状態を確認
+            if processed_count < 3 {
+                println!("🔍 Added piece {} to BatchManager. Total in batch: {}", 
+                    piece_id, batch_manager.batched_pieces.len());
+            }
+            
+            processed_count += 1;
             progress.pieces_created += 1;
             progress.pieces_spawned_this_frame += 1;
             
@@ -336,7 +360,7 @@ pub fn spawn_puzzle_pieces_progressive(
             unsafe {
                 SPAWN_LOG_COUNT += 1;
                 if SPAWN_LOG_COUNT % 10 == 0 {
-                    println!("🎯 Spawned {} pieces (total: {}/{})", 
+                    println!("📦 Stored {} pieces in data store (total: {}/{})", 
                         progress.pieces_spawned_this_frame, progress.pieces_created, progress.total_pieces);
                 }
             }
@@ -344,7 +368,17 @@ pub fn spawn_puzzle_pieces_progressive(
         
         // 全てのピースが生成完了したかチェック
         if progress.pending_pieces.is_empty() {
-            println!("✅ All puzzle pieces spawned successfully: {} pieces", progress.pieces_created);
+            println!("✅ All puzzle pieces stored successfully in data store: {} pieces", progress.pieces_created);
+            
+            // 🚀 NEW: バッチ再構築を要求（全ピース生成完了）
+            batch_events.write(BatchRebuildRequest {
+                reason: BatchRebuildReason::PieceAdded,
+                affected_pieces: vec![], // 全ピース対象
+            });
+            
+            if perf_monitor.debug_level != PerformanceDebugLevel::Off {
+                println!("🔄 Requesting initial batch rebuild for {} pieces", progress.pieces_created);
+            }
             
             // 生成完了
             progress.is_generating = false;

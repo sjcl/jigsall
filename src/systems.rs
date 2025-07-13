@@ -7,6 +7,7 @@ pub mod performance;
 pub mod image_loading;
 pub mod id_management;
 pub mod collision;
+pub mod batching;
 
 // Re-export all public functions from submodules
 pub use input_camera::*;
@@ -17,3 +18,4 @@ pub use performance::*;
 pub use image_loading::*;
 pub use id_management::*;
 pub use collision::*;
+pub use batching::*;

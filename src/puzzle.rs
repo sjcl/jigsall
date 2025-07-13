@@ -516,41 +516,92 @@ fn calculate_puzzle_grid_area(
 
 /// メッシュから精密当たり判定用の形状データを抽出（JigsawPieceShapeから）
 pub fn extract_shape_data_from_jigsaw_shape(jigsaw_shape: &crate::jigsaw_shapes::JigsawPieceShape) -> PieceShape {
-    // 🔧 NEW: 境界頂点を使用（triangle mesh vertices の代わりに）
-    let vertices = if !jigsaw_shape.boundary_vertices.is_empty() {
-        println!("✅ Using boundary vertices ({} points) for collision detection", jigsaw_shape.boundary_vertices.len());
-        jigsaw_shape.boundary_vertices.clone()
-    } else {
-        println!("⚠️ No boundary vertices available, falling back to triangle mesh extraction");
-        // フォールバック: triangle mesh から抽出（元の方法）
-        match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-            Some(VertexAttributeValues::Float32x3(positions)) => {
-                positions.iter().map(|pos| [pos[0], pos[1]]).collect()
-            }
-            _ => {
-                println!("Warning: Could not extract vertices from jigsaw mesh, using fallback rectangle");
+    // 🔧 FIXED: 描画用には常にメッシュ頂点を使用（boundary_verticesはコリジョン用のみ）
+    let vertices = match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(VertexAttributeValues::Float32x3(positions)) => {
+            println!("✅ Using mesh vertices ({} points) for rendering", positions.len());
+            positions.iter().map(|pos| [pos[0], pos[1]]).collect()
+        }
+        _ => {
+            // フォールバック: boundary_verticesを使用
+            if !jigsaw_shape.boundary_vertices.is_empty() {
+                println!("⚠️ No mesh vertices, falling back to boundary vertices ({} points)", jigsaw_shape.boundary_vertices.len());
+                jigsaw_shape.boundary_vertices.clone()
+            } else {
+                println!("❌ No vertices available, using fallback rectangle");
                 vec![[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
             }
         }
     };
     
-    // 境界頂点の場合はインデックスは不要（polygon として扱う）
-    let indices = if !jigsaw_shape.boundary_vertices.is_empty() {
-        // 境界頂点の場合は、単純にポリゴンとして扱うためインデックスは空
-        Vec::new()
-    } else {
-        // triangle mesh の場合はインデックスを使用
-        match jigsaw_shape.mesh.indices() {
-            Some(Indices::U32(idx)) => idx.clone(),
-            Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
-            None => {
-                println!("Warning: Could not extract indices from jigsaw mesh, using fallback");
-                vec![0, 1, 2, 1, 2, 3]
+    // インデックスを生成（常にメッシュから取得）
+    let indices = match jigsaw_shape.mesh.indices() {
+        Some(Indices::U32(idx)) => idx.clone(),
+        Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
+        None => {
+            // フォールバック: 頂点数に基づいてファン三角分割を生成
+            println!("⚠️ No mesh indices available, generating fan triangulation for {} vertices", vertices.len());
+            if vertices.len() >= 3 {
+                let mut fan_indices = Vec::new();
+                for i in 2..vertices.len() {
+                    fan_indices.push(0);
+                    fan_indices.push((i - 1) as u32);
+                    fan_indices.push(i as u32);
+                }
+                fan_indices
+            } else {
+                // 最小限のフォールバック
+                vec![0, 1, 2]
             }
         }
     };
     
-    println!("🔍 Extracted shape data: {} vertices, {} indices", vertices.len(), indices.len());
+    // インデックス値の妥当性をチェックして修正
+    let max_index = indices.iter().max().cloned().unwrap_or(0);
+    let vertex_count = vertices.len() as u32;
+    
+    let final_indices = if max_index >= vertex_count {
+        println!("❌ INDEX OUT OF BOUNDS: max_index={}, vertex_count={}", max_index, vertex_count);
+        println!("   Mesh has {} attribute vertices", 
+            match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+                Some(bevy::render::mesh::VertexAttributeValues::Float32x3(pos)) => pos.len(),
+                _ => 0
+            });
+        println!("   Boundary vertices: {}", jigsaw_shape.boundary_vertices.len());
+        println!("   Using mesh vertices for rendering: {}", 
+            matches!(jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION), Some(_)));
+        if indices.len() <= 20 {
+            println!("   All indices: {:?}", indices);
+        } else {
+            println!("   First 10 indices: {:?}", &indices[0..10]);
+            println!("   Last 10 indices: {:?}", &indices[indices.len()-10..]);
+        }
+        
+        // 重要: インデックスアウトオブバウンズを修正
+        println!("🔧 Fixing indices to prevent out-of-bounds access");
+        let fixed_indices = indices.into_iter()
+            .map(|idx| idx.min(vertex_count.saturating_sub(1)))
+            .collect::<Vec<u32>>();
+        
+        let new_max = fixed_indices.iter().max().cloned().unwrap_or(0);
+        println!("✅ Fixed indices: max_index={}", new_max);
+        fixed_indices
+    } else {
+        // 正常ケースでも基本情報をログ出力（最初の数個のピースのみ）
+        static mut DEBUG_COUNTER: usize = 0;
+        unsafe {
+            DEBUG_COUNTER += 1;
+            if DEBUG_COUNTER <= 3 {
+                println!("✅ Valid mesh data: {} vertices, {} indices (max_index: {})", 
+                    vertex_count, indices.len(), max_index);
+            }
+        }
+        indices
+    };
+    
+    let final_max_index = final_indices.iter().max().cloned().unwrap_or(0);
+    println!("🔍 Extracted shape data: {} vertices, {} indices (max_index: {})", 
+        vertices.len(), final_indices.len(), final_max_index);
     if vertices.len() <= 5 {
         println!("   First vertices: {:?}", vertices);
     } else {
@@ -559,7 +610,7 @@ pub fn extract_shape_data_from_jigsaw_shape(jigsaw_shape: &crate::jigsaw_shapes:
     
     PieceShape { 
         vertices, 
-        indices,
+        indices: final_indices,
         shape_hash: jigsaw_shape.shape_hash.clone(), // JigsawPieceShapeから形状ハッシュを取得
     }
 }

@@ -11,6 +11,8 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_event::<PieceMoveCompleted>()
             .add_event::<PiecePlacedEvent>()
+            .add_event::<BatchRebuildRequest>()
+            .add_event::<BatchRebuildCompleted>()
             .init_resource::<GameData>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<NetworkInfo>()
@@ -22,6 +24,8 @@ impl Plugin for GamePlugin {
             .init_resource::<PieceCollisionSystem>()
             .init_resource::<PerformanceMonitor>()
             .init_resource::<HighlightState>()
+            .init_resource::<PieceDataStore>()
+            .init_resource::<BatchManager>()
             .insert_state(AppState::Loading)
             .insert_state(GameSubState::Initializing)
             .add_systems(Startup, (setup_game, setup_highlight_materials, setup_image_load_system))
@@ -83,6 +87,16 @@ impl Plugin for GamePlugin {
                 test_collision_api,
                 performance_test_collision_system,
                 manual_rebuild_collision_system,
+                
+                // バッチ管理システム
+                handle_batch_rebuild_requests,
+                auto_batch_rebuild,
+                monitor_batch_system,
+                
+                // 一時エンティティ管理システム
+                create_temporary_entities,
+                cleanup_temporary_entities,
+                sync_temporary_entities_with_data_store,
                 
                 // パフォーマンス計測システム
                 toggle_performance_debug.run_if(f12_just_pressed),

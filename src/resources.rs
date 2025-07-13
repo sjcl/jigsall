@@ -1090,8 +1090,8 @@ impl Default for InputState {
 pub enum GenerationPhase {
     NotStarted,
     PreparingShapes,    // ジグソー形状を生成中（非同期）
-    CreatingPieces,     // ピースエンティティを作成中（非同期）
-    SpawningEntities,   // メインスレッドでエンティティをスポーン中
+    CreatingPieces,     // ピースデータを作成中（非同期）
+    SpawningEntities,   // メインスレッドでデータストアに保存中（エンティティは作成しない）
     Completed,
 }
 
@@ -1379,6 +1379,357 @@ pub struct ImageLoadChannels {
 #[derive(Resource)]
 pub struct ImageLoadSender {
     pub tx_results: crossbeam::channel::Sender<crate::asset_reader::ImageLoadResult>,
+}
+
+// ==========================================
+// Pure Batch System - Centralized Piece Data
+// ==========================================
+
+/// 純粋なデータ駆動型ピース情報管理
+#[derive(Resource)]
+pub struct PieceDataStore {
+    /// 全ピースの基本データ
+    pub pieces: std::collections::HashMap<PieceId, StoredPieceData>,
+    
+    /// ピースの位置・変形情報
+    pub transforms: std::collections::HashMap<PieceId, Transform>,
+    
+    /// 選択状態（コンポーネントを使わずにここで管理）
+    pub selected_pieces: std::collections::HashSet<PieceId>,
+    
+    /// ドラッグ状態情報
+    pub drag_info: std::collections::HashMap<PieceId, DragInfo>,
+    
+    /// レンダリング状態（バッチ内 or 一時エンティティ）
+    pub render_states: std::collections::HashMap<PieceId, PieceRenderState>,
+    
+    /// 配置済みピース（正しい位置にある）
+    pub placed_pieces: std::collections::HashSet<PieceId>,
+    
+    /// 一時エンティティマッピング（PieceId -> Entity）
+    pub temporary_entities: std::collections::HashMap<PieceId, Entity>,
+    
+    /// ピース統計
+    pub total_pieces: usize,
+    pub pieces_in_batch: usize,
+}
+
+/// ピースの基本データ（PuzzlePieceコンポーネントの代替）
+#[derive(Clone, Debug)]
+pub struct StoredPieceData {
+    pub id: PieceId,
+    pub original_position: Vec2,
+    pub current_position: Vec2,
+    pub correct_position: Vec2,
+    pub texture_coords: Vec4,
+    pub is_placed: bool,
+    pub grid_x: usize,
+    pub grid_y: usize,
+    pub bounds: Rect,
+    pub shape: PieceShapeData,
+}
+
+/// ピース形状データ（PieceShapeコンポーネントの代替）
+#[derive(Clone, Debug)]
+pub struct PieceShapeData {
+    pub vertices: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
+    pub shape_hash: String,
+}
+
+/// ドラッグ情報
+#[derive(Clone, Debug)]
+pub struct DragInfo {
+    pub is_dragging: bool,
+    pub drag_offset: Vec2,
+    pub start_position: Vec2,
+}
+
+/// ピースのレンダリング状態
+#[derive(Clone, Debug)]
+pub enum PieceRenderState {
+    /// バッチメッシュに含まれている（エンティティなし）
+    InBatch,
+    /// 一時的な個別エンティティとして存在（インタラクション中）
+    TemporaryEntity(Entity),
+}
+
+impl Default for PieceDataStore {
+    fn default() -> Self {
+        Self {
+            pieces: std::collections::HashMap::new(),
+            transforms: std::collections::HashMap::new(),
+            selected_pieces: std::collections::HashSet::new(),
+            drag_info: std::collections::HashMap::new(),
+            render_states: std::collections::HashMap::new(),
+            placed_pieces: std::collections::HashSet::new(),
+            temporary_entities: std::collections::HashMap::new(),
+            total_pieces: 0,
+            pieces_in_batch: 0,
+        }
+    }
+}
+
+impl PieceDataStore {
+    /// ピースを追加
+    pub fn add_piece(&mut self, piece_data: StoredPieceData, transform: Transform) {
+        let piece_id = piece_data.id;
+        
+        self.pieces.insert(piece_id, piece_data);
+        self.transforms.insert(piece_id, transform);
+        self.render_states.insert(piece_id, PieceRenderState::InBatch);
+        self.drag_info.insert(piece_id, DragInfo {
+            is_dragging: false,
+            drag_offset: Vec2::ZERO,
+            start_position: Vec2::ZERO,
+        });
+        
+        self.total_pieces += 1;
+        self.pieces_in_batch += 1;
+    }
+    
+    /// ピースを選択状態に設定
+    pub fn select_piece(&mut self, piece_id: PieceId) -> bool {
+        self.selected_pieces.insert(piece_id)
+    }
+    
+    /// ピースの選択を解除
+    pub fn deselect_piece(&mut self, piece_id: PieceId) -> bool {
+        self.selected_pieces.remove(&piece_id)
+    }
+    
+    /// 全選択解除
+    pub fn clear_selection(&mut self) {
+        self.selected_pieces.clear();
+    }
+    
+    /// ピースがある選択されているか
+    pub fn is_selected(&self, piece_id: PieceId) -> bool {
+        self.selected_pieces.contains(&piece_id)
+    }
+    
+    /// ドラッグ開始
+    pub fn start_drag(&mut self, piece_id: PieceId, drag_offset: Vec2) {
+        if let Some(drag_info) = self.drag_info.get_mut(&piece_id) {
+            drag_info.is_dragging = true;
+            drag_info.drag_offset = drag_offset;
+            if let Some(transform) = self.transforms.get(&piece_id) {
+                drag_info.start_position = transform.translation.truncate();
+            }
+        }
+    }
+    
+    /// ドラッグ終了
+    pub fn stop_drag(&mut self, piece_id: PieceId) {
+        if let Some(drag_info) = self.drag_info.get_mut(&piece_id) {
+            drag_info.is_dragging = false;
+            drag_info.drag_offset = Vec2::ZERO;
+        }
+    }
+    
+    /// ピース位置更新
+    pub fn update_position(&mut self, piece_id: PieceId, new_position: Vec2) {
+        if let Some(transform) = self.transforms.get_mut(&piece_id) {
+            transform.translation = new_position.extend(transform.translation.z);
+        }
+        
+        if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
+            piece_data.current_position = new_position;
+        }
+    }
+    
+    /// 一時エンティティに移行
+    pub fn extract_to_entity(&mut self, piece_id: PieceId, entity: Entity) {
+        self.render_states.insert(piece_id, PieceRenderState::TemporaryEntity(entity));
+        self.temporary_entities.insert(piece_id, entity);
+        self.pieces_in_batch = self.pieces_in_batch.saturating_sub(1);
+    }
+    
+    /// バッチに戻す
+    pub fn return_to_batch(&mut self, piece_id: PieceId) {
+        if matches!(self.render_states.get(&piece_id), Some(PieceRenderState::TemporaryEntity(_))) {
+            self.render_states.insert(piece_id, PieceRenderState::InBatch);
+            self.temporary_entities.remove(&piece_id);
+            self.pieces_in_batch += 1;
+        }
+    }
+    
+    /// ピースを配置済みに設定
+    pub fn set_placed(&mut self, piece_id: PieceId, is_placed: bool) {
+        if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
+            piece_data.is_placed = is_placed;
+        }
+        
+        if is_placed {
+            self.placed_pieces.insert(piece_id);
+        } else {
+            self.placed_pieces.remove(&piece_id);
+        }
+    }
+    
+    /// 統計情報取得
+    pub fn get_stats(&self) -> String {
+        format!(
+            "PieceDataStore Stats:\n  Total pieces: {}\n  In batch: {}\n  Temporary entities: {}\n  Selected: {}\n  Placed: {}",
+            self.total_pieces,
+            self.pieces_in_batch,
+            self.temporary_entities.len(),
+            self.selected_pieces.len(),
+            self.placed_pieces.len()
+        )
+    }
+    
+    /// バッチに含まれるピースのIDリストを取得
+    pub fn get_batched_piece_ids(&self) -> Vec<PieceId> {
+        self.render_states.iter()
+            .filter_map(|(id, state)| {
+                if matches!(state, PieceRenderState::InBatch) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+    
+    /// 一時エンティティのピースIDリストを取得
+    pub fn get_temporary_entity_piece_ids(&self) -> Vec<PieceId> {
+        self.render_states.iter()
+            .filter_map(|(id, state)| {
+                if matches!(state, PieceRenderState::TemporaryEntity(_)) {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+}
+
+// ==========================================
+// Mesh Batching System Resources
+// ==========================================
+
+/// バッチメッシュ管理システム
+#[derive(Resource)]
+pub struct BatchManager {
+    /// 現在の結合メッシュエンティティ（存在する場合）
+    pub batched_entity: Option<Entity>,
+    
+    /// バッチに含まれているピースのIDリスト
+    pub batched_pieces: std::collections::HashSet<PieceId>,
+    
+    /// 抽出されているピースのIDリスト（個別エンティティとして存在）
+    pub extracted_pieces: std::collections::HashSet<PieceId>,
+    
+    /// 正しい位置に配置されたピースのIDリスト（静的バッチ用）
+    pub placed_pieces: std::collections::HashSet<PieceId>,
+    
+    /// バッチ再構築が必要かどうか
+    pub needs_rebuild: bool,
+    
+    /// 最後にバッチが更新された時刻
+    pub last_update: std::time::Instant,
+    
+    /// パフォーマンス統計
+    pub rebuild_count: usize,
+    pub total_rebuild_time: std::time::Duration,
+    
+    /// バッチ再構築中フラグ（重複実行防止）
+    pub is_rebuilding: bool,
+}
+
+impl Default for BatchManager {
+    fn default() -> Self {
+        Self {
+            batched_entity: None,
+            batched_pieces: std::collections::HashSet::new(),
+            extracted_pieces: std::collections::HashSet::new(),
+            placed_pieces: std::collections::HashSet::new(),
+            needs_rebuild: false,
+            last_update: std::time::Instant::now(),
+            rebuild_count: 0,
+            total_rebuild_time: std::time::Duration::ZERO,
+            is_rebuilding: false,
+        }
+    }
+}
+
+impl BatchManager {
+    /// ピースをバッチから抽出（選択時など）
+    pub fn extract_piece(&mut self, piece_id: PieceId) -> bool {
+        if self.batched_pieces.remove(&piece_id) {
+            self.extracted_pieces.insert(piece_id);
+            self.needs_rebuild = true;
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// ピースをバッチに戻す（選択解除時など）
+    pub fn return_piece(&mut self, piece_id: PieceId) -> bool {
+        if self.extracted_pieces.remove(&piece_id) {
+            self.batched_pieces.insert(piece_id);
+            self.needs_rebuild = true;
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// ピースを配置済みに設定（正しい位置に配置時）
+    pub fn place_piece(&mut self, piece_id: PieceId) -> bool {
+        let was_extracted = self.extracted_pieces.remove(&piece_id);
+        let was_batched = self.batched_pieces.remove(&piece_id);
+        
+        if was_extracted || was_batched {
+            self.placed_pieces.insert(piece_id);
+            self.needs_rebuild = true;
+            true
+        } else {
+            false
+        }
+    }
+    
+    /// 新しいピースをバッチに追加
+    pub fn add_piece(&mut self, piece_id: PieceId) {
+        self.batched_pieces.insert(piece_id);
+        self.needs_rebuild = true;
+    }
+    
+    /// バッチ再構築完了を記録
+    pub fn record_rebuild(&mut self, rebuild_time: std::time::Duration) {
+        self.rebuild_count += 1;
+        self.total_rebuild_time += rebuild_time;
+        self.last_update = std::time::Instant::now();
+        self.needs_rebuild = false;
+        self.is_rebuilding = false;
+    }
+    
+    /// パフォーマンス統計を取得
+    pub fn get_stats(&self) -> String {
+        let avg_rebuild_time = if self.rebuild_count > 0 {
+            self.total_rebuild_time / self.rebuild_count as u32
+        } else {
+            std::time::Duration::ZERO
+        };
+        
+        format!(
+            "BatchManager Stats:\n  Batched pieces: {}\n  Extracted pieces: {}\n  Placed pieces: {}\n  Rebuild count: {}\n  Average rebuild time: {:.2}ms\n  Needs rebuild: {}",
+            self.batched_pieces.len(),
+            self.extracted_pieces.len(),
+            self.placed_pieces.len(),
+            self.rebuild_count,
+            avg_rebuild_time.as_secs_f64() * 1000.0,
+            self.needs_rebuild
+        )
+    }
+    
+    /// 全ピース数を取得
+    pub fn total_pieces(&self) -> usize {
+        self.batched_pieces.len() + self.extracted_pieces.len() + self.placed_pieces.len()
+    }
 }
 
 // バックグラウンドスレッド版の完了
