@@ -26,6 +26,7 @@ pub struct JigsawPieceShape {
     pub bounds: Rect,
     pub texture_coords: Vec4,
     pub shape_hash: String, // SVGパスベースの形状ハッシュ
+    pub boundary_vertices: Vec<[f32; 2]>, // コリジョン検出用の境界頂点
 }
 
 /// ジグソーピース形状の生成とキャッシュを管理するシステム
@@ -102,6 +103,32 @@ impl JigsawShapeGenerator {
         // SVGパスをlyonのPathに変換してメッシュ生成（フィルとストローク両方）
         let (mesh, stroke_mesh) = self.parse_svg_path_to_meshes(svg_path, x, y)?;
         
+        // 境界頂点を抽出（コリジョン検出用）
+        let (piece_width, piece_height) = self.piece_size;
+        let svg_piece_width = piece_width;
+        let svg_piece_height = piece_height;
+        let offset_x = x as f32 * svg_piece_width + svg_piece_width / 2.0;
+        let offset_y = y as f32 * svg_piece_height + svg_piece_height / 2.0;
+        
+        let boundary_vertices = match self.extract_boundary_vertices_from_svg(svg_path, offset_x, offset_y) {
+            Ok(vertices) => {
+                println!("✅ Successfully extracted {} boundary vertices for piece ({}, {})", vertices.len(), x, y);
+                vertices
+            },
+            Err(e) => {
+                println!("⚠️ Failed to extract boundary vertices for piece ({}, {}): {}. Using fallback rectangle.", x, y, e);
+                // フォールバック: 矩形の境界頂点
+                let half_width = piece_width / 2.0;
+                let half_height = piece_height / 2.0;
+                vec![
+                    [-half_width, half_height],   // 左上
+                    [half_width, half_height],    // 右上  
+                    [half_width, -half_height],   // 右下
+                    [-half_width, -half_height],  // 左下
+                ]
+            }
+        };
+        
         // SVGパスから形状ハッシュを計算
         let shape_hash = self.calculate_shape_hash_from_svg_path(svg_path);
         
@@ -122,6 +149,7 @@ impl JigsawShapeGenerator {
             bounds,
             texture_coords,
             shape_hash,
+            boundary_vertices,
         };
 
         // キャッシュに保存
@@ -587,6 +615,115 @@ impl JigsawShapeGenerator {
         }
         
         Ok(builder.build())
+    }
+
+    /// SVGパスから境界頂点を抽出（コリジョン検出用）
+    pub fn extract_boundary_vertices_from_svg(&self, svg_path: &str, offset_x: f32, offset_y: f32) -> Result<Vec<[f32; 2]>, Box<dyn std::error::Error>> {
+        let mut vertices = Vec::new();
+        let mut current_x = 0.0f64;
+        let mut current_y = 0.0f64;
+        
+        // SVGパスを解析して境界頂点のみを抽出
+        for segment in PathParser::from(svg_path) {
+            match segment {
+                Ok(seg) => {
+                    match seg {
+                        PathSegment::MoveTo { abs: _, x, y } => {
+                            // 座標系変換: SVG座標 → Bevy座標 (Y反転 + オフセット)
+                            current_x = x;
+                            current_y = y;
+                            let bevy_x = x as f32 - offset_x;
+                            let bevy_y = -(y as f32 - offset_y);
+                            vertices.push([bevy_x, bevy_y]);
+                        }
+                        PathSegment::LineTo { abs: _, x, y } => {
+                            current_x = x;
+                            current_y = y;
+                            let bevy_x = x as f32 - offset_x;
+                            let bevy_y = -(y as f32 - offset_y);
+                            vertices.push([bevy_x, bevy_y]);
+                        }
+                        PathSegment::CurveTo { abs: _, x1, y1, x2, y2, x, y } => {
+                            // ベジェ曲線を複数セグメントに分割して境界の凸部分をキャプチャ
+                            let start_x = current_x;
+                            let start_y = current_y;
+                            
+                            // ベジェ曲線を8セグメントに分割（凸部分を正確にキャプチャするため）
+                            let segments = 8;
+                            for i in 1..=segments {
+                                let t = i as f32 / segments as f32;
+                                
+                                // 3次ベジェ曲線の計算: B(t) = (1-t)³P₀ + 3(1-t)²tP₁ + 3(1-t)t²P₂ + t³P₃
+                                let one_minus_t = 1.0 - t;
+                                let one_minus_t_sq = one_minus_t * one_minus_t;
+                                let one_minus_t_cube = one_minus_t_sq * one_minus_t;
+                                let t_sq = t * t;
+                                let t_cube = t_sq * t;
+                                
+                                let bezier_x = one_minus_t_cube * (start_x as f32) +
+                                             3.0 * one_minus_t_sq * t * (x1 as f32) +
+                                             3.0 * one_minus_t * t_sq * (x2 as f32) +
+                                             t_cube * (x as f32);
+                                             
+                                let bezier_y = one_minus_t_cube * (start_y as f32) +
+                                             3.0 * one_minus_t_sq * t * (y1 as f32) +
+                                             3.0 * one_minus_t * t_sq * (y2 as f32) +
+                                             t_cube * (y as f32);
+                                
+                                // 座標系変換: SVG座標 → Bevy座標 (Y反転 + オフセット)
+                                let bevy_x = bezier_x - offset_x;
+                                let bevy_y = -(bezier_y - offset_y);
+                                vertices.push([bevy_x, bevy_y]);
+                            }
+                            
+                            // 現在位置を更新
+                            current_x = x;
+                            current_y = y;
+                        }
+                        PathSegment::ClosePath { abs: _ } => {
+                            // ClosePath: 最初の頂点に戻る（すでに追加されているのでスキップ）
+                        }
+                        _ => {
+                            // その他のコマンド（楕円弧など）は無視
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(format!("SVG parsing error: {}", e).into());
+                }
+            }
+        }
+        
+        // 最低限の頂点数をチェック
+        if vertices.len() < 3 {
+            return Err("Not enough vertices for collision polygon".into());
+        }
+        
+        // 境界ボックスを計算してタブの凸部分がキャプチャされているか確認
+        let mut min_x = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        
+        for vertex in &vertices {
+            min_x = min_x.min(vertex[0]);
+            max_x = max_x.max(vertex[0]);
+            min_y = min_y.min(vertex[1]);
+            max_y = max_y.max(vertex[1]);
+        }
+        
+        println!("🔍 Extracted {} boundary vertices from SVG path", vertices.len());
+        println!("   📏 Boundary box: ({:.1}, {:.1}) to ({:.1}, {:.1}) [size: {:.1}x{:.1}]", 
+            min_x, min_y, max_x, max_y, max_x - min_x, max_y - min_y);
+        
+        if vertices.len() <= 5 {
+            println!("   First vertices: {:?}", vertices);
+        } else {
+            println!("   First 5 vertices: {:?}", &vertices[0..5]);
+            println!("   Last 5 vertices: {:?}", &vertices[vertices.len()-5..]);
+        }
+        
+        Ok(vertices)
     }
 
     /// SVGパス文字列をlyonのPathオブジェクトに変換（旧バージョン - 使用しない）

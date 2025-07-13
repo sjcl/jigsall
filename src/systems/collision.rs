@@ -37,18 +37,74 @@ pub fn register_new_pieces_to_collision_system(
                 position.y + max_y,
             );
             
+            // デバッグ: メッシュデータの検証（最初の数個のピースのみ）
+            static mut PIECE_COUNT: usize = 0;
+            unsafe {
+                PIECE_COUNT += 1;
+                if PIECE_COUNT <= 3 {
+                    println!("🔬 MESH DATA VERIFICATION for piece {} (#{}):", piece_id, PIECE_COUNT);
+                    println!("   📊 Vertex count: {}", vertices.len());
+                    println!("   📊 Index count: {}", indices.len());
+                }
+            }
+            
             let collision_data = PieceCollisionData {
                 piece_id,
                 position,
                 bounding_box,
-                vertices,
-                indices,
+                vertices: vertices.clone(),
+                indices: indices.clone(),
             };
             
             collision_system.add_piece(collision_data);
             
             println!("📝 Registered piece {} to collision system (pos: {:?}, bounds: {:?})", 
                     piece_id, position, bounding_box);
+                    
+            // 追加のデバッグ情報（最初の数個のピースのみ）
+            unsafe {
+                if PIECE_COUNT <= 3 {
+                    println!("   📊 First 5 vertices (local coords):");
+                    for (i, vertex) in vertices.iter().take(5).enumerate() {
+                        println!("      {}. ({:.1}, {:.1})", i, vertex.x, vertex.y);
+                    }
+                    if vertices.len() > 5 {
+                        println!("      ... and {} more", vertices.len() - 5);
+                    }
+                    
+                    // 頂点範囲の計算
+                    if !vertices.is_empty() {
+                        let mut min_v = vertices[0];
+                        let mut max_v = vertices[0];
+                        for vertex in &vertices {
+                            min_v.x = min_v.x.min(vertex.x);
+                            min_v.y = min_v.y.min(vertex.y);
+                            max_v.x = max_v.x.max(vertex.x);
+                            max_v.y = max_v.y.max(vertex.y);
+                        }
+                        println!("   📏 Vertex range: ({:.1}, {:.1}) to ({:.1}, {:.1})", 
+                            min_v.x, min_v.y, max_v.x, max_v.y);
+                        println!("   📏 Vertex size: {:.1}x{:.1}", max_v.x - min_v.x, max_v.y - min_v.y);
+                        
+                        // 計算されたバウンディングボックスと比較
+                        let computed_bbox_min = Vec2::new(position.x + min_v.x, position.y + min_v.y);
+                        let computed_bbox_max = Vec2::new(position.x + max_v.x, position.y + max_v.y);
+                        println!("   🔍 Computed BBox: ({:.1}, {:.1}) to ({:.1}, {:.1})", 
+                            computed_bbox_min.x, computed_bbox_min.y, computed_bbox_max.x, computed_bbox_max.y);
+                        println!("   🔍 Actual BBox:   ({:.1}, {:.1}) to ({:.1}, {:.1})", 
+                            bounding_box.min.x, bounding_box.min.y, bounding_box.max.x, bounding_box.max.y);
+                        
+                        // 形状タイプの推測
+                        if vertices.len() == 4 {
+                            println!("   ⚠️ WARNING: Only 4 vertices - likely fallback rectangle, not jigsaw shape!");
+                        } else if vertices.len() < 20 {
+                            println!("   ⚠️ WARNING: Very few vertices ({}) - may not represent detailed jigsaw shape", vertices.len());
+                        } else {
+                            println!("   ✅ Good vertex count for detailed jigsaw shape");
+                        }
+                    }
+                }
+            }
         }
     }
 }

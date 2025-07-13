@@ -324,14 +324,21 @@ impl PieceCollisionSystem {
                 debug_info.push_str(&format!("     ✅ BBox contains cursor: {}\n", bbox_contains));
                 
                 if bbox_contains {
-                    let precise_hit = self.precise_point_in_piece(*piece_id, position);
+                    // 詳細なポリゴン判定を実行
+                    let (precise_hit, polygon_debug) = self.precise_point_in_piece_debug(*piece_id, position);
                     debug_info.push_str(&format!("     🎯 Precise polygon hit: {}\n", precise_hit));
+                    
+                    // 詳細なポリゴンデバッグ情報を追加
+                    debug_info.push_str("     🔬 Detailed polygon analysis:\n");
+                    for line in polygon_debug.lines() {
+                        debug_info.push_str(&format!("       {}\n", line));
+                    }
                     
                     if precise_hit {
                         debug_info.push_str("     🎉 FOUND PIECE!\n");
                         return (Some(*piece_id), debug_info);
                     } else {
-                        debug_info.push_str("     ⚠️ Inside bbox but outside polygon\n");
+                        debug_info.push_str("     ⚠️ Inside bbox but outside polygon - CHECK VERTEX DATA!\n");
                     }
                 } else {
                     debug_info.push_str("     ❌ Outside bounding box - precise test skipped\n");
@@ -469,6 +476,73 @@ impl PieceCollisionSystem {
         }
     }
 
+    /// 詳細デバッグ付きの精密ポリゴン当たり判定
+    pub fn precise_point_in_piece_debug(&self, piece_id: PieceId, world_position: Vec2) -> (bool, String) {
+        if let Some(piece_data) = self.pieces.get(&piece_id) {
+            let mut debug_info = format!("🔍 Precise collision debug for piece {}:\n", piece_id);
+            
+            // バウンディングボックスチェック
+            let bbox_contains = piece_data.bounding_box.contains(world_position);
+            debug_info.push_str(&format!("   📦 BBox contains point: {}\n", bbox_contains));
+            debug_info.push_str(&format!("   📦 BBox: ({:.1}, {:.1}) to ({:.1}, {:.1})\n", 
+                piece_data.bounding_box.min.x, piece_data.bounding_box.min.y,
+                piece_data.bounding_box.max.x, piece_data.bounding_box.max.y));
+            debug_info.push_str(&format!("   🌍 World position: ({:.1}, {:.1})\n", world_position.x, world_position.y));
+            debug_info.push_str(&format!("   📍 Piece center: ({:.1}, {:.1})\n", piece_data.position.x, piece_data.position.y));
+            
+            if !bbox_contains {
+                debug_info.push_str("   ❌ Outside bounding box - skipping polygon test\n");
+                return (false, debug_info);
+            }
+
+            // ローカル座標に変換
+            let local_position = world_position - piece_data.position;
+            debug_info.push_str(&format!("   📐 Local position: ({:.1}, {:.1})\n", local_position.x, local_position.y));
+            
+            // ポリゴンデータの詳細情報
+            debug_info.push_str(&format!("   🔺 Vertex count: {}\n", piece_data.vertices.len()));
+            debug_info.push_str(&format!("   🔺 Index count: {}\n", piece_data.indices.len()));
+            
+            // 最初の数個の頂点を表示
+            if !piece_data.vertices.is_empty() {
+                debug_info.push_str("   🔺 First 5 vertices (local coords):\n");
+                for (i, vertex) in piece_data.vertices.iter().take(5).enumerate() {
+                    debug_info.push_str(&format!("      {}. ({:.1}, {:.1})\n", i, vertex.x, vertex.y));
+                }
+                if piece_data.vertices.len() > 5 {
+                    debug_info.push_str(&format!("      ... and {} more\n", piece_data.vertices.len() - 5));
+                }
+            }
+            
+            // 頂点の範囲をチェック
+            if !piece_data.vertices.is_empty() {
+                let mut min_v = piece_data.vertices[0];
+                let mut max_v = piece_data.vertices[0];
+                for vertex in &piece_data.vertices {
+                    min_v.x = min_v.x.min(vertex.x);
+                    min_v.y = min_v.y.min(vertex.y);
+                    max_v.x = max_v.x.max(vertex.x);
+                    max_v.y = max_v.y.max(vertex.y);
+                }
+                debug_info.push_str(&format!("   📏 Vertex bounds: ({:.1}, {:.1}) to ({:.1}, {:.1})\n", 
+                    min_v.x, min_v.y, max_v.x, max_v.y));
+                
+                // ローカル座標が頂点範囲内にあるかチェック
+                let in_vertex_bounds = local_position.x >= min_v.x && local_position.x <= max_v.x &&
+                                     local_position.y >= min_v.y && local_position.y <= max_v.y;
+                debug_info.push_str(&format!("   📏 Local point in vertex bounds: {}\n", in_vertex_bounds));
+            }
+
+            // ポリゴン内判定を実行
+            let (result, polygon_debug) = self.point_in_polygon_debug(local_position, &piece_data.vertices);
+            debug_info.push_str(&polygon_debug);
+            
+            (result, debug_info)
+        } else {
+            (false, format!("❌ Piece {} not found in collision system\n", piece_id))
+        }
+    }
+
     /// ポリゴン内判定（レイキャスト法）
     fn point_in_polygon(&self, point: Vec2, vertices: &[Vec2]) -> bool {
         if vertices.len() < 3 {
@@ -491,6 +565,74 @@ impl PieceCollisionSystem {
         }
 
         intersections % 2 == 1
+    }
+
+    /// デバッグ付きポリゴン内判定
+    fn point_in_polygon_debug(&self, point: Vec2, vertices: &[Vec2]) -> (bool, String) {
+        let mut debug_info = String::new();
+        
+        if vertices.len() < 3 {
+            debug_info.push_str(&format!("   ❌ Too few vertices: {} (need at least 3)\n", vertices.len()));
+            return (false, debug_info);
+        }
+
+        let mut intersections = 0;
+        let ray_y = point.y;
+        
+        debug_info.push_str(&format!("   🎯 Ray casting from ({:.1}, {:.1}) horizontally (y={:.1})\n", 
+            point.x, point.y, ray_y));
+        
+        let mut edge_details = Vec::new();
+        
+        for i in 0..vertices.len() {
+            let j = (i + 1) % vertices.len();
+            let v1 = vertices[i];
+            let v2 = vertices[j];
+            
+            // エッジの詳細情報を収集
+            let y_cross = (v1.y > ray_y) != (v2.y > ray_y);
+            let intersection_x = if (v2.y - v1.y).abs() > f32::EPSILON {
+                (v2.x - v1.x) * (ray_y - v1.y) / (v2.y - v1.y) + v1.x
+            } else {
+                f32::NAN  // 水平線
+            };
+            let x_cross = point.x < intersection_x;
+            
+            // 水平レイが線分と交差するかチェック
+            if y_cross && x_cross && !intersection_x.is_nan() {
+                intersections += 1;
+                edge_details.push(format!("      Edge {}->{}: ({:.1},{:.1}) to ({:.1},{:.1}) → intersection at x={:.1} ✅", 
+                    i, j, v1.x, v1.y, v2.x, v2.y, intersection_x));
+            } else {
+                if i < 5 || !edge_details.is_empty() {  // 最初の5個または交差がある場合のみ表示
+                    let reason = if !y_cross {
+                        "no Y crossing"
+                    } else if intersection_x.is_nan() {
+                        "horizontal edge"
+                    } else if !x_cross {
+                        "intersection behind point"
+                    } else {
+                        "unknown"
+                    };
+                    edge_details.push(format!("      Edge {}->{}: ({:.1},{:.1}) to ({:.1},{:.1}) → {} ❌", 
+                        i, j, v1.x, v1.y, v2.x, v2.y, reason));
+                }
+            }
+        }
+        
+        debug_info.push_str(&format!("   🔍 Testing {} edges:\n", vertices.len()));
+        for detail in edge_details.iter().take(10) {  // 最大10個まで表示
+            debug_info.push_str(&format!("{}\n", detail));
+        }
+        if edge_details.len() > 10 {
+            debug_info.push_str(&format!("      ... and {} more edges\n", edge_details.len() - 10));
+        }
+        
+        let result = intersections % 2 == 1;
+        debug_info.push_str(&format!("   🎯 Total intersections: {} → Point is {} polygon\n", 
+            intersections, if result { "INSIDE" } else { "OUTSIDE" }));
+        
+        (result, debug_info)
     }
 
     /// デバッグ用：統計情報取得

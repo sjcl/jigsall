@@ -516,24 +516,46 @@ fn calculate_puzzle_grid_area(
 
 /// メッシュから精密当たり判定用の形状データを抽出（JigsawPieceShapeから）
 pub fn extract_shape_data_from_jigsaw_shape(jigsaw_shape: &crate::jigsaw_shapes::JigsawPieceShape) -> PieceShape {
-    let vertices = match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        Some(VertexAttributeValues::Float32x3(positions)) => {
-            positions.iter().map(|pos| [pos[0], pos[1]]).collect()
-        }
-        _ => {
-            println!("Warning: Could not extract vertices from jigsaw mesh, using fallback");
-            vec![[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
+    // 🔧 NEW: 境界頂点を使用（triangle mesh vertices の代わりに）
+    let vertices = if !jigsaw_shape.boundary_vertices.is_empty() {
+        println!("✅ Using boundary vertices ({} points) for collision detection", jigsaw_shape.boundary_vertices.len());
+        jigsaw_shape.boundary_vertices.clone()
+    } else {
+        println!("⚠️ No boundary vertices available, falling back to triangle mesh extraction");
+        // フォールバック: triangle mesh から抽出（元の方法）
+        match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(VertexAttributeValues::Float32x3(positions)) => {
+                positions.iter().map(|pos| [pos[0], pos[1]]).collect()
+            }
+            _ => {
+                println!("Warning: Could not extract vertices from jigsaw mesh, using fallback rectangle");
+                vec![[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]]
+            }
         }
     };
     
-    let indices = match jigsaw_shape.mesh.indices() {
-        Some(Indices::U32(idx)) => idx.clone(),
-        Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
-        None => {
-            println!("Warning: Could not extract indices from jigsaw mesh, using fallback");
-            vec![0, 1, 2, 1, 2, 3]
+    // 境界頂点の場合はインデックスは不要（polygon として扱う）
+    let indices = if !jigsaw_shape.boundary_vertices.is_empty() {
+        // 境界頂点の場合は、単純にポリゴンとして扱うためインデックスは空
+        Vec::new()
+    } else {
+        // triangle mesh の場合はインデックスを使用
+        match jigsaw_shape.mesh.indices() {
+            Some(Indices::U32(idx)) => idx.clone(),
+            Some(Indices::U16(idx)) => idx.iter().map(|&i| i as u32).collect(),
+            None => {
+                println!("Warning: Could not extract indices from jigsaw mesh, using fallback");
+                vec![0, 1, 2, 1, 2, 3]
+            }
         }
     };
+    
+    println!("🔍 Extracted shape data: {} vertices, {} indices", vertices.len(), indices.len());
+    if vertices.len() <= 5 {
+        println!("   First vertices: {:?}", vertices);
+    } else {
+        println!("   First 5 vertices: {:?}", &vertices[0..5]);
+    }
     
     PieceShape { 
         vertices, 
