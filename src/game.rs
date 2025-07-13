@@ -49,14 +49,13 @@ impl Plugin for GamePlugin {
                 // メニュー操作（プレイ中にESCを検出してポーズに移行）
                 toggle_game_menu.run_if(escape_just_pressed),
                 
-                // 選択システム
-                update_piece_cache,
+                // 選択システム（UUIDベース）
                 render_selection_box.run_if(should_render_selection_box),
-                handle_box_selection,
+                handle_box_selection_uuid,
                 handle_multi_piece_drag,
                 
-                // レガシー & ハイライト
-                handle_piece_dragging_hybrid_legacy,
+                // 新しいUUIDベースのドラッグシステム & ハイライト  
+                handle_piece_dragging_uuid,
                 highlight_selected_pieces,
                 
                 // ゲームロジック
