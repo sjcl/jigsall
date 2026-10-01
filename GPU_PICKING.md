@@ -16,15 +16,15 @@ pointはcrop projectionで対象画素を1×1のR32Uint / Depth32Float targetへ
 
 rectangleはscissor内の同じgeometryからatomicOrでbitsetを設定します。depth testをしないので奥も返ります。readbackは4 * ceil(N / 32) bytes。1万は1,252 bytes、100万は125,000 bytesです。確保はpower-of-twoに丸めます。
 
-矩形previewは専用GPU bitsetへ直接出力し、main fragmentがそのbitsetから青いoutlineを描きます。preview要求はstaging buffer・copy・map・CPUのID集合・flags uploadを使いません。release時の最終矩形だけをreadbackし、CPUの確定選択へ反映します。preview描画passはmain passより前に実行し、取消時はuniformで非表示、空矩形はbitsetをclearします。
+矩形previewは専用GPU bitsetへ直接出力し、main fragmentがそのbitsetから青いoutlineを描きます。preview要求はstaging buffer・copy・map・CPUのID集合・flags uploadを使いません。release時の最終矩形だけをreadbackし、CPUのPieceBitSetへwordのまま復号します。確定選択は別のGPU bitsetへuploadし、黄色のoutlineもそれを直接参照します。SELECTED flagのper-piece更新は不要です。preview描画passはmain passより前に実行し、取消時はuniformで非表示、空矩形はbitsetをclearします。
 
 ## Multi-drag
 
-開始時に選択可能な対象IDを固定し、相対Z順にGrabします。CPUのper-piece offset mapはありません。対象を示すbitsetを一度GPUへuploadし、移動中はworld-spaceのdrag_deltaだけをuniformへ渡します。main vertexとvisibility computeが同じ一時移動を適用するため、CPU正本が画面外にあるピースもdragで画面内へ入れます。heldの除外とZ順は維持します。
+開始時に選択可能な対象maskを固定し、1つのGrabGroupをauthorityへ渡します。authorityは所有権を再検証し、受理した対象の相対Z順を保ってGrabします。CPUのper-piece offset mapはありません。対象を示すbitsetを一度GPUへuploadし、移動中はworld-spaceのdrag_deltaだけをuniformへ渡します。main vertexとvisibility computeが同じ一時移動を適用するため、CPU正本が画面外にあるピースもdragで画面内へ入れます。heldの除外とZ順は維持します。
 
-移動frameのCPU処理は選択数に対してO(1)、Move命令・state upload・membership uploadは0です。release時だけ全対象の最終座標をCPU命令として反映し、Release後に通常のsnapを行います。pause / focus lossも最後に表示したdeltaを一度反映して解放します。Grab・確定選択・releaseは引き続きO(選択数)の処理を含みます。
+移動frameのCPU処理は選択数に対してO(1)、Move命令・state upload・membership uploadは0です。release時はmaskとdeltaを持つ1つのReleaseGroupで、位置のcommit・所有権解放・各pieceのsnap・placed_count更新まで処理します。pieceごとのcommand / Messageは不要です。pause / focus lossも最後に表示したdeltaを一度反映して解放します。確定選択・releaseは引き続きO(選択数)の処理を含み、Grabは相対Zを保つ一時sortも行います。
 
-100万ピースのmembershipはCPU/GPUそれぞれ125,000 bytes、GPU previewは追加125,000 bytesです。CPUには対象IDのVec（4 bytes/対象）が残ります。PieceStateのpositionはdrag中に変わらず、一時移動はローカルpresentationのみです。
+100万ピースのselectionとmembershipは各125,000 bytesのmaskです。GPUはselected / preview / membershipを別bufferに持ちます。gestureに対象ID Vecは保持せず、authorityのGrab時に相対Zのsort用一時Vecだけを使います。rollback snapshotはArc cloneで共有し、変更時だけ最大125 KBをcopy-on-writeします。PieceStateのpositionはdrag中に変わらず、一時移動はローカルpresentationのみです。2026-10-02の最新計測と制限は[MILLION_SELECTION.md](MILLION_SELECTION.md)を参照してください。
 
 2026-10-01のWindows release CPU計測では、100,000回の`PieceInteraction::update`の平均は以下でした。gesture更新のみ（入力sampling・Bevy schedule・描画・Grab・releaseを除外）の計測で、frame timeではありません。
 

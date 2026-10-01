@@ -1,5 +1,7 @@
 //! Puzzle identities, state and authoritative command decisions.
+mod bitset;
 mod commands;
+pub use bitset::{PieceBitSet, MAX_PIECES};
 mod gameplay;
 pub mod session;
 pub use commands::ClientCommand;

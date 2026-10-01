@@ -1,0 +1,23 @@
+{
+  "date": "2026-10-02",
+  "timezone": "Asia/Tokyo",
+  "os": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+  "rust": "1.97.0 (2d8144b78 2026-07-07)",
+  "adapter": "NVIDIA GeForce RTX 5090",
+  "backend": "Vulkan",
+  "driver": "NVIDIA 610.88",
+  "branch": "perf/million-piece-selection",
+  "base_commit": "014cab45fa61be5535cf857d62cabbe48204aeb8",
+  "worktree": "C:\\Users\\bebe\\.codex\\worktrees\\million-selection\\puzzella",
+  "cpu_samples_per_size": 5,
+  "rectangle_samples": 5,
+  "renderer_frames_per_row": 30,
+  "gpu_resolution": 2048,
+  "renderer_resolution": 1024,
+  "rss_peak_measured": false,
+  "midrange_gpu_available": false,
+  "cpu_select_final_ms": 0.6774,
+  "cpu_drag_start_ms": 5.6836,
+  "cpu_release_ms": 16.4357
+}

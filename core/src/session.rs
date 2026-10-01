@@ -501,6 +501,46 @@ mod tests {
     };
     const A: PlayerId = PlayerId(1);
     const B: PlayerId = PlayerId(2);
+    #[test]
+    fn bulk_grab_and_final_release_use_reliable_controls() {
+        let mut members = crate::PieceBitSet::new(1_000_000);
+        members.fill();
+        let grab = ClientCommandEnvelope {
+            command: PieceCommand::GrabGroup {
+                members: members.clone(),
+            },
+            ..command(A, 0)
+        };
+        let release = ClientCommandEnvelope {
+            command: PieceCommand::ReleaseGroup {
+                members,
+                delta: bevy_math::Vec2::ONE,
+            },
+            ..command(A, 1)
+        };
+        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
+        assert_eq!(
+            tracker.validate_and_record(&grab),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        let mut unreliable = release.clone();
+        unreliable.sequence = ClientCommandSequence::Move {
+            after_control_sequence: 0,
+            tick: 0,
+        };
+        assert_eq!(
+            tracker.validate_and_record(&unreliable),
+            Err(ProtocolError::WrongCommandStream)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&release),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&release),
+            Err(ProtocolError::DuplicateCommand)
+        );
+    }
     fn command(player: PlayerId, sequence: u64) -> ClientCommandEnvelope {
         ClientCommandEnvelope {
             session: SESSION,

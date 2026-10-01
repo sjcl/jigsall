@@ -138,8 +138,7 @@ mod tests {
                     Some(SelectionResult {
                         request_id: request.request_id,
                         mode: request.mode,
-                        piece_ids: ids,
-                        entities: vec![],
+                        payload: SelectionPayload::from_ids(request.mode, 2, ids),
                         error: None,
                     });
             }
@@ -365,7 +364,10 @@ mod tests {
         pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, true);
         pointer_frame(&mut app, Vec2::new(150.0, 150.0), false, true);
         let store = app.world().resource::<PieceDataStore>();
-        assert_eq!(store.selected_pieces, HashSet::from([PieceId(1)]));
+        assert_eq!(
+            store.selected_pieces.iter().collect::<HashSet<_>>(),
+            HashSet::from([PieceId(1)])
+        );
         assert_eq!(
             store.state(PieceId(0)).unwrap().position,
             Vec2::new(100.0, 100.0)
@@ -442,7 +444,10 @@ mod tests {
             .clear();
         app.update();
         let store = app.world().resource::<PieceDataStore>();
-        assert_eq!(store.selected_pieces, HashSet::from([PieceId(0)]));
+        assert_eq!(
+            store.selected_pieces.iter().collect::<HashSet<_>>(),
+            HashSet::from([PieceId(0)])
+        );
         assert!(
             !app.world()
                 .resource::<crate::selection::PuzzleSelection>()
@@ -519,8 +524,7 @@ mod tests {
         selection.completed = Some(SelectionResult {
             request_id: request.request_id,
             mode: request.mode,
-            piece_ids: vec![PieceId(0)],
-            entities: vec![],
+            payload: SelectionPayload::from_ids(request.mode, 2, vec![PieceId(0)]),
             error: None,
         });
         // Later pointer motion after release must not move the piece again.
@@ -532,12 +536,21 @@ mod tests {
         assert_eq!(
             commands,
             vec![
-                PieceCommand::Grab(PieceId(0)),
-                PieceCommand::Move {
-                    id: PieceId(0),
-                    position: Vec2::splat(2.)
+                PieceCommand::GrabGroup {
+                    members: {
+                        let mut set = PieceBitSet::new(2);
+                        set.insert(PieceId(0));
+                        set
+                    }
                 },
-                PieceCommand::Release(PieceId(0))
+                PieceCommand::ReleaseGroup {
+                    members: {
+                        let mut set = PieceBitSet::new(2);
+                        set.insert(PieceId(0));
+                        set
+                    },
+                    delta: Vec2::new(-98.0, -98.0)
+                }
             ]
         );
         assert!(!interaction.is_dragging());
@@ -569,8 +582,7 @@ mod tests {
         selection.completed = Some(SelectionResult {
             request_id: point.request_id,
             mode: point.mode,
-            piece_ids: vec![],
-            entities: vec![],
+            payload: SelectionPayload::from_ids(point.mode, 2, vec![]),
             error: None,
         });
         interaction.update(
@@ -589,8 +601,7 @@ mod tests {
         selection.completed = Some(SelectionResult {
             request_id: preview.request_id,
             mode: preview.mode,
-            piece_ids: vec![PieceId(0)],
-            entities: vec![],
+            payload: SelectionPayload::from_ids(preview.mode, 2, vec![PieceId(0)]),
             error: None,
         });
         interaction.update(
@@ -602,8 +613,11 @@ mod tests {
         selection.completed = Some(SelectionResult {
             request_id: final_request.request_id,
             mode: final_request.mode,
-            piece_ids: vec![PieceId(0), PieceId(1)],
-            entities: vec![],
+            payload: SelectionPayload::from_ids(
+                final_request.mode,
+                2,
+                vec![PieceId(0), PieceId(1)],
+            ),
             error: None,
         });
         interaction.update(
@@ -612,7 +626,7 @@ mod tests {
             &mut selection,
         );
         assert_eq!(
-            store.selected_pieces,
+            store.selected_pieces.iter().collect::<HashSet<_>>(),
             HashSet::from([PieceId(0), PieceId(1)])
         );
         assert!(interaction.selection_rect().is_none());

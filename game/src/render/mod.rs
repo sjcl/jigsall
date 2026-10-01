@@ -248,6 +248,8 @@ struct StateBuffers {
     dummy_selection: Buffer,
     drag_members: Buffer,
     current_drag: Arc<[u32]>,
+    selected: Buffer,
+    current_selected: Arc<[u32]>,
     preview: Buffer,
     capacity: u32,
     pick_visible: Buffer,
@@ -353,6 +355,7 @@ struct GpuRenderer {
     upload_bytes: u64,
     upload_calls: usize,
     drag_upload_bytes: u64,
+    selection_upload_bytes: u64,
 }
 impl GpuRenderer {
     fn new(
@@ -387,6 +390,7 @@ impl GpuRenderer {
                     ShaderStages::VERTEX_FRAGMENT,
                     (
                         uniform_buffer::<PuzzleUniform>(false),
+                        storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
@@ -481,6 +485,7 @@ impl GpuRenderer {
             upload_bytes: 0,
             upload_calls: 0,
             drag_upload_bytes: 0,
+            selection_upload_bytes: 0,
         }
     }
     fn sort_ready(&self, cache: &PipelineCache) -> bool {
@@ -646,6 +651,7 @@ fn prepare_buffers(
     gpu.upload_bytes = 0;
     gpu.upload_calls = 0;
     gpu.drag_upload_bytes = 0;
+    gpu.selection_upload_bytes = 0;
     if frame.upload.epoch == 0 {
         gpu.buffers = None;
         gpu.image_group = default();
@@ -723,6 +729,13 @@ fn prepare_buffers(
                 BufferUsages::STORAGE | BufferUsages::COPY_DST,
             ),
             current_drag: Arc::default(),
+            selected: buffer(
+                &device,
+                "committed selection bitset",
+                u64::from(count.div_ceil(32)) * 4,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            ),
+            current_selected: Arc::default(),
             preview: buffer(
                 &device,
                 "GPU selection preview",
@@ -773,6 +786,18 @@ fn prepare_buffers(
     }
     gpu.upload_bytes += bytes;
     gpu.upload_calls += calls;
+    let buffers = gpu.buffers.as_mut().unwrap();
+    if !Arc::ptr_eq(&buffers.current_selected, &frame.upload.selected) {
+        if !frame.upload.selected.is_empty() {
+            queue.write_buffer(
+                &buffers.selected,
+                0,
+                bytemuck::cast_slice(&frame.upload.selected),
+            );
+        }
+        buffers.current_selected = frame.upload.selected.clone();
+        gpu.selection_upload_bytes = frame.upload.selected.len() as u64 * 4;
+    }
     let buffers = gpu.buffers.as_mut().unwrap();
     if !Arc::ptr_eq(&buffers.current_drag, &frame.upload.drag.members) {
         if !frame.upload.drag.members.is_empty() {

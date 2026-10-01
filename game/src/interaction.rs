@@ -3,7 +3,6 @@ use crate::resources::pieces::DragTransform;
 use crate::{resources::*, selection::*};
 use bevy::prelude::*;
 use puzzella_core::*;
-use std::collections::HashSet;
 
 #[derive(Default)]
 enum Gesture {
@@ -16,11 +15,11 @@ enum Gesture {
         current: Vec2,
         screen_current: Vec2,
         released: bool,
-        original: HashSet<PieceId>,
+        original: PieceBitSet,
         ctrl: bool,
     },
     Dragging {
-        ids: Vec<PieceId>,
+        members: PieceBitSet,
         anchor: Vec2,
     },
     BoxSelecting {
@@ -29,7 +28,7 @@ enum Gesture {
         current: Vec2,
         screen_anchor: Vec2,
         screen_current: Vec2,
-        original: HashSet<PieceId>,
+        original: PieceBitSet,
         additive: bool,
         request_id: Option<u64>,
         released: bool,
@@ -156,11 +155,10 @@ impl PieceInteraction {
                     return self.cancel(store, selection);
                 }
                 debug_assert_eq!(result.mode, SelectionMode::Point);
-                let hit = result
-                    .piece_ids
-                    .first()
-                    .copied()
-                    .filter(|&id| store.is_selectable(id));
+                let hit = match result.payload {
+                    SelectionPayload::Point(id) => id.filter(|&id| store.is_selectable(id)),
+                    SelectionPayload::Rectangle(_) => return self.cancel(store, selection),
+                };
                 if let Some(id) = hit {
                     if *ctrl {
                         if !store.selected_pieces.remove(&id) {
@@ -173,34 +171,22 @@ impl PieceInteraction {
                             store.selected_pieces.clear();
                             store.selected_pieces.insert(id);
                         }
-                        let mut ids: Vec<_> = store
-                            .selected_pieces
-                            .iter()
-                            .copied()
-                            .filter(|&id| store.is_selectable(id))
-                            .collect();
-                        ids.sort_by(|a, b| {
-                            store.states[a.0 as usize]
-                                .z_order
-                                .cmp(&store.states[b.0 as usize].z_order)
-                                .then(a.cmp(b))
-                        });
-                        let mut members = vec![0u32; store.len().div_ceil(32)];
-                        for &id in &ids {
-                            members[id.0 as usize / 32] |= 1 << (id.0 % 32);
-                        }
+                        let mut members = store.selected_pieces.clone();
+                        members.retain(|id| store.is_selectable(id));
                         let delta = *current - *anchor;
                         store.drag = DragTransform {
-                            members: members.into(),
+                            members: members.words().clone(),
                             delta: if delta.is_finite() { delta } else { Vec2::ZERO },
                         };
-                        commands.extend(ids.iter().copied().map(PieceCommand::Grab));
+                        commands.push(PieceCommand::GrabGroup {
+                            members: members.clone(),
+                        });
                         if *released {
-                            finish_drag(&ids, store, &mut commands);
+                            finish_drag(members, store, &mut commands);
                             self.gesture = Gesture::Idle;
                         } else {
                             self.gesture = Gesture::Dragging {
-                                ids,
+                                members,
                                 anchor: *anchor,
                             };
                         }
@@ -225,7 +211,7 @@ impl PieceInteraction {
             }
         }
         match &mut self.gesture {
-            Gesture::Dragging { ids, anchor } => {
+            Gesture::Dragging { members, anchor } => {
                 if let Some(point) = point {
                     let delta = point - *anchor;
                     if delta.is_finite() {
@@ -233,7 +219,7 @@ impl PieceInteraction {
                     }
                 }
                 if !frame.pressed {
-                    finish_drag(ids, store, &mut commands);
+                    finish_drag(std::mem::take(members), store, &mut commands);
                     self.gesture = Gesture::Idle;
                 }
             }
@@ -288,17 +274,10 @@ impl PieceInteraction {
                     debug_assert_eq!(result.mode, SelectionMode::Rectangle);
                     if *released {
                         store.highlights_dirty = true;
-                        store.selected_pieces = if *additive {
-                            original.clone()
-                        } else {
-                            HashSet::new()
+                        let SelectionPayload::Rectangle(members) = result.payload else {
+                            return self.cancel(store, selection);
                         };
-                        let ids = result
-                            .piece_ids
-                            .into_iter()
-                            .filter(|&id| store.is_selectable(id))
-                            .collect::<Vec<_>>();
-                        store.selected_pieces.extend(ids);
+                        store.commit_selection(members, additive.then_some(&*original));
                         self.gesture = Gesture::Idle;
                         selection.cancel();
                     }
@@ -313,49 +292,56 @@ impl PieceInteraction {
         store: &mut PieceDataStore,
         selection: &mut PuzzleSelection,
     ) -> Vec<PieceCommand> {
+        // Repeated unfocused idle frames must not allocate or scan an owner mask.
+        if matches!(self.gesture, Gesture::Idle) && !store.held_by.has_player(LOCAL_PLAYER) {
+            selection.cancel();
+            store.drag = default();
+            return Vec::new();
+        }
         store.highlights_dirty = true;
         let gesture = std::mem::take(&mut self.gesture);
         selection.cancel();
         let mut commands = Vec::new();
-        let mut held: Vec<_> = store
-            .held_by
-            .iter()
-            .filter_map(|(&id, &player)| (player == LOCAL_PLAYER).then_some(id))
-            .collect();
+        let mut held = PieceBitSet::new(store.len());
+        held.extend(
+            store
+                .held_by
+                .iter()
+                .filter_map(|(id, &player)| (player == LOCAL_PLAYER).then_some(id)),
+        );
         match gesture {
-            Gesture::Dragging { ids, .. } => {
-                // Pause/focus loss commits the last displayed location before snap.
-                let members = store.drag.members.clone();
-                finish_drag(&ids, store, &mut commands);
-                held.retain(|id| {
-                    members
-                        .get(id.0 as usize / 32)
-                        .is_none_or(|word| word & (1 << (id.0 % 32)) == 0)
-                });
+            Gesture::Dragging { members, .. } => {
+                // Pause/focus loss commits the last displayed location once.
+                held.difference(&members);
+                finish_drag(members, store, &mut commands);
             }
-            Gesture::BoxSelecting { original, .. } => store.selected_pieces = original,
-            Gesture::PendingPoint { original, .. } => store.selected_pieces = original,
+            Gesture::BoxSelecting { original, .. } | Gesture::PendingPoint { original, .. } => {
+                store.selected_pieces = original
+            }
             Gesture::Idle => {}
         }
-        held.sort_unstable();
-        held.dedup();
         store.drag = default();
-        commands.extend(held.into_iter().map(PieceCommand::Release));
+        if !held.is_empty() {
+            commands.push(PieceCommand::ReleaseGroup {
+                members: held,
+                delta: Vec2::ZERO,
+            });
+        }
         commands
     }
 }
 
-fn finish_drag(ids: &[PieceId], store: &mut PieceDataStore, commands: &mut Vec<PieceCommand>) {
-    let delta = store.drag.delta;
-    commands.reserve(ids.len() * 2);
-    commands.extend(ids.iter().copied().map(|id| PieceCommand::Move {
-        id,
-        position: store.states[id.0 as usize].position + delta,
-    }));
-    commands.extend(ids.iter().copied().map(PieceCommand::Release));
+fn finish_drag(members: PieceBitSet, store: &mut PieceDataStore, commands: &mut Vec<PieceCommand>) {
+    commands.push(PieceCommand::ReleaseGroup {
+        members,
+        delta: store.drag.delta,
+    });
     store.drag = default();
 }
 
+#[cfg(test)]
+#[path = "interaction_bench.rs"]
+mod benchmarks;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,16 +360,10 @@ mod tests {
     }
     fn apply(store: &mut PieceDataStore, commands: Vec<PieceCommand>) {
         for command in commands {
-            let id = command.piece_id();
-            let mut state = store.state(id).unwrap();
-            if let Some(outcome) = apply_piece_command(&mut state, LOCAL_PLAYER, &command) {
-                store.set_state(id, state);
-                if outcome == CommandOutcome::Grabbed {
-                    store.bring_piece_to_front(id);
-                }
-            }
+            store.apply_command(LOCAL_PLAYER, &command, None);
         }
     }
+
     fn begin(count: usize) -> (PieceInteraction, PieceDataStore, PuzzleSelection) {
         let mut store = PieceDataStore::default();
         store.initialize((0..count).map(|id| Vec2::new(id as f32, 0.0)).collect());
@@ -395,14 +375,15 @@ mod tests {
         selection.completed = Some(SelectionResult {
             request_id: request.request_id,
             mode: request.mode,
-            piece_ids: vec![PieceId(0)],
-            entities: vec![],
+            payload: SelectionPayload::from_ids(request.mode, count, vec![PieceId(0)]),
             error: None,
         });
         let commands =
             interaction.update(frame(Vec2::ZERO, true, false), &mut store, &mut selection);
-        assert_eq!(commands.len(), count);
-        assert!(commands.iter().all(|c| matches!(c, PieceCommand::Grab(_))));
+        assert_eq!(commands.len(), 1);
+        assert!(commands
+            .iter()
+            .all(|c| matches!(c, PieceCommand::GrabGroup { .. })));
         apply(&mut store, commands);
         store.sync_highlights();
         store.dirty_pieces.clear();
@@ -430,7 +411,7 @@ mod tests {
             &mut store,
             &mut selection,
         );
-        assert_eq!(commands.len(), 2_000_000);
+        assert_eq!(commands.len(), 1);
         assert!(store.drag.members.is_empty());
         apply(&mut store, commands);
         assert_eq!(
@@ -453,6 +434,13 @@ mod tests {
             let mut states = store.states.to_vec();
             states.push(GpuPieceState::new(Vec2::ZERO, PieceId(33)));
             store.states = states.into();
+            store.dirty_pieces = PieceBitSet::new(34);
+            if let Gesture::Dragging { members, .. } = &mut interaction.gesture {
+                let mut resized = PieceBitSet::new(34);
+                resized.union(members);
+                *members = resized;
+                store.drag.members = members.words().clone();
+            }
             let mut other = store.state(PieceId(33)).unwrap();
             other.held_by = Some(LOCAL_PLAYER);
             store.set_state(PieceId(33), other);
@@ -473,7 +461,7 @@ mod tests {
             } else {
                 interaction.cancel(&mut store, &mut selection)
             };
-            assert_eq!(commands.len(), 67);
+            assert_eq!(commands.len(), 2);
             apply(&mut store, commands);
             assert_eq!(store.states[32].position, Vec2::new(42.0, 20.0));
             assert_eq!(store.states[33].position, Vec2::ZERO);

@@ -1,5 +1,6 @@
 use super::*;
 mod cache_tests;
+mod selection_bench;
 use crate::{
     resources::{
         pieces::{prepare_piece_upload, ENABLED},
@@ -146,7 +147,7 @@ fn pick(app: &mut App, rect: Rect, mode: SelectionMode) -> Vec<PieceId> {
             .take_result(id)
         {
             assert!(result.error.is_none(), "{:?}", result.error);
-            return result.piece_ids;
+            return result.payload.ids();
         }
         assert!(Instant::now() < deadline, "GPU picking timed out");
     }
@@ -692,9 +693,24 @@ fn gpu_raster_selection() {
         ),
         (0, [255, 255, 255]),
     ] {
-        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
-        store.states[0].flags = ENABLED | flags;
-        store.dirty_pieces.insert(PieceId(0));
+        {
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            if flags & crate::resources::pieces::SELECTED != 0 {
+                store.selected_pieces.insert(PieceId(0));
+            } else {
+                store.selected_pieces.clear();
+            }
+        }
+        app.world_mut()
+            .resource_mut::<PuzzleSelection>()
+            .preview_active = flags & crate::resources::pieces::PREVIEW != 0;
+        let render = app.sub_app(RenderApp).world();
+        let gpu = render.resource::<GpuRenderer>();
+        render.resource::<RenderQueue>().write_buffer(
+            &gpu.buffers.as_ref().unwrap().preview,
+            0,
+            bytemuck::bytes_of(&1u32),
+        );
         let pixels = rendered_pixels(&mut app, target.clone());
         let edge = (64 * 128 + 32) * 4;
         for (actual, expected) in pixels[edge..edge + 3].iter().zip(expected) {
@@ -707,6 +723,7 @@ fn gpu_raster_selection() {
         let center = (64 * 128 + 64) * 4;
         assert_eq!(&pixels[center..center + 4], &[255, 255, 255, 255]);
     }
+    app.world_mut().resource_mut::<PuzzleSelection>().cancel();
     for (x, y, inside) in samples {
         let rect = Rect::new(
             x as f32 + 0.1,

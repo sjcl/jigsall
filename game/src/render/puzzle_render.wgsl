@@ -11,6 +11,7 @@ struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 @group(0) @binding(2) var<storage,read> visible:array<u32>;
 @group(0) @binding(3) var<storage,read> drag_members:array<u32>;
 @group(0) @binding(4) var<storage,read> preview:array<u32>;
+@group(0) @binding(5) var<storage,read> selected:array<u32>;
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -47,7 +48,8 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     let d=distance(in);let color=sample_visible(in,d);
     // Evaluate derivatives before the per-piece highlight branch.
     let aa=fwidth(d);
-    var flags=in.flags;
+    var flags=in.flags&~6u;
+    if (selected[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=2u;}
     if config.preview_active!=0u && (flags&9u)==0u && (preview[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=4u;}
     if (flags&6u)==0u {return color;}
     let width=min(16.0,min(config.size.x,config.size.y)*0.16)*0.5;

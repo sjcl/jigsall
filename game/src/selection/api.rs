@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use puzzella_core::PieceId;
+use puzzella_core::{PieceBitSet, PieceId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionMode {
@@ -13,21 +13,47 @@ pub struct SelectionRequest {
     /// Absolute logical coordinates in the camera render target, top-left origin.
     pub region: Rect,
     pub mode: SelectionMode,
-    /// Preview stays on the GPU; only point/final rectangle requests need IDs.
+    /// Preview stays on the GPU; final results read one ID or compact mask words.
     pub readback: bool,
 }
 
 #[derive(Clone, Debug)]
+pub enum SelectionPayload {
+    Point(Option<PieceId>),
+    Rectangle(PieceBitSet),
+}
+impl SelectionPayload {
+    #[cfg(test)]
+    pub fn from_ids(mode: SelectionMode, count: usize, ids: Vec<PieceId>) -> Self {
+        match mode {
+            SelectionMode::Point => Self::Point(ids.first().copied()),
+            SelectionMode::Rectangle => {
+                let mut mask = PieceBitSet::new(count);
+                mask.extend(ids);
+                Self::Rectangle(mask)
+            }
+        }
+    }
+    #[cfg(test)]
+    pub fn ids(&self) -> Vec<PieceId> {
+        match self {
+            Self::Point(id) => id.iter().copied().collect(),
+            Self::Rectangle(mask) => mask.iter().collect(),
+        }
+    }
+}
+#[derive(Clone, Debug)]
 pub struct SelectionResult {
     pub request_id: u64,
     pub mode: SelectionMode,
-    pub piece_ids: Vec<PieceId>,
-    pub entities: Vec<Entity>,
+    pub payload: SelectionPayload,
     pub error: Option<String>,
 }
 
 #[derive(Resource, Default)]
 pub struct PuzzleSelection {
+    #[cfg(test)]
+    pub receive_cpu_ns: u64,
     next_id: u64,
     pub latest: Option<SelectionRequest>,
     pub completed: Option<SelectionResult>,

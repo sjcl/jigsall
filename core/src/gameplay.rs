@@ -1,4 +1,5 @@
 //! Input- and rendering-independent definitions and authoritative decisions.
+use crate::PieceBitSet;
 use bevy_ecs::prelude::{Component, Resource};
 use bevy_math::{UVec2, Vec2};
 use serde::{Deserialize, Serialize};
@@ -86,13 +87,27 @@ impl PieceState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PieceCommand {
     Grab(PieceId),
-    Move { id: PieceId, position: Vec2 },
+    Move {
+        id: PieceId,
+        position: Vec2,
+    },
     Release(PieceId),
+    /// Reliable control: compact membership, authenticated owner supplied by caller.
+    GrabGroup {
+        members: PieceBitSet,
+    },
+    /// Commit the displayed delta once, release and snap each accepted member.
+    /// This is a reliable control, not a best-effort Move packet.
+    ReleaseGroup {
+        members: PieceBitSet,
+        delta: Vec2,
+    },
 }
 impl PieceCommand {
-    pub fn piece_id(&self) -> PieceId {
+    pub fn piece_id(&self) -> Option<PieceId> {
         match *self {
-            Self::Grab(id) | Self::Move { id, .. } | Self::Release(id) => id,
+            Self::Grab(id) | Self::Move { id, .. } | Self::Release(id) => Some(id),
+            Self::GrabGroup { .. } | Self::ReleaseGroup { .. } => None,
         }
     }
 }

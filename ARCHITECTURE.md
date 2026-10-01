@@ -20,7 +20,7 @@ puzzella
 | `puzzle/src/fingerprint.rs` | feature / test限定のmacro fingerprint、輪郭descriptor、凍結v4測定参照 |
 | `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
 | `puzzle/src/shapes.rs` / `generation.rs` | feature / test限定のv2 Bezier・lyon・Rayon・U16 geometry |
-| `game/src/resources/pieces.rs` | 16-byte dense正本、sparse holder、確定選択、drag bitset / delta、dirty upload |
+| `game/src/resources/pieces.rs` | 16-byte dense正本、dense owner IDs、selection / dirty mask、bulk authority、drag bitset / delta、dirty upload |
 | `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
 | `game/src/systems/game_logic.rs` | 命令適用、Release後のsnap、イベント駆動の進捗 |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
@@ -36,19 +36,18 @@ puzzella
 
 ## CPU正本と入力
 
-`PieceDataStore.states: DensePieceStates`が正本です。内部は固定長の`Arc<[GpuPieceState]>`で、`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。holderはsparse HashMap、確定選択・dirty IDは集合です。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPUへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。
+`PieceDataStore.states: DensePieceStates`が正本です。内部は固定長の`Arc<[GpuPieceState]>`で、`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。確定選択とdirty IDは`PieceBitSet`、holderはdense PlayerIdとoccupancy maskです。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPU maskへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。[MILLION_SELECTION.md](MILLION_SELECTION.md)に移行・計測・メモリを記載しています。
 
 ```text
 mouse / Ctrl / rectangle / multi-drag
   → ClientCommand { player, PieceCommand }
-  → apply_piece_command（所有者・placed・有限座標の検証）
-  → dense CPU state + dirty ID
-  → 受理したRelease後のPieceMoveCompleted
-  → snap_piece（Definition + IDから一時的に定義を導出）
-  → PiecePlacedEvent → placed_count → 完成
+  → PieceDataStore::apply_command（所有者・placed・有限座標・mask寸法の検証）
+  → dense CPU state + owner / dirty mask
+  → ReleaseGroupのdelta commit → 所有権解放 → 各pieceのsnap_piece
+  → placed_count → O(1)進捗更新 → 完成
 ```
 
-Moveの最終座標を適用してからReleaseとsnapを処理します。snap閾値は`distance < snap_distance`。配置済みピースは再Grabできません。保持者の異なる命令と非有限座標を拒否します。
+Moveの最終座標を適用してからReleaseとsnapを処理します。bulk grabとreleaseはそれぞれ1つのClientCommandで、pieceごとの完了・配置Messageも生成しません。snap閾値は`distance < snap_distance`。配置済みピースは再Grabできません。保持者の異なる命令と非有限座標を拒否します。
 
 入力はPostUpdateのegui処理、camera pan / zoom / edge scrollingの後です。現Transformで座標変換し、UI上の押下を抑制します。開始済みdragはUIを横切っても継続・解放できます。pauseとfocus lossで保持を解放し、未確定の矩形選択を元に戻します。
 
@@ -56,7 +55,7 @@ Moveの最終座標を適用してからReleaseとsnapを処理します。snap�
 
 ## Dirty同期とZ順序
 
-Last scheduleで選択に変更がある場合だけflagsを同期します。初回uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。その後はdirty IDをsortして連続rangeへまとめます。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
+Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変わった場合だけmaskをuploadします。selected outlineはfragmentで専用bitsetを参照し、dense stateのflagsとdirty rangeを変更しません。初回state uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。dirty bitsetのset bitsをID順にiterateして連続rangeへまとめ、ID Vecの展開・sortは不要です。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate / selected / membership uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
 
 初期ZはID、next_zはpiece_count。Grabでnext_z++を割り当て、グループ内の順序を維持します。shaderは24-bit整数範囲のreverse-Zへ変換します。100万ピースでは約1577万回のfront操作まで再圧縮不要です。上限でのみ順序を保つO(N log N)のslow pathを実行します。
 
@@ -85,6 +84,6 @@ opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけを
 
 ## Multiplayerの境界と課題
 
-PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。transport導入時はsession identity、画像hash、snapshot、認証済みplayer、命令sequenceが必要です。通信・途中参加・切断時の保持解放・ネットワーク向けレート制限は未実装です。
+PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。core/sessionはsession identity・画像hash・命令sequence・authority epoch・migrationを、game/multiplayerはsnapshotの検証・復元とplayer単位の保持解放を提供します。GrabGroup / ReleaseGroupも同じ認証済みplayerとreliable control streamを使います。selectionはlocal presentationでありsnapshotには入りません。transport・途中参加のbackend連携・ネットワーク向けレート制限は未実装です。
 
-GPUは描画と選択の補助で、placed・所有権・snapを決めません。cullingはO(N)、半透明sortは可視数に比例します。大量選択では集合のメモリとCPU処理が増え、極端な重なりではrasterとpickingの負荷が増えます。異OS/GPU、通常windowの全手動操作は今後の確認対象です。
+GPUは描画と選択の補助で、placed・所有権・snapを決めません。cullingはO(N)、半透明sortは可視数に比例します。選択保持・drag pointer・rectangle previewのCPU処理はO(1)ですが、final selectionの再検証、grab時のZ順保持、release時のsnapとstate commitには明示的な大量処理が残ります。極端な重なりではrasterとpickingの負荷が増えます。異OS/GPU、通常windowの全手動操作は今後の確認対象です。

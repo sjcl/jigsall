@@ -51,7 +51,7 @@ fn fixture() -> PieceDataStore {
         store.set_state(id, held);
         store.bring_piece_to_front(id);
     }
-    store.selected_pieces = HashSet::from([PieceId(1)]);
+    store.selected_pieces.insert(PieceId(1));
     store.highlights_dirty = true;
     store.sync_highlights(); // Exercise private previous highlight caches too.
     store
@@ -120,7 +120,8 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
         .iter()
         .all(|state| state.flags & !SNAPSHOT_PLACED == 0));
     assert_eq!(a_store.held_by.len(), 2); // Capturing does not change the old host.
-    assert!(a_store.states[1].flags & SELECTED != 0);
+    assert!(a_store.selected_pieces.contains(&PieceId(1)));
+    assert_eq!(a_store.states[1].flags & SELECTED, 0);
     assert!(a_store.drag.members.is_empty());
     assert_eq!(a_store.drag.delta, Vec2::ZERO);
 
@@ -224,9 +225,8 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
     store.highlights_dirty = true;
     app.update();
     let upload = app.world().resource::<PieceUpload>();
-    assert_eq!(upload.ranges.len(), 1);
-    assert_eq!(upload.ranges[0].start, 3);
-    assert_eq!(upload.ranges[0].states[0].flags, ENABLED | SELECTED);
+    assert!(upload.ranges.is_empty());
+    assert_eq!(&*upload.selected, &[1 << 3]);
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn ordinary_disconnect_releases_only_b_holds_marks_dirty_without_moving_or_snapp
         vec![PieceId(10), PieceId(11), PieceId(25)]
     );
     assert_eq!(
-        store.dirty_pieces,
+        store.dirty_pieces.iter().collect::<HashSet<_>>(),
         HashSet::from([PieceId(10), PieceId(11), PieceId(25)])
     );
     for (index, original) in before.iter().enumerate() {

@@ -17,7 +17,7 @@ pub fn release_player_holds(store: &mut PieceDataStore, player: PlayerId) -> Vec
     let mut ids: Vec<_> = store
         .held_by
         .iter()
-        .filter_map(|(&id, &holder)| (holder == player).then_some(id))
+        .filter_map(|(id, &holder)| (holder == player).then_some(id))
         .collect();
     ids.sort_unstable();
     for &id in &ids {

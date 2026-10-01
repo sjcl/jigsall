@@ -94,6 +94,7 @@ impl GpuRenderer {
                     buffers.visible.as_entire_buffer_binding(),
                     buffers.drag_members.as_entire_buffer_binding(),
                     buffers.preview.as_entire_buffer_binding(),
+                    buffers.selected.as_entire_buffer_binding(),
                 )),
             )
         });
@@ -200,6 +201,7 @@ impl GpuRenderer {
                     buffers.pick_visible.as_entire_buffer_binding(),
                     buffers.drag_members.as_entire_buffer_binding(),
                     buffers.dummy_selection.as_entire_buffer_binding(),
+                    buffers.selected.as_entire_buffer_binding(),
                 )),
             )
         });
