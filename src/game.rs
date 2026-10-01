@@ -206,3 +206,133 @@ fn clear_session_messages(
     placed.clear();
     rebuild.clear();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::{
+        asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
+        transform::TransformPlugin,
+    };
+
+    #[test]
+    fn session_lifecycle_resets_batches_workers_and_substate() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            StatesPlugin,
+            InputPlugin,
+            TransformPlugin,
+            AssetPlugin::default(),
+            crate::asset_reader::DirectFileAssetPlugin,
+            GamePlugin,
+        ))
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Assets<Image>>()
+        .init_resource::<bevy_egui::EguiUserTextures>();
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::Menu
+        );
+        for seed in [42, 43] {
+            app.world_mut()
+                .resource_mut::<NextState<AppState>>()
+                .set(AppState::GameSetup);
+            app.update();
+            let handle = app
+                .world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(Image::default());
+            app.world_mut().insert_resource(PuzzleImage {
+                handle,
+                size: Vec2::splat(200.0),
+            });
+            let mut config = app.world_mut().resource_mut::<PuzzleConfig>();
+            config.grid_size = (2, 2);
+            config.seed = seed;
+            config.image_path = "fixture".into();
+            app.world_mut()
+                .resource_mut::<NextState<AppState>>()
+                .set(AppState::InGame);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.update();
+                if app
+                    .world()
+                    .get_resource::<State<GameSubState>>()
+                    .is_some_and(|s| *s.get() == GameSubState::Playing)
+                {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline, "generation timed out");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert_eq!(app.world().resource::<PieceDataStore>().pieces.len(), 4);
+            assert_eq!(
+                app.world().resource::<PieceCollisionSystem>().pieces.len(),
+                4
+            );
+            assert_eq!(app.world().resource::<PuzzleDefinition>().seed, seed);
+            app.world_mut()
+                .resource_mut::<NextState<GameSubState>>()
+                .set(GameSubState::Paused);
+            app.update();
+            assert_eq!(
+                *app.world().resource::<State<GameSubState>>().get(),
+                GameSubState::Paused
+            );
+            app.world_mut()
+                .resource_mut::<NextState<GameSubState>>()
+                .set(GameSubState::Playing);
+            app.update();
+            for index in 0..4 {
+                let id = PieceId(index);
+                let position = app.world().resource::<PieceDataStore>().pieces[&id]
+                    .definition
+                    .correct_position;
+                for command in [
+                    PieceCommand::Grab(id),
+                    PieceCommand::Move { id, position },
+                    PieceCommand::Release(id),
+                ] {
+                    app.world_mut().write_message(ClientCommand {
+                        player: LOCAL_PLAYER,
+                        command,
+                    });
+                }
+            }
+            app.update();
+            app.update();
+            assert_eq!(
+                *app.world().resource::<State<AppState>>().get(),
+                AppState::GameComplete
+            );
+            assert_eq!(
+                app.world().resource::<PieceDataStore>().placed_pieces.len(),
+                4
+            );
+            app.world_mut()
+                .resource_mut::<NextState<AppState>>()
+                .set(AppState::Menu);
+            app.update();
+            assert!(app.world().resource::<PieceDataStore>().pieces.is_empty());
+            assert!(app
+                .world()
+                .resource::<BatchManager>()
+                .batched_pieces
+                .is_empty());
+            assert!(app.world().get_resource::<PuzzleImage>().is_none());
+            assert!(app.world().get_resource::<PuzzleDefinition>().is_none());
+            assert!(app.world().get_resource::<State<GameSubState>>().is_none());
+            assert_eq!(
+                app.world_mut()
+                    .query_filtered::<Entity, With<BatchedMeshEntity>>()
+                    .iter(app.world())
+                    .count(),
+                0
+            );
+        }
+    }
+}

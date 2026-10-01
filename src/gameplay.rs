@@ -146,3 +146,73 @@ pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) ->
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn validates_ownership_and_finite_moves() {
+        let mut s = PieceState::new(Vec2::ZERO);
+        let id = PieceId(7);
+        let other = PlayerId(1);
+        assert_eq!(
+            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Grab(id)),
+            Some(CommandOutcome::Grabbed)
+        );
+        assert_eq!(
+            apply_piece_command(&mut s, other, &PieceCommand::Grab(id)),
+            None
+        );
+        assert_eq!(
+            apply_piece_command(
+                &mut s,
+                other,
+                &PieceCommand::Move {
+                    id,
+                    position: Vec2::ONE
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            apply_piece_command(
+                &mut s,
+                LOCAL_PLAYER,
+                &PieceCommand::Move {
+                    id,
+                    position: Vec2::splat(f32::NAN)
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            apply_piece_command(&mut s, other, &PieceCommand::Release(id)),
+            None
+        );
+        assert_eq!(s.position, Vec2::ZERO);
+        assert_eq!(
+            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Release(id)),
+            Some(CommandOutcome::Released)
+        );
+    }
+    #[test]
+    fn release_snap_locks_piece_and_preserves_threshold() {
+        let p = PuzzlePiece {
+            id: PieceId(0),
+            grid_position: UVec2::ZERO,
+            correct_position: Vec2::ZERO,
+            initial_position: Vec2::ONE,
+        };
+        let mut s = PieceState::new(Vec2::new(5.0, 0.0));
+        assert!(!snap_piece(&p, &mut s, 5.0));
+        s.held_by = Some(LOCAL_PLAYER);
+        assert!(!snap_piece(&p, &mut s, 10.0));
+        apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Release(p.id));
+        assert!(snap_piece(&p, &mut s, 10.0));
+        assert_eq!(s.position, Vec2::ZERO);
+        assert_eq!(
+            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Grab(p.id)),
+            None
+        );
+    }
+}

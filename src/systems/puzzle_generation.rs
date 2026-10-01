@@ -211,3 +211,43 @@ pub fn spawn_grid_reference(mut commands: Commands, image: Res<PuzzleImage>) {
         GridReference,
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn definition(seed: u64) -> PuzzleDefinition {
+        PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed,
+            grid_size: UVec2::new(4, 3),
+            image_size: UVec2::new(800, 600),
+            snap_distance: 50.0,
+        }
+    }
+    #[test]
+    fn generation_reproduces_ids_shapes_uvs_and_positions() {
+        let def = definition(42);
+        let a = create_all_pieces_sync(generate_shapes(&def).unwrap(), &def).unwrap();
+        let b = create_all_pieces_sync(generate_shapes(&def).unwrap(), &def).unwrap();
+        assert_eq!(a.pieces.len(), def.piece_count());
+        for (index, (a, b)) in a.pieces.iter().zip(&b.pieces).enumerate() {
+            assert_eq!(a.piece_component.id, PieceId(index as u32));
+            assert_eq!(a.piece_component, b.piece_component);
+            assert_eq!(a.state, b.state);
+            assert_eq!(a.piece_shape.vertices, b.piece_shape.vertices);
+            assert_eq!(a.piece_shape.indices, b.piece_shape.indices);
+            assert_eq!(
+                a.mesh.attribute(Mesh::ATTRIBUTE_UV_0),
+                b.mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+            );
+        }
+        let other = definition(43);
+        let c = create_all_pieces_sync(generate_shapes(&other).unwrap(), &other).unwrap();
+        assert_ne!(a.pieces[0].state.position, c.pieces[0].state.position);
+        assert!(a
+            .pieces
+            .iter()
+            .zip(&c.pieces)
+            .any(|(a, c)| a.piece_shape.vertices != c.piece_shape.vertices));
+    }
+}

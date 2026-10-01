@@ -395,3 +395,147 @@ pub fn should_render_selection_box(
     matches!(input_state.selection_mode, SelectionMode::BoxSelection)
         || !selection_box_query.is_empty()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::systems::game_logic::{apply_piece_commands, project_piece_states};
+
+    fn pointer_frame(app: &mut App, point: Vec2, pressed: bool, ctrl: bool) {
+        let mut input = app.world_mut().resource_mut::<InputState>();
+        input.mouse_position = point;
+        input.cursor_screen_position = Some(Vec2::ZERO);
+        let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
+        mouse.clear();
+        if pressed {
+            mouse.press(MouseButton::Left);
+        } else {
+            mouse.release(MouseButton::Left);
+        }
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        if ctrl {
+            keys.press(KeyCode::ControlLeft);
+        } else {
+            keys.release(KeyCode::ControlLeft);
+        }
+        app.update();
+    }
+
+    #[test]
+    fn ctrl_box_selection_and_multi_drag_work_without_render_entities() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<InputState>()
+            .init_resource::<PieceDataStore>()
+            .init_resource::<PieceCollisionSystem>()
+            .init_resource::<PerformanceMonitor>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .add_message::<ClientCommand>()
+            .add_message::<PieceMoveCompleted>()
+            .add_systems(
+                Update,
+                (
+                    handle_piece_input,
+                    apply_piece_commands,
+                    project_piece_states,
+                )
+                    .chain(),
+            );
+        for (index, position) in [Vec2::new(100.0, 100.0), Vec2::new(300.0, 100.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let id = PieceId(index as u32);
+            let vertices = vec![[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]];
+            let indices = vec![0, 1, 2, 0, 2, 3];
+            app.world_mut()
+                .resource_mut::<PieceCollisionSystem>()
+                .add_piece(PieceCollisionData {
+                    piece_id: id,
+                    position,
+                    bounding_box: Rect {
+                        min: position - Vec2::splat(20.0),
+                        max: position + Vec2::splat(20.0),
+                    },
+                    vertices: vertices.iter().map(|&vertex| Vec2::from(vertex)).collect(),
+                    indices: indices.clone(),
+                });
+            app.world_mut()
+                .resource_mut::<PieceDataStore>()
+                .add_piece(StoredPieceData {
+                    definition: PuzzlePiece {
+                        id,
+                        grid_position: UVec2::new(index as u32, 0),
+                        correct_position: Vec2::ZERO,
+                        initial_position: position,
+                    },
+                    state: PieceState::new(position),
+                    render: PieceRenderData {
+                        bounds: Rect::new(-20.0, -20.0, 20.0, 20.0),
+                        shape: PieceShapeData {
+                            vertices,
+                            indices,
+                            shape_hash: String::new(),
+                        },
+                        mesh: default(),
+                        material: default(),
+                    },
+                });
+        }
+        for point in [Vec2::new(100.0, 100.0), Vec2::new(300.0, 100.0)] {
+            pointer_frame(&mut app, point, true, true);
+            pointer_frame(&mut app, point, false, true);
+        }
+        assert_eq!(
+            app.world()
+                .resource::<PieceDataStore>()
+                .selected_pieces
+                .len(),
+            2
+        );
+        pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
+        assert_eq!(
+            app.world().resource::<PieceDataStore>().held_pieces.len(),
+            2
+        );
+        pointer_frame(&mut app, Vec2::new(120.0, 130.0), true, false);
+        pointer_frame(&mut app, Vec2::new(120.0, 130.0), false, false);
+        let store = app.world().resource::<PieceDataStore>();
+        assert_eq!(
+            store.pieces[&PieceId(0)].state.position,
+            Vec2::new(120.0, 130.0)
+        );
+        assert_eq!(
+            store.pieces[&PieceId(1)].state.position,
+            Vec2::new(320.0, 130.0)
+        );
+        assert!(store.held_pieces.is_empty());
+        assert!(app
+            .world()
+            .resource::<PieceCollisionSystem>()
+            .dragging_pieces
+            .is_empty());
+
+        pointer_frame(&mut app, Vec2::new(50.0, 50.0), true, false);
+        assert!(app
+            .world()
+            .resource::<PieceDataStore>()
+            .selected_pieces
+            .is_empty());
+        pointer_frame(&mut app, Vec2::new(400.0, 200.0), true, false);
+        assert_eq!(
+            app.world()
+                .resource::<PieceDataStore>()
+                .preview_pieces
+                .len(),
+            2
+        );
+        pointer_frame(&mut app, Vec2::new(400.0, 200.0), false, false);
+        let store = app.world().resource::<PieceDataStore>();
+        assert_eq!(store.selected_pieces.len(), 2);
+        assert!(store.preview_pieces.is_empty());
+        assert!(store.temporary_entities.is_empty());
+    }
+}

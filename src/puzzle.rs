@@ -805,3 +805,53 @@ pub fn update_puzzle_image_size(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thousand_piece_placement_is_complete_and_reproducible() {
+        let generate = |seed| generate_placement_grid(40, 25, 48.0, 43.2, 1920.0, 1080.0, seed);
+        let positions = generate(42);
+        assert_eq!(positions.len(), 1000);
+        assert_eq!(positions, generate(42));
+        assert_ne!(positions, generate(43));
+        let exclusion = calculate_puzzle_grid_area(48.0, 43.2, 1920.0, 1080.0);
+        assert!(positions.iter().all(|&position| {
+            position.is_finite() && !is_in_grid_area(position, &exclusion, 48.0, 43.2)
+        }));
+    }
+
+    #[test]
+    fn random_fallback_uses_the_definition_seed() {
+        // The exclusion area extends beyond the grid fallback's clipping area,
+        // forcing the seeded random path to supply the remaining positions.
+        let exclusion = (Vec2::new(-370.0, -280.0), Vec2::new(370.0, 280.0));
+        let generate = |seed| {
+            generate_fallback_positions(
+                100,
+                40.0,
+                40.0,
+                &exclusion,
+                &[],
+                400.0,
+                300.0,
+                &mut ChaCha8Rng::seed_from_u64(seed),
+            )
+        };
+        let positions = generate(42);
+        assert_eq!(positions.len(), 100);
+        assert_eq!(positions, generate(42));
+        assert_ne!(positions, generate(43));
+        for (index, &position) in positions.iter().enumerate() {
+            assert!(!is_in_grid_area(position, &exclusion, 40.0, 40.0));
+            assert!(!is_overlapping_with_existing(
+                position,
+                &positions[..index],
+                40.0,
+                40.0
+            ));
+        }
+    }
+}

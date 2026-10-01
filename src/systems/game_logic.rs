@@ -149,3 +149,124 @@ pub fn update_game_state_event_driven(
     }
     perf.end_system_timing("update_game_state_event_driven", start);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::systems::batching::*;
+    use bevy::state::app::StatesPlugin;
+
+    /// Exercise the command -> snap -> state -> batch path without a GPU.
+    #[test]
+    fn snap_counts_all_pieces_and_survives_missing_temporary_entities() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .init_state::<AppState>()
+            .init_resource::<PieceDataStore>()
+            .init_resource::<PieceCollisionSystem>()
+            .init_resource::<PieceIdManager>()
+            .init_resource::<BatchManager>()
+            .init_resource::<PerformanceMonitor>()
+            .init_resource::<GameData>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .add_message::<ClientCommand>()
+            .add_message::<PieceMoveCompleted>()
+            .add_message::<PiecePlacedEvent>()
+            .add_message::<BatchRebuildRequest>()
+            .insert_resource(PuzzleDefinition {
+                generator_version: GENERATOR_VERSION,
+                seed: 42,
+                grid_size: UVec2::new(2, 1),
+                image_size: UVec2::new(200, 100),
+                snap_distance: 10.0,
+            })
+            .add_systems(
+                Update,
+                (
+                    apply_piece_commands,
+                    check_piece_placement_event_driven,
+                    project_piece_states,
+                    update_game_state_event_driven,
+                    reconcile_piece_rendering,
+                    cleanup_temporary_entities,
+                    create_temporary_entities,
+                    handle_batch_rebuild_requests,
+                )
+                    .chain(),
+            );
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::from(Rectangle::new(100.0, 100.0)));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<ColorMaterial>>()
+            .add(ColorMaterial::default());
+        for index in 0..2 {
+            let piece = app
+                .world()
+                .resource::<PuzzleDefinition>()
+                .piece(index, Vec2::splat(500.0));
+            app.world_mut()
+                .resource_mut::<PieceDataStore>()
+                .add_piece(StoredPieceData {
+                    definition: piece,
+                    state: PieceState::new(Vec2::splat(500.0)),
+                    render: PieceRenderData {
+                        bounds: Rect::new(-50.0, -50.0, 50.0, 50.0),
+                        shape: PieceShapeData {
+                            vertices: vec![],
+                            indices: vec![],
+                            shape_hash: String::new(),
+                        },
+                        mesh: mesh.clone(),
+                        material: material.clone(),
+                    },
+                });
+            app.world_mut()
+                .resource_mut::<BatchManager>()
+                .add_piece(PieceId(index));
+        }
+        app.update();
+        assert!(app
+            .world()
+            .resource::<PieceDataStore>()
+            .temporary_entities
+            .is_empty());
+        for index in 0..2 {
+            let id = PieceId(index);
+            let position = app.world().resource::<PieceDataStore>().pieces[&id]
+                .definition
+                .correct_position;
+            for command in [
+                PieceCommand::Grab(id),
+                PieceCommand::Move { id, position },
+                PieceCommand::Release(id),
+            ] {
+                app.world_mut().write_message(ClientCommand {
+                    player: LOCAL_PLAYER,
+                    command,
+                });
+            }
+            app.update();
+            let store = app.world().resource::<PieceDataStore>();
+            assert!(store.pieces[&id].state.placed);
+            assert_eq!(store.transforms[&id].translation.truncate(), position);
+            assert_eq!(
+                app.world().resource::<GameData>().puzzle_progress,
+                (index + 1) as f32 / 2.0
+            );
+            assert_eq!(
+                app.world().resource::<BatchManager>().batched_pieces.len(),
+                2
+            );
+        }
+        assert!(app.world().resource::<GameData>().puzzle_completed);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::GameComplete
+        );
+    }
+}
