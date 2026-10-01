@@ -4,6 +4,7 @@ mod game_setup;
 mod grid;
 mod menu;
 mod overlays;
+mod performance;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use puzzella_game::resources::{AppState, GameSubState};
@@ -17,6 +18,7 @@ impl Plugin for GameUiPlugin {
                 menu::draw_menu_ui.run_if(in_state(AppState::Menu)),
                 game_setup::draw_game_setup_ui.run_if(in_state(AppState::GameSetup)),
                 game_play::draw_game_ui.run_if(in_state(AppState::InGame)),
+                performance::draw_performance_overlay.run_if(in_state(AppState::InGame)),
                 game_play::draw_players_overlay
                     .run_if(in_state(AppState::InGame).and_then(tab_pressed)),
                 overlays::draw_in_game_menu_ui.run_if(in_state(GameSubState::Paused)),

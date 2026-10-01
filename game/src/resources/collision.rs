@@ -1,4 +1,3 @@
-use super::performance::PerformanceDebugLevel;
 use bevy::prelude::*;
 use puzzella_core::PieceId;
 use rstar::{RTree, RTreeObject, AABB};
@@ -117,13 +116,10 @@ impl PieceCollisionSystem {
         }
 
         self.need_rebuild = false;
-        // デバッグログは High レベルでのみ表示（頻繁なログを避けるため）
-        // println!("✅ R-tree rebuilt with {} pieces ({} dragging excluded)",
-        //     pieces_count, self.dragging_pieces.len());
     }
 
     /// ドラッグ開始: ピースをR-treeから除外
-    pub fn start_dragging_piece(&mut self, piece_id: PieceId, debug_level: &PerformanceDebugLevel) {
+    pub fn start_dragging_piece(&mut self, piece_id: PieceId) {
         if self.dragging_pieces.contains(&piece_id) {
             return;
         }
@@ -132,38 +128,16 @@ impl PieceCollisionSystem {
             self.rtree.remove(piece_data);
             // ドラッグ中リストに追加
             self.dragging_pieces.insert(piece_id);
-
-            // デバッグレベルが Medium 以上の場合のみログ出力
-            if matches!(
-                debug_level,
-                PerformanceDebugLevel::Medium | PerformanceDebugLevel::High
-            ) {
-                println!(
-                    "🎯 Piece {} removed from R-tree (dragging started)",
-                    piece_id
-                );
-            }
         }
     }
 
     /// ドラッグ終了: ピースをR-treeに再挿入
-    pub fn stop_dragging_piece(&mut self, piece_id: PieceId, debug_level: &PerformanceDebugLevel) {
+    pub fn stop_dragging_piece(&mut self, piece_id: PieceId) {
         if self.dragging_pieces.remove(&piece_id) {
             if let Some(piece_data) = self.pieces.get(&piece_id) {
                 // R-treeに再挿入
                 if !self.need_rebuild {
                     self.rtree.insert(piece_data.clone());
-                }
-
-                // デバッグレベルが Medium 以上の場合のみログ出力
-                if matches!(
-                    debug_level,
-                    PerformanceDebugLevel::Medium | PerformanceDebugLevel::High
-                ) {
-                    println!(
-                        "🎯 Piece {} re-inserted to R-tree (dragging stopped)",
-                        piece_id
-                    );
                 }
             }
         }

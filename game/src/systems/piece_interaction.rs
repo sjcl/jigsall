@@ -149,7 +149,6 @@ mod tests {
     fn sync_collision_fixture(
         store: Res<PieceDataStore>,
         mut collision: ResMut<PieceCollisionSystem>,
-        perf: Res<PerformanceMonitor>,
     ) {
         for i in 0..store.len() {
             let id = PieceId(i as u32);
@@ -165,9 +164,9 @@ mod tests {
             );
             collision.update_piece_z_order(id, store.states[i].z_order as f32);
             if state.held_by.is_some() {
-                collision.start_dragging_piece(id, &perf.debug_level);
+                collision.start_dragging_piece(id);
             } else {
-                collision.stop_dragging_piece(id, &perf.debug_level);
+                collision.stop_dragging_piece(id);
             }
         }
     }

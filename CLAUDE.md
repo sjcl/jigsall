@@ -41,7 +41,7 @@ Use release mode for performance measurements. Tracy and Chrome tracing remain a
 - `systems/piece_interaction.rs`: input adapters, cached child outlines and one selection rectangle updated by Transform.
 - `systems/batching.rs`: contiguous Z ranges split around extracted pieces, preserving order, UVs and image transparency.
 - `asset_reader.rs` and `systems/image_loading.rs`: external file registry and worker image decode. File dialog itself is synchronous.
-- GPU picking, stroke cache, batch extraction / return, change detection, F12 performance monitoring, Tracy / Chrome tracing.
+- GPU picking, stroke cache, batch extraction / return, change detection, F3 performance overlay, Tracy / Chrome tracing.
 
 Keep one original image texture and share the normal material. Retain original meshes and UVs when rebuilding batches. Generation is versioned and seeded; cross-platform bit equality still needs validation.
 

@@ -1,15 +1,14 @@
 use bevy::prelude::*;
 use instant::Instant;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
-/// パフォーマンス計測のデバッグレベル
+/// F3で切り替えるパフォーマンスオーバーレイの表示モード。
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum PerformanceDebugLevel {
     #[default]
     Off,
-    Low,    // 基本的な統計のみ
-    Medium, // 個別システムの時間
-    High,   // 詳細な内部計測
+    Fps,
+    Verbose,
 }
 
 /// 個別システムの計測データ
@@ -60,12 +59,8 @@ impl SystemTiming {
 #[derive(Resource)]
 pub struct PerformanceMonitor {
     pub debug_level: PerformanceDebugLevel,
-    pub enabled: bool,
-    pub frame_start: Option<Instant>,
-    pub frame_times: Vec<std::time::Duration>,
+    pub frame_times: VecDeque<std::time::Duration>,
     pub system_timings: HashMap<String, SystemTiming>,
-    pub last_report_time: Instant,
-    pub report_interval: std::time::Duration,
     pub frame_count: u64,
     pub max_stored_frames: usize,
 }
@@ -74,27 +69,17 @@ impl Default for PerformanceMonitor {
     fn default() -> Self {
         Self {
             debug_level: PerformanceDebugLevel::Off,
-            enabled: false,
-            frame_start: None,
-            frame_times: Vec::new(),
+            frame_times: VecDeque::new(),
             system_timings: HashMap::new(),
-            last_report_time: Instant::now(),
-            report_interval: std::time::Duration::from_secs(5), // 5秒間隔でレポート
             frame_count: 0,
-            max_stored_frames: 300, // 5秒分のフレーム（60FPS想定）
+            max_stored_frames: 120,
         }
     }
 }
 
 impl PerformanceMonitor {
-    pub fn start_frame(&mut self) {
-        if self.enabled {
-            self.frame_start = Some(Instant::now());
-        }
-    }
-
     pub fn start_system_timing(&mut self, _system_name: &str) -> Option<Instant> {
-        if self.enabled {
+        if self.debug_level == PerformanceDebugLevel::Verbose {
             Some(Instant::now())
         } else {
             None
@@ -102,7 +87,7 @@ impl PerformanceMonitor {
     }
 
     pub fn end_system_timing(&mut self, system_name: &str, start_time: Option<Instant>) {
-        if self.enabled {
+        if self.debug_level == PerformanceDebugLevel::Verbose {
             if let Some(start) = start_time {
                 let duration = start.elapsed();
                 let timing = self
@@ -114,12 +99,10 @@ impl PerformanceMonitor {
         }
     }
 
-    pub fn should_report(&self) -> bool {
-        self.enabled && self.last_report_time.elapsed() >= self.report_interval
-    }
-
-    pub fn reset_report_timer(&mut self) {
-        self.last_report_time = Instant::now();
+    pub fn reset_samples(&mut self) {
+        self.frame_times.clear();
+        self.system_timings.clear();
+        self.frame_count = 0;
     }
 
     pub fn get_fps(&self) -> f32 {
@@ -149,17 +132,12 @@ impl PerformanceMonitor {
 
     pub fn toggle_debug_level(&mut self) {
         self.debug_level = match self.debug_level {
-            PerformanceDebugLevel::Off => PerformanceDebugLevel::Low,
-            PerformanceDebugLevel::Low => PerformanceDebugLevel::Medium,
-            PerformanceDebugLevel::Medium => PerformanceDebugLevel::High,
-            PerformanceDebugLevel::High => PerformanceDebugLevel::Off,
+            PerformanceDebugLevel::Off => PerformanceDebugLevel::Fps,
+            PerformanceDebugLevel::Fps => PerformanceDebugLevel::Verbose,
+            PerformanceDebugLevel::Verbose => PerformanceDebugLevel::Off,
         };
-        self.enabled = self.debug_level != PerformanceDebugLevel::Off;
-
-        if self.enabled {
-            println!("🔍 Performance monitoring enabled: {:?}", self.debug_level);
-        } else {
-            println!("🔍 Performance monitoring disabled");
+        if self.debug_level == PerformanceDebugLevel::Fps {
+            self.reset_samples();
         }
     }
 }

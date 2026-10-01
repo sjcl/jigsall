@@ -1,178 +1,38 @@
 use crate::resources::*;
 use bevy::prelude::*;
 
-/// フレーム開始時のパフォーマンス計測システム
-pub fn performance_frame_start(mut perf_monitor: ResMut<PerformanceMonitor>) {
-    perf_monitor.start_frame();
-}
-
-/// フレーム終了時のパフォーマンス計測システム
-pub fn performance_frame_end(mut perf_monitor: ResMut<PerformanceMonitor>, time: Res<Time>) {
-    // Bevyの実際のフレーム時間を使用
+/// ゲーム時間の停止・倍率・deltaの上限に影響されない実フレーム時間を収集する。
+pub fn sample_performance_frame(
+    mut perf_monitor: ResMut<PerformanceMonitor>,
+    time: Res<Time<Real>>,
+) {
     let delta_time = time.delta();
-
-    perf_monitor.frame_times.push(delta_time);
-
-    // 古いフレームデータを削除
+    // The first update has no preceding frame to measure.
+    if delta_time.is_zero() {
+        return;
+    }
+    perf_monitor.frame_times.push_back(delta_time);
     if perf_monitor.frame_times.len() > perf_monitor.max_stored_frames {
-        perf_monitor.frame_times.remove(0);
+        perf_monitor.frame_times.pop_front();
     }
-
     perf_monitor.frame_count += 1;
-
-    // デバッグ: 異常に高速なフレームを検出
-    if perf_monitor.debug_level == PerformanceDebugLevel::High && delta_time.as_nanos() < 100_000 {
-        // 0.1ms未満
-        println!(
-            "⚠️  WARNING: Extremely fast frame detected: {:.3}ms",
-            delta_time.as_secs_f32() * 1000.0
-        );
-    }
 }
 
-/// F12キーが押されたかチェックするRun Condition
-pub fn f12_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
-    keyboard_input.just_pressed(KeyCode::F12)
+pub fn f3_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
+    keyboard_input.just_pressed(KeyCode::F3)
 }
 
-/// パフォーマンス計測のトグルシステム（F12キー）
+/// F3: FPSのみ → 詳細表示 → 非表示。
 pub fn toggle_performance_debug(mut perf_monitor: ResMut<PerformanceMonitor>) {
     perf_monitor.toggle_debug_level();
 }
 
-/// パフォーマンス計測が有効かチェックするRun Condition
 pub fn performance_monitoring_enabled(perf_monitor: Res<PerformanceMonitor>) -> bool {
     perf_monitor.debug_level != PerformanceDebugLevel::Off
 }
 
-/// パフォーマンス報告すべきかチェックするRun Condition
-pub fn should_report_performance(perf_monitor: Res<PerformanceMonitor>) -> bool {
-    perf_monitor.should_report()
-}
-
-/// パフォーマンスレポート生成システム
-pub fn performance_report_system(
-    mut perf_monitor: ResMut<PerformanceMonitor>,
-    store: Res<PieceDataStore>,
-    time: Res<Time>,
-) {
-    let piece_count = store.len();
-    let collision_count = 0;
-
-    // Bevyの正確なフレーム時間を使用
-    let delta_time = time.delta();
-    let frame_time_ms = delta_time.as_secs_f32() * 1000.0;
-    let fps = if frame_time_ms > 0.0 {
-        1000.0 / frame_time_ms
-    } else {
-        0.0
-    };
-
-    // フォールバック: 内部計測も比較のため取得
-    let internal_fps = perf_monitor.get_fps();
-    let internal_frame_time_ms = perf_monitor.get_frame_time_ms();
-
-    // サニティチェック: 異常な値を検出
-    let fps_clamped = if fps > 1000.0 || fps.is_nan() || fps.is_infinite() {
-        fps.clamp(0.0, 1000.0)
-    } else {
-        fps
-    };
-
-    let frame_time_clamped =
-        if frame_time_ms > 1000.0 || frame_time_ms.is_nan() || frame_time_ms.is_infinite() {
-            frame_time_ms.clamp(0.0, 1000.0)
-        } else {
-            frame_time_ms
-        };
-
-    match perf_monitor.debug_level {
-        PerformanceDebugLevel::Off => return,
-
-        PerformanceDebugLevel::Low => {
-            println!(
-                "📊 PERFORMANCE - FPS: {:.1}, Frame Time: {:.2}ms, Pieces: {}",
-                fps_clamped, frame_time_clamped, piece_count
-            );
-        }
-
-        PerformanceDebugLevel::Medium => {
-            println!("📊 PERFORMANCE REPORT");
-            println!(
-                "  FPS: {:.1}, Frame Time: {:.2}ms, Pieces: {}",
-                fps_clamped, frame_time_clamped, piece_count
-            );
-
-            // システム別の時間を表示（上位5つ）
-            let mut system_times: Vec<_> = perf_monitor.system_timings.iter().collect();
-            system_times.sort_by_key(|entry| std::cmp::Reverse(entry.1.last_duration));
-
-            println!("  Top Systems by Last Duration:");
-            for (i, (name, timing)) in system_times.iter().take(5).enumerate() {
-                println!(
-                    "    {}. {}: {:.2}ms (avg: {:.2}ms)",
-                    i + 1,
-                    name,
-                    timing.last_duration.as_secs_f32() * 1000.0,
-                    timing.average_duration().as_secs_f32() * 1000.0
-                );
-            }
-        }
-
-        PerformanceDebugLevel::High => {
-            println!("📊 DETAILED PERFORMANCE REPORT");
-            println!(
-                "  FPS: {:.1}, Frame Time: {:.2}ms, Pieces: {}, Cache Size: {}",
-                fps_clamped, frame_time_clamped, piece_count, collision_count
-            );
-            println!(
-                "  Internal Timing: FPS={:.1}, Frame Time={:.2}ms (may be inaccurate)",
-                internal_fps, internal_frame_time_ms
-            );
-
-            // 全システムの詳細情報
-            let mut system_times: Vec<_> = perf_monitor.system_timings.iter().collect();
-            system_times.sort_by_key(|entry| std::cmp::Reverse(entry.1.average_duration()));
-
-            println!("  System Performance Details:");
-            for (name, timing) in system_times.iter() {
-                println!(
-                    "    {}: Last={:.2}ms, Avg={:.2}ms, Min={:.2}ms, Max={:.2}ms, Calls={}",
-                    name,
-                    timing.last_duration.as_secs_f32() * 1000.0,
-                    timing.average_duration().as_secs_f32() * 1000.0,
-                    timing.min_duration.as_secs_f32() * 1000.0,
-                    timing.max_duration.as_secs_f32() * 1000.0,
-                    timing.call_count
-                );
-            }
-
-            // フレーム時間の分析
-            if !perf_monitor.frame_times.is_empty() {
-                let min_frame = perf_monitor.frame_times.iter().min().unwrap();
-                let max_frame = perf_monitor.frame_times.iter().max().unwrap();
-                let total_nanos: u128 = perf_monitor.frame_times.iter().map(|d| d.as_nanos()).sum();
-                let avg_nanos = total_nanos / perf_monitor.frame_times.len() as u128;
-
-                println!(
-                    "  Frame Time Analysis: Min={:.2}ms, Max={:.2}ms, Avg={:.2}ms, Frames={}",
-                    min_frame.as_secs_f32() * 1000.0,
-                    max_frame.as_secs_f32() * 1000.0,
-                    avg_nanos as f32 / 1_000_000.0,
-                    perf_monitor.frame_times.len()
-                );
-
-                // 異常に高速な値を検出
-                if avg_nanos < 1_000_000 {
-                    // 1ms未満
-                    println!("  ⚠️  WARNING: Frame times are unusually fast ({:.2}ms avg), check frame timing implementation",
-                        avg_nanos as f32 / 1_000_000.0);
-                }
-            }
-        }
-    }
-
-    perf_monitor.reset_report_timer();
+pub fn reset_performance_samples(mut perf_monitor: ResMut<PerformanceMonitor>) {
+    perf_monitor.reset_samples();
 }
 
 /// パフォーマンス計測用マクロ
@@ -190,23 +50,112 @@ macro_rules! time_system {
 #[macro_export]
 macro_rules! time_scope {
     ($perf_monitor:expr, $scope_name:expr, $block:block) => {{
-        let start_time = if $perf_monitor.enabled {
-            Some(instant::Instant::now())
-        } else {
-            None
-        };
-
+        let start_time = $perf_monitor.start_system_timing($scope_name);
         let result = $block;
-
-        if let Some(start) = start_time {
-            let duration = start.elapsed();
-            let timing = $perf_monitor
-                .system_timings
-                .entry($scope_name.to_string())
-                .or_insert_with(SystemTiming::new);
-            timing.record_timing(duration);
-        }
-
+        $perf_monitor.end_system_timing($scope_name, start_time);
         result
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn f3_cycles_once_per_press_and_f12_does_nothing() {
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<PerformanceMonitor>()
+            .add_systems(Update, toggle_performance_debug.run_if(f3_just_pressed));
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F12);
+        app.update();
+        assert_eq!(
+            app.world().resource::<PerformanceMonitor>().debug_level,
+            PerformanceDebugLevel::Off
+        );
+        for expected in [
+            PerformanceDebugLevel::Fps,
+            PerformanceDebugLevel::Verbose,
+            PerformanceDebugLevel::Off,
+            PerformanceDebugLevel::Fps,
+        ] {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::F3);
+            keys.clear();
+            keys.press(KeyCode::F3);
+            app.update();
+            assert_eq!(
+                app.world().resource::<PerformanceMonitor>().debug_level,
+                expected
+            );
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear();
+            app.update();
+            assert_eq!(
+                app.world().resource::<PerformanceMonitor>().debug_level,
+                expected,
+                "holding F3 must not cycle again"
+            );
+        }
+    }
+
+    #[test]
+    fn samples_real_time_even_when_game_time_is_paused_and_bounds_history() {
+        let mut app = App::new();
+        app.init_resource::<Time<Real>>()
+            .init_resource::<Time>()
+            .insert_resource(PerformanceMonitor {
+                debug_level: PerformanceDebugLevel::Fps,
+                max_stored_frames: 2,
+                ..default()
+            })
+            .add_systems(Update, sample_performance_frame);
+        app.update();
+        assert!(app
+            .world()
+            .resource::<PerformanceMonitor>()
+            .frame_times
+            .is_empty());
+
+        let mut real = app.world_mut().resource_mut::<Time<Real>>();
+        real.update_with_duration(Duration::ZERO);
+        for millis in [10, 20, 30] {
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .update_with_duration(Duration::from_millis(millis));
+            app.update();
+        }
+        let perf = app.world().resource::<PerformanceMonitor>();
+        assert_eq!(app.world().resource::<Time>().delta(), Duration::ZERO);
+        assert_eq!(perf.frame_count, 3);
+        assert_eq!(perf.frame_times.len(), 2);
+        assert_eq!(perf.get_frame_time_ms(), 25.0);
+        assert_eq!(perf.get_fps(), 40.0);
+    }
+
+    #[test]
+    fn system_timings_only_run_in_verbose_and_reenable_clears_old_samples() {
+        let mut perf = PerformanceMonitor::default();
+        assert!(perf.start_system_timing("test").is_none());
+        perf.toggle_debug_level();
+        assert!(perf.start_system_timing("test").is_none());
+        perf.frame_times.push_back(Duration::from_millis(20));
+        perf.frame_count = 1;
+        perf.toggle_debug_level();
+        let start = perf.start_system_timing("test");
+        assert!(start.is_some());
+        perf.end_system_timing("test", start);
+        assert_eq!(perf.system_timings["test"].call_count, 1);
+        perf.toggle_debug_level();
+        assert!(perf.start_system_timing("test").is_none());
+        perf.toggle_debug_level();
+        assert!(perf.frame_times.is_empty());
+        assert!(perf.system_timings.is_empty());
+        assert_eq!(perf.frame_count, 0);
+    }
 }

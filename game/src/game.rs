@@ -27,10 +27,6 @@ impl Plugin for GamePlugin {
             .add_sub_state::<GameSubState>()
             .add_systems(Startup, (setup_game, setup_image_load_system))
             .add_systems(
-                First,
-                performance_frame_start.run_if(performance_monitoring_enabled),
-            )
-            .add_systems(
                 OnEnter(AppState::Menu),
                 (cleanup_game, clear_session_messages),
             )
@@ -40,6 +36,7 @@ impl Plugin for GamePlugin {
                     initialize_game,
                     spawn_grid_reference,
                     auto_adjust_camera_zoom,
+                    reset_performance_samples,
                 )
                     .chain(),
             )
@@ -86,16 +83,15 @@ impl Plugin for GamePlugin {
                 Update,
                 (
                     toggle_game_menu.run_if(escape_just_pressed),
-                    toggle_performance_debug.run_if(f12_just_pressed),
-                    performance_report_system.run_if(should_report_performance),
+                    (
+                        toggle_performance_debug.run_if(f3_just_pressed),
+                        sample_performance_frame.run_if(performance_monitoring_enabled),
+                    )
+                        .chain(),
                 )
                     .run_if(in_state(AppState::InGame)),
             )
-            .add_systems(Last, crate::resources::pieces::prepare_piece_upload)
-            .add_systems(
-                Last,
-                performance_frame_end.run_if(performance_monitoring_enabled),
-            );
+            .add_systems(Last, crate::resources::pieces::prepare_piece_upload);
     }
 }
 fn setup_game(mut commands: Commands) {

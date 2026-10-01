@@ -157,9 +157,8 @@ mod tests {
             );
             assert_eq!(collision.rtree.size(), 1);
         }
-        let level = PerformanceDebugLevel::Off;
-        collision.start_dragging_piece(PieceId(0), &level);
-        collision.start_dragging_piece(PieceId(0), &level);
+        collision.start_dragging_piece(PieceId(0));
+        collision.start_dragging_piece(PieceId(0));
         collision.need_rebuild = true;
         collision.rebuild_rtree();
         assert_eq!(collision.rtree.size(), 0);
@@ -168,8 +167,8 @@ mod tests {
             Vec2::splat(1000.0),
             Rect::new(-10.0, -10.0, 10.0, 10.0),
         );
-        collision.stop_dragging_piece(PieceId(0), &level);
-        collision.stop_dragging_piece(PieceId(0), &level);
+        collision.stop_dragging_piece(PieceId(0));
+        collision.stop_dragging_piece(PieceId(0));
         assert_eq!(collision.rtree.size(), 1);
         assert_eq!(collision.find_piece_at_position(Vec2::ZERO), None);
         assert_eq!(
