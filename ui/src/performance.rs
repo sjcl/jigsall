@@ -42,10 +42,7 @@ fn paint_overlay(ctx: &egui::Context, perf: &PerformanceMonitor, piece_count: us
     let padding = egui::vec2(10.0, 8.0);
     let size = galley.size() + padding * 2.0;
     // Keep clear of the progress/player HUD at the top of the game viewport.
-    let position = egui::pos2(
-        (viewport.right() - size.x - 12.0).max(viewport.left() + 12.0),
-        viewport.top() + 40.0,
-    );
+    let position = egui::pos2(viewport.left() + 12.0, viewport.top() + 40.0);
     painter.rect_filled(
         egui::Rect::from_min_size(position, size),
         4.0,
