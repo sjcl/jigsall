@@ -4,6 +4,7 @@ use bevy::prelude::*;
 pub struct PuzzleImage {
     pub handle: Handle<Image>,
     pub size: Vec2,
+    pub opaque: bool,
 }
 
 /// 画像読み込みチャネル（crossbeam-channel）
@@ -17,4 +18,16 @@ pub struct ImageLoadChannels {
 #[derive(Resource)]
 pub struct ImageLoadSender {
     pub tx_results: crossbeam::channel::Sender<crate::asset_reader::ImageLoadResult>,
+}
+
+/// Decode outputs RGBA8. Unknown formats conservatively use the transparent path.
+pub fn image_is_opaque(image: &Image) -> bool {
+    use bevy::render::render_resource::TextureFormat;
+    matches!(
+        image.texture_descriptor.format,
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+    ) && image
+        .data
+        .as_ref()
+        .is_some_and(|bytes| bytes.chunks_exact(4).all(|p| p[3] == 255))
 }

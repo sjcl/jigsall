@@ -114,8 +114,8 @@ pub fn draw_generation_progress_ui(
                 // 進捗率を計算
                 let progress_ratio = match progress.generation_phase {
                     GenerationPhase::NotStarted => 0.0,
-                    GenerationPhase::GeneratingPieces => 0.0,
-                    GenerationPhase::SpawningEntities => {
+                    GenerationPhase::GeneratingState => 0.0,
+                    GenerationPhase::UploadingGpu => {
                         0.8 + (progress.pieces_created as f32 / progress.total_pieces.max(1) as f32
                             * 0.2)
                     }
@@ -126,16 +126,16 @@ pub fn draw_generation_progress_ui(
                 // フェーズ名
                 let phase_text = match progress.generation_phase {
                     GenerationPhase::NotStarted => "Starting...",
-                    GenerationPhase::GeneratingPieces => "Generating pieces",
-                    GenerationPhase::SpawningEntities => "Registering pieces",
+                    GenerationPhase::GeneratingState => "Generating state",
+                    GenerationPhase::UploadingGpu => "Uploading GPU state",
                     GenerationPhase::Completed => "Completed",
                     GenerationPhase::Failed => "Failed",
                 };
 
                 // プログレスバー（フェーズに応じて適切な数値を表示）
                 let (current_count, label) = match progress.generation_phase {
-                    GenerationPhase::GeneratingPieces => (0, "pieces"),
-                    GenerationPhase::SpawningEntities => (progress.pieces_created, "spawned"),
+                    GenerationPhase::GeneratingState => (0, "pieces"),
+                    GenerationPhase::UploadingGpu => (progress.pieces_created, "pieces"),
                     _ => (0, "items"),
                 };
 

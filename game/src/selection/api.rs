@@ -1,12 +1,5 @@
-use bevy::{mesh::MeshVertexAttribute, prelude::*, render::render_resource::VertexFormat};
+use bevy::prelude::*;
 use puzzella_core::PieceId;
-
-pub const ATTRIBUTE_PIECE_ID: MeshVertexAttribute =
-    MeshVertexAttribute::new("PuzzlePieceId", 0x5055_5a5a, VertexFormat::Uint32);
-
-/// Stable identity entity: unaffected by batch extraction/return.
-#[derive(Component, Clone, Copy)]
-pub struct PuzzlePieceId(pub PieceId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionMode {

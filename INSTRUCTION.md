@@ -1,829 +1,1558 @@
-# Task: Implement GPU-based puzzle piece picking in Bevy
+# タスク: 現在のnative lyon生成を基準に、100万ピース対応のProcedural GPU Rendererへ移行する
 
-Puzzella のパズルピース選択処理を、CPU の AABB / polygon intersection ベースではなく、**GPU rasterization を利用した picking** として実装してください。
+現在の最新実装を前提に作業してください。
 
-目的は、画面上に多数配置される任意形状のパズルピースについて、
-
-- クリックした位置に存在するピースを取得する
-- ドラッグした矩形領域に **1 pixel でも描画領域が入っているピースをすべて取得する**
-- 複雑なピース形状について CPU 側に別の collision geometry を持たない
-- 実際の描画形状と picking の結果を可能な限り一致させる
-
-ことです。
-
-## 基本方針
-
-Bevy の ECS / renderer を使用しつつ、Render World 側に専用の GPU picking pass を実装してください。
-
-矩形選択については、ID texture 全体を CPU に readback する方式ではなく、
-
-**scissor rectangle + fragment shader + atomic bitset**
-
-方式を第一候補としてください。
-
-概念的には以下です。
+基準コミット:
 
 ```text
-Main World
-  PuzzlePiece(Entity)
-    Mesh
-    Transform
-    PieceId
+22e0aa135c5bdc6a881a3fe2ab6d976087d728ba
+perf: generate native puzzle geometry in parallel
+```
 
-        ↓ extract
+このコミットでは既に以下が実装されています。
 
-Render World
+- `puzzle-paths` / SVG / `svgtypes` 廃止
+- `EdgeId`
+- stable hashによる`EdgeProfile`
+- Round / Wide / Narrow / Deep / Shallow / Pear の6スタイル
+- 共有辺の決定論的生成
+- cubic Bezierによるnative contour
+- lyon fill/stroke tessellation
+- Rayon piece-level parallelism
+- worker-local tessellator reuse
+- 1段background worker
+- generator version 2
+- default buildでCPU triangle二重保持を削減
+- `shape_hash` / stroke cache廃止
+- U16 geometry
+- GPU picking
 
-Selection Render Pass
+これらを一度旧方式へ戻したり、再実装したりしないでください。
+
+今回の目的は、現在の
+
+```text
+EdgeProfile
   ↓
-selection rectangle を scissor rect に設定
+Bezier
   ↓
-対象となる puzzle mesh を描画
+lyon
   ↓
-fragment が生成された PieceId について
-atomicOr(selection_bitset[word], bit)
+1 fill Mesh / piece
   ↓
+1 stroke Mesh / piece
+  ↓
+Assets<Mesh>
+  ↓
+combined batch Mesh
+```
+
+を最終的に、
+
+```text
+PuzzleDefinition
+        +
+dense PieceState
+        ↓
 GPU storage buffer
-  ↓
-小さい bitset だけ CPU に async readback
-  ↓
-PieceId → Entity
+        ↓
+compute visibility
+        ↓
+visible PieceId list
+        ↓
+single procedural instanced draw
+        ↓
+shared quad
+        ↓
+fragment shader shape evaluation
 ```
 
-## Piece ID
+へ置き換えることです。
 
-各選択可能なピースには、GPU picking 用の安定した整数 ID を割り当ててください。
-
-例:
-
-```rust
-#[derive(Component)]
-struct PuzzlePieceId(u32);
-```
-
-`Entity` の内部表現をそのまま shader に渡すことには依存せず、
+目標規模は最大
 
 ```text
-PieceId <-> Entity
+1000 x 1000
+= 1,000,000 pieces
 ```
 
-を Main World 側で対応付ける設計にしてください。
+です。
 
-ID 0 を「background / none」として予約する必要は、bitset方式ではありません。
+---
 
-ただし将来的に ID buffer 方式にも流用しやすい設計にしてください。
+# 1. 最重要方針
 
-## GPU bitset
-
-選択結果は GPU storage buffer 上の bitset に記録してください。
-
-PieceId が `id` の場合、
+100万ピース時に以下を作ってはいけません。
 
 ```text
-word = id / 32
-bit  = id % 32
+1,000,000 Mesh
+1,000,000 stroke Mesh
+1,000,000 render Entity
+1,000,000 Handle<Mesh>
 ```
 
-として、
+また、
+
+```text
+10 pieces / frame
+```
+
+でasset登録する現在の方式も廃止対象です。
+
+最終状態ではパズルピース描画用の個別Meshはゼロにしてください。
+
+理想的には頂点buffer自体も不要です。
 
 ```wgsl
-atomicOr(&selection[word], 1u << bit);
+@vertex
+fn vertex(
+    @builtin(vertex_index) vertex_index: u32,
+    @builtin(instance_index) instance_index: u32,
+)
 ```
 
-相当の処理を fragment shader で行います。
+からquadを生成してください。
 
-実際の WGSL syntax / buffer declaration は、使用中の Bevy / wgpu バージョンに合う形で実装してください。
-
-例えば10,000ピースでも必要な readback は約1.25KBなので、pixel buffer 全体を readback しないでください。
-
-## Rectangle selection
-
-ドラッグ選択時には、選択矩形を screen-space の scissor rectangle に変換し、
-
-```rust
-render_pass.set_scissor_rect(...)
-```
-
-相当を利用してください。
-
-選択矩形外の fragment shader invocation を可能な限り発生させないことが重要です。
-
-矩形の向きは、
-
-- 左上 → 右下
-- 右下 → 左上
-- 左下 → 右上
-- 右上 → 左下
-
-のどのドラッグ方向でも正しく正規化してください。
-
-viewport / window scaling / DPI / render target resolution が異なる可能性も考慮してください。
-
-## Hit の定義
-
-矩形との intersection は geometry の bounding box ではなく、
-
-> picking pass で実際に fragment が1つ以上生成された
-
-ことを hit と定義してください。
-
-したがって、パズルピースの concave な形状や複雑な輪郭について、CPU 側で polygon intersection を実装しないでください。
-
-通常描画で alpha discard / alpha mask を使用して形状を作っている場合は、picking shader 側でも同じ基準を使用してください。
-
-例えば概念的には、
-
-```wgsl
-let color = textureSample(...);
-
-if color.a < ALPHA_THRESHOLD {
-    discard;
-}
-
-atomicOr(...);
-```
-
-のようにします。
-
-可能な限り、
+例えばtriangle stripなら、
 
 ```text
-visible geometry
-=
-pickable geometry
+vertex count = 4
+instance count = visible_piece_count
 ```
 
-となるようにしてください。
+です。
 
-## Overlapping pieces
+---
 
-矩形選択では、他のピースに隠れているピースも含め、
+# 2. 現行generator v2はすぐ削除しない
 
-**選択矩形に geometry が入っているすべてのピース**
-
-を取得したいです。
-
-そのため picking pass では通常描画の depth / draw order によって fragment が消えないようにしてください。
-
-たとえば、
+現在の
 
 ```text
-Piece A
-Piece B が A の上に重なっている
+puzzle/src/shapes.rs
+puzzle/src/generation.rs
 ```
 
-場合でも、矩形が両方に重なっていれば A / B の両方を返してください。
+は、新方式を検証するための非常に有用なreference implementationです。
 
-必要なら depth test を無効化してください。
+特に、
 
-2D の描画順序のために通常描画側で depth / z ordering を使用していても、rectangle picking の結果には影響させないでください。
+- EdgeId
+- EdgeProfile
+- 共有辺の向き
+- style parameter ranges
+- UV mapping
+- shared edge tests
+- seed variation tests
 
-## Point / click picking
+は再利用してください。
 
-クリックによる puzzle piece selection についても、既存の CPU picking から **GPU picking へ移行してください**。
-
-Rectangle selection と click selection は、可能な限り同じ picking infrastructure、geometry、transform、camera、alpha mask 判定を共有してください。
-
-ただし両者では selection semantics が異なります。
-
-### Rectangle selection
-
-選択矩形と実際に rasterized geometry が1 pixelでも重なる **すべての PieceId** を返してください。
-
-この用途では、
-
-```text
-scissor rectangle
-+
-depth / occlusion 無効
-+
-atomic bitset
-```
-
-を使用します。
-
-### Click selection
-
-クリック位置でユーザーから実際に見えている **最前面の PieceId 1つ** を返してください。
-
-概念的には、
-
-```text
-cursor position
-    ↓
-1x1 pixel の picking region
-    ↓
-puzzle geometry を rasterize
-    ↓
-通常描画と同等の alpha discard
-    ↓
-通常描画と同等の depth / draw order
-    ↓
-front-most PieceId
-    ↓
-GPU → CPU readback
-```
-
-としてください。
-
-Click picking では rectangle selection の atomic bitset をそのまま使用して、CPU側で候補から最前面を推測する方式にはしないでください。
-
-最前面判定自体を GPU 上で完結させてください。
-
-### Rendering consistency
-
-Click picking の hit 判定は通常描画と可能な限り一致させてください。
-
-特に以下を共有してください。
-
-- Mesh geometry
-- Transform
-- Camera / projection
-- visibility
-- alpha mask
-- alpha discard threshold
-- 必要な clipping
-- front/back ordering
-
-したがって、
-
-```text
-transparent pixel
-```
-
-をクリックした場合、そのピースは hit として扱わないでください。
-
-別のピースがその背後に存在する場合は、その背後のピースが選択されることが期待されます。
-
-### Overlapping pieces
+migration途中ではCPU lyon版をfeature/test限定で残してください。
 
 例えば、
 
 ```text
-Piece A
-   ↑ partially covered by
-Piece B
+legacy-mesh-debug
+cpu-geometry-reference
 ```
 
-という状態で B がクリック位置を覆っている場合、
+等。
+
+新GPU rendererの検証が完了する前に、現行generatorを一括削除しないでください。
+
+最終的にruntimeからlyonを外せる状態になったら削除またはtest-only化してください。
+
+---
+
+# 3. generator version 3を導入する
+
+今回shapeの数学的定義自体が変わるので、
+
+```rust
+GENERATOR_VERSION
+```
+
+を3へ更新してください。
+
+generator v2:
 
 ```text
-Click:
-    B only
+EdgeProfile
+→ cubic Bezier
+→ lyon polygon
+```
+
+generator v3:
+
+```text
+EdgeProfile
+→ analytic/SDF procedural shape
+```
+
+と扱ってください。
+
+同じseedでv2とv3の形状が異なることは問題ありません。
+
+ネットワーク・保存データでは引き続き、
+
+```text
+generator_version
+seed
+grid_size
+image_size
+```
+
+から形状を完全再構成できることを維持してください。
+
+---
+
+# 4. 現在のmix64はWGSL向けhashへ変更する
+
+現在の`shapes.rs`には64bitの`mix64`があります。
+
+WGSL/WebGPU側でu64整数演算に依存する設計にはしないでください。
+
+generator v3では、RustとWGSL双方で簡単に同じ処理を書ける32bit integer hashを定義してください。
+
+`seed: u64` は、
+
+```text
+seed_low:  u32
+seed_high: u32
+```
+
+に分解して両方をhashへ参加させます。
+
+例えば、
+
+```rust
+fn mix32(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x
+}
+```
+
+のようなWGSLへそのまま移植可能なavalanche hashを使用できます。
+
+具体的な式は調査して決定してください。
+
+必須条件:
+
+```text
+seed low bits
+seed high bits
+orientation
+edge x
+edge y
+parameter domain
+```
+
+すべてが結果に参加すること。
+
+RustとWGSLで同一のraw integer profile parametersを生成するテストを作ってください。
+
+浮動小数点そのもののbit一致ではなく、可能ならまずquantized integer parametersを一致させてください。
+
+---
+
+# 5. EdgeIdの概念はそのまま維持する
+
+これは現在の設計をそのまま再利用します。
+
+```text
+Horizontal(x, y)
+Vertical(x, y)
+```
+
+のcanonical shared edge IDを維持してください。
+
+例えば、
+
+```text
+Piece(x,y).right
+    =
+Vertical(x+1,y)
+
+Piece(x+1,y).left
+    =
+Vertical(x+1,y)
+```
+
+です。
+
+GPUでも同じEdgeIdから同じEdgeProfileを生成してください。
+
+4辺のshape paramsを100万ピース分保存する必要はありません。
+
+---
+
+# 6. EdgeProfileの意味も維持する
+
+現在の
+
+```rust
+EdgeProfile {
+    polarity,
+    style,
+    center,
+    width,
+    depth,
+    neck_width,
+    head_width,
+    asymmetry,
+}
+```
+
+という考え方はそのまま使用してください。
+
+ただしv3ではBezier control pointsを生成するためではなく、
+
+```text
+analytic tab/blank shape
+```
+
+を生成するパラメータとして使用します。
+
+現在の6スタイルも基本的には維持してください。
+
+```text
+Round
+Wide
+Narrow
+Deep
+Shallow
+Pear
+```
+
+現行v2と大きく印象が変わらないよう、styleごとのwidth/depth/head/neck比率を初期値として再利用してください。
+
+---
+
+# 7. arbitrary cubicのpoint-in-pathをfragment shaderで行わない
+
+fragment shader内で24〜32本のcubic Bezierに対してray crossing/root solveする方式にはしないでください。
+
+100万ピース対応の目的と逆行します。
+
+代わりに、tab/blankをGPU向けのanalytic shapeまたはSDFとして再定義してください。
+
+例えば概念的に、
+
+```text
+piece
+=
+rectangle
+union/subtract top tab
+union/subtract right tab
+union/subtract bottom tab
+union/subtract left tab
+```
+
+です。
+
+tab shapeは、
+
+- rounded neck
+- head ellipse/circle
+- capsule
+- rounded box
+- smooth union
+
+等の安価なprimitiveから構成してください。
+
+重要なのは、
+
+```text
+width
+depth
+neck_width
+head_width
+center
+asymmetry
+```
+
+が自然に反映されることです。
+
+tabとblankは必ず同じanalytic shapeのunion/subtractionとして扱い、隣接ピース間で完全に補完してください。
+
+---
+
+# 8. 共通WGSL shape moduleを作る
+
+main renderingとGPU pickingが別々のshape判定を持ってはいけません。
+
+例えば、
+
+```text
+game/src/render/puzzle_shape.wgsl
+```
+
+などを作り、
+
+```wgsl
+edge_hash(...)
+edge_profile(...)
+sd_tab(...)
+piece_signed_distance(...)
+inside_piece(...)
+piece_uv(...)
+```
+
+等を共通化してください。
+
+通常描画shaderとselection shaderの両方から同じ実装をimportしてください。
+
+目標:
+
+```text
+visible pixels
+==
+pickable pixels
+```
+
+です。
+
+---
+
+# 9. fragment shaderでshape clippingを行う
+
+各ピースは最大tab depthまで含む共通quadとして描画します。
+
+概念的には、
+
+```text
+        shared quad
+┌─────────────────────┐
+│                     │
+│   ┌─────────────┐   │
+│   │ nominal     │   │
+│   │ piece rect  │   │
+│   └─────────────┘   │
+│                     │
+└─────────────────────┘
+```
+
+です。
+
+fragment shader:
+
+```wgsl
+let d = piece_signed_distance(local_position, ...);
+
+if d > 0.0 {
+    discard;
+}
 ```
 
 としてください。
 
-一方で rectangle selection では、
+AAが必要なら、
 
-```text
-Rectangle:
-    A + B
+```wgsl
+fwidth(d)
 ```
 
-となります。
+を用いたcoverageを検討してください。
 
-この違いを明示的に設計してください。
+---
 
-### Readback
+# 10. outlineもprocedural化する
 
-クリック結果についても CPU/GPU synchronization で render thread を block しないでください。
+現在は1ピースにつきfill Mesh + stroke Meshを作っています。
 
-GPU 側で最終 PieceId を絞り込み、
+stroke Meshを完全に削除してください。
 
-```text
-PieceId 1個
+signed distanceが得られるなら、
+
+```wgsl
+abs(d) < outline_width
 ```
 
-程度の非常に小さい結果だけを async readback してください。
+からoutlineを描けます。
 
-画面全体の ID texture をCPUに転送してはいけません。
-
-### Shared request API
-
-可能であれば、
+現在の
 
 ```rust
-SelectionRequest {
-    request_id,
-    region,
-    mode,
+stroke_width(size)
+= min(16px, short_side * 0.16)
+```
+
+の視覚的挙動を参考にしてください。
+
+これにより最終的には、
+
+```text
+StrokeTessellator
+PieceStroke
+stroke Handle<Mesh>
+stroke Mesh
+```
+
+を削除できます。
+
+---
+
+# 11. EdgeProfileをfragmentごとにhashし直さない
+
+これは重要です。
+
+近距離で1ピースが数万fragmentを占有する場合、
+
+```text
+fragmentごとに
+4 EdgeId
+→ hash
+→ 4 EdgeProfile
+```
+
+を行うのは無駄です。
+
+まずvertex shader側でPieceIdから4辺のEdgeProfileを生成し、flat varyingでfragmentへ渡す方式を検討してください。
+
+例えば、
+
+```wgsl
+@location(...)
+@interpolate(flat)
+edge_top: ...
+```
+
+です。
+
+parameter数が多い場合はquantize/packしてください。
+
+例えば1 edgeを
+
+```text
+2 x u32
+```
+
+程度へpackできれば、
+
+```text
+4 edges = 8 u32
+```
+
+で済みます。
+
+まず可読性の高い実装を作り、その後varying countとALUをprofileしてpackingしてください。
+
+---
+
+# 12. PieceごとのGPU stateは16 bytes前後を目標にする
+
+例えば、
+
+```rust
+#[repr(C)]
+struct GpuPieceState {
+    position: [f32; 2],
+    z_order: u32,
+    flags: u32,
 }
 ```
 
-のように click / rectangle を共通化してください。
+です。
 
-概念例:
+16 bytesなら、
+
+```text
+1,000,000 pieces
+= 16 MB
+```
+
+です。
+
+flagsには必要に応じて、
+
+```text
+PLACED
+SELECTED
+PREVIEW
+HELD
+VISIBLE/ENABLED
+```
+
+等を格納してください。
+
+PieceIdはstorage bufferのindexなので保存不要です。
+
+以下も原則保存不要です。
+
+```text
+grid position
+size
+UV rect
+edge parameters
+bounds
+```
+
+grid position:
+
+```text
+x = piece_id % grid_width
+y = piece_id / grid_width
+```
+
+size:
+
+```text
+PuzzleDefinitionから共通計算
+```
+
+UV:
+
+```text
+grid + local positionからshader計算
+```
+
+shape:
+
+```text
+seed + EdgeIdから生成
+```
+
+です。
+
+---
+
+# 13. CPU側PieceDataStoreをdense化する
+
+現在、
 
 ```rust
-enum SelectionMode {
-    Point,
-    Rectangle,
+HashMap<PieceId, StoredPieceData>
+HashMap<PieceId, Transform>
+```
+
+を持っています。
+
+100万ピースではこの構造を正本にしないでください。
+
+PieceIdがrow-major dense integerなので、
+
+```text
+Vec / Box<[T]>
+```
+
+を利用してください。
+
+少なくとも、
+
+```text
+PieceId -> HashMap lookup
+```
+
+を毎回行う構造は廃止してください。
+
+また現在各pieceに保持している、
+
+```text
+PuzzlePiece {
+    id,
+    grid_position,
+    correct_position,
+    initial_position,
 }
 ```
 
-Point の場合:
+の多くは`PuzzleDefinition + PieceId`から計算できます。
 
-```text
-region = cursor position / 1x1
-result = Option<Entity>
+100万個分保存する必要が本当にあるか調査してください。
+
+可能ならCPU正本も、
+
+```rust
+struct RuntimePieceState {
+    position: Vec2,
+    z_order: u32,
+    flags: u32,
+}
 ```
 
-Rectangle の場合:
+に近づけてください。
 
-```text
-region = rectangle
-result = Vec<Entity>
+`held_by`のように通常ほぼ全pieceでNoneの情報は、必要なら別のsparse structureへ分離してください。
+
+ゲームロジックの正しさを優先しつつ、per-piece固定overheadを減らしてください。
+
+---
+
+# 14. 1,000,000個のBevy Entityを生成しない
+
+現在、
+
+```rust
+commands.spawn(PuzzlePieceId(id))
 ```
-
-ただし、型安全性や既存 architecture に適するのであれば PointSelectionRequest / RectangleSelectionRequest を分けても構いません。
-
-### GPU implementation
-
-Click picking の具体的な GPU 実装方法については、現在使用中の Bevy / wgpu version と既存 renderer を調査して最適な方法を選択してください。
-
-候補には例えば、
-
-- integer PieceId render target
-- depth-tested ID rendering
-- small GPU result buffer
-- render order を考慮した GPU reduction
 
 などがあります。
 
-重要なのは、
+procedural renderer移行後はper-piece render entityを作らないでください。
 
-1. 最前面判定を GPU 上で行う
-2. full-screen pixel data を readback しない
-3. 実際の通常描画と hit geometry を一致させる
-4. clickごとの同期的 GPU wait を発生させない
-
-ことです。
-
-単純さと保守性を優先し、既存 Bevy renderer に最も自然に統合できる方式を選択してください。
-
-## Final target architecture
-
-最終的には以下を目標としてください。
+理想的にはパズル描画用Entityは、
 
 ```text
-PuzzleSelectionPlugin
-│
-├── shared extraction
-│     ├── Mesh
-│     ├── Transform
-│     ├── PieceId
-│     ├── Camera
-│     └── alpha / texture data
-│
-├── Point GPU Picking
-│     ├── 1x1 selection region
-│     ├── occlusion/order enabled
-│     └── front-most PieceId
-│
-└── Rectangle GPU Picking
-      ├── NxM scissor
-      ├── occlusion/order ignored
-      └── atomic PieceId bitset
+0〜数個
 ```
 
-CPU polygon intersection / AABB picking は、GPU picking が正常に動作した後は通常の puzzle selection path から削除してください。
+です。
 
-Debug fallback として残す場合は明示的に feature flag または debug option として分離してください。
+temporary extraction Entityも最終的に不要です。
 
-## Bevy integration
+GPU shaderのflagsとz orderで、
 
-標準の `MeshPickingPlugin` に無理に組み込む必要はありません。
+- selected
+- preview
+- held
+- normal
 
-`PuzzleSelectionPlugin` のような独立した plugin としてまとめることを推奨します。
+を描き分けてください。
 
-概念的には、
+---
+
+# 15. BatchManagerを廃止する方向で移行する
+
+現在の、
+
+```text
+per-piece Mesh
+→ combined Mesh
+→ extracted pieceだけtemporary Entity
+→ selection変更でbatch rebuild
+```
+
+は100万ピース向けではありません。
+
+procedural rendererが動作した段階で、
+
+- `combine_meshes`
+- `BatchManager`
+- `BatchedMeshEntity`
+- `BatchRebuildRequest`
+- `temporary_entities`
+- `create_temporary_entities`
+- `cleanup_temporary_entities`
+- `reconcile_piece_rendering`
+
+を削除可能か調査してください。
+
+通常描画は常にstorage bufferをsource of truthにしてください。
+
+---
+
+# 16. Z-orderをO(N log N)で再圧縮しない
+
+現在、
 
 ```rust
-pub struct PuzzleSelectionPlugin;
+next_z_order >= 50.0
 ```
 
-内部に、
+になると全pieceをsortしてZを再割当します。
+
+100万ピースでは避けてください。
+
+GPU stateでは`u32 z_order`を使用してください。
+
+初期値:
 
 ```text
-Main World
-├─ selection input/state
-├─ PieceId allocation
-├─ PieceId ↔ Entity mapping
-└─ picking result handling
-
-Render World
-├─ extracted selection request
-├─ extracted puzzle piece data
-├─ GPU bitset buffer
-├─ picking pipeline
-├─ render graph node / render phase
-└─ readback
+z_order = PieceId
+next_z = piece_count
 ```
 
-を持たせてください。
-
-現在利用している Bevy バージョンの API を確認した上で、
-
-- RenderApp
-- ExtractSchedule
-- RenderGraph
-- custom render phase
-- render command
-- GPU readback
-
-などのうち、最も自然で保守しやすい API を選択してください。
-
-古い Bevy バージョンの記事や example をコピーして、現行 API に存在しない型を使わないでください。
-
-## Existing rendering data
-
-可能な限り通常描画と以下を共有してください。
-
-- vertex buffer
-- index buffer
-- mesh geometry
-- transform
-- texture / alpha mask
-- per-piece instance data
-
-Picking のためだけに CPU で同じ geometry を複製しないでください。
-
-ただし、通常の Bevy material pipeline を無理に再利用することで実装が極端に複雑になる場合、
+grab時:
 
 ```text
-normal rendering pipeline
-picking pipeline
+z_order = next_z++
 ```
 
-を分けても構いません。
+としてください。
 
-重要なのは geometry / transform の source of truth を共通化することです。
+shaderのdepthへ変換します。
 
-## Instancing
+f32 depthで整数順序が厳密に必要なので、24bit程度のexact integer rangeを考慮してください。
 
-現状または将来的に puzzle pieces を instancing できる構造なら、それを考慮してください。
+例えば約1600万回のfront operationまでは再圧縮不要です。
 
-例えば picking shader へ、
+再圧縮が必要になっても、それは極めて稀なslow pathにしてください。
 
-```rust
-struct PuzzleInstance {
-    transform: ...,
-    piece_id: u32,
+現在のように開始直後から100万pieceによってthresholdを超える設計にはしないでください。
+
+---
+
+# 17. GPU buffer更新はdirty pieceだけ行う
+
+毎frame、
+
+```text
+1,000,000 PieceState
+```
+
+をmain worldからrender worldへclone/uploadしてはいけません。
+
+initialization時のみfull uploadしてください。
+
+通常frameでは、
+
+```text
+dirty PieceId
+```
+
+だけをrender worldへ渡してください。
+
+連続PieceIdはrangeへcoalesceして、
+
+```text
+queue.write_buffer(...)
+```
+
+のcall数も抑えてください。
+
+dirty数が一定割合を超えた場合だけfull uploadへ切り替える方式でも構いません。
+
+BevyのExtractScheduleでも、100万要素のVecを毎framecloneしないこと。
+
+---
+
+# 18. GPU frustum/viewport cullingを導入する
+
+100万instanceすべてを毎frameraster pipelineへ投入しないでください。
+
+compute shaderで、
+
+```text
+PieceState[1,000,000]
+       ↓
+visibility test
+       ↓
+visible_piece_ids[]
+```
+
+を生成してください。
+
+shapeそのものをcullingする必要はありません。
+
+最大tab depthまで拡張したquad AABBでconservative cullingすれば十分です。
+
+compute:
+
+```wgsl
+if piece_quad_intersects_view(...) {
+    let dst = atomicAdd(&visible_count, 1u);
+    visible_ids[dst] = piece_id;
 }
 ```
 
-相当を渡せる構造が望ましいです。
+のような構造で構いません。
 
-ただし、このタスクのために既存 renderer 全体を大規模に instancing 化する必要はありません。
+---
 
-既存設計に自然に組み込める範囲にしてください。
+# 19. indirect drawを利用する
 
-## Selection request lifecycle
-
-GPU readback は同期的に待たないでください。
-
-Main Thread / render loop を、
+visibility computeから、
 
 ```text
-submit GPU work
-↓
-GPU finished?
-↓
-CPU block
+vertex_count   = 4
+instance_count = visible_count
+first_vertex   = 0
+first_instance = 0
 ```
 
-のように止めないこと。
+のindirect argsを作り、
 
-非同期 readback を使用してください。
+```text
+draw_indirect
+```
 
-選択要求には generation / request ID を付けてください。
+してください。
 
-例:
+目標として通常描画のdraw call数はpiece数ではなく、
+
+```text
+O(1)
+```
+
+にしてください。
+
+---
+
+# 20. vertex buffer / index buffer自体をなくす
+
+共通quadの4頂点すらbufferに置かなくて構いません。
+
+```wgsl
+let corners = array<vec2<f32>, 4>(
+    vec2(-1.0, -1.0),
+    vec2( 1.0, -1.0),
+    vec2(-1.0,  1.0),
+    vec2( 1.0,  1.0),
+);
+```
+
+等から`vertex_index`で生成してください。
+
+最終的なpiece rendererには、
+
+```text
+Mesh
+vertex buffer
+index buffer
+```
+
+が不要な構成を目標とします。
+
+---
+
+# 21. UVもshaderで計算する
+
+現在v2では、
 
 ```rust
-struct SelectionRequestId(u64);
+(center + vec2(local.x, -local.y)) / image_size
 ```
 
-これにより、
+を使用しています。
 
-```text
-request #10
-request #11
-request #12
-```
+この意味論をそのままshaderへ移してください。
 
-と連続してドラッグされた場合、古い readback result が後から届いて現在の selection を上書きしないようにしてください。
+つまりtab部分もnominal cellを越えた元画像位置からsamplingします。
 
-少なくとも
+外周はstraightなのでimage外へ出ないことを確認してください。
 
-```text
-result.request_id == latest_relevant_request
-```
+UV rectを100万個保存しないでください。
 
-を判断できる構造にしてください。
+---
 
-## Dragging behavior
+# 22. GPU pickingを新rendererと統合する
 
-ドラッグ中に毎フレームGPU readbackする必要があるかは検討してください。
-
-第一案として、
-
-- drag start
-- drag update
-- drag end
-
-を区別し、
-
-ドラッグ中は必要に応じて一定頻度で preview selection を更新し、
-
-drag end では必ず最終 selection を要求する構造にしてください。
-
-ただし premature optimization は不要です。
-
-最初は毎 frame request でも構いませんが、
-
-- 複数 request が in-flight になる
-- readback latency が1フレーム以上ある
-
-ことを前提に壊れない設計にしてください。
-
-## GPU buffer management
-
-毎回 GPU buffer を新規作成しないでください。
-
-bitset buffer / readback に必要な resource は可能な範囲で再利用してください。
-
-ピース数が増えて必要な bitset size を超えた場合のみ resize してください。
-
-selection pass 前には bitset を必ず zero clear してください。
-
-clear → render → copy/readback
-
-の ordering が保証されるようにしてください。
-
-## Empty / very small selection
-
-以下を正しく処理してください。
-
-- width == 0
-- height == 0
-- window 外に矩形がはみ出す
-- 全体が viewport 外
-- negative drag coordinates
-- minimized / zero-sized window
-
-invalid な scissor rectangle を wgpu に渡さないでください。
-
-## Camera
-
-Main puzzle camera の projection / viewport と picking pass の座標系を一致させてください。
+現在のGPU pickingは既に良い基盤があります。
 
 特に、
 
+- asynchronous readback
+- 1x1 point target
+- rectangle bitset
+- selectable bitset
+- request ordering
+
+は維持してください。
+
+ただし現在は、
+
 ```text
-logical cursor coordinates
-physical pixels
-viewport offset
-render target size
-camera projection
+RenderMesh
+ATTRIBUTE_POSITION
+ATTRIBUTE_UV_0
+ATTRIBUTE_PIECE_ID
 ```
 
-を混同しないでください。
+を描画しています。
 
-通常描画と picking で同じ transform / projection を使用し、カメラ移動・zoom 後も正しく選択できることを確認してください。
+これをprocedural drawへ変更してください。
 
-## Performance
-
-重要なのは、以下のような実装を避けることです。
+selection passも、
 
 ```text
-矩形領域の全 pixel をCPUへ転送
+visible_piece_ids
+PieceState buffer
+PuzzleConfig
+image texture
+shared shape WGSL
+```
+
+を使います。
+
+point picking:
+
+```text
+same inside_piece()
+→ discard
+→ PieceId output
+```
+
+rectangle selection:
+
+```text
+same inside_piece()
+→ selectable check
+→ atomicOr(bitset)
+```
+
+です。
+
+現在実装済みの1x1 cropped click targetは維持してください。
+
+---
+
+# 23. selectable bitsetは維持してよい
+
+100万ピースでも、
+
+```text
+1,000,000 bits
+≈ 125 KiB
+```
+
+なので、現在のselectable bitset方式は十分軽量です。
+
+これは無理に変更しないでください。
+
+---
+
+# 24. picking用visible listをmain rendererと共有する
+
+可能ならmain rendering用compute culling結果、
+
+```text
+visible_piece_ids[]
+```
+
+をpickingでも利用してください。
+
+clickごとに100万instanceをvertex shaderへ流すことは避けてください。
+
+camera/viewが同じframeではvisible listを共有する設計を優先してください。
+
+---
+
+# 25. placementをO(N²)から変更する
+
+現在の`puzzle/src/placement.rs`には、
+
+```rust
+is_overlapping_with_existing(...)
+```
+
+として既存position全件を線形走査する処理があります。
+
+5000piece計測ですでにplacementが約36msを占めています。
+
+100万pieceではこのアルゴリズムは使用不可です。
+
+重複を「検査する」のではなく、最初から重複しないslotをconstructiveに生成してください。
+
+例えば、
+
+```text
+central puzzle exclusion rectangle
+
+その外側へ
+rectangular rings / lattice
+```
+
+としてslotを順次作ります。
+
+各slotはspacing上必ず非重複になるよう設計してください。
+
+その後、
+
+```text
+seeded permutation / shuffle
+```
+
+でPieceIdへ割り当ててください。
+
+最低条件:
+
+```text
+O(N)
 ```
 
 または
 
 ```text
-すべてのmeshについてCPUで triangle intersection
+O(N log N)
 ```
 
 です。
 
-期待する処理は、
+distance overlapの全件探索は禁止します。
+
+1,000,000 piece placementのbenchmarkを追加してください。
+
+---
+
+# 26. `10 pieces / frame` asset登録を完全に削除する
+
+現在、
 
 ```text
+SpawningEntities
+10 pieces / frame
+```
+
+なので100万pieceでは、
+
+```text
+100,000 frames
+```
+
+必要になってしまいます。
+
+procedural rendererではasset生成自体がないため、このphaseを廃止してください。
+
+最終的なgenerationは例えば、
+
+```text
+NotStarted
+GeneratingState
+UploadingGpu
+Completed
+Failed
+```
+
+程度にしてください。
+
+CPU側のdense state完成後、一括GPU buffer作成を行い、描画可能になったらPlayingへ移行してください。
+
+---
+
+# 27. main threadに100万件のAssets操作をさせない
+
+以下は全てpiece count非依存にしてください。
+
+```text
+Assets<Mesh>::add
+Handle<Mesh>
+Mesh2d
+MeshMaterial2d
+```
+
+パズル画像textureは1つ。
+
+render pipeline/bind groupも少数。
+
+piece countに比例するのは、
+
+```text
+dense CPU state
+GPU state buffer
+visibility work
+```
+
+だけにしてください。
+
+---
+
+# 28. image alpha semanticsを確認する
+
+現在のColorMaterialはBlendを使用しているため、任意の半透明PNGでは単純なdepth writeだけでは既存描画と完全一致しません。
+
+ここを黙って壊さないでください。
+
+まず入力画像がopaqueかをload時に判定できるか調査してください。
+
+### Opaque image
+
+こちらを100万piece向けfast pathにしてください。
+
+```text
+depth test/write
+arbitrary instance order
+```
+
+で問題ありません。
+
+### Arbitrary translucent image
+
+必要なら当面、
+
+- legacy renderer fallback
+- visible instanceのGPU depth sort
+- 別のtransparent path
+
+のいずれかを採用してください。
+
+今回の最適化のために「PNG alphaを無視する」という変更を暗黙に入れないこと。
+
+---
+
+# 29. dense CPU stateへの移行は段階的に行う
+
+いきなりgameplay全部を書き換えず、以下の順番を推奨します。
+
+## Phase A
+
+procedural rendererを追加。
+
+現行`PieceDataStore`からGPU stateを生成して見た目を一致させる。
+
+legacy mesh rendererと切替可能にする。
+
+## Phase B
+
+GPU pickingをprocedural geometryへ切替。
+
+見た目とpicking一致を確認。
+
+## Phase C
+
+Mesh/stroke/batching/temporary Entityを削除。
+
+## Phase D
+
+`PieceDataStore`をdense storageへ変更。
+
+## Phase E
+
+placementをO(N)化。
+
+## Phase F
+
+GPU culling + indirect drawを有効化し、100万piece benchmark。
+
+各Phaseでテストを通してください。
+
+---
+
+# 30. legacy rendererとのA/B比較機能を一時的に用意する
+
+開発中だけ、
+
+```text
+legacy lyon mesh
+procedural GPU
+```
+
+を同じPuzzleDefinitionで切り替えられると検証しやすいです。
+
+generator versionが異なる場合でも、styleと共有辺の性質を比較できるpreview/testを作ってください。
+
+migration終了後は通常buildからlegacy pathを外してください。
+
+---
+
+# 31. tests
+
+最低限以下を追加してください。
+
+## Rust / WGSL hash parity
+
+複数の、
+
+```text
+seed
+EdgeId
+orientation
+```
+
+に対してraw profile parametersが一致すること。
+
+可能ならGPU testで確認してください。
+
+## Shared edge complement
+
+隣接pieceで同じEdgeIdを生成し、
+
+```text
+A tab
+B blank
+```
+
+の境界がsample点で一致すること。
+
+## Outer edge
+
+外周が完全なstraight edgeになること。
+
+## Style coverage
+
+6 styleがseed range内ですべて出現すること。
+
+## Shape safety
+
+- finite
+- no impossible parameter combinations
+- neck < head
+- tabがcornerへ侵入しない
+- max depthを超えない
+
+## UV parity
+
+現行v2 UV式とv3 shader UV式がsample点で一致すること。
+
+## Rendering/picking parity
+
+描画されるfragmentだけがpoint/rectangle pickingされること。
+
+tab先端、neck、blank内部を必ずtestしてください。
+
+## Dense state indexing
+
+```text
+PieceId(n) == state[n]
+```
+
+を保証。
+
+## Dirty upload
+
+1piece移動時にfull million-entry buffer uploadが発生しないこと。
+
+## Visibility
+
+viewport外pieceがvisible listへ入らないこと。
+
+tabだけviewportへ入るpieceはcullされないこと。
+
+## Z ordering
+
+重なったpieceで最大z_orderが描画・point pickingされること。
+
+---
+
+# 32. benchmark
+
+最低限、
+
+```text
+1,000
+10,000
+100,000
+1,000,000
+```
+
+piecesを測ってください。
+
+CPU:
+
+```text
+initial placement
+state initialization
+GPU upload preparation
+per-frame dirty sync
+```
+
 GPU:
-    selection rect 部分だけ rasterize
-    ↓
-    atomic bitset
 
-CPU transfer:
-    O(number_of_pieces / 8 bytes)
+```text
+visibility compute
+visible count
+main draw
+point picking
+rectangle picking
+```
+
+メモリ:
+
+```text
+CPU state
+GPU PieceState
+visible ID buffer
+selection bitsets
+Mesh assets count
+Entity count
+```
+
+を記録してください。
+
+さらにcamera条件を分けてください。
+
+### Near
+
+```text
+~1,000 visible
+```
+
+### Medium
+
+```text
+~10,000 visible
+```
+
+### Entire puzzle
+
+```text
+potentially 1,000,000 visible
+```
+
+特に「全体を引いて100万pieceが画面内」のケースを逃げずに測ってください。
+
+---
+
+# 33. 最終的な目標メモリモデル
+
+概ね、
+
+```text
+CPU
+Piece runtime state
+    ~16-24 MB / 1M pieces
+
+GPU
+PieceState        ~16 MB
+VisiblePieceIds   ~4 MB maximum
+selection bitset  ~125 KB
+selectable bitset ~125 KB
+indirect/counters negligible
+image texture     one
+```
+
+程度を目標にしてください。
+
+100万個のMesh/Handle/Entityによる数百MB〜GB級のoverheadを発生させないでください。
+
+---
+
+# 34. 最終的な目標pipeline
+
+```text
+                 PuzzleDefinition
+                        │
+                        │
+                O(N) placement
+                        │
+                        ▼
+              dense PieceState[]
+                        │
+                 initial upload
+                        │
+                        ▼
+             GPU PieceStateBuffer
+                        │
+          ┌─────────────┴─────────────┐
+          │                           │
+     dirty updates               compute culling
+                                      │
+                                      ▼
+                              visible_piece_ids
+                                      │
+                              indirect args
+                                      │
+                    ┌─────────────────┴────────────────┐
+                    │                                  │
+              normal render                       GPU picking
+                    │                                  │
+            procedural quad                      same quad
+                    │                                  │
+        EdgeId → EdgeProfile                same EdgeProfile
+                    │                                  │
+               analytic SDF                     same SDF
+                    │                                  │
+           texture + outline                 ID / bitset
+                    │
+                    ▼
+                  screen
+```
+
+---
+
+# 35. 完了後に削除可能なもの
+
+新rendererが完全に動作し、testsが通った段階で以下を整理してください。
+
+runtime側:
+
+```text
+lyon
+lyon_tessellation
+MeshGeometry
+PieceGeometry
+TessellationWorker
+FillTessellator
+StrokeTessellator
+per-piece Mesh
+per-piece stroke Mesh
+PieceStroke
+BatchManager
+combine_meshes
+temporary piece entities
+ATTRIBUTE_PIECE_ID
+10-piece/frame asset registration
+```
+
+ただしreference/debug testsでlyonがまだ有用ならfeature限定で残して構いません。
+
+不要なものを中途半端に両方式で永続的に維持しないでください。
+
+---
+
+# 36. 既存機能を維持する
+
+以下を壊さないでください。
+
+- click selection
+- box selection
+- Ctrl toggle selection
+- multi drag
+- delayed GPU selection response handling
+- release position適用後のsnap
+- focus loss release
+- pause release
+- placed piece lock
+- camera pan/zoom
+- selection preview
+- same image UV behavior
+- deterministic generation
+- session cleanup
+- future multiplayer向けPieceId安定性
+
+GPU renderer導入を理由にgameplay logicをshaderへ移さないでください。
+
+authoritative gameplay stateはCPU側です。
+
+GPUはpresentation/picking acceleratorです。
+
+---
+
+# 37. 検証コマンド
+
+既存の以下を維持してください。
+
+```sh
+cargo fmt --check
+cargo check --locked
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo test --locked --all-features
+cargo build --locked
+```
+
+実GPU testも現在の環境で引き続き実行してください。
+
+---
+
+# 38. 作業結果で必ず報告するもの
+
+最後に、
+
+1. どの旧runtime構造を削除したか
+2. 残したv2 reference code
+3. v3 hash仕様
+4. analytic shape/SDF仕様
+5. `GpuPieceState` bytes/piece
+6. CPU bytes/piece
+7. 100万piece時の総CPU/GPU memory
+8. Entity数
+9. Mesh asset数
+10. draw call数
+11. visible culling方式
+12. dirty upload方式
+13. picking統合方式
+14. placement計算量
+15. 1k/10k/100k/1M benchmark
+16. 全体表示時のframe time
+17. 残った最大ボトルネック
+
+を報告してください。
+
+100万piece対応では「生成時間が速い」だけでは不十分です。
+
+最優先KPIは、
+
+```text
+per-piece Meshなし
+per-piece render Entityなし
+O(N²)処理なし
+通常frameでO(total pieces) CPU iterationなし
+draw call O(1)
+GPU upload O(dirty pieces)
 ```
 
 です。
-
-CPU readback量が selection rectangle の pixel 数に比例しないようにしてください。
-
-## Correctness tests
-
-最低限、以下を確認してください。
-
-### 1. Basic
-
-1ピースだけ矩形に重なる。
-
-Expected:
-
-```text
-selected = [piece]
-```
-
-### 2. Partial overlap
-
-ピースの1 pixel程度だけ矩形に入る。
-
-Expected:
-
-```text
-selected = [piece]
-```
-
-### 3. AABB false positive
-
-矩形が piece の bounding box には入っているが、実際の mesh geometry には触れていない。
-
-Expected:
-
-```text
-selected = []
-```
-
-### 4. Multiple pieces
-
-矩形内に複数 piece がある。
-
-Expected:
-
-すべて取得。
-
-### 5. Occlusion
-
-B が A を完全または部分的に覆っている。
-
-Expected:
-
-矩形が両方に重なっていれば A / B の両方を取得。
-
-### 6. Camera zoom
-
-camera zoom を変更。
-
-Expected:
-
-visual position と picking position が一致。
-
-### 7. Camera translation
-
-camera を移動。
-
-Expected:
-
-visual position と picking position が一致。
-
-### 8. Drag direction
-
-4方向すべてから矩形を作る。
-
-Expected:
-
-同じ領域なら同じ結果。
-
-### 9. Transparent area
-
-alpha mask された透明部分だけを矩形が通る。
-
-Expected:
-
-piece を選択しない。
-
-### 10. Large piece count
-
-少なくとも数千〜10,000程度の PieceId を想定した buffer sizing が正常に動くこと。
-
-## Debugging
-
-開発中のみ有効にできる debug visualization を用意すると望ましいです。
-
-最低でも、
-
-- normalized selection rectangle
-- returned PieceId
-- returned Entity
-
-をログまたは debug overlay で確認できるようにしてください。
-
-可能なら picking pass の結果を視覚的に確認する debug mode を追加して構いません。
-
-ただし production path に unnecessary overhead を入れないでください。
-
-## API
-
-ゲームロジックから renderer の詳細を極力隠してください。
-
-例えばゲーム側では概念的に、
-
-```rust
-SelectionRequest {
-    rect: ScreenRect,
-    mode: SelectionMode::Rectangle,
-}
-```
-
-を送信し、
-
-結果として、
-
-```rust
-SelectionResult {
-    request_id,
-    entities: Vec<Entity>,
-}
-```
-
-を受け取る程度のAPIを目指してください。
-
-実際の Bevy Event / Message / Resource / Observer の選択は、現在のプロジェクトで採用しているパターンに合わせてください。
-
-## Implementation order
-
-以下の順番で進めてください。
-
-1. 現在の puzzle piece rendering architecture を調査
-2. PieceId の割当方法を決定
-3. selection request / result API を追加
-4. Render World に必要なデータを extract
-5. GPU atomic bitset buffer を作成
-6. picking pipeline / WGSL shader を実装
-7. rectangle scissor rendering を実装
-8. async readback を接続
-9. PieceId → Entity に戻す
-10. selection UI と接続
-11. camera / DPI / viewport edge cases を確認
-12. overlapping / transparent geometry をテスト
-13. resource reuse / unnecessary allocations を確認
-
-各段階で compile / test してください。
-
-一度に renderer 全体を書き換えないでください。
-
-## Before modifying code
-
-まず repository を調査して、以下を簡潔にまとめてください。
-
-- 使用中の Bevy version
-- puzzle pieces が現在どう描画されているか
-- Mesh2d / Sprite / custom pipeline / instancing のどれを使っているか
-- puzzle piece geometry の source of truth
-- alpha / texture による discard の有無
-- camera 構成
-- 現在の selection / clicking implementation
-- picking pass を追加するのに最適と思われる integration point
-
-その後、その調査結果に基づいて実装してください。
-
-設計がこの指示と既存コードで衝突する場合は、既存 architecture に自然に合わせることを優先してください。ただし、
-
-**「矩形内に実際に rasterize される geometry が1 pixelでも存在するすべての PieceId を、GPUで集約して小さい結果だけCPUへ戻す」**
-
-という基本方針は維持してください。
-
-## Out of scope
-
-今回のタスクでは以下は必須ではありません。
-
-- physics engine 導入
-- CPU polygon collision system
-- generic picking framework の全面再設計
-- renderer 全体の instancing 化
-- multiplayer protocol の変更
-- gameplay selection semantics の大幅変更
-
-まず GPU rectangle picking を独立して正しく動かしてください。
-
-## Deliverables
-
-実装完了時には以下を報告してください。
-
-1. 変更した architecture
-2. 新規追加した主要 types / systems / render nodes
-3. GPU picking の処理フロー
-4. readback の仕組み
-5. camera / coordinate conversion の扱い
-6. overlap / transparency の扱い
-7. performance 上の注意点
-8. 残っている limitation
-9. 実行した tests / checks
-10. click picking を今後同じ仕組みに統合する場合の拡張ポイント
-
-不要な大規模リファクタリングは避け、既存コードとの差分を小さく保ってください。

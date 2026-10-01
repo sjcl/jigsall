@@ -22,6 +22,7 @@ enum Gesture {
         offsets: BTreeMap<PieceId, Vec2>,
     },
     BoxSelecting {
+        #[allow(dead_code)] // World-space gesture anchor is also used by CPU gesture tests.
         anchor: Vec2,
         current: Vec2,
         screen_anchor: Vec2,
@@ -51,6 +52,7 @@ impl PieceInteraction {
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })
     }
+    #[cfg(test)]
     pub fn selection_rect(&self) -> Option<Rect> {
         if let Gesture::BoxSelecting {
             anchor, current, ..
@@ -86,12 +88,6 @@ impl PieceInteraction {
         store: &mut PieceDataStore,
         selection: &mut PuzzleSelection,
     ) -> Vec<PieceCommand> {
-        store.selected_pieces.retain(|id| {
-            store.pieces.get(id).is_some_and(|piece| {
-                !piece.state.placed
-                    && (piece.state.held_by.is_none() || piece.state.held_by == Some(LOCAL_PLAYER))
-            })
-        });
         if !frame.focused {
             return self.cancel(store, selection);
         }
@@ -153,6 +149,7 @@ impl PieceInteraction {
                 *released = !frame.pressed;
             }
             if let Some(result) = selection.take_result(*request_id) {
+                store.highlights_dirty = true;
                 if let Some(error) = result.error {
                     warn!(%error, "GPU point selection failed");
                     return self.cancel(store, selection);
@@ -182,15 +179,14 @@ impl PieceInteraction {
                             .filter(|&id| store.is_selectable(id))
                             .collect();
                         ids.sort_by(|a, b| {
-                            store.transforms[a]
-                                .translation
-                                .z
-                                .total_cmp(&store.transforms[b].translation.z)
+                            store.states[a.0 as usize]
+                                .z_order
+                                .cmp(&store.states[b.0 as usize].z_order)
                                 .then(a.cmp(b))
                         });
                         let offsets: BTreeMap<_, _> = ids
                             .iter()
-                            .map(|&id| (id, store.pieces[&id].state.position - *anchor))
+                            .map(|&id| (id, store.states[id.0 as usize].position - *anchor))
                             .collect();
                         commands.extend(ids.into_iter().map(PieceCommand::Grab));
                         // Retain press-to-release motion while the GPU was working.
@@ -281,6 +277,7 @@ impl PieceInteraction {
                 }
                 *preview_ticks = preview_ticks.saturating_add(1);
                 if let Some(result) = selection.take_result(request_id.unwrap()) {
+                    store.highlights_dirty = true;
                     if let Some(error) = result.error {
                         warn!(%error, "GPU rectangle selection failed");
                         return self.cancel(store, selection);
@@ -312,12 +309,13 @@ impl PieceInteraction {
         store: &mut PieceDataStore,
         selection: &mut PuzzleSelection,
     ) -> Vec<PieceCommand> {
+        store.highlights_dirty = true;
         let gesture = std::mem::take(&mut self.gesture);
         selection.cancel();
         let mut held: Vec<_> = store
-            .pieces
+            .held_by
             .iter()
-            .filter_map(|(&id, p)| (p.state.held_by == Some(LOCAL_PLAYER)).then_some(id))
+            .filter_map(|(&id, &player)| (player == LOCAL_PLAYER).then_some(id))
             .collect();
         match gesture {
             Gesture::Dragging { offsets } => held.extend(offsets.into_keys()),

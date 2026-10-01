@@ -1,7 +1,8 @@
 //! Export native contour commands and tessellation for raster visual inspection.
 //! cargo run --release --locked -p puzzella-puzzle --example geometry_preview > target/geometry-preview.txt
 use bevy_math::{UVec2, Vec2};
-use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use puzzella_core::{PieceId, PuzzleDefinition};
+use puzzella_puzzle::generation::REFERENCE_GENERATOR_VERSION;
 use puzzella_puzzle::{
     shapes::{piece_edges, EdgeId, EdgeOrientation, EdgeProfile, PieceEdge},
     TessellationWorker,
@@ -12,7 +13,7 @@ fn main() {
     let mut out = io::BufWriter::new(io::stdout().lock());
     let grid = UVec2::new(4, 3);
     let definition = PuzzleDefinition {
-        generator_version: GENERATOR_VERSION,
+        generator_version: REFERENCE_GENERATOR_VERSION,
         seed: 42,
         grid_size: grid,
         image_size: UVec2::new(400, 300),

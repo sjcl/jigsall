@@ -3,7 +3,6 @@ use bevy::prelude::*;
 use bevy_egui::EguiContexts;
 use puzzella_core::ClientCommand;
 use puzzella_core::*;
-use std::collections::HashSet;
 
 /// UI adapters only sample input and publish the gesture's gameplay commands.
 #[allow(clippy::too_many_arguments)]
@@ -59,46 +58,12 @@ pub fn release_local_drag(
     input.last_cursor_position = None;
 }
 
-/// Selection markers are local presentation only; selection is keyed by stable ID.
-pub fn sync_selection_markers(
-    mut commands: Commands,
-    store: Res<PieceDataStore>,
-    pieces: Query<(
-        Entity,
-        &PuzzlePiece,
-        Has<SelectedPiece>,
-        Has<SelectionPreview>,
-    )>,
-) {
-    for (entity, piece, selected, preview) in &pieces {
-        let want_selected = store.selected_pieces.contains(&piece.id);
-        let want_preview = store.preview_pieces.contains(&piece.id) && !want_selected;
-        if want_selected != selected {
-            if want_selected {
-                commands.entity(entity).insert(SelectedPiece);
-            } else {
-                commands.entity(entity).remove::<SelectedPiece>();
-            }
-        }
-        if want_preview != preview {
-            if want_preview {
-                commands.entity(entity).insert(SelectionPreview);
-            } else {
-                commands.entity(entity).remove::<SelectionPreview>();
-            }
-        }
-    }
-}
-#[allow(clippy::type_complexity)]
 pub fn render_selection_box(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
     interaction: Res<crate::interaction::PieceInteraction>,
-    cameras: Query<(&Camera, &Transform), (With<MainCamera>, Without<SelectionBox>)>,
-    mut boxes: Query<(Entity, &mut Transform), With<SelectionBox>>,
+    cameras: Query<(&Camera, &Transform), With<MainCamera>>,
+    mut overlay: ResMut<crate::render::SelectionOverlay>,
 ) {
-    let rect = interaction
+    overlay.0 = interaction
         .screen_selection_rect()
         .and_then(|rect| {
             let (camera, transform) = cameras.single().ok()?;
@@ -111,125 +76,13 @@ pub fn render_selection_box(
             })
         })
         .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
-    if let Some(rect) = rect {
-        let transform = Transform::from_translation(rect.center().extend(200.0))
-            .with_scale(Vec3::new(rect.width(), rect.height(), 1.0));
-        if let Ok((_, mut current)) = boxes.single_mut() {
-            if *current != transform {
-                *current = transform;
-            }
-        } else {
-            commands.spawn((
-                Mesh2d(meshes.add(Rectangle::new(1.0, 1.0))),
-                MeshMaterial2d(
-                    materials.add(ColorMaterial::from(Color::srgba(0.3, 0.6, 1.0, 0.3))),
-                ),
-                transform,
-                SelectionBox,
-            ));
-        }
-    } else {
-        for (entity, _) in &boxes {
-            commands.entity(entity).despawn();
-        }
-    }
-}
-
-/// Cached child outlines follow piece transforms without changing the shared
-/// image material or rebuilding meshes on every pointer movement.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
-pub fn highlight_selected_pieces(
-    mut commands: Commands,
-    pieces: Query<(
-        Entity,
-        &PieceStroke,
-        Has<SelectedPiece>,
-        Has<SelectionPreview>,
-    )>,
-    outlines: Query<Entity, With<PieceOutline>>,
-    mut state: ResMut<HighlightState>,
-    materials: Res<HighlightMaterials>,
-) {
-    let selected: HashSet<_> = pieces.iter().filter(|p| p.2).map(|p| p.0).collect();
-    let preview: HashSet<_> = pieces.iter().filter(|p| p.3).map(|p| p.0).collect();
-    if selected == state.last_selected_pieces && preview == state.last_preview_pieces {
-        return;
-    }
-    for entity in &outlines {
-        commands.entity(entity).despawn();
-    }
-    for (entity, stroke, selected, preview) in &pieces {
-        if !selected && !preview {
-            continue;
-        }
-        let material = if selected {
-            materials.selected_material.clone()
-        } else {
-            materials.preview_material.clone()
-        };
-        commands.spawn((
-            Mesh2d(stroke.0.clone()),
-            MeshMaterial2d(material),
-            // Outlines are overlays above every piece, below the selection box.
-            Transform::from_xyz(0.0, 0.0, 60.0),
-            PieceOutline,
-            ChildOf(entity),
-        ));
-    }
-    state.last_selected_pieces = selected;
-    state.last_preview_pieces = preview;
-}
-
-pub fn should_render_selection_box(
-    interaction: Res<crate::interaction::PieceInteraction>,
-    boxes: Query<Entity, With<SelectionBox>>,
-) -> bool {
-    interaction.selection_rect().is_some() || !boxes.is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::game_logic::{apply_piece_commands, project_piece_states};
-
-    #[test]
-    fn outlines_follow_the_piece_owned_stroke_handle_and_clear_on_deselection() {
-        let mut app = App::new();
-        app.init_resource::<Assets<Mesh>>()
-            .init_resource::<Assets<ColorMaterial>>()
-            .init_resource::<HighlightState>()
-            .add_systems(Update, highlight_selected_pieces);
-        let stroke = app
-            .world_mut()
-            .resource_mut::<Assets<Mesh>>()
-            .add(Rectangle::new(10.0, 10.0));
-        let selected_material = app
-            .world_mut()
-            .resource_mut::<Assets<ColorMaterial>>()
-            .add(ColorMaterial::default());
-        app.insert_resource(HighlightMaterials {
-            preview_material: default(),
-            selected_material: selected_material.clone(),
-        });
-        let parent = app
-            .world_mut()
-            .spawn((PieceStroke(stroke.clone()), SelectedPiece))
-            .id();
-        app.update();
-        let mut query = app.world_mut().query_filtered::<(Entity, &Mesh2d, &MeshMaterial2d<ColorMaterial>, &ChildOf), With<PieceOutline>>();
-        let (entity, mesh, material, child) = query.single(app.world()).unwrap();
-        assert_eq!(mesh.0, stroke);
-        assert_eq!(material.0, selected_material);
-        assert_eq!(child.parent(), parent);
-        app.update();
-        assert!(
-            app.world().get_entity(entity).is_ok(),
-            "unchanged selection reuses outline"
-        );
-        app.world_mut().entity_mut(parent).remove::<SelectedPiece>();
-        app.update();
-        assert!(app.world().get_entity(entity).is_err());
-    }
+    use crate::systems::game_logic::apply_piece_commands;
+    use std::collections::HashSet;
 
     fn pointer_frame(app: &mut App, point: Vec2, pressed: bool, ctrl: bool) {
         let mut input = app.world_mut().resource_mut::<InputState>();
@@ -293,6 +146,31 @@ mod tests {
         }
     }
 
+    fn sync_collision_fixture(
+        store: Res<PieceDataStore>,
+        mut collision: ResMut<PieceCollisionSystem>,
+        perf: Res<PerformanceMonitor>,
+    ) {
+        for i in 0..store.len() {
+            let id = PieceId(i as u32);
+            let state = store.state(id).unwrap();
+            if state.placed {
+                collision.remove_piece(id);
+                continue;
+            }
+            collision.update_piece_position(
+                id,
+                state.position,
+                Rect::new(-20.0, -20.0, 20.0, 20.0),
+            );
+            collision.update_piece_z_order(id, store.states[i].z_order as f32);
+            if state.held_by.is_some() {
+                collision.start_dragging_piece(id, &perf.debug_level);
+            } else {
+                collision.stop_dragging_piece(id, &perf.debug_level);
+            }
+        }
+    }
     fn input_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
@@ -300,7 +178,6 @@ mod tests {
             .init_resource::<InputState>()
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<crate::interaction::PieceInteraction>()
-            .init_resource::<BatchManager>()
             .init_resource::<PieceDataStore>()
             .init_resource::<PieceCollisionSystem>()
             .init_resource::<PerformanceMonitor>()
@@ -315,8 +192,8 @@ mod tests {
                 (
                     handle_piece_input,
                     apply_piece_commands,
+                    sync_collision_fixture,
                     crate::systems::game_logic::check_piece_placement_event_driven,
-                    project_piece_states,
                 )
                     .chain(),
             );
@@ -325,7 +202,7 @@ mod tests {
             .enumerate()
         {
             let id = PieceId(index as u32);
-            let vertices = vec![[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]];
+            let vertices = [[-20.0, -20.0], [20.0, -20.0], [20.0, 20.0], [-20.0, 20.0]];
             let indices = vec![0, 1, 2, 0, 2, 3];
             app.world_mut()
                 .resource_mut::<PieceCollisionSystem>()
@@ -340,24 +217,9 @@ mod tests {
                     vertices: vertices.iter().map(|&vertex| Vec2::from(vertex)).collect(),
                     indices: indices.clone(),
                 });
-            app.world_mut()
-                .resource_mut::<PieceDataStore>()
-                .add_piece(StoredPieceData {
-                    definition: PuzzlePiece {
-                        id,
-                        grid_position: UVec2::new(index as u32, 0),
-                        correct_position: Vec2::ZERO,
-                        initial_position: position,
-                    },
-                    state: PieceState::new(position),
-                    render: PieceRenderData {
-                        bounds: Rect::new(-20.0, -20.0, 20.0, 20.0),
-                        shape: PieceShapeData { vertices, indices },
-                        mesh: default(),
-                        stroke: default(),
-                        material: default(),
-                    },
-                });
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            store.states.push(GpuPieceState::new(position, id));
+            store.next_z_order = 3;
         }
         app
     }
@@ -377,22 +239,19 @@ mod tests {
             2
         );
         pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
-        assert_eq!(
-            app.world().resource::<PieceDataStore>().held_pieces.len(),
-            2
-        );
+        assert_eq!(app.world().resource::<PieceDataStore>().held_by.len(), 2);
         pointer_frame(&mut app, Vec2::new(120.0, 130.0), true, false);
         pointer_frame(&mut app, Vec2::new(120.0, 130.0), false, false);
         let store = app.world().resource::<PieceDataStore>();
         assert_eq!(
-            store.pieces[&PieceId(0)].state.position,
+            store.state(PieceId(0)).unwrap().position,
             Vec2::new(120.0, 130.0)
         );
         assert_eq!(
-            store.pieces[&PieceId(1)].state.position,
+            store.state(PieceId(1)).unwrap().position,
             Vec2::new(320.0, 130.0)
         );
-        assert!(store.held_pieces.is_empty());
+        assert!(store.held_by.is_empty());
         assert!(app
             .world()
             .resource::<PieceCollisionSystem>()
@@ -417,7 +276,6 @@ mod tests {
         let store = app.world().resource::<PieceDataStore>();
         assert_eq!(store.selected_pieces.len(), 2);
         assert!(store.preview_pieces.is_empty());
-        assert!(store.temporary_entities.is_empty());
     }
 
     #[test]
@@ -432,14 +290,17 @@ mod tests {
         });
         // Grab off-center, then move and release in one frame.
         pointer_frame(&mut app, Vec2::new(107.0, 103.0), true, false);
-        pointer_frame(&mut app, Vec2::new(9.0, 5.0), false, false);
+        pointer_frame(&mut app, Vec2::new(-41.0, 5.0), false, false);
         let store = app.world().resource::<PieceDataStore>();
-        assert_eq!(store.pieces[&PieceId(0)].state.position, Vec2::ZERO);
-        assert!(store.pieces[&PieceId(0)].state.placed);
+        assert_eq!(
+            store.state(PieceId(0)).unwrap().position,
+            Vec2::new(-50.0, 0.0)
+        );
+        assert!(store.state(PieceId(0)).unwrap().placed);
         assert!(store.selected_pieces.is_empty());
-        assert!(store.held_pieces.is_empty());
+        assert!(store.held_by.is_empty());
         let collision = app.world().resource::<PieceCollisionSystem>();
-        assert!(!collision.pieces.contains_key(&PieceId(0)));
+
         assert!(collision.dragging_pieces.is_empty());
     }
 
@@ -458,11 +319,7 @@ mod tests {
                 app.world_mut().resource_mut::<InputState>().window_focused = false;
             }
             app.update();
-            assert!(app
-                .world()
-                .resource::<PieceDataStore>()
-                .held_pieces
-                .is_empty());
+            assert!(app.world().resource::<PieceDataStore>().held_by.is_empty());
             assert!(!app
                 .world()
                 .resource::<crate::interaction::PieceInteraction>()
@@ -499,7 +356,7 @@ mod tests {
         let store = app.world().resource::<PieceDataStore>();
         assert_eq!(store.selected_pieces, HashSet::from([PieceId(1)]));
         assert_eq!(
-            store.pieces[&PieceId(0)].state.position,
+            store.state(PieceId(0)).unwrap().position,
             Vec2::new(100.0, 100.0)
         );
     }
@@ -528,10 +385,10 @@ mod tests {
         pointer_frame(&mut app, Vec2::new(155.0, 135.0), false, false);
         let store = app.world().resource::<PieceDataStore>();
         assert_eq!(
-            store.pieces[&PieceId(0)].state.position,
+            store.state(PieceId(0)).unwrap().position,
             Vec2::new(150.0, 130.0)
         );
-        assert!(store.held_pieces.is_empty());
+        assert!(store.held_by.is_empty());
     }
 
     #[test]
@@ -544,17 +401,15 @@ mod tests {
             .clear();
         app.update();
         assert_eq!(
-            app.world().resource::<PieceDataStore>().pieces[&PieceId(0)]
-                .state
+            app.world()
+                .resource::<PieceDataStore>()
+                .state(PieceId(0))
+                .unwrap()
                 .position,
             Vec2::new(100.0, 100.0)
         );
         pointer_frame(&mut app, Vec2::splat(f32::NAN), false, false);
-        assert!(app
-            .world()
-            .resource::<PieceDataStore>()
-            .held_pieces
-            .is_empty());
+        assert!(app.world().resource::<PieceDataStore>().held_by.is_empty());
         assert_eq!(
             app.world_mut()
                 .resource_mut::<PieceCollisionSystem>()
@@ -595,16 +450,16 @@ mod tests {
         // Force depth compaction during a group grab.
         app.world_mut()
             .resource_mut::<PieceDataStore>()
-            .next_z_order = 50.0;
+            .next_z_order = crate::resources::pieces::MAX_Z;
         pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
         pointer_frame(&mut app, Vec2::new(100.0, 100.0), false, false);
         let store = app.world().resource::<PieceDataStore>();
-        let z0 = store.transforms[&PieceId(0)].translation.z;
-        let z1 = store.transforms[&PieceId(1)].translation.z;
-        assert!(z0 < z1 && z1 < 50.0);
+        let z0 = store.states[0].z_order;
+        let z1 = store.states[1].z_order;
+        assert!(z0 < z1 && z1 < 50);
         let collision = app.world().resource::<PieceCollisionSystem>();
-        assert_eq!(collision.pieces[&PieceId(0)].z_order, z0);
-        assert_eq!(collision.pieces[&PieceId(1)].z_order, z1);
+        assert_eq!(collision.pieces[&PieceId(0)].z_order, z0 as f32);
+        assert_eq!(collision.pieces[&PieceId(1)].z_order, z1 as f32);
         assert_eq!(collision.rtree.size(), 2);
     }
 

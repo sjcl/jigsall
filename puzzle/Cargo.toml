@@ -11,13 +11,32 @@ bevy_asset.workspace = true
 bevy_ecs.workspace = true
 bevy_log.workspace = true
 bevy_math.workspace = true
-bevy_mesh.workspace = true
+bevy_mesh = { workspace = true, optional = true }
 rand.workspace = true
 rand_chacha.workspace = true
+rayon = { workspace = true, optional = true }
+lyon = { workspace = true, optional = true }
+lyon_tessellation = { workspace = true, optional = true }
+
+[features]
+default = []
+cpu-geometry-reference = ["dep:bevy_mesh", "dep:rayon", "dep:lyon", "dep:lyon_tessellation"]
+cpu-picking-debug = ["cpu-geometry-reference"]
+
+[dev-dependencies]
+bevy_mesh.workspace = true
 rayon.workspace = true
 lyon.workspace = true
 lyon_tessellation.workspace = true
 
-[features]
-default = []
-cpu-picking-debug = []
+[[example]]
+name = "generation_bench"
+required-features = ["cpu-geometry-reference"]
+
+[[example]]
+name = "geometry_preview"
+required-features = ["cpu-geometry-reference"]
+
+[[example]]
+name = "shape_comparison"
+required-features = ["cpu-geometry-reference"]

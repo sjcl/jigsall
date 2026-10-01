@@ -6,6 +6,7 @@ mod interaction;
 #[cfg(any(test, feature = "cpu-picking-debug"))]
 #[allow(dead_code)]
 mod piece_geometry;
+pub mod render;
 pub mod resources;
 mod selection;
 mod systems;

@@ -1,214 +1,84 @@
 # Puzzella のアーキテクチャ
 
-## Cargo workspace（2026-10-01）
+2026-10-01。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、通常runtimeをprocedural GPU generator v3へ移行しました。数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)を参照してください。
 
-起動用の`puzzella`と4つのライブラリを1つのworkspaceにまとめています。ライブラリはトップレベルの`core/`・`game/`・`puzzle/`・`ui/`へ配置し、package名は`puzzella-core`・`puzzella-game`・`puzzella-puzzle`・`puzzella-ui`です。共通のpackage属性・依存バージョンをルート`Cargo.toml`から継承し、`Cargo.lock`と`target/`を共有します。`default-members`に全packageを含めているため、ルートの`cargo test --locked`でも全crateのテストが実行されます。`cargo run --locked`は従来通り唯一のバイナリ`puzzella`を起動します。
+## Workspaceと責務
 
 ```text
-puzzella (src/main.rs)
-  ├── puzzella-ui
-  │     ├── puzzella-game
-  │     └── puzzella-puzzle
-  └── puzzella-game
-        ├── puzzella-core
-        └── puzzella-puzzle
-              └── puzzella-core
+puzzella
+  ├── puzzella-ui → puzzella-game / puzzella-puzzle
+  └── puzzella-game → puzzella-core / puzzella-puzzle
+                                         └── puzzella-core
 ```
 
-| package / ファイル | 所有する責務 |
+共通の依存バージョン・Cargo.lock・targetをworkspaceで管理し、全packageをdefault-membersに含めています。
+
+| ファイル | 責務 |
 | --- | --- |
-| `core/src/gameplay.rs` | PuzzleDefinition / PuzzlePiece / PieceState、ID、命令検証、スナップ。依存はbevy_ecs・bevy_math・serdeのみ |
-| `core/src/commands.rs` | ClientCommand。実通信は未実装 |
-| `puzzle/src/generation.rs` | Rayonによるピース単位のCPU生成、lyon tessellation、UV・bounds・U16 geometry、worker結果型 |
-| `puzzle/src/shapes.rs` / `shape_data.rs` | EdgeId・stable hash・6種類のEdgeProfile・ローカルBezier輪郭、debug/test限定のPieceShape |
-| `puzzle/src/placement.rs` / `grid.rs` | seed付き初期配置、グリッド寸法計算 |
-| `game/src/game.rs` / `systems/` | 状態遷移、入力→命令→状態→描画のスケジュール、worker受信と10ピース/フレームのasset登録 |
-| `game/src/resources/` | app・config・input・generation・images・pieces・rendering・batching・performance・collisionごとのリソース |
-| `game/src/selection/` | api.rs、coordinates.rs、render.rs、selection.wgsl、render_tests.rs。GPU内部はcrate外へ公開しない |
-| `game/src/interaction.rs` / `piece_geometry.rs` | 非同期選択のジェスチャーと、feature / テスト限定のCPU判定 |
-| `ui/src/lib.rs` / 各画面 | GameUiPlugin、egui登録とMenu・設定・プレイ・オーバーレイ |
+| `core/src/gameplay.rs` / `commands.rs` | row-major PieceId、PuzzleDefinition、CPU命令検証、snap |
+| `puzzle/src/procedural.rs` | u32 hash、packed EdgeProfile、解析形状・UVのCPU参照 |
+| `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
+| `puzzle/src/shapes.rs` / `generation.rs` | feature / test限定のv2 Bezier・lyon・Rayon・U16 geometry |
+| `game/src/resources/pieces.rs` | 16-byte dense正本、sparse holder、選択集合、dirty upload |
+| `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
+| `game/src/systems/game_logic.rs` | 命令適用、Release後のsnap、イベント駆動の進捗 |
+| `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
+| `game/src/render/mod.rs` | GPU buffers、Core2d pass、indirect draw、非同期readback |
+| `game/src/render/puzzle_shape.wgsl` | main / point / rectangle共通の形状・UV |
+| `game/src/render/puzzle_render.wgsl` | shader生成quad、画像・outline、ID / bitset出力 |
+| `game/src/render/visibility.wgsl` / `pick_visibility.wgsl` | culling、selectable bitset、透明sort、選択ROI |
+| `game/src/selection/` | API、論理→物理座標、要求順序、readback復号 |
+| `ui/` | egui設定・メニュー・HUD・進捗 |
 
-`PieceShape`と`PieceShapeData`は同じdebug形状型です。通常buildの`PieceRenderData`はbounds・fill/stroke handle・materialだけを持ち、CPU triangleの二重保持をしません。`cpu-picking-debug`はルート→game→puzzleへ転送し、gameのdev-dependencyもpuzzle側のdebugデータを有効にします。`tracy` / `chrome`とWindowsのwgpu-hal固定は維持しています。
+通常依存からlyon、lyon_tessellation、Rayonを外しました。`cpu-geometry-reference`はv2参照を、`cpu-picking-debug`は加えてCPU triangle判定を有効にします。通常の選択はGPUです。
 
-```sh
-cargo test -p puzzella-core --locked
-cargo test -p puzzella-puzzle --locked
-cargo test -p puzzella-game --locked
-cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+## CPU正本と入力
+
+`PieceDataStore.states: Vec<GpuPieceState>`が正本です。`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。holderはsparse HashMap、選択・preview・dirty IDは集合です。
+
+```text
+mouse / Ctrl / rectangle / multi-drag
+  → ClientCommand { player, PieceCommand }
+  → apply_piece_command（所有者・placed・有限座標の検証）
+  → dense CPU state + dirty ID
+  → 受理したRelease後のPieceMoveCompleted
+  → snap_piece（Definition + IDから一時的に定義を導出）
+  → PiecePlacedEvent → placed_count → 完成
 ```
 
-分割後の通常テストはcoreの2件、puzzleの3件、gameの22件が成功し、実GPU選択テスト1件もRTX 5090で成功しました。workspace全体のcheck・警告をエラーにしたall-targets / all-features clippy・fmtと、バイナリのbuildが通過しています。実行ファイルは8秒間継続動作し、stderrは空でした。画面の目視操作と性能計測は行っていません。外部依存のバージョン・checksum・依存リストは分割前のlockfileから変更していません。
+Moveの最終座標を適用してからReleaseとsnapを処理します。snap閾値は`distance < snap_distance`。配置済みピースは再Grabできません。保持者の異なる命令と非有限座標を拒否します。
 
-以下はゲームの動作設計と、それまでの移行記録です。workspace分割では判定・生成アルゴリズム、システムの実行順、選択shaderを維持しています。
+入力はPostUpdateのegui処理、camera pan / zoom / edge scrollingの後です。現Transformで座標変換し、UI上の押下を抑制します。開始済みdragはUIを横切っても継続・解放できます。pauseとfocus lossで保持を解放し、未確定の矩形選択を元に戻します。
 
-2026-10-01のGPU picking更新は[GPU_PICKING.md](GPU_PICKING.md)を参照。以下の第1フェーズで導入したR-tree/CPU triangle選択は、現在はcpu-picking-debug featureとテストに限定され、通常選択はGPUへ移行済みです。
+`PieceInteraction`はIdle / Dragging / BoxSelectingを持ちます。point結果の受信前にreleaseした場合も最終座標を保持します。矩形previewとrelease時の確定要求を分け、古いGPU応答が確定選択を上書きしないようにします。
 
-## 調査結果と変更理由
+## Dirty同期とZ順序
 
-更新前の作業ツリーは Bevy 0.16.1 / bevy_egui 0.35。`cargo check` は成功したが、未使用コードなどの警告が60件あった。作業開始時の未コミット変更（データストアからの当たり判定登録、頂点に基づくbounds修正、バッチ抽出・返却の修正）は調査対象に含め、目的を引き継いだ。
+Last scheduleで選択に変更がある場合だけflagsを同期します。初期化時は全stateを一度Arcへコピーし、その後はdirty IDをsortして連続rangeへまとめます。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
 
-| 調査対象 | 更新前の構造・問題 | 第1フェーズの対応 |
-| --- | --- | --- |
-| `main.rs` / `game.rs` | 実際に登録される入力はUUID版。legacy版は登録されていなかった | 稼働経路を安定IDによる入力と命令処理へ接続。順序を明示 |
-| state | `GameScreen` と `AppState` / `GameSubState` が同じ画面を二重管理 | `GameScreen`、起動直後にMenuへ遷移するだけのLoadingを削除 |
-| ピース | 全体は `PieceDataStore`、操作時のみ一時Entity。しかしスナップ・進捗はEntityを参照 | 全ピースの正本をデータストアへ統一。Entityは描画表現 |
-| 選択 | UUID版box selectionがEntityへの変換に依存し、未抽出のピースを選べなかった | R-treeの結果をPieceIdの選択集合へ直接反映 |
-| バッチ描画 | 元のメッシュを捨て、boundsからUVを再計算する経路があった | 元のメッシュとUVを保持・共有。画像の凸凹部分の歪みを避ける |
-| 生成 | shape worker → piece worker → 10ピース/フレームのasset登録 | 同じ段階構成を維持。キューはVecDeque、worker失敗を表示 |
-| キャッシュ | Entityベースの旧選択キャッシュとID/R-tree方式が併存 | 未稼働のEntity境界キャッシュを削除。R-tree、stroke cache、ハイライトの変更検出を維持 |
-| networking | `mod networking` とRenet依存が無効。クライアントの配置フラグを信用する試作 | 試作を削除し、稼働するローカル命令境界だけを追加 |
+初期ZはID、next_zはpiece_count。Grabでnext_z++を割り当て、グループ内の順序を維持します。shaderは24-bit整数範囲のreverse-Zへ変換します。100万ピースでは約1577万回のfront操作まで再圧縮不要です。上限でのみ順序を保つO(N log N)のslow pathを実行します。
 
-## 状態遷移
+## 生成と状態遷移
 
 ```text
 AppState: Menu → GameSetup → InGame → GameComplete
-              ↑                │          │
-              └──── Menu ←──────┴──────────┘
-
-InGame のみ存在する GameSubState:
-Initializing → Playing ⇄ Paused
+                                  └──────────→ Menu
+GameSubState: Initializing → Playing ⇄ Paused
+Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Failed
 ```
 
-`GameSubState` はBevyの `SubStates`。InGameを離れると消える。完成は `AppState::GameComplete` だけで表す。完成時はパズルを残し、Menuへ戻ると全ピース・結合メッシュ・背景・選択枠・キャッシュ・worker受信器・命令・画像を清掃する。workerはWorldを触らず、受信器が破棄された場合は結果を捨てる。
+背景workerは中央除外領域外に格子リングslotを生成し、ChaCha8でshuffleします。main worldが結果をdense state化します。GPU storage limitとpipelineエラーは生成失敗として表示します。GPU bufferとmain pipelineの準備後にPlayingへ進みます。ピースごとのasset登録phaseはありません。
 
-## データの責務
+完成画面ではパズルを残します。Menuへ戻る際、定義・state・画像・背景・選択・gesture・overlay・worker受信器・命令を清掃します。epochでGPU stateを作り直し、request IDをセッション間で再使用せず、前セッションの遅延readbackを無効にします。
 
-| 型 | 責務 | ネットワーク共有の候補 |
-| --- | --- | --- |
-| `PuzzleDefinition` | generator version、seed、grid、画像寸法、snap距離。開始時に設定から固定 | ○ |
-| `PuzzlePiece` | PieceId、grid位置、正解位置、初期位置。不変 | ○（定義から再生成可能） |
-| `PieceState` | 現在位置、placed、held_by | ○ |
-| `PieceRenderData` | bounds、形状、Mesh/Material handle | × |
-| `PieceDataStore.transforms` | PieceStateから導くローカル描画座標と重なり順 | × |
-| 選択・プレビュー集合 / `PieceInteraction` / `InputState` | ローカル選択、ジェスチャーとドラッグoffset、マウス、カメラ | × |
-| `BatchManager` / `PieceIdManager` | 結合メッシュと一時Entityのローカル管理 | × |
+## GPU presentation
 
-ピースIDはgridのrow-major `u32`。プレイヤーIDは `u64`。どちらもEntityと独立し、serdeに対応する。PieceIdのスコープは1パズルなので、将来の通信ではsession/puzzle identityを併せて検証する必要がある。
+Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 
-## 入力から描画まで
+opaqueは任意のinstance順でdepth test/write、半透明はGPU bitonic sortで後方→前方に並べblendし、depthを書きません。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。詳細は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
-```text
-mouse / box selection / multi-drag
-  → ClientCommand { player, PieceCommand }
-  → apply_piece_command（所有者・配置済み・有限座標の検証）
-  → PieceState
-  → Release後の PieceMoveCompleted
-  → snap_piece（純粋なゲーム判定）
-  → PiecePlacedEvent
-  → 全ピースに対する進捗・完成判定
-  → 変更IDのみ Transform / R-tree を更新
-  → 選択・保持中ピースを既存バッチから抽出して描画
-```
+## Multiplayerの境界と課題
 
-入力はゲーム座標のTransformを書き換えない。命令処理はマウスやUIを参照しない。受理されたReleaseだけがスナップを起動し、閾値は従来同様 `distance < snap_distance`。配置済みのピースは再Grabできない。ポーズ開始とボタンの押下終了でローカル保持を解放する。
+PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。transport導入時はsession identity、画像hash、snapshot、認証済みplayer、命令sequenceが必要です。通信・途中参加・切断時の保持解放・ネットワーク向けレート制限は未実装です。
 
-スナップと完成判定に一時Entityは不要。配置済みピースも結合メッシュに残す。一時Entityから状態を逆同期する経路は削除した。
-
-## 選択・移動の再実装（2026-10-01）
-
-描画用のテッセレーション頂点を輪郭順のポリゴンとして判定していたため、見た目とクリック領域が一致していなかった。`piece_geometry.rs`で描画と同じindicesの三角形を判定する。点の境界も含め、矩形は分離軸判定で細い範囲が辺を横切る場合を扱い、形状の凹みや空白は選択しない。R-treeは候補検索に使い、ヒットのうち描画Zが最大のピースを選ぶ。更新時は正確な旧レコードを削除し、boundsを不変のローカルboundsから再投影する。
-
-`interaction.rs`の`PieceInteraction`がIdle / Dragging / BoxSelectingの一つの状態を持つ。Ctrlは選択の追加・解除、通常クリックは選択の置換、選択済みピースのドラッグはグループ移動となる。範囲選択の追加モードは押下時に固定する。ドラッグと範囲選択の終了フレームの座標も処理し、最後のMoveの後にReleaseを送る。ポーズ・フォーカス喪失で保持を解放し、範囲選択は開始前の選択へ戻す。座標が取得できない間は移動せず、押下終了の解放は継続する。
-
-入力から描画までをPostUpdateでeguiの現フレーム処理の後に順序付ける。カメラpan / zoom / edge scrollingの後で、rootのMainCameraの現Transformから座標変換し、全ピースの状態投影をTransform伝播の前に完了する。zoomはXYだけを変更し、Zの表示範囲を縮めない。HUDは独立した背景Uiなので、パネルの矩形でも入力を抑制する。ゲーム領域で始めたドラッグはUIを横切っても継続・解放できる。
-
-透明な結合メッシュはEntity単位で描画順が決まるため、一つのバッチに異なる深度の個別ピースを挟むことはできない。全ピースをZ順に並べ、抽出ピースの前後で連続するバッチへ分割する。バッチのEntity Zとローカル頂点Zを相殺し、元のワールド座標・UV・共有Blend materialを維持する。Grabしたグループは内部の重なり順を保ち、Zが50へ達すると順序を保って再割当する。枠線は子Entityのoverlay、選択矩形は単位メッシュのTransform更新として描画する。
-
-## ネイティブ生成・再現性・描画（generator version 2）
-
-`puzzle-paths` / `svgtypes`への依存、SVG文字列・parse・再parse、形状cache、shape_hash文字列、StrokeMeshCache、Meshからの形状・bounds再抽出を削除しました。grid寸法のdivisor探索もローカル実装へ移しました。旧version 1は`PuzzleDefinition::validate`で拒否し、同じseedの旧形状との混同を防ぎます。
-
-```text
-PuzzleDefinition
-  → 単一background worker
-      → seed付きplacement
-      → row-major IndexedParallelIterator + map_init(TessellationWorker)
-          → EdgeId → stable 64-bit mixing → EdgeProfile
-          → piece-local cubic contour → lyon Path（1回）
-          → fill / stroke → positions・UV・U16 indices・bounds
-      → PieceCreationResult（単一channel）
-  → Bevy main thread（10ピース/フレーム）
-      → bufferを消費してMesh作成 → Assets<Mesh> → PieceDataStore → batching
-```
-
-水平辺のIDは(column, row boundary)、垂直辺は(column boundary, row)。seedの全64-bit、orientation、x、yをSplitMix64相当の固定整数mixで組み合わせます。隣接ピースは同じcanonical制御点を再計算し、片側で順序とcontrol1/control2を反転します。edge table、共有RNG、Mutex、edge生成barrierはありません。Rayonのworker数・work stealing・ピース生成順はhashに参加せず、結果はrow-major順です。`with_min_len(16)`でtessellatorを複数ピースに再利用し、生成中のログはstage単位のtracingだけにしました。
-
-Round / Wide / Narrow / Deep / Shallow / Pearの6スタイルを使用します。width・depth・neck・headには±3.5%の寸法variation、centerには辺長の±2.5%、asymmetryにはhead幅の±2.5%だけを加えます。制御点への独立jitterはありません。内部辺はC1連続のcubic、外周は完全な直線です。tab深さは短辺の22%未満で、shoulderは角から20%以上離れます。直線baselineのcubicはlyonへlineとして渡し、lyonがcollinear joinで出す面積ゼロの三角形はindicesのin-place圧縮で除去します。
-
-fill/strokeは同じPathを使用し、toleranceは`min(0.25px, short_side * 0.0025)`です。0.1 / 0.2 / 0.25のraster比較で形状を確認し、native scaleで最大約1/4pxの誤差と頂点数削減を両立する0.25を選びました。通常のstroke幅16pxは維持し、短辺100px未満では短辺の16%へ縮めて極小ピースを覆い尽くすことを防ぎます。
-
-UVは`((cell + 0.5) * piece_size + (local_x, -local_y)) / image_size`です。凸部・凹部も元画像内の実座標に対応し、boundsはUV処理と同じ頂点loopで集計します。tessellation出力のpositions/indicesはcloneせず結果へmoveし、Mesh/Assets/Worldはmain threadだけが操作します。各ピースはstroke handleを直接保持し、一時Entityは`PieceStroke` handleだけを受け取ります。batchingも元Meshを借用して読み、U16を結合時だけU32へ拡張します。
-
-Imageと通常materialは共有し、各ピースの元MeshのCPU attributeはbatching用に保持します。追加の`PieceShape` triangleコピーはdebug feature/test時だけです。初期配置の同心円・fallback・shuffleは従来の`ChaCha8Rng`で維持します。version・seed・grid・画像寸法とlockfileを揃えれば、同一環境で頂点・indices・UV・bounds・初期位置を再現します。異CPU/OSやlyon/randの異バージョンをまたぐfloatのbit一致は未検証です。
-
-### Release計測と検証
-
-2026-10-01、Windows / Ryzen 9 9950X（16 core / 32 logical threads）/ Rust 1.97。seed=42、1ピース100×100px、grid=10×10 / 40×25 / 100×50。warmup 1回を除く3回の中央値です。旧版は作業開始時の`generate_shapes → create_all_pieces_sync`を同じ定義で計測し、既存printlnはファイルへredirectしました。新方式は`puzzle/examples/generation_bench.rs`で再現できます。
-
-| pieces | 旧CPU生成（Mesh作成含む） | 新worker CPU（32 threads） | 新CPU + main-thread Mesh作成 | 総合改善 | fill頂点数 旧→新 |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 100 | 8.121ms | 0.653ms | 0.780ms | 10.4× | 22,000 → 11,992 |
-| 1000 | 85.734ms | 4.231ms | 4.883ms | 17.6× | 236,200 → 128,626 |
-| 5000 | 452.394ms | 50.018ms | 53.964ms | 8.4× | 1,202,000 → 653,424 |
-
-同じnative実装のworker数1 / 4 / 32で、1000ピースのCPU生成は23.545 / 7.983 / 4.231msでした。1000ピースの逐次stage計測はprofile/contour 0.863ms、fill 9.749ms、stroke 6.265ms。placementは100 / 1000 / 5000ピースで0.021 / 1.414 / 36.434msです。main-thread Mesh作成は約0.112 / 0.652 / 3.946ms、`Assets<Mesh>`登録のみは約0.044 / 0.275 / 1.920msでした。
-
-nativeのtolerance 0.1 / 0.2 / 0.25（1000ピース、4 workers、placementを除くgeometry）は9.184 / 6.223 / 5.816ms、fill頂点は193,698 / 143,632 / 128,626でした。0.25は0.1より頂点を約34%削減します。6スタイルと組み立てgridをrasterで目視確認しました。`geometry_preview` exampleは制御点・頂点・trianglesをテキスト出力し、SVGを生成しません。
-
-この比較は旧ログ・SVG処理・複製の除去、形状変更、tolerance変更、並列化を含む総合比較です。各変更の寄与を個別には分離していません。worker間channelのフレーム待ち、ECS登録、10ピース/フレームの待ち、batch rebuild、GPU uploadの時間は表に含めません。大規模生成のCPU側ではplacementの全件重複探索が支配的で、5000ピースのasset登録完了には従来通り500フレームが必要です。
-
-以下はすべて成功しました。
-
-```sh
-cargo fmt --check
-cargo check --locked
-cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
-cargo test --locked
-cargo test --locked --all-features
-cargo test --locked -p puzzella-game gpu_raster_selection -- --ignored --nocapture
-cargo build --locked
-```
-
-通常39件（core 2 / puzzle 11 / game 26）、実GPU 1件が成功。追加検証は同一定義の完全再現、1/2/4 workerと任意順の一致、全64-bit seedによる寸法変化、両軸の共有制御点反転、直線外周、C1接続、sampled self-intersection、小画像・非正方形の有限頂点/UV/bounds、有効indicesと非退化三角形、全ピース面積の補完、旧versionの拒否です。GPUテストはRTX 5090でネイティブU16 meshのtab/blankのpoint/rectangle選択を確認し、stroke handleの再利用と選択解除も通常テストで確認しました。描画順・抽出/返却・snap・session lifecycleの既存テストも維持しています。
-
-## 更新した依存関係
-
-2026-10-01時点の安定版 [Bevy 0.19.1](https://docs.rs/crate/bevy/0.19.1) と対応する [bevy_egui 0.42](https://docs.rs/crate/bevy_egui/0.42.0) に更新。Rustの最低版はBevyに合わせ1.95。buffered EventはMessageへ、rendererの移動した型とeguiのPanel APIを移行した。image、serde、lyonなどは最新の互換版へlockfileを更新。未使用のRenetコメント依存、uuid、bincodeを削除した。
-
-Windowsではwgpu-hal 29.0.4とgpu-allocator 0.28のWindows COM型が一致しなかったため、互換性を確認したwgpu-hal 29.0.3へCargo.tomlで限定固定している。
-
-## 削除したもの
-
-- 未登録の `handle_piece_dragging_hybrid_legacy`、旧box selection、旧毎フレームplacement/progress、重複reset処理
-- `GameScreen`、`needs_reset`、`use_target_mode`、未使用UIマーカー・バッチ状態型、空の `ui/common.rs`
-- Entity依存の未稼働選択キャッシュ、二重のドラッグ状態、逆方向のTransform→gameplay同期
-- 元UVを捨てるメッシュ再生成と、使用されない旧SVG parser / 重複hit test
-- Renet試作通信、動作していないJoin/Port画面、不要なID登録の旧システム
-- worker間で共有されていた `static mut` のログ用カウンター
-
-カメラpan/zoom/edge scrolling、画像decode、egui設定、debug限定R-tree/triangle hit test、イベント駆動スナップ、性能計測、Tracy/Chrome tracingは再利用しています。形状生成とstroke管理は上記のversion 2へ移行しました。
-
-## 残る負債と次のステップ
-
-1. 構造体は役割を分けたが、PieceDataStore内で正本とローカルcacheをまとめている。snapshot APIと描画adapterを次の段階で分離し、古い命令のsession ID / sequence / ownershipを検証する。
-2. ローカル操作では有限座標と所有者を検証する。ネットワーク向けの移動速度・座標範囲・レート制限、切断時の保持解放、拒否応答は未実装。
-3. 大量選択のプレビューで抽出数が変わると結合メッシュを再構築する。1000+ピースの実GPU計測を行い、必要ならchunk単位の結合とoverlay専用描画を導入する。
-4. batching用の元Mesh CPUデータと結合Meshの保持は必要。形状cache・Mesh clone・通常buildのtriangle二重保持は削除済み。大規模パズルでは既存placementの全件重複探索と、10ピース/フレームのasset登録待ちが次の計測対象です。
-5. 画像dialogは同期、decodeはworker。cross-platformのdialog経路と画像エラー表示、極端なアスペクト比・巨大grid・極小画像は追加検証が必要。
-6. Lightyear/Quinnを比較する前に、定義＋画像hash＋snapshot＋host確定イベントのprotocolを設計する。Join/Grab/Release/Snap/SnapshotはReliable、Move/CursorはUnreliable候補。途中参加ではホストsnapshotを正本にする。
-7. rendezvous、NAT越え、relay、保存・再開は次フェーズ以降。現在は実ネットワーク通信を実装していない。
-
-## 検証結果
-
-2026-10-01、Windows / Rust 1.97で `cargo fmt --check`、`cargo check --locked`、`cargo clippy --locked --all-targets --all-features -- -D warnings`、`cargo test --locked`、`cargo build --locked`が成功。22件のテストで以下を確認した。
-
-- 所有者の異なるGrab / Move / Release、NaN座標を拒否し、スナップの従来閾値と配置済みロックを保持
-- 同じ定義からPieceId・形状頂点・indices・UV・初期位置が再現され、別seedで配置と形状が変わる
-- 1000ピースの配置数・有限座標・除外領域・再現性、ランダムfallbackの再現性と非重複
-- 描画indicesで生成した全三角形をクリックでき、重なり順・矩形の辺交差・空白領域・R-treeの繰り返し更新を検証
-- 一時EntityがなくてもCtrl / box selectionとmulti-dragが相対位置を保ち、終了座標・snap・UI上の押下抑制・フォーカス喪失・pause・範囲選択取消・Z再割当を検証
-- カメラの現Transformによる座標変換と無効座標の除去、バッチ抽出・返却時の描画順・元UV・Blend material保持を検証
-- 全ピースのスナップ・進捗・完成と結合メッシュ内の配置済みピース保持
-- 実GamePluginで生成worker → Playing → Paused → Playing → GameComplete → Menu → 再生成し、定義・画像・バッチ・SubStateを清掃
-
-実行ファイルは8秒間の起動確認で初期化メッセージを出力し、継続動作した。stderrにエラー出力はなく、その後終了した。画面の目視確認、実ファイルdialogでの画像選択、全マウス操作、1000+ピースのGPU性能、macOS / Linuxは未検証。操作・再現手順はREADMEに記載する。
+GPUは描画と選択の補助で、placed・所有権・snapを決めません。大規模な半透明画像ではGPU sortが最大の負荷です。大量選択では集合のメモリとCPU処理が増えます。異OS/GPU、通常windowの全手動操作、極端な重なり負荷は今後の確認対象です。

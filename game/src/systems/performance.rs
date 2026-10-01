@@ -54,13 +54,9 @@ pub fn should_report_performance(perf_monitor: Res<PerformanceMonitor>) -> bool 
 pub fn performance_report_system(
     mut perf_monitor: ResMut<PerformanceMonitor>,
     store: Res<PieceDataStore>,
-    #[cfg(any(test, feature = "cpu-picking-debug"))] collision: Res<PieceCollisionSystem>,
     time: Res<Time>,
 ) {
-    let piece_count = store.pieces.len();
-    #[cfg(any(test, feature = "cpu-picking-debug"))]
-    let collision_count = collision.pieces.len();
-    #[cfg(not(any(test, feature = "cpu-picking-debug")))]
+    let piece_count = store.len();
     let collision_count = 0;
 
     // Bevyの正確なフレーム時間を使用

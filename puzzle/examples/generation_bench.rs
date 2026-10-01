@@ -7,7 +7,8 @@ use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions, StrokeTessellator,
     StrokeVertex, VertexBuffers,
 };
-use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use puzzella_core::{PieceId, PuzzleDefinition};
+use puzzella_puzzle::generation::REFERENCE_GENERATOR_VERSION;
 use puzzella_puzzle::{
     generate_pieces,
     generation::stroke_width,
@@ -35,7 +36,7 @@ fn main() {
             .unwrap();
         for (columns, rows) in [(10, 10), (40, 25), (100, 50)] {
             let definition = PuzzleDefinition {
-                generator_version: GENERATOR_VERSION,
+                generator_version: REFERENCE_GENERATOR_VERSION,
                 seed: 42,
                 grid_size: UVec2::new(columns, rows),
                 image_size: UVec2::new(columns * 100, rows * 100),
@@ -86,7 +87,7 @@ fn main() {
 
 fn compare_tolerances() {
     let definition = PuzzleDefinition {
-        generator_version: GENERATOR_VERSION,
+        generator_version: REFERENCE_GENERATOR_VERSION,
         seed: 42,
         grid_size: UVec2::new(40, 25),
         image_size: UVec2::new(4000, 2500),

@@ -51,6 +51,7 @@ puzzella-ui.workspace = true
 
 [features]
 default = []
+cpu-geometry-reference = ["puzzella-game/cpu-geometry-reference"]
 cpu-picking-debug = ["puzzella-game/cpu-picking-debug"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）
 tracy = ["bevy/trace_tracy"]

@@ -2,44 +2,7 @@
 use bevy_math::{UVec2, Vec2};
 use lyon::{math::point, path::Path};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EdgeOrientation {
-    Horizontal,
-    Vertical,
-}
-
-/// Horizontal (x, y): column x, row boundary y, left to right.
-/// Vertical (x, y): column boundary x, row y, top to bottom.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EdgeId {
-    pub orientation: EdgeOrientation,
-    pub x: u32,
-    pub y: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EdgeStyle {
-    Round,
-    Wide,
-    Narrow,
-    Deep,
-    Shallow,
-    Pear,
-}
-
-/// Dimensions are fractions of edge length; depth uses the shorter piece
-/// dimension. Only these manufacturing parameters vary, never control points.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EdgeProfile {
-    pub polarity: f32,
-    pub style: EdgeStyle,
-    pub center: f32,
-    pub width: f32,
-    pub depth: f32,
-    pub neck_width: f32,
-    pub head_width: f32,
-    pub asymmetry: f32,
-}
+pub use crate::procedural::{EdgeId, EdgeOrientation, EdgeProfile, EdgeStyle};
 
 fn mix64(mut value: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);

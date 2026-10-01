@@ -14,8 +14,8 @@ impl std::fmt::Display for PieceId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
-/// Version 2 uses native hashed shared edges; version 1 SVG seeds are rejected.
-pub const GENERATOR_VERSION: u16 = 2;
+/// Version 3 uses quantized shared-edge profiles and analytic GPU shapes.
+pub const GENERATOR_VERSION: u16 = 3;
 
 /// Frozen at game start. Image dimensions also participate in reconstruction.
 #[derive(Resource, Clone, Debug, PartialEq, Serialize, Deserialize)]

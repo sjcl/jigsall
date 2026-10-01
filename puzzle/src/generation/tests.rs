@@ -1,10 +1,10 @@
+use super::REFERENCE_GENERATOR_VERSION;
 use super::*;
 use bevy_math::UVec2;
-use puzzella_core::GENERATOR_VERSION;
 
 fn definition(seed: u64) -> PuzzleDefinition {
     PuzzleDefinition {
-        generator_version: GENERATOR_VERSION,
+        generator_version: REFERENCE_GENERATOR_VERSION,
         seed,
         grid_size: UVec2::new(4, 3),
         image_size: UVec2::new(800, 600),
@@ -154,7 +154,7 @@ fn unsupported_version_and_invalid_ids_are_rejected() {
         generate_pieces(&def),
         Err(GenerationError::InvalidDefinition(_))
     ));
-    def.generator_version = GENERATOR_VERSION;
+    def.generator_version = REFERENCE_GENERATOR_VERSION;
     assert!(matches!(
         TessellationWorker::default().generate_piece(&def, PieceId(12), Vec2::ZERO),
         Err(GenerationError::InvalidPiece(_))

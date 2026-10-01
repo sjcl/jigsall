@@ -45,12 +45,14 @@ pub fn handle_image_load_results(
                 let size_vec2 = Vec2::new(image_size.x as f32, image_size.y as f32);
 
                 // Imageアセットとして登録
+                let opaque = crate::resources::images::image_is_opaque(&image);
                 let handle = images.add(image);
 
                 // PuzzleImageリソースを作成
                 commands.insert_resource(PuzzleImage {
                     handle: handle.clone(),
                     size: size_vec2,
+                    opaque,
                 });
 
                 println!(

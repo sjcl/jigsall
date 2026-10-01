@@ -9,7 +9,7 @@ pub struct PixelRegion {
 
 /// Expand one physical viewport pixel to the entire 1x1 picking target.
 /// X/Y operate in homogeneous clip space; Z/W (including reverse-Z) stay intact.
-pub(super) fn point_crop_projection(viewport: URect, pixel: UVec2) -> Mat4 {
+pub(crate) fn point_crop_projection(viewport: URect, pixel: UVec2) -> Mat4 {
     let size = viewport.size().as_vec2();
     let center = pixel.as_vec2() - viewport.min.as_vec2() + Vec2::splat(0.5);
     // Avoid computing NDC center by division and then multiplying it back: this
@@ -125,5 +125,93 @@ mod tests {
         assert_eq!(pixel.size, UVec2::ONE);
         let crop = point_crop_projection(viewport, pixel.min);
         assert_eq!(crop.w_axis, Vec4::new(913., -605., 0., 1.));
+    }
+}
+
+#[cfg(test)]
+mod normalization_tests {
+    use super::*;
+    #[test]
+    fn coordinates_normalize_all_directions_and_clip_before_scissor() {
+        let viewport = URect::new(20, 10, 100, 90);
+        for (a, b) in [
+            (Vec2::new(15., 10.), Vec2::new(40., 30.)),
+            (Vec2::new(40., 30.), Vec2::new(15., 10.)),
+            (Vec2::new(15., 30.), Vec2::new(40., 10.)),
+            (Vec2::new(40., 10.), Vec2::new(15., 30.)),
+        ] {
+            let request = SelectionRequest {
+                request_id: 1,
+                region: Rect { min: a, max: b },
+                mode: SelectionMode::Rectangle,
+            };
+            assert_eq!(
+                pixel_region(request, 2., UVec2::splat(128), viewport),
+                Some(PixelRegion {
+                    min: UVec2::new(30, 20),
+                    size: UVec2::new(50, 40)
+                })
+            );
+        }
+        let make = |a, b, mode| SelectionRequest {
+            request_id: 1,
+            region: Rect { min: a, max: b },
+            mode,
+        };
+        assert_eq!(
+            pixel_region(
+                make(
+                    Vec2::splat(-20.),
+                    Vec2::splat(80.),
+                    SelectionMode::Rectangle
+                ),
+                2.,
+                UVec2::splat(128),
+                viewport
+            ),
+            Some(PixelRegion {
+                min: viewport.min,
+                size: viewport.size()
+            })
+        );
+        for (a, b) in [
+            (Vec2::ZERO, Vec2::ZERO),
+            (Vec2::ZERO, Vec2::Y),
+            (Vec2::splat(-20.), Vec2::splat(-10.)),
+            (Vec2::splat(f32::NAN), Vec2::ONE),
+        ] {
+            assert!(pixel_region(
+                make(a, b, SelectionMode::Rectangle),
+                2.,
+                UVec2::splat(128),
+                viewport
+            )
+            .is_none());
+        }
+        assert!(pixel_region(
+            make(Vec2::splat(20.), Vec2::splat(40.), SelectionMode::Rectangle),
+            2.,
+            UVec2::ZERO,
+            viewport
+        )
+        .is_none());
+        assert!(pixel_region(
+            make(Vec2::splat(-0.1), Vec2::ZERO, SelectionMode::Point),
+            1.,
+            UVec2::splat(128),
+            URect::new(0, 0, 128, 128)
+        )
+        .is_none());
+        assert_eq!(
+            pixel_region(
+                make(Vec2::splat(20.9), Vec2::ZERO, SelectionMode::Point),
+                2.,
+                UVec2::splat(128),
+                viewport
+            )
+            .unwrap()
+            .size,
+            UVec2::ONE
+        );
     }
 }

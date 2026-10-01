@@ -16,6 +16,16 @@ use lyon_tessellation::{
 use puzzella_core::{PieceId, PieceState, PuzzleDefinition, PuzzlePiece};
 use rayon::prelude::*;
 
+pub const REFERENCE_GENERATOR_VERSION: u16 = 2;
+fn validate_reference(def: &PuzzleDefinition) -> Result<(), &'static str> {
+    if def.generator_version != REFERENCE_GENERATOR_VERSION {
+        return Err("CPU reference requires generator version 2");
+    }
+    let mut current = def.clone();
+    current.generator_version = puzzella_core::GENERATOR_VERSION;
+    current.validate()
+}
+
 #[derive(Debug)]
 pub enum GenerationError {
     InvalidDefinition(&'static str),
@@ -122,9 +132,7 @@ impl TessellationWorker {
         id: PieceId,
         position: Vec2,
     ) -> Result<PieceData, GenerationError> {
-        definition
-            .validate()
-            .map_err(GenerationError::InvalidDefinition)?;
+        validate_reference(definition).map_err(GenerationError::InvalidDefinition)?;
         if id.0 as usize >= definition.piece_count() {
             return Err(GenerationError::InvalidPiece(id));
         }
@@ -271,9 +279,7 @@ pub fn stroke_width(size: Vec2) -> f32 {
 pub fn generate_pieces(
     definition: &PuzzleDefinition,
 ) -> Result<PieceCreationResult, GenerationError> {
-    definition
-        .validate()
-        .map_err(GenerationError::InvalidDefinition)?;
+    validate_reference(definition).map_err(GenerationError::InvalidDefinition)?;
     let _span = info_span!("generate_pieces", count = definition.piece_count()).entered();
     let size = definition.image_size.as_vec2();
     let piece_size = size / definition.grid_size.as_vec2();

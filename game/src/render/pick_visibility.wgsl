@@ -1,0 +1,23 @@
+struct PuzzleUniform {
+    clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
+    view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
+    selection_min:vec2<f32>,selection_max:vec2<f32>,selection_enabled:vec4<u32>,
+};
+struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
+struct MainArgs {vertex_count:u32,instance_count:u32,first_vertex:u32,first_instance:u32};
+struct PickArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,first_instance:u32};
+@group(0) @binding(0) var<uniform> config:PuzzleUniform;
+@group(0) @binding(1) var<storage,read> states:array<PieceState>;
+@group(0) @binding(2) var<storage,read> main_ids:array<u32>;
+@group(0) @binding(3) var<storage,read> main_args:MainArgs;
+@group(0) @binding(4) var<storage,read_write> pick_ids:array<u32>;
+@group(0) @binding(5) var<storage,read_write> pick_args:PickArgs;
+@compute @workgroup_size(256) fn cull_pick(@builtin(global_invocation_id) invocation:vec3<u32>) {
+    let index=invocation.x;if index>=main_args.instance_count {return;}
+    let id=main_ids[index];let state=states[id];
+    if (state.flags&9u)!=0u || (state.flags&16u)==0u {return;}
+    let half=config.size*0.5+min(config.size.x,config.size.y)*0.22;
+    if all(state.position+half>=config.view_min) && all(state.position-half<=config.view_max) {
+        let dst=atomicAdd(&pick_args.instance_count,1u);pick_ids[dst]=id;
+    }
+}
