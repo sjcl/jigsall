@@ -17,11 +17,16 @@ pub fn setup_image_load_system(mut commands: Commands) {
 /// 画像読み込み結果を処理（crossbeam-channel受信）
 pub fn handle_image_load_results(
     image_channels: Res<ImageLoadChannels>,
+    config: Res<PuzzleConfig>,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
 ) {
     // crossbeam-channelから直接try_recv
     while let Ok(result) = image_channels.rx_results.try_recv() {
+        // An older worker can finish after the user selects another image.
+        if result.virtual_key != config.image_path {
+            continue;
+        }
         println!(
             "📨 MAIN THREAD [{:?}]: Received image load result for: {}",
             std::thread::current().id(),

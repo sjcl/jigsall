@@ -1,16 +1,15 @@
 use crate::components::{PieceShape, PuzzlePiece};
+pub use crate::gameplay::PieceId;
+use crate::gameplay::{PieceState, PlayerId};
 use crate::jigsaw_shapes::JigsawShapeGenerator;
 use bevy::prelude::*;
-use bevy::sprite::ColorMaterial;
+use bevy::sprite_render::ColorMaterial;
 use crossbeam::channel;
 use instant::Instant;
 use rstar::{RTree, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
-use uuid::Uuid;
-
-/// ピースの一意識別子（将来的にバッチング対応）
-pub type PieceId = Uuid;
 
 /// ピースの当たり判定データ（CPU側で管理）
 #[derive(Debug, Clone, PartialEq)]
@@ -44,15 +43,6 @@ pub struct PieceCollisionSystem {
 }
 
 impl PieceCollisionSystem {
-    pub fn new() -> Self {
-        Self {
-            pieces: HashMap::new(),
-            rtree: RTree::new(),
-            dragging_pieces: HashSet::new(),
-            need_rebuild: true,
-        }
-    }
-
     pub fn add_piece(&mut self, collision_data: PieceCollisionData) {
         self.pieces.insert(collision_data.piece_id, collision_data);
         self.need_rebuild = true;
@@ -112,8 +102,6 @@ impl PieceCollisionSystem {
             .cloned()
             .collect();
 
-        let pieces_count = pieces_vec.len();
-
         if !pieces_vec.is_empty() {
             self.rtree = RTree::bulk_load(pieces_vec);
         } else {
@@ -168,28 +156,7 @@ impl PieceCollisionSystem {
         }
     }
 
-    /// 複数ピースのドラッグ開始
-    pub fn start_dragging_pieces(
-        &mut self,
-        piece_ids: &[PieceId],
-        debug_level: &PerformanceDebugLevel,
-    ) {
-        for &piece_id in piece_ids {
-            self.start_dragging_piece(piece_id, debug_level);
-        }
-    }
-
-    /// 複数ピースのドラッグ終了
-    pub fn stop_dragging_pieces(
-        &mut self,
-        piece_ids: &[PieceId],
-        debug_level: &PerformanceDebugLevel,
-    ) {
-        for &piece_id in piece_ids {
-            self.stop_dragging_piece(piece_id, debug_level);
-        }
-    }
-
+    /// R-treeによる候補検索
     pub fn query_pieces_in_rect(&mut self, query_rect: Rect) -> Vec<PieceId> {
         // R-tree再構築チェック（必要な場合のみ実行）
         if self.need_rebuild {
@@ -218,7 +185,7 @@ impl PieceCollisionSystem {
             self.rebuild_rtree();
         }
 
-        let mut debug_info = format!("🌳 R-tree Query Debug:\n");
+        let mut debug_info = "🌳 R-tree Query Debug:\n".to_string();
         debug_info.push_str(&format!(
             "📍 Query rect: ({:.1}, {:.1}) to ({:.1}, {:.1}) [{}x{}]\n",
             query_rect.min.x,
@@ -276,12 +243,6 @@ impl PieceCollisionSystem {
         }
 
         (results, debug_info)
-    }
-
-    pub fn ray_cast(&mut self, ray_origin: Vec2, ray_direction: Vec2) -> Option<PieceId> {
-        // より効率的なポイント検索を使用
-        // レイキャストよりもマウス位置での直接検索の方が適している
-        self.find_piece_at_position(ray_origin)
     }
 
     /// デバッグ用の詳細レイキャスト
@@ -343,10 +304,6 @@ impl PieceCollisionSystem {
         (result, debug_info)
     }
 
-    pub fn get_piece_data(&self, piece_id: PieceId) -> Option<&PieceCollisionData> {
-        self.pieces.get(&piece_id)
-    }
-
     /// マウス位置でのピース検索（精密な形状判定付き）
     pub fn find_piece_at_position(&mut self, position: Vec2) -> Option<PieceId> {
         // 大幅に拡大された範囲でクエリ（座標範囲問題の対処）
@@ -376,23 +333,7 @@ impl PieceCollisionSystem {
         None
     }
 
-    /// 矩形と適切に交差するピースを検索（UUIDベース・Entity不要）
-    pub fn find_pieces_intersecting_rect(&mut self, selection_rect: Rect) -> Vec<PieceId> {
-        let candidate_pieces = self.query_pieces_in_rect(selection_rect);
-        let mut intersecting_pieces = Vec::new();
-
-        for piece_id in candidate_pieces {
-            if let Some(piece_data) = self.pieces.get(&piece_id) {
-                // バウンディングボックスが矩形と交差するかチェック
-                if self.rect_intersects_bbox(selection_rect, piece_data.bounding_box) {
-                    intersecting_pieces.push(piece_id);
-                }
-            }
-        }
-
-        intersecting_pieces
-    }
-
+    /// 矩形と適切に交差するピースを検索（PieceIdベース・Entity不要）
     /// より厳密な矩形交差判定（選択矩形の辺またはピースの境界頂点との交差をチェック）
     pub fn find_pieces_with_detailed_rect_intersection(
         &mut self,
@@ -561,7 +502,7 @@ impl PieceCollisionSystem {
                     debug_info.push_str("     ❌ Outside bounding box - precise test skipped\n");
                 }
 
-                debug_info.push_str("\n");
+                debug_info.push('\n');
             }
         }
 
@@ -657,10 +598,10 @@ impl PieceCollisionSystem {
                 let distance = position.distance(piece_data.position);
                 if distance <= radius {
                     // バウンディングボックス内かつ精密判定通過のもののみ
-                    if piece_data.bounding_box.contains(position) {
-                        if self.precise_point_in_piece(piece_id, position) {
-                            results.push((piece_id, distance));
-                        }
+                    if piece_data.bounding_box.contains(position)
+                        && self.precise_point_in_piece(piece_id, position)
+                    {
+                        results.push((piece_id, distance));
                     }
                 }
             }
@@ -921,11 +862,6 @@ impl PieceCollisionSystem {
         (result, debug_info)
     }
 
-    /// デバッグ用：統計情報取得
-    pub fn get_debug_stats(&self) -> (usize, bool, bool) {
-        (self.pieces.len(), self.rtree.size() > 0, self.need_rebuild)
-    }
-
     /// パフォーマンス統計取得
     pub fn get_performance_stats(&self) -> String {
         let rtree_size = self.rtree.size();
@@ -962,147 +898,67 @@ pub struct HighlightState {
     pub frame_count: u64,                      // フレーム数（デバッグ用）
 }
 
-/// パフォーマンス最適化用のピース検索キャッシュ
-#[derive(Resource, Default)]
-pub struct PieceSelectionCache {
-    pub all_pieces: Vec<Entity>,                // 全ピースのキャッシュリスト
-    pub piece_positions: HashMap<Entity, Vec2>, // ピース位置のキャッシュ
-    pub piece_bounds: HashMap<Entity, (Vec2, Vec2)>, // ピース境界ボックスのキャッシュ
-    pub need_refresh: bool,                     // キャッシュ更新が必要か
-}
-
-/// ID管理とEntity関連付けシステム（将来的なバッチング対応）
+/// Local presentation mapping, never part of a network snapshot.
 #[derive(Resource, Default)]
 pub struct PieceIdManager {
-    /// ID → Entity の関連付け
     id_to_entity: HashMap<PieceId, Entity>,
-    /// Entity → ID の関連付け（逆引き用）
     entity_to_id: HashMap<Entity, PieceId>,
-    /// 次に使用可能なID（Uuidの代替案として、デバッグ用）
-    next_id_counter: u32,
 }
-
 impl PieceIdManager {
-    /// 新しいピースIDを生成してEntityと関連付け
-    pub fn register_piece(&mut self, entity: Entity, existing_id: Option<PieceId>) -> PieceId {
-        let piece_id = existing_id.unwrap_or_else(|| Uuid::new_v4());
-
-        // 既存の関連付けを削除
-        if let Some(old_id) = self.entity_to_id.remove(&entity) {
-            self.id_to_entity.remove(&old_id);
+    pub fn len(&self) -> usize {
+        self.id_to_entity.len()
+    }
+    pub fn register_piece(&mut self, entity: Entity, id: PieceId) {
+        self.id_to_entity.insert(id, entity);
+        self.entity_to_id.insert(entity, id);
+    }
+    pub fn unregister_entity(&mut self, entity: Entity) {
+        if let Some(id) = self.entity_to_id.remove(&entity) {
+            self.id_to_entity.remove(&id);
         }
-
-        // 新しい関連付けを登録
-        self.id_to_entity.insert(piece_id, entity);
-        self.entity_to_id.insert(entity, piece_id);
-
-        piece_id
-    }
-
-    /// EntityからピースIDを取得
-    pub fn get_piece_id(&self, entity: Entity) -> Option<PieceId> {
-        self.entity_to_id.get(&entity).copied()
-    }
-
-    /// ピースIDからEntityを取得
-    pub fn get_entity(&self, piece_id: PieceId) -> Option<Entity> {
-        self.id_to_entity.get(&piece_id).copied()
-    }
-
-    /// Entity削除時のクリーンアップ
-    pub fn unregister_entity(&mut self, entity: Entity) -> Option<PieceId> {
-        if let Some(piece_id) = self.entity_to_id.remove(&entity) {
-            self.id_to_entity.remove(&piece_id);
-            Some(piece_id)
-        } else {
-            None
-        }
-    }
-
-    /// 将来的なバッチング対応：複数ピースを1つのEntityに関連付け
-    pub fn register_batch(&mut self, entity: Entity, piece_ids: Vec<PieceId>) {
-        for piece_id in piece_ids {
-            self.id_to_entity.insert(piece_id, entity);
-            // 注意：entity_to_id は1対1のため、バッチング時は別のマップが必要
-        }
-    }
-
-    /// 統計情報取得（デバッグ用）
-    pub fn get_stats(&self) -> (usize, usize, u32) {
-        (
-            self.id_to_entity.len(),
-            self.entity_to_id.len(),
-            self.next_id_counter,
-        )
-    }
-
-    /// 全てのピースIDを取得
-    pub fn get_all_piece_ids(&self) -> Vec<PieceId> {
-        self.id_to_entity.keys().copied().collect()
     }
 }
 
 #[derive(Resource, Default)]
 pub struct GameData {
-    pub current_screen: GameScreen, // 一時的に残す
-    pub is_host: bool,
     pub players: Vec<PlayerInfo>,
     pub puzzle_completed: bool,
     pub puzzle_progress: f32,
-    pub needs_reset: bool, // パズルをリセットする必要があるかのフラグ
 }
 
 /// メインアプリケーションの状態
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
     #[default]
-    Loading, // 起動時の初期化
-    Menu,         // メインメニュー
+    Menu, // メインメニュー
     GameSetup,    // ゲーム設定・画像読み込み
     InGame,       // ゲーム中
     GameComplete, // ゲーム完了
 }
 
 /// ゲーム内のサブ状態（InGame時のみ有効）
-#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(SubStates, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[source(AppState = AppState::InGame)]
 pub enum GameSubState {
     #[default]
     Initializing, // パズル生成中
     Playing, // プレイ中
     Paused,  // ポーズ中（ESCメニュー）
-             // Complete is removed as it's unused
-}
-
-/// 従来のGameScreen（後で削除予定）
-#[derive(Default, PartialEq, Clone, Debug)]
-pub enum GameScreen {
-    #[default]
-    Menu,
-    HostSetup,
-    JoinGame,
-    InGame,
-    InGameMenu, // ESCキーで表示されるゲーム内メニュー
-    GameComplete,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlayerInfo {
-    pub id: Uuid,
+    pub id: PlayerId,
     pub name: String,
     pub score: u32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Default)]
 pub enum PieceMode {
-    TargetCount,  // 目標ピース数から計算
+    #[default]
+    TargetCount, // 目標ピース数から計算
     ManualGrid,   // 手動でグリッドサイズを指定
     SquarePieces, // 正方形ピースサイズから計算
-}
-
-impl Default for PieceMode {
-    fn default() -> Self {
-        PieceMode::TargetCount
-    }
 }
 
 #[derive(Resource)]
@@ -1111,7 +967,7 @@ pub struct PuzzleConfig {
     pub snap_distance: f32,
     pub image_path: String,
     pub target_piece_count: usize,
-    pub use_target_mode: bool,  // 下位互換性のため残す
+    pub seed: u64,
     pub piece_mode: PieceMode,  // 新しいモード選択
     pub target_piece_size: f32, // 正方形ピースの目標サイズ（ピクセル）
 }
@@ -1123,9 +979,9 @@ impl Default for PuzzleConfig {
             snap_distance: 50.0,       // Reduced to prevent immediate snapping
             image_path: String::new(), // 空の文字列から開始
             target_piece_count: 16,    // デフォルト16ピース
-            use_target_mode: false,    // アスペクト比モードがデフォルト
+            seed: 42,
             piece_mode: PieceMode::SquarePieces, // アスペクト比モードをデフォルトに
-            target_piece_size: 4.0,    // 4x4グリッド相当（16ピース）
+            target_piece_size: 4.0,              // 4x4グリッド相当（16ピース）
         }
     }
 }
@@ -1136,97 +992,45 @@ pub struct PuzzleImage {
     pub size: Vec2,
 }
 
-#[derive(Resource, Default)]
-pub struct NetworkInfo {
-    pub server_address: String,
-    pub port: u16,
-}
-
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq)]
 pub enum SelectionMode {
     #[default]
-    Single, // 単一ピース選択モード
-    BoxSelection, // 範囲選択モード
-    MultiDrag,    // 複数ピース同時移動モード
+    Single,
+    BoxSelection,
+    MultiDrag,
 }
 
-#[derive(Resource)]
+/// Local mouse/camera state. Selected IDs live in PieceDataStore only.
+#[derive(Resource, Default)]
 pub struct InputState {
     pub mouse_position: Vec2,
-    pub is_mouse_pressed: bool,
-    pub selected_piece: Option<Entity>,
-    pub next_z_order: f32,
-    pub is_camera_dragging: bool,
     pub last_mouse_position: Vec2,
+    pub is_mouse_pressed: bool,
+    pub is_camera_dragging: bool,
     pub last_cursor_position: Option<Vec2>,
-
-    // 新しいマルチ選択関連フィールド
+    pub cursor_screen_position: Option<Vec2>,
+    pub is_dragging_piece: bool,
     pub selection_mode: SelectionMode,
     pub selection_start: Option<Vec2>,
     pub selection_current: Option<Vec2>,
-    pub selected_pieces: Vec<Entity>,
-    pub multi_drag_offset: HashMap<Entity, Vec2>,
-
-    // パフォーマンス最適化用のキャッシュ
-    pub selected_pieces_set: HashSet<Entity>, // 高速な選択状態チェック用
-    pub last_selection_rect: Option<(Vec2, Vec2)>, // 前回の選択範囲
-    pub cached_drag_entity: Option<Entity>,   // ドラッグ中のエンティティキャッシュ
-
-    // エッジスクロール用
-    pub cursor_screen_position: Option<Vec2>, // スクリーン座標でのカーソル位置
-    pub is_dragging_piece: bool,              // ピースをドラッグ中かどうか
-
-    // コリジョンシステム制御用
-    pub is_any_piece_dragging: bool, // 任意のピースがドラッグ中（コリジョンシステム自動更新を停止）
+    pub drag_offsets: HashMap<PieceId, Vec2>,
 }
 
-impl Default for InputState {
-    fn default() -> Self {
-        Self {
-            mouse_position: Vec2::ZERO,
-            is_mouse_pressed: false,
-            selected_piece: None,
-            next_z_order: 1.0, // 1.0から開始
-            is_camera_dragging: false,
-            last_mouse_position: Vec2::ZERO,
-            last_cursor_position: None,
-
-            // 新しいマルチ選択関連フィールドの初期化
-            selection_mode: SelectionMode::Single,
-            selection_start: None,
-            selection_current: None,
-            selected_pieces: Vec::new(),
-            multi_drag_offset: HashMap::new(),
-
-            // パフォーマンス最適化用のキャッシュの初期化
-            selected_pieces_set: HashSet::new(),
-            last_selection_rect: None,
-            cached_drag_entity: None,
-
-            // エッジスクロール用の初期化
-            cursor_screen_position: None,
-            is_dragging_piece: false,
-
-            // コリジョンシステム制御用の初期化
-            is_any_piece_dragging: false,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub enum GenerationPhase {
+    #[default]
     NotStarted,
     PreparingShapes,  // ジグソー形状を生成中（非同期）
     CreatingPieces,   // ピースデータを作成中（非同期）
     SpawningEntities, // メインスレッドでデータストアに保存中（エンティティは作成しない）
     Completed,
+    Failed,
 }
 
 // 非同期タスクの結果を格納する構造体
 pub struct ShapeGenerationResult {
     pub shape_generator: JigsawShapeGenerator,
     pub placement_positions: Vec<Vec2>,
-    pub grid_size: (usize, usize),
     pub total_pieces: usize,
 }
 
@@ -1235,8 +1039,9 @@ pub struct PieceData {
     pub mesh: Mesh,
     pub stroke_mesh: Option<Mesh>, // ストロークメッシュ
     pub piece_component: PuzzlePiece,
+    pub state: PieceState,
     pub piece_shape: PieceShape,
-    pub transform: Transform,
+    pub bounds: Rect,
 }
 
 // ピース作成の非同期タスク結果
@@ -1244,71 +1049,55 @@ pub struct PieceCreationResult {
     pub pieces: Vec<PieceData>,
 }
 
-impl Default for GenerationPhase {
-    fn default() -> Self {
-        GenerationPhase::NotStarted
-    }
-}
-
 #[derive(Resource)]
 pub struct PieceGenerationProgress {
     // バックグラウンドスレッド版 - フィールドテスト
     pub is_generating: bool,
-    pub current_piece: usize,
     pub total_pieces: usize,
     pub generation_phase: GenerationPhase,
     pub grid_size: (usize, usize),
     pub shapes_generated: usize,
     pub pieces_created: usize,
-    pub placement_positions: Vec<Vec2>,
-    pub pending_pieces: Vec<PieceData>, // 非同期で作成されたピースデータの待機列
-    pub pieces_spawned_this_frame: usize, // 今フレームでスポーンしたピース数
+    pub pending_pieces: VecDeque<PieceData>, // 非同期で作成されたピースデータの待機列
+    pub pieces_spawned_this_frame: usize,    // 今フレームでスポーンしたピース数
 
     // 新しい標準スレッド用フィールド（crossbeam channelを使用）
-    pub bg_thread_receiver: Option<channel::Receiver<ShapeGenerationResult>>,
-    pub piece_thread_receiver: Option<channel::Receiver<PieceCreationResult>>,
-    pub progress_receiver: Option<channel::Receiver<()>>,
+    pub bg_thread_receiver: Option<channel::Receiver<Result<ShapeGenerationResult, String>>>,
+    pub piece_thread_receiver: Option<channel::Receiver<Result<PieceCreationResult, String>>>,
+    pub error: Option<String>,
 }
 
 impl Default for PieceGenerationProgress {
     fn default() -> Self {
         Self {
             is_generating: false,
-            current_piece: 0,
             total_pieces: 0,
             generation_phase: GenerationPhase::NotStarted,
             grid_size: (0, 0),
             shapes_generated: 0,
             pieces_created: 0,
-            placement_positions: Vec::new(),
-            pending_pieces: Vec::new(),
+            pending_pieces: VecDeque::new(),
             pieces_spawned_this_frame: 0,
             bg_thread_receiver: None,
             piece_thread_receiver: None,
-            progress_receiver: None,
+            error: None,
         }
     }
 }
 
 /// パフォーマンス計測のデバッグレベル
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum PerformanceDebugLevel {
+    #[default]
     Off,
     Low,    // 基本的な統計のみ
     Medium, // 個別システムの時間
     High,   // 詳細な内部計測
 }
 
-impl Default for PerformanceDebugLevel {
-    fn default() -> Self {
-        PerformanceDebugLevel::Off
-    }
-}
-
 /// 個別システムの計測データ
 #[derive(Debug, Clone)]
 pub struct SystemTiming {
-    pub name: String,
     pub last_duration: std::time::Duration,
     pub total_duration: std::time::Duration,
     pub call_count: u64,
@@ -1317,9 +1106,8 @@ pub struct SystemTiming {
 }
 
 impl SystemTiming {
-    pub fn new(name: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            name,
             last_duration: std::time::Duration::ZERO,
             total_duration: std::time::Duration::ZERO,
             call_count: 0,
@@ -1342,13 +1130,6 @@ impl SystemTiming {
         } else {
             std::time::Duration::ZERO
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.total_duration = std::time::Duration::ZERO;
-        self.call_count = 0;
-        self.min_duration = std::time::Duration::MAX;
-        self.max_duration = std::time::Duration::ZERO;
     }
 }
 
@@ -1383,34 +1164,9 @@ impl Default for PerformanceMonitor {
 }
 
 impl PerformanceMonitor {
-    pub fn new(debug_level: PerformanceDebugLevel) -> Self {
-        Self {
-            debug_level,
-            enabled: debug_level != PerformanceDebugLevel::Off,
-            ..Default::default()
-        }
-    }
-
     pub fn start_frame(&mut self) {
         if self.enabled {
             self.frame_start = Some(Instant::now());
-        }
-    }
-
-    pub fn end_frame(&mut self) {
-        if self.enabled {
-            if let Some(start) = self.frame_start {
-                let frame_duration = start.elapsed();
-                self.frame_times.push(frame_duration);
-
-                // 古いフレームデータを削除
-                if self.frame_times.len() > self.max_stored_frames {
-                    self.frame_times.remove(0);
-                }
-
-                self.frame_count += 1;
-                self.frame_start = None;
-            }
         }
     }
 
@@ -1429,7 +1185,7 @@ impl PerformanceMonitor {
                 let timing = self
                     .system_timings
                     .entry(system_name.to_string())
-                    .or_insert_with(|| SystemTiming::new(system_name.to_string()));
+                    .or_insert_with(SystemTiming::new);
                 timing.record_timing(duration);
             }
         }
@@ -1483,15 +1239,7 @@ impl PerformanceMonitor {
             println!("🔍 Performance monitoring disabled");
         }
     }
-
-    // reset_statistics method removed - never used
 }
-
-// ImageLoadingStatus removed - unused with new thread-based implementation
-
-// ImageLoadingTask removed - unused with new thread-based implementation
-
-// ImageLoadingTasks removed - unused with new thread-based implementation
 
 /// 画像読み込みチャネル（crossbeam-channel）
 #[derive(Resource)]
@@ -1510,235 +1258,49 @@ pub struct ImageLoadSender {
 // Pure Batch System - Centralized Piece Data
 // ==========================================
 
-/// 純粋なデータ駆動型ピース情報管理
-#[derive(Resource)]
+/// Canonical gameplay records plus separate, local presentation caches.
+#[derive(Resource, Default)]
 pub struct PieceDataStore {
-    /// 全ピースの基本データ
-    pub pieces: std::collections::HashMap<PieceId, StoredPieceData>,
-
-    /// ピースの位置・変形情報
-    pub transforms: std::collections::HashMap<PieceId, Transform>,
-
-    /// 選択状態（コンポーネントを使わずにここで管理）
-    pub selected_pieces: std::collections::HashSet<PieceId>,
-
-    /// ドラッグ状態情報
-    pub drag_info: std::collections::HashMap<PieceId, DragInfo>,
-
-    /// レンダリング状態（バッチ内 or 一時エンティティ）
-    pub render_states: std::collections::HashMap<PieceId, PieceRenderState>,
-
-    /// 配置済みピース（正しい位置にある）
-    pub placed_pieces: std::collections::HashSet<PieceId>,
-
-    /// 一時エンティティマッピング（PieceId -> Entity）
-    pub temporary_entities: std::collections::HashMap<PieceId, Entity>,
-
-    /// ピース統計
-    pub total_pieces: usize,
-    pub pieces_in_batch: usize,
+    pub pieces: HashMap<PieceId, StoredPieceData>,
+    pub transforms: HashMap<PieceId, Transform>,
+    pub selected_pieces: HashSet<PieceId>,
+    pub preview_pieces: HashSet<PieceId>,
+    pub temporary_entities: HashMap<PieceId, Entity>,
+    pub dirty_pieces: HashSet<PieceId>,
+    pub held_pieces: HashSet<PieceId>,
+    pub placed_pieces: HashSet<PieceId>,
+    pub next_z_order: f32,
 }
 
-/// ピースの基本データ（PuzzlePieceコンポーネントの代替）
 #[derive(Clone, Debug)]
 pub struct StoredPieceData {
-    pub id: PieceId,
-    pub original_position: Vec2,
-    pub current_position: Vec2,
-    pub correct_position: Vec2,
-    pub texture_coords: Vec4,
-    pub is_placed: bool,
-    pub grid_x: usize,
-    pub grid_y: usize,
-    pub bounds: Rect,
-    pub shape: PieceShapeData,
+    pub definition: PuzzlePiece,
+    pub state: PieceState,
+    pub render: PieceRenderData,
 }
 
-/// ピース形状データ（PieceShapeコンポーネントの代替）
+/// Mesh, bounds, shape and handles are never included in gameplay snapshots.
+#[derive(Clone, Debug)]
+pub struct PieceRenderData {
+    pub bounds: Rect,
+    pub shape: PieceShapeData,
+    pub mesh: Handle<Mesh>,
+    pub material: Handle<ColorMaterial>,
+}
 #[derive(Clone, Debug)]
 pub struct PieceShapeData {
     pub vertices: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
     pub shape_hash: String,
 }
-
-/// ドラッグ情報
-#[derive(Clone, Debug)]
-pub struct DragInfo {
-    pub is_dragging: bool,
-    pub drag_offset: Vec2,
-    pub start_position: Vec2,
-}
-
-/// ピースのレンダリング状態
-#[derive(Clone, Debug)]
-pub enum PieceRenderState {
-    /// バッチメッシュに含まれている（エンティティなし）
-    InBatch,
-    /// 一時的な個別エンティティとして存在（インタラクション中）
-    TemporaryEntity(Entity),
-}
-
-impl Default for PieceDataStore {
-    fn default() -> Self {
-        Self {
-            pieces: std::collections::HashMap::new(),
-            transforms: std::collections::HashMap::new(),
-            selected_pieces: std::collections::HashSet::new(),
-            drag_info: std::collections::HashMap::new(),
-            render_states: std::collections::HashMap::new(),
-            placed_pieces: std::collections::HashSet::new(),
-            temporary_entities: std::collections::HashMap::new(),
-            total_pieces: 0,
-            pieces_in_batch: 0,
-        }
-    }
-}
-
 impl PieceDataStore {
-    /// ピースを追加
-    pub fn add_piece(&mut self, piece_data: StoredPieceData, transform: Transform) {
-        let piece_id = piece_data.id;
-
-        self.pieces.insert(piece_id, piece_data);
-        self.transforms.insert(piece_id, transform);
-        self.render_states
-            .insert(piece_id, PieceRenderState::InBatch);
-        self.drag_info.insert(
-            piece_id,
-            DragInfo {
-                is_dragging: false,
-                drag_offset: Vec2::ZERO,
-                start_position: Vec2::ZERO,
-            },
+    pub fn add_piece(&mut self, piece: StoredPieceData) {
+        let id = piece.definition.id;
+        self.transforms.insert(
+            id,
+            Transform::from_translation(piece.state.position.extend(id.0 as f32 * 0.001)),
         );
-
-        self.total_pieces += 1;
-        self.pieces_in_batch += 1;
-    }
-
-    /// ピースを選択状態に設定
-    pub fn select_piece(&mut self, piece_id: PieceId) -> bool {
-        self.selected_pieces.insert(piece_id)
-    }
-
-    /// ピースの選択を解除
-    pub fn deselect_piece(&mut self, piece_id: PieceId) -> bool {
-        self.selected_pieces.remove(&piece_id)
-    }
-
-    /// 全選択解除
-    pub fn clear_selection(&mut self) {
-        self.selected_pieces.clear();
-    }
-
-    /// ピースがある選択されているか
-    pub fn is_selected(&self, piece_id: PieceId) -> bool {
-        self.selected_pieces.contains(&piece_id)
-    }
-
-    /// ドラッグ開始
-    pub fn start_drag(&mut self, piece_id: PieceId, drag_offset: Vec2) {
-        if let Some(drag_info) = self.drag_info.get_mut(&piece_id) {
-            drag_info.is_dragging = true;
-            drag_info.drag_offset = drag_offset;
-            if let Some(transform) = self.transforms.get(&piece_id) {
-                drag_info.start_position = transform.translation.truncate();
-            }
-        }
-    }
-
-    /// ドラッグ終了
-    pub fn stop_drag(&mut self, piece_id: PieceId) {
-        if let Some(drag_info) = self.drag_info.get_mut(&piece_id) {
-            drag_info.is_dragging = false;
-            drag_info.drag_offset = Vec2::ZERO;
-        }
-    }
-
-    /// ピース位置更新
-    pub fn update_position(&mut self, piece_id: PieceId, new_position: Vec2) {
-        if let Some(transform) = self.transforms.get_mut(&piece_id) {
-            transform.translation = new_position.extend(transform.translation.z);
-        }
-
-        if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
-            piece_data.current_position = new_position;
-        }
-    }
-
-    /// 一時エンティティに移行
-    pub fn extract_to_entity(&mut self, piece_id: PieceId, entity: Entity) {
-        self.render_states
-            .insert(piece_id, PieceRenderState::TemporaryEntity(entity));
-        self.temporary_entities.insert(piece_id, entity);
-        self.pieces_in_batch = self.pieces_in_batch.saturating_sub(1);
-    }
-
-    /// バッチに戻す
-    pub fn return_to_batch(&mut self, piece_id: PieceId) {
-        if matches!(
-            self.render_states.get(&piece_id),
-            Some(PieceRenderState::TemporaryEntity(_))
-        ) {
-            self.render_states
-                .insert(piece_id, PieceRenderState::InBatch);
-            self.temporary_entities.remove(&piece_id);
-            self.pieces_in_batch += 1;
-        }
-    }
-
-    /// ピースを配置済みに設定
-    pub fn set_placed(&mut self, piece_id: PieceId, is_placed: bool) {
-        if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
-            piece_data.is_placed = is_placed;
-        }
-
-        if is_placed {
-            self.placed_pieces.insert(piece_id);
-        } else {
-            self.placed_pieces.remove(&piece_id);
-        }
-    }
-
-    /// 統計情報取得
-    pub fn get_stats(&self) -> String {
-        format!(
-            "PieceDataStore Stats:\n  Total pieces: {}\n  In batch: {}\n  Temporary entities: {}\n  Selected: {}\n  Placed: {}",
-            self.total_pieces,
-            self.pieces_in_batch,
-            self.temporary_entities.len(),
-            self.selected_pieces.len(),
-            self.placed_pieces.len()
-        )
-    }
-
-    /// バッチに含まれるピースのIDリストを取得
-    pub fn get_batched_piece_ids(&self) -> Vec<PieceId> {
-        self.render_states
-            .iter()
-            .filter_map(|(id, state)| {
-                if matches!(state, PieceRenderState::InBatch) {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-
-    /// 一時エンティティのピースIDリストを取得
-    pub fn get_temporary_entity_piece_ids(&self) -> Vec<PieceId> {
-        self.render_states
-            .iter()
-            .filter_map(|(id, state)| {
-                if matches!(state, PieceRenderState::TemporaryEntity(_)) {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
-            .collect()
+        self.pieces.insert(id, piece);
     }
 }
 
@@ -1821,6 +1383,7 @@ impl BatchManager {
 
         if was_extracted || was_batched {
             self.placed_pieces.insert(piece_id);
+            self.batched_pieces.insert(piece_id);
             self.needs_rebuild = true;
             true
         } else {
@@ -1864,8 +1427,6 @@ impl BatchManager {
 
     /// 全ピース数を取得
     pub fn total_pieces(&self) -> usize {
-        self.batched_pieces.len() + self.extracted_pieces.len() + self.placed_pieces.len()
+        self.batched_pieces.len() + self.extracted_pieces.len()
     }
 }
-
-// バックグラウンドスレッド版の完了

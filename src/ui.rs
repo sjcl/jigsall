@@ -1,5 +1,4 @@
 // Module declarations for UI
-pub mod common;
 pub mod game_play;
 pub mod game_setup;
 pub mod menu;

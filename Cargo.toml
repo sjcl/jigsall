@@ -2,18 +2,16 @@
 name = "puzzella"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
 
 [dependencies]
-bevy = { version = "0.16.1", default-features = false, features = ["bevy_winit", "bevy_render", "bevy_core_pipeline", "bevy_sprite", "bevy_asset", "bevy_ui", "bevy_text", "bevy_picking", "bevy_state", "png", "jpeg", "webp", "bmp", "x11", "trace"] }
-# bevy_renet = "1.0.0" # 一時的に無効化
-# renet = "1.0.0" # 一時的に無効化
-bevy_egui = "0.35"
+bevy = { version = "0.19.1", default-features = false, features = ["2d", "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace"] }
+bevy_egui = "0.42"
 serde = { version = "1.0", features = ["derive"] }
 image = "0.25"
-rand = "0.8"
-uuid = { version = "1.0", features = ["v4"] }
-bincode = "1.3"
-rfd = { version = "0.11", default-features = false, features = ["xdg-portal"] }
+rand = "0.10"
+rand_chacha = "0.10"
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 puzzle-paths = "0.0.9"
 lyon = "1.0"
 lyon_tessellation = "1.0"
@@ -21,6 +19,11 @@ svgtypes = "0.15"
 crossbeam = "0.8"
 instant = "0.1"
 rstar = "0.12"
+
+# wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
+# Keep the compatible patch until upstream aligns these dependencies.
+[target.'cfg(windows)'.dependencies]
+wgpu-hal = "=29.0.3"
 
 # プロファイリング用の設定
 [features]

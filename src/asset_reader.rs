@@ -163,7 +163,7 @@ pub fn start_thread_image_load(
                 bevy::render::render_resource::TextureDimension::D2,
                 rgba_data,
                 bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                bevy::render::render_asset::RenderAssetUsages::all(),
+                bevy::asset::RenderAssetUsages::all(),
             );
 
             println!(

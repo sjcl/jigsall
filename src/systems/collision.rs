@@ -1,190 +1,19 @@
-use crate::components::*;
-use crate::resources::*;
+use crate::{components::*, resources::*};
 use bevy::prelude::*;
 
-/// 新しく作成されたピースをPieceCollisionSystemに追加するシステム
-pub fn register_new_pieces_to_collision_system(
-    mut collision_system: ResMut<PieceCollisionSystem>,
-    id_manager: Res<PieceIdManager>,
-    new_pieces: Query<(Entity, &PuzzlePiece, &PieceShape, &Transform), Added<PuzzlePiece>>,
-) {
-    for (entity, puzzle_piece, piece_shape, transform) in new_pieces.iter() {
-        if let Some(piece_id) = id_manager.get_piece_id(entity) {
-            // テッセレーション結果から頂点とインデックスを取得
-            let vertices: Vec<Vec2> = piece_shape
-                .vertices
-                .iter()
-                .map(|&[x, y]| Vec2::new(x, y))
-                .collect();
-            let indices = piece_shape.indices.clone();
-
-            // バウンディングボックスを計算
-            let mut min_x = f32::INFINITY;
-            let mut max_x = f32::NEG_INFINITY;
-            let mut min_y = f32::INFINITY;
-            let mut max_y = f32::NEG_INFINITY;
-
-            for vertex in &vertices {
-                min_x = min_x.min(vertex.x);
-                max_x = max_x.max(vertex.x);
-                min_y = min_y.min(vertex.y);
-                max_y = max_y.max(vertex.y);
-            }
-
-            let position = transform.translation.truncate();
-            let bounding_box = Rect::new(
-                position.x + min_x,
-                position.y + min_y,
-                position.x + max_x,
-                position.y + max_y,
-            );
-
-            // デバッグ: メッシュデータの検証（最初の数個のピースのみ）
-            static mut PIECE_COUNT: usize = 0;
-            unsafe {
-                PIECE_COUNT += 1;
-                if PIECE_COUNT <= 3 {
-                    println!(
-                        "🔬 MESH DATA VERIFICATION for piece {} (#{}):",
-                        piece_id, PIECE_COUNT
-                    );
-                    println!("   📊 Vertex count: {}", vertices.len());
-                    println!("   📊 Index count: {}", indices.len());
-                }
-            }
-
-            let collision_data = PieceCollisionData {
-                piece_id,
-                position,
-                bounding_box,
-                vertices: vertices.clone(),
-                indices: indices.clone(),
-            };
-
-            collision_system.add_piece(collision_data);
-
-            // 最初の3個のピースのみログ出力（デバッグ用）
-            unsafe {
-                if PIECE_COUNT <= 3 {
-                    println!(
-                        "📝 Registered piece {} to collision system (pos: {:?}, bounds: {:?})",
-                        piece_id, position, bounding_box
-                    );
-
-                    println!("   📊 First 5 vertices (local coords):");
-                    for (i, vertex) in vertices.iter().take(5).enumerate() {
-                        println!("      {}. ({:.1}, {:.1})", i, vertex.x, vertex.y);
-                    }
-                    if vertices.len() > 5 {
-                        println!("      ... and {} more", vertices.len() - 5);
-                    }
-
-                    // 頂点範囲の計算
-                    if !vertices.is_empty() {
-                        let mut min_v = vertices[0];
-                        let mut max_v = vertices[0];
-                        for vertex in &vertices {
-                            min_v.x = min_v.x.min(vertex.x);
-                            min_v.y = min_v.y.min(vertex.y);
-                            max_v.x = max_v.x.max(vertex.x);
-                            max_v.y = max_v.y.max(vertex.y);
-                        }
-                        println!(
-                            "   📏 Vertex range: ({:.1}, {:.1}) to ({:.1}, {:.1})",
-                            min_v.x, min_v.y, max_v.x, max_v.y
-                        );
-                        println!(
-                            "   📏 Vertex size: {:.1}x{:.1}",
-                            max_v.x - min_v.x,
-                            max_v.y - min_v.y
-                        );
-
-                        // 計算されたバウンディングボックスと比較
-                        let computed_bbox_min =
-                            Vec2::new(position.x + min_v.x, position.y + min_v.y);
-                        let computed_bbox_max =
-                            Vec2::new(position.x + max_v.x, position.y + max_v.y);
-                        println!(
-                            "   🔍 Computed BBox: ({:.1}, {:.1}) to ({:.1}, {:.1})",
-                            computed_bbox_min.x,
-                            computed_bbox_min.y,
-                            computed_bbox_max.x,
-                            computed_bbox_max.y
-                        );
-                        println!(
-                            "   🔍 Actual BBox:   ({:.1}, {:.1}) to ({:.1}, {:.1})",
-                            bounding_box.min.x,
-                            bounding_box.min.y,
-                            bounding_box.max.x,
-                            bounding_box.max.y
-                        );
-
-                        // 形状タイプの推測
-                        if vertices.len() == 4 {
-                            println!("   ⚠️ WARNING: Only 4 vertices - likely fallback rectangle, not jigsaw shape!");
-                        } else if vertices.len() < 20 {
-                            println!("   ⚠️ WARNING: Very few vertices ({}) - may not represent detailed jigsaw shape", vertices.len());
-                        } else {
-                            println!("   ✅ Good vertex count for detailed jigsaw shape");
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// ピース位置が変更されたときにコリジョンシステムを更新するシステム
-pub fn update_collision_system_positions(
-    input_state: Res<InputState>,
-    mut collision_system: ResMut<PieceCollisionSystem>,
-    id_manager: Res<PieceIdManager>,
-    changed_pieces: Query<(Entity, &Transform), (With<PuzzlePiece>, Changed<Transform>)>,
-) {
-    // ドラッグ中は自動更新をスキップ（手動更新で対応）
-    if input_state.is_any_piece_dragging {
-        return;
-    }
-
-    for (entity, transform) in changed_pieces.iter() {
-        if let Some(piece_id) = id_manager.get_piece_id(entity) {
-            let new_position = transform.translation.truncate();
-            collision_system.update_piece_position(piece_id, new_position);
-        }
-    }
-}
-
-/// ピース削除時にコリジョンシステムからクリーンアップするシステム
-pub fn cleanup_removed_pieces_from_collision_system(
-    _collision_system: ResMut<PieceCollisionSystem>,
-    mut removed_pieces: RemovedComponents<PuzzlePiece>,
-    _id_manager: Res<PieceIdManager>,
-    // 削除されたエンティティのIDは取得できないため、別の方法が必要
-) {
-    // RemovedComponentsからは削除されたEntityしか取得できないため、
-    // ID管理システムと連携してクリーンアップする必要がある
-    // この実装は id_management.rs の cleanup と連携する
-
-    for _entity in removed_pieces.read() {
-        // エンティティが削除されている場合、IDManagerからも削除されているはず
-        // そのため、ここでは特別な処理は不要
-        // 代わりに定期的なクリーンアップを実装
-    }
-}
-
-/// コリジョンシステムの統計情報を表示するシステム（デバッグ用）
 pub fn debug_collision_system_stats(
     collision_system: Res<PieceCollisionSystem>,
     input: Res<ButtonInput<KeyCode>>,
     puzzle_pieces_query: Query<Entity, With<PuzzlePiece>>,
     id_manager: Res<PieceIdManager>,
+    store: Res<PieceDataStore>,
 ) {
     if input.just_pressed(KeyCode::F11) {
         println!("🔍 === Collision System Debug Stats ===");
         println!("{}", collision_system.get_performance_stats());
 
         let bevy_piece_count = puzzle_pieces_query.iter().count();
-        let id_manager_count = id_manager.get_all_piece_ids().len();
+        let id_manager_count = id_manager.len();
 
         println!("📊 Cross-system comparison:");
         println!("  Bevy ECS pieces: {}", bevy_piece_count);
@@ -194,7 +23,9 @@ pub fn debug_collision_system_stats(
             collision_system.pieces.len()
         );
 
-        if collision_system.pieces.len() != bevy_piece_count {
+        let unplaced_count = store.pieces.len() - store.placed_pieces.len();
+        println!("  Canonical unplaced pieces: {}", unplaced_count);
+        if collision_system.pieces.len() != unplaced_count {
             println!("⚠️ WARNING: Piece count mismatch detected!");
             println!("   This suggests pieces are not being registered to collision system");
         }
@@ -276,9 +107,6 @@ pub fn performance_test_collision_system(
     }
 }
 
-/// QuadTreeの最適化とクリーンアップシステム
-// optimize_collision_system関数を削除 - 不要な定期再構築を防ぐため
-
 /// レイキャスティングのテストシステム（詳細デバッグ付き）
 pub fn test_ray_casting(
     mut collision_system: ResMut<PieceCollisionSystem>,
@@ -318,7 +146,7 @@ pub fn test_ray_casting(
 
                         // 従来のレイキャストも実行して比較
                         let ray_direction = Vec2::new(0.0, -1.0);
-                        let (hit_piece, ray_debug_info) =
+                        let (_hit_piece, ray_debug_info) =
                             collision_system.ray_cast_debug(world_position, ray_direction);
 
                         println!("\n📊 Ray Cast Debug Info:\n{}", ray_debug_info);
@@ -440,129 +268,99 @@ pub fn test_collision_api(
 }
 
 /// 実際のドラッグ操作でのIDベース当たり判定統合ヘルパー
-pub fn id_based_piece_picker(
-    collision_system: &mut PieceCollisionSystem,
-    world_position: Vec2,
-    use_precise_detection: bool,
-) -> Option<PieceId> {
-    // 基本的なピース検索
-    if let Some(piece_id) = collision_system.find_piece_at_position(world_position) {
-        if use_precise_detection {
-            // 精密判定を使用する場合
-            if collision_system.precise_point_in_piece(piece_id, world_position) {
-                Some(piece_id)
-            } else {
-                None
-            }
-        } else {
-            // バウンディングボックスのみの場合
-            Some(piece_id)
-        }
-    } else {
-        None
-    }
-}
-
-/// 範囲選択でのIDベース当たり判定統合ヘルパー
-pub fn id_based_rect_selector(
-    collision_system: &mut PieceCollisionSystem,
-    selection_rect: Rect,
-    use_precise_detection: bool,
-) -> Vec<PieceId> {
-    let candidate_pieces = collision_system.find_pieces_in_rect(selection_rect);
-
-    if use_precise_detection {
-        // 精密判定: 範囲内の各コーナーでテスト
-        let corners = [
-            Vec2::new(selection_rect.min.x, selection_rect.min.y),
-            Vec2::new(selection_rect.max.x, selection_rect.min.y),
-            Vec2::new(selection_rect.min.x, selection_rect.max.y),
-            Vec2::new(selection_rect.max.x, selection_rect.max.y),
-        ];
-
-        candidate_pieces
-            .into_iter()
-            .filter(|&piece_id| {
-                // 少なくとも1つのコーナーがピース内にあるかチェック
-                corners
-                    .iter()
-                    .any(|&corner| collision_system.precise_point_in_piece(piece_id, corner))
-            })
-            .collect()
-    } else {
-        // バウンディングボックスのみ
-        candidate_pieces
-    }
-}
-
-/// 手動でコリジョンシステムを再構築するシステム（デバッグ用）
-pub fn manual_rebuild_collision_system(
+pub fn register_pieces_from_data_store_to_collision_system(
     mut collision_system: ResMut<PieceCollisionSystem>,
-    id_manager: Res<PieceIdManager>,
-    pieces_query: Query<(Entity, &PuzzlePiece, &PieceShape, &Transform)>,
-    input: Res<ButtonInput<KeyCode>>,
+    piece_data_store: Res<PieceDataStore>,
+    perf_monitor: Res<PerformanceMonitor>,
 ) {
-    if input.just_pressed(KeyCode::KeyU) {
-        println!("🔄 Manual collision system rebuild triggered...");
+    // 既存データをクリア
+    collision_system.pieces.clear();
+    collision_system.need_rebuild = true;
 
-        // 既存データをクリア
-        collision_system.pieces.clear();
-        collision_system.need_rebuild = true;
+    let mut registered_count = 0;
 
-        let mut registered_count = 0;
+    println!("🔄 Registering pieces from PieceDataStore to collision system...");
 
-        // 全ピースを再登録
-        for (entity, _puzzle_piece, piece_shape, transform) in pieces_query.iter() {
-            if let Some(piece_id) = id_manager.get_piece_id(entity) {
-                // テッセレーション結果から頂点とインデックスを取得
-                let vertices: Vec<Vec2> = piece_shape
-                    .vertices
-                    .iter()
-                    .map(|&[x, y]| Vec2::new(x, y))
-                    .collect();
-                let indices = piece_shape.indices.clone();
+    // PieceDataStoreから全ピースを登録
+    for (piece_id, piece_data) in &piece_data_store.pieces {
+        if piece_data.state.placed {
+            continue;
+        }
+        if let Some(transform) = piece_data_store.transforms.get(piece_id) {
+            // 頂点データを Vec2 に変換
+            let vertices: Vec<Vec2> = piece_data
+                .render
+                .shape
+                .vertices
+                .iter()
+                .map(|&[x, y]| Vec2::new(x, y))
+                .collect();
 
-                // バウンディングボックスを計算
-                let mut min_x = f32::INFINITY;
-                let mut max_x = f32::NEG_INFINITY;
-                let mut min_y = f32::INFINITY;
-                let mut max_y = f32::NEG_INFINITY;
+            // Bounds were computed from the same vertices during generation.
+            let position = transform.translation.truncate();
+            let bounding_box = Rect::new(
+                position.x + piece_data.render.bounds.min.x,
+                position.y + piece_data.render.bounds.min.y,
+                position.x + piece_data.render.bounds.max.x,
+                position.y + piece_data.render.bounds.max.y,
+            );
 
-                for vertex in &vertices {
-                    min_x = min_x.min(vertex.x);
-                    max_x = max_x.max(vertex.x);
-                    min_y = min_y.min(vertex.y);
-                    max_y = max_y.max(vertex.y);
-                }
-
-                let position = transform.translation.truncate();
-                let bounding_box = Rect::new(
-                    position.x + min_x,
-                    position.y + min_y,
-                    position.x + max_x,
-                    position.y + max_y,
+            // デバッグ: 最初の数個のピースのみログ出力（verticesを使う前に）
+            if registered_count < 3
+                && matches!(
+                    perf_monitor.debug_level,
+                    PerformanceDebugLevel::Medium | PerformanceDebugLevel::High
+                )
+            {
+                println!(
+                    "📝 Registering piece {} from data store (pos: {:?}, bounds: {:?})",
+                    piece_id, position, bounding_box
                 );
 
-                let collision_data = PieceCollisionData {
-                    piece_id,
-                    position,
-                    bounding_box,
-                    vertices,
-                    indices,
-                };
-
-                collision_system.add_piece(collision_data);
-                registered_count += 1;
+                if !vertices.is_empty() {
+                    let vertex_range = (
+                        vertices
+                            .iter()
+                            .fold(Vec2::splat(f32::INFINITY), |acc, &v| acc.min(v)),
+                        vertices
+                            .iter()
+                            .fold(Vec2::splat(f32::NEG_INFINITY), |acc, &v| acc.max(v)),
+                    );
+                    println!(
+                        "   📏 {} vertices, range: ({:.1}, {:.1}) to ({:.1}, {:.1})",
+                        vertices.len(),
+                        vertex_range.0.x,
+                        vertex_range.0.y,
+                        vertex_range.1.x,
+                        vertex_range.1.y
+                    );
+                }
             }
+
+            let collision_data = PieceCollisionData {
+                piece_id: *piece_id,
+                position,
+                bounding_box,
+                vertices,
+                indices: piece_data.render.shape.indices.clone(),
+            };
+
+            collision_system.add_piece(collision_data);
+            registered_count += 1;
+        } else {
+            println!("⚠️ No transform found for piece {}", piece_id);
         }
-
-        println!(
-            "✅ Manual rebuild completed: {} pieces registered",
-            registered_count
-        );
-
-        // QuadTreeも再構築
-        collision_system.rebuild_rtree();
-        println!("✅ QuadTree rebuilt");
     }
+
+    println!(
+        "✅ Data store collision registration completed: {} pieces registered",
+        registered_count
+    );
+
+    // R-Tree を再構築
+    collision_system.rebuild_rtree();
+    println!(
+        "✅ Collision R-Tree rebuilt with {} pieces",
+        collision_system.pieces.len()
+    );
 }

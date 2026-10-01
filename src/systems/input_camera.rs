@@ -130,7 +130,7 @@ pub fn auto_adjust_camera_zoom(
 }
 
 pub fn handle_camera_zoom(
-    mut scroll_evr: EventReader<MouseWheel>,
+    mut scroll_evr: MessageReader<MouseWheel>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     puzzle_image: Option<Res<PuzzleImage>>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -171,16 +171,6 @@ pub fn handle_camera_zoom(
             transform.scale = Vec3::splat(new_scale);
 
             // デバッグ出力（頻度制限）
-            static mut ZOOM_LOG_COUNT: usize = 0;
-            unsafe {
-                ZOOM_LOG_COUNT += 1;
-                if ZOOM_LOG_COUNT % 5 == 0 {
-                    println!(
-                        "🔍 Camera zoom: {:.2} (limits: {:.2}-{:.1})",
-                        new_scale, min_zoom, max_zoom
-                    );
-                }
-            }
         }
     }
 

@@ -5,14 +5,18 @@ use bevy_egui::{egui, EguiContexts};
 /// インゲームUI（プレイ中のUI）
 pub fn draw_game_ui(mut contexts: EguiContexts, game_state: Res<GameData>) {
     let _span = info_span!("draw_game_ui").entered();
-    if game_state.current_screen != GameScreen::InGame {
-        return;
-    }
 
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    egui::TopBottomPanel::top("game_info").show(ctx, |ui| {
+    let mut viewport_ui = egui::Ui::new(
+        ctx.clone(),
+        "game_info_viewport".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+    egui::Panel::top("game_info").show(&mut viewport_ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(format!(
                 "Progress: {:.1}%",
@@ -20,11 +24,6 @@ pub fn draw_game_ui(mut contexts: EguiContexts, game_state: Res<GameData>) {
             ));
             ui.separator();
             ui.label(format!("Players: {}", game_state.players.len()));
-
-            if game_state.is_host {
-                ui.separator();
-                ui.label("(Host)");
-            }
 
             ui.separator();
             ui.label("Click and drag puzzle pieces to move them");
@@ -37,9 +36,6 @@ pub fn draw_game_ui(mut contexts: EguiContexts, game_state: Res<GameData>) {
 /// プレイヤー一覧オーバーレイ（Tabキーで表示）
 pub fn draw_players_overlay(mut contexts: EguiContexts, game_state: Res<GameData>) {
     let _span = info_span!("draw_players_overlay").entered();
-    if game_state.current_screen != GameScreen::InGame {
-        return;
-    }
 
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -49,7 +45,7 @@ pub fn draw_players_overlay(mut contexts: EguiContexts, game_state: Res<GameData
     egui::Area::new(egui::Id::new("players_overlay_background"))
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             ui.allocate_ui_with_layout(
                 screen_rect.size(),
                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
@@ -74,7 +70,7 @@ pub fn draw_players_overlay(mut contexts: EguiContexts, game_state: Res<GameData
             ui.set_min_width(400.0);
 
             // ウィンドウの高さを画面の半分に制限
-            let screen_height = ctx.screen_rect().height();
+            let screen_height = ctx.content_rect().height();
             let max_height = screen_height * 0.5;
 
             egui::ScrollArea::vertical()
@@ -114,14 +110,17 @@ pub fn draw_completion_ui(
     mut game_state: ResMut<GameData>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if game_state.current_screen != GameScreen::GameComplete {
-        return;
-    }
-
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    egui::CentralPanel::default().show(ctx, |ui| {
+    let mut viewport_ui = egui::Ui::new(
+        ctx.clone(),
+        "completion_viewport".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+    egui::CentralPanel::default().show(&mut viewport_ui, |ui| {
         ui.heading("🎉 Puzzle Complete!");
 
         ui.separator();
@@ -131,10 +130,8 @@ pub fn draw_completion_ui(
         ui.separator();
 
         if ui.button("New Game").clicked() {
-            game_state.current_screen = GameScreen::Menu;
             game_state.puzzle_completed = false;
             game_state.puzzle_progress = 0.0;
-            game_state.needs_reset = true; // パズルリセットフラグを設定
             next_state.set(AppState::Menu);
         }
 

@@ -5,14 +5,9 @@ use bevy_egui::{egui, EguiContexts};
 /// インゲームメニューUI（ESCキーで表示）
 pub fn draw_in_game_menu_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameData>,
     mut next_state: ResMut<NextState<AppState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
-    if game_state.current_screen != GameScreen::InGameMenu {
-        return;
-    }
-
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -21,7 +16,7 @@ pub fn draw_in_game_menu_ui(
     egui::Area::new(egui::Id::new("in_game_menu_background"))
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             ui.allocate_ui_with_layout(
                 screen_rect.size(),
                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
@@ -57,7 +52,6 @@ pub fn draw_in_game_menu_ui(
                     .add_sized([200.0, 40.0], egui::Button::new("Resume Game"))
                     .clicked()
                 {
-                    game_state.current_screen = GameScreen::InGame;
                     next_sub_state.set(GameSubState::Playing);
                     println!("🎮 Resuming game from menu");
                 }
@@ -67,10 +61,6 @@ pub fn draw_in_game_menu_ui(
                     .add_sized([200.0, 40.0], egui::Button::new("Return to Title"))
                     .clicked()
                 {
-                    game_state.current_screen = GameScreen::Menu;
-                    game_state.puzzle_completed = false;
-                    game_state.puzzle_progress = 0.0;
-                    game_state.needs_reset = true; // パズルと画像設定を完全リセット
                     next_state.set(AppState::Menu);
                     println!("🎮 Returning to title screen");
                 }
@@ -97,10 +87,9 @@ pub fn draw_in_game_menu_ui(
 pub fn draw_generation_progress_ui(
     mut contexts: EguiContexts,
     progress: Res<PieceGenerationProgress>,
-    game_state: Res<GameData>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
-    // ゲーム画面で生成中の場合のみ表示
-    if game_state.current_screen != GameScreen::InGame || !progress.is_generating {
+    if !progress.is_generating && progress.error.is_none() {
         return;
     }
 
@@ -109,9 +98,16 @@ pub fn draw_generation_progress_ui(
     };
 
     // 画面下部にプログレスバーを表示
-    egui::TopBottomPanel::bottom("generation_progress")
-        .min_height(60.0)
-        .show(ctx, |ui| {
+    let mut viewport_ui = egui::Ui::new(
+        ctx.clone(),
+        "generation_viewport".into(),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(ctx.viewport_rect()),
+    );
+    egui::Panel::bottom("generation_progress")
+        .default_size(60.0)
+        .show(&mut viewport_ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0);
 
@@ -130,6 +126,7 @@ pub fn draw_generation_progress_ui(
                             * 0.2)
                     }
                     GenerationPhase::Completed => 1.0,
+                    GenerationPhase::Failed => 0.0,
                 };
 
                 // フェーズ名
@@ -139,6 +136,7 @@ pub fn draw_generation_progress_ui(
                     GenerationPhase::CreatingPieces => "Creating pieces",
                     GenerationPhase::SpawningEntities => "Spawning entities",
                     GenerationPhase::Completed => "Completed",
+                    GenerationPhase::Failed => "Failed",
                 };
 
                 // プログレスバー（フェーズに応じて適切な数値を表示）
@@ -160,6 +158,12 @@ pub fn draw_generation_progress_ui(
 
                 ui.add(progress_bar);
                 ui.label(format!("Phase: {}", phase_text));
+                if let Some(error) = &progress.error {
+                    ui.colored_label(egui::Color32::RED, error);
+                }
+                if ui.button("Return to Title").clicked() {
+                    next_state.set(AppState::Menu);
+                }
             });
         });
 }

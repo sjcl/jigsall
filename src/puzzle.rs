@@ -1,8 +1,9 @@
 use crate::components::*;
 use crate::resources::*;
+use bevy::mesh::{Indices, VertexAttributeValues};
 use bevy::prelude::*;
-use bevy::render::mesh::{Indices, VertexAttributeValues};
 use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 
 /// パズルグリッドの周囲を囲む配置でピース位置を生成（マージン付き）
 pub fn generate_placement_grid(
@@ -12,9 +13,10 @@ pub fn generate_placement_grid(
     piece_height: f32,
     display_width: f32,
     display_height: f32,
+    seed: u64,
 ) -> Vec<Vec2> {
     let total_pieces = grid_width * grid_height;
-    let mut rng = thread_rng();
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
     println!(
         "🎯 Generating {} positions surrounding puzzle grid...",
@@ -51,6 +53,7 @@ pub fn generate_placement_grid(
             &surrounding_positions,
             display_width,
             display_height,
+            &mut rng,
         );
 
         surrounding_positions.extend(fallback_positions);
@@ -203,6 +206,8 @@ fn generate_spiral_positions(
 }
 
 /// 指定半径の円周上にピースを配置する
+// Preserve the existing placement algorithm and its independent dimensions.
+#[allow(clippy::too_many_arguments)]
 fn generate_circle_layer(
     center: Vec2,
     radius: f32,
@@ -259,40 +264,38 @@ fn generate_circle_layer(
 
         // 各種チェック
         let distance_from_center = position.distance(Vec2::ZERO);
-        if distance_from_center <= max_screen_distance {
-            if !is_in_grid_area(
+        if distance_from_center <= max_screen_distance
+            && !is_in_grid_area(
                 position,
                 puzzle_area,
                 effective_piece_width,
                 effective_piece_height,
-            ) {
-                if !is_overlapping_with_existing(
-                    position,
-                    existing_positions,
-                    effective_piece_width,
-                    effective_piece_height,
-                ) {
-                    if !is_overlapping_with_existing(
-                        position,
-                        &layer_positions,
-                        effective_piece_width,
-                        effective_piece_height,
-                    ) {
-                        layer_positions.push(position);
+            )
+            && !is_overlapping_with_existing(
+                position,
+                existing_positions,
+                effective_piece_width,
+                effective_piece_height,
+            )
+            && !is_overlapping_with_existing(
+                position,
+                &layer_positions,
+                effective_piece_width,
+                effective_piece_height,
+            )
+        {
+            layer_positions.push(position);
 
-                        // 最初のいくつかのピースの詳細ログ
-                        if layer_positions.len() <= 5 {
-                            println!(
-                                "     📍 Layer {} piece #{} at ({:.1}, {:.1}), angle: {:.1}°",
-                                layer_index,
-                                layer_positions.len(),
-                                x,
-                                y,
-                                angle.to_degrees()
-                            );
-                        }
-                    }
-                }
+            // 最初のいくつかのピースの詳細ログ
+            if layer_positions.len() <= 5 {
+                println!(
+                    "     📍 Layer {} piece #{} at ({:.1}, {:.1}), angle: {:.1}°",
+                    layer_index,
+                    layer_positions.len(),
+                    x,
+                    y,
+                    angle.to_degrees()
+                );
             }
         }
     }
@@ -360,6 +363,7 @@ fn is_overlapping_with_existing(
 }
 
 /// フォールバック用の配置生成（グリッド状 + ランダム配置）
+#[allow(clippy::too_many_arguments)]
 fn generate_fallback_positions(
     count: usize,
     piece_width: f32,
@@ -368,9 +372,9 @@ fn generate_fallback_positions(
     existing_positions: &[Vec2],
     display_width: f32,
     display_height: f32,
+    rng: &mut ChaCha8Rng,
 ) -> Vec<Vec2> {
     let mut positions = Vec::new();
-    let mut rng = thread_rng();
 
     let (puzzle_min, puzzle_max) = puzzle_area;
     let piece_size = piece_width.max(piece_height);
@@ -387,7 +391,7 @@ fn generate_fallback_positions(
 
     // 四方向に均等に配置するための準備
     let grid_margin = piece_size * 0.6;
-    let pieces_per_side = (count + 3) / 4; // 各方向の最大ピース数
+    let pieces_per_side = count.div_ceil(4); // 各方向の最大ピース数
 
     // 各方向のエリア定義
     let areas = [
@@ -444,7 +448,7 @@ fn generate_fallback_positions(
             // 水平配置（上下）
             let x_range = step_or_end - start_pos;
             let cols = (x_range / spacing).max(1.0) as usize;
-            let rows = (pieces_this_side + cols - 1) / cols; // 切り上げ除算
+            let rows = pieces_this_side.div_ceil(cols); // 切り上げ除算
 
             for row in 0..rows {
                 for col in 0..cols {
@@ -456,15 +460,16 @@ fn generate_fallback_positions(
                     let y = fixed_coord + (row as f32 * range_end);
                     let pos = Vec2::new(x, y);
 
-                    if pos.x.abs() <= display_width * 0.9 && pos.y.abs() <= display_height * 0.9 {
-                        if !is_overlapping_with_all(
+                    if pos.x.abs() <= display_width * 0.9
+                        && pos.y.abs() <= display_height * 0.9
+                        && !is_overlapping_with_all(
                             pos,
                             existing_positions,
                             &positions,
                             piece_size * 0.8,
-                        ) {
-                            positions.push(pos);
-                        }
+                        )
+                    {
+                        positions.push(pos);
                     }
                 }
             }
@@ -472,7 +477,7 @@ fn generate_fallback_positions(
             // 垂直配置（左右）
             let y_range = range_end - fixed_coord;
             let rows = (y_range / spacing).max(1.0) as usize;
-            let cols = (pieces_this_side + rows - 1) / rows; // 切り上げ除算
+            let cols = pieces_this_side.div_ceil(rows); // 切り上げ除算
 
             for col in 0..cols {
                 for row in 0..rows {
@@ -484,15 +489,16 @@ fn generate_fallback_positions(
                     let y = fixed_coord + (row as f32 * spacing) + (spacing / 2.0);
                     let pos = Vec2::new(x, y);
 
-                    if pos.x.abs() <= display_width * 0.9 && pos.y.abs() <= display_height * 0.9 {
-                        if !is_overlapping_with_all(
+                    if pos.x.abs() <= display_width * 0.9
+                        && pos.y.abs() <= display_height * 0.9
+                        && !is_overlapping_with_all(
                             pos,
                             existing_positions,
                             &positions,
                             piece_size * 0.8,
-                        ) {
-                            positions.push(pos);
-                        }
+                        )
+                    {
+                        positions.push(pos);
                     }
                 }
             }
@@ -513,15 +519,15 @@ fn generate_fallback_positions(
         while positions.len() < count && attempts < max_attempts {
             // より広いエリアからランダム選択
             let area_scale = 1.5;
-            let x = rng.gen_range(-display_width * area_scale..display_width * area_scale);
-            let y = rng.gen_range(-display_height * area_scale..display_height * area_scale);
+            let x = rng.random_range(-display_width * area_scale..display_width * area_scale);
+            let y = rng.random_range(-display_height * area_scale..display_height * area_scale);
             let candidate = Vec2::new(x, y);
 
             // 除外エリア外で、既存ピースと重複しなければ追加
-            if !is_in_grid_area(candidate, puzzle_area, piece_size, piece_size) {
-                if !is_overlapping_with_all(candidate, existing_positions, &positions, piece_size) {
-                    positions.push(candidate);
-                }
+            if !is_in_grid_area(candidate, puzzle_area, piece_size, piece_size)
+                && !is_overlapping_with_all(candidate, existing_positions, &positions, piece_size)
+            {
+                positions.push(candidate);
             }
 
             attempts += 1;
@@ -680,7 +686,7 @@ pub fn extract_shape_data_from_jigsaw_shape(
         println!(
             "   Mesh has {} attribute vertices",
             match jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-                Some(bevy::render::mesh::VertexAttributeValues::Float32x3(pos)) => pos.len(),
+                Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) => pos.len(),
                 _ => 0,
             }
         );
@@ -690,10 +696,10 @@ pub fn extract_shape_data_from_jigsaw_shape(
         );
         println!(
             "   Using mesh vertices for rendering: {}",
-            matches!(
-                jigsaw_shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION),
-                Some(_)
-            )
+            jigsaw_shape
+                .mesh
+                .attribute(Mesh::ATTRIBUTE_POSITION)
+                .is_some()
         );
         if indices.len() <= 20 {
             println!("   All indices: {:?}", indices);
@@ -714,18 +720,7 @@ pub fn extract_shape_data_from_jigsaw_shape(
         fixed_indices
     } else {
         // 正常ケースでも基本情報をログ出力（最初の数個のピースのみ）
-        static mut DEBUG_COUNTER: usize = 0;
-        unsafe {
-            DEBUG_COUNTER += 1;
-            if DEBUG_COUNTER <= 3 {
-                println!(
-                    "✅ Valid mesh data: {} vertices, {} indices (max_index: {})",
-                    vertex_count,
-                    indices.len(),
-                    max_index
-                );
-            }
-        }
+
         indices
     };
 
@@ -762,25 +757,6 @@ pub fn update_puzzle_image_size(
         let is_external = file_registry.is_external_image_path(&puzzle_config.image_path);
 
         // デバッグ用に状態を出力（頻度制限）
-        static mut DEBUG_COUNTER: usize = 0;
-        unsafe {
-            DEBUG_COUNTER += 1;
-            if DEBUG_COUNTER % 300 == 0 {
-                // 5秒に1回程度
-                if is_external {
-                    println!(
-                        "🖼️ External image check: handle {:?}, current size: {:.0}x{:.0}",
-                        puzzle_image.handle.id(),
-                        puzzle_image.size.x,
-                        puzzle_image.size.y
-                    );
-                } else {
-                    let load_state = asset_server.load_state(&puzzle_image.handle);
-                    println!("🖼️ Asset image loading: handle {:?}, state: {:?}, current size: {:.0}x{:.0}",
-                        puzzle_image.handle.id(), load_state, puzzle_image.size.x, puzzle_image.size.y);
-                }
-            }
-        }
 
         if is_external {
             // 外部ファイルの場合：AssetServerの状態チェックをスキップして直接Imageをチェック
@@ -795,14 +771,6 @@ pub fn update_puzzle_image_size(
                         puzzle_image.size.x, puzzle_image.size.y, new_size.x, new_size.y
                     );
                     puzzle_image.size = new_size;
-                }
-            } else {
-                unsafe {
-                    if DEBUG_COUNTER % 120 == 0 {
-                        println!(
-                            "⚠️ External image not found in Assets<Image> - may still be loading"
-                        );
-                    }
                 }
             }
         } else {
@@ -828,25 +796,11 @@ pub fn update_puzzle_image_size(
                         println!("Asset image is loaded but not found in Assets<Image>");
                     }
                 }
-                bevy::asset::LoadState::Loading => {
-                    // 頻度を制限してログ出力
-                    unsafe {
-                        if DEBUG_COUNTER % 120 == 0 {
-                            println!("Asset image is still loading...");
-                        }
-                    }
-                }
+                bevy::asset::LoadState::Loading => {}
                 bevy::asset::LoadState::Failed(_) => {
                     println!("Failed to load asset image!");
                 }
-                bevy::asset::LoadState::NotLoaded => {
-                    // NotLoadedの場合は、再度読み込みを試行
-                    unsafe {
-                        if DEBUG_COUNTER % 120 == 0 {
-                            println!("Asset image not loaded - this may indicate the image was not properly loaded by AssetServer");
-                        }
-                    }
-                }
+                bevy::asset::LoadState::NotLoaded => {}
             }
         }
     }

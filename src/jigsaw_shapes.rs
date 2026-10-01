@@ -1,6 +1,6 @@
+use bevy::asset::RenderAssetUsages;
+use bevy::mesh::Indices;
 use bevy::prelude::*;
-use bevy::render::mesh::Indices;
-use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::PrimitiveTopology;
 use lyon::math;
 use lyon::path::Path;
@@ -23,7 +23,6 @@ pub struct JigsawPieceShape {
     pub mesh: Mesh,
     pub stroke_mesh: Option<Mesh>, // アウトライン用のストロークメッシュ
     pub bounds: Rect,
-    pub texture_coords: Vec4,
     pub shape_hash: String,               // SVGパスベースの形状ハッシュ
     pub boundary_vertices: Vec<[f32; 2]>, // コリジョン検出用の境界頂点
 }
@@ -31,6 +30,7 @@ pub struct JigsawPieceShape {
 /// ジグソーピース形状の生成とキャッシュを管理するシステム
 pub struct JigsawShapeGenerator {
     piece_size: (f32, f32),
+    seed: u64,
     grid_size: (usize, usize),
     jigsaw_template: Option<JigsawTemplate>,
     shape_cache: HashMap<(usize, usize), JigsawPieceShape>,
@@ -38,9 +38,10 @@ pub struct JigsawShapeGenerator {
 
 impl JigsawShapeGenerator {
     /// 新しいジグソー形状ジェネレータを作成
-    pub fn new(piece_size: (f32, f32), grid_size: (usize, usize)) -> Self {
+    pub fn new(piece_size: (f32, f32), grid_size: (usize, usize), seed: u64) -> Self {
         Self {
             piece_size,
+            seed,
             grid_size,
             jigsaw_template: None,
             shape_cache: HashMap::new(),
@@ -59,7 +60,7 @@ impl JigsawShapeGenerator {
             grid_height,                       // 列のピース数（行数）
             None,                              // デフォルトのタブサイズ
             None,                              // デフォルトのジッター
-            Some(42),                          // 固定シード
+            Some(((self.seed ^ (self.seed >> 32)) & 0x00ff_ffff) as usize), // stable on 32/64-bit
         );
 
         // デバッグ: ジグソーテンプレート生成ログ
@@ -90,7 +91,7 @@ impl JigsawShapeGenerator {
         }
 
         let template = self.jigsaw_template.as_ref().unwrap();
-        let (grid_width, grid_height) = self.grid_size;
+        let (grid_width, _) = self.grid_size;
         let piece_index = y * grid_width + x;
 
         // SVGパスを取得
@@ -139,14 +140,6 @@ impl JigsawShapeGenerator {
         // SVGパスから形状ハッシュを計算
         let shape_hash = self.calculate_shape_hash_from_svg_path(svg_path);
 
-        // テクスチャ座標を計算
-        let texture_coords = Vec4::new(
-            x as f32 / grid_width as f32,
-            y as f32 / grid_height as f32,
-            (x + 1) as f32 / grid_width as f32,
-            (y + 1) as f32 / grid_height as f32,
-        );
-
         // バウンディングボックスをメッシュから計算
         let bounds = self.calculate_mesh_bounds(&mesh);
 
@@ -154,7 +147,6 @@ impl JigsawShapeGenerator {
             mesh,
             stroke_mesh,
             bounds,
-            texture_coords,
             shape_hash,
             boundary_vertices,
         };
@@ -275,10 +267,7 @@ impl JigsawShapeGenerator {
         let _height = max_y - min_y;
 
         // Bevyメッシュを作成
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::all());
 
         // 頂点位置を変換
         let positions: Vec<[f32; 3]> = vb
@@ -326,7 +315,7 @@ impl JigsawShapeGenerator {
             .collect();
 
         // Debug: Log UV coordinates for first few vertices of first piece
-        if x == 0 && y == 0 && uvs.len() > 0 {
+        if x == 0 && y == 0 && !uvs.is_empty() {
             println!(
                 "First piece UV mapping: vertex[0]: pos[{:.1},{:.1}] -> uv[{:.3},{:.3}]",
                 vb.vertices[0].position[0], vb.vertices[0].position[1], uvs[0][0], uvs[0][1]
@@ -356,10 +345,7 @@ impl JigsawShapeGenerator {
         &self,
         stroke_vb: &VertexBuffers<SimpleVertex, u16>,
     ) -> Result<Mesh, Box<dyn std::error::Error>> {
-        let mut stroke_mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
+        let mut stroke_mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::all());
 
         // 頂点位置を変換
         let positions: Vec<[f32; 3]> = stroke_vb
@@ -382,7 +368,7 @@ impl JigsawShapeGenerator {
     fn calculate_mesh_bounds(&self, mesh: &Mesh) -> Rect {
         if let Some(positions) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
             match positions {
-                bevy::render::mesh::VertexAttributeValues::Float32x3(positions) => {
+                bevy::mesh::VertexAttributeValues::Float32x3(positions) => {
                     let (min_x, max_x, min_y, max_y) = positions.iter().fold(
                         (
                             f32::INFINITY,
@@ -400,36 +386,8 @@ impl JigsawShapeGenerator {
                         },
                     );
 
-                    // メッシュの中心を計算
-                    let center_x = (min_x + max_x) / 2.0;
-                    let center_y = (min_y + max_y) / 2.0;
-
-                    // 中心を原点とした相対座標に変換
-                    let relative_min_x = min_x - center_x;
-                    let relative_min_y = min_y - center_y;
-                    let relative_max_x = max_x - center_x;
-                    let relative_max_y = max_y - center_y;
-                    let width = max_x - min_x;
-                    let height = max_y - min_y;
-
-                    // Only log for first few pieces to avoid spam
-                    static mut BOUNDS_LOG_COUNT: usize = 0;
-                    unsafe {
-                        if BOUNDS_LOG_COUNT < 4 {
-                            println!("Mesh bounds: abs({:.1},{:.1} to {:.1},{:.1}) center:({:.1},{:.1}) -> relative({:.1},{:.1} to {:.1},{:.1}) size:{}x{}",
-                                min_x, min_y, max_x, max_y, center_x, center_y,
-                                relative_min_x, relative_min_y, relative_max_x, relative_max_y, width, height);
-                            BOUNDS_LOG_COUNT += 1;
-                        }
-                    }
-
-                    // Rect::new は (min_x, min_y, max_x, max_y) の順序
-                    Rect::new(
-                        relative_min_x,
-                        relative_min_y,
-                        relative_max_x,
-                        relative_max_y,
-                    )
+                    // Mesh vertices already use piece-local coordinates.
+                    Rect::new(min_x, min_y, max_x, max_y)
                 }
                 _ => {
                     // フォールバック: 期待される形式でない場合は piece_size を使用
@@ -470,13 +428,6 @@ impl JigsawShapeGenerator {
         let hash = format!("shape_{:08x}", hash_value % 0xFFFFFFFF);
 
         // デバッグログ（最初の数ピースのみ）
-        static mut SVG_HASH_LOG_COUNT: usize = 0;
-        unsafe {
-            if SVG_HASH_LOG_COUNT < 10 {
-                println!("🔑 Shape pattern: '{}' -> hash: '{}'", shape_pattern, hash);
-                SVG_HASH_LOG_COUNT += 1;
-            }
-        }
 
         hash
     }
@@ -557,13 +508,13 @@ impl JigsawShapeGenerator {
 
             if width > 0.0 && height > 0.0 {
                 // 座標を0-1000の範囲に正規化（精度のため）
-                for i in 0..coords.len() {
+                for (i, coordinate) in coords.iter_mut().enumerate() {
                     if i % 2 == 0 {
                         // X座標
-                        coords[i] = ((coords[i] - min_x) / width * 1000.0).round();
+                        *coordinate = ((*coordinate - min_x) / width * 1000.0).round();
                     } else {
                         // Y座標
-                        coords[i] = ((coords[i] - min_y) / height * 1000.0).round();
+                        *coordinate = ((*coordinate - min_y) / height * 1000.0).round();
                     }
                 }
             }
@@ -844,115 +795,6 @@ impl JigsawShapeGenerator {
         Ok(vertices)
     }
 
-    /// SVGパス文字列をlyonのPathオブジェクトに変換（旧バージョン - 使用しない）
-    fn parse_svg_path_to_lyon(&self, svg_path: &str) -> Result<Path, Box<dyn std::error::Error>> {
-        // println!("Parsing SVG path: {}", svg_path);
-
-        let mut builder = Path::builder();
-        let mut path_started = false;
-        let mut coord_count = 0;
-
-        // SVG解析を実装
-        for segment in PathParser::from(svg_path) {
-            match segment {
-                Ok(seg) => {
-                    match seg {
-                        PathSegment::MoveTo { abs: _, x, y } => {
-                            if path_started {
-                                builder.end(false);
-                            }
-                            // Debug: Log first few coordinates to understand coordinate system
-                            if coord_count < 5 {
-                                println!(
-                                    "MoveTo: ({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})",
-                                    x, y, x as f32, -y as f32
-                                );
-                                coord_count += 1;
-                            }
-                            // Y座標を反転してBevyの座標系に合わせる
-                            builder.begin(math::point(x as f32, -y as f32));
-                            path_started = true;
-                        }
-                        PathSegment::LineTo { abs: _, x, y } => {
-                            if !path_started {
-                                builder.begin(math::point(0.0, 0.0));
-                                path_started = true;
-                            }
-                            // Debug: Log first few coordinates
-                            if coord_count < 5 {
-                                println!(
-                                    "LineTo: ({:.1}, {:.1}) -> Bevy: ({:.1}, {:.1})",
-                                    x, y, x as f32, -y as f32
-                                );
-                                coord_count += 1;
-                            }
-                            // Y座標を反転してBevyの座標系に合わせる
-                            builder.line_to(math::point(x as f32, -y as f32));
-                        }
-                        PathSegment::CurveTo {
-                            abs: _,
-                            x1,
-                            y1,
-                            x2,
-                            y2,
-                            x,
-                            y,
-                        } => {
-                            if !path_started {
-                                builder.begin(math::point(0.0, 0.0));
-                                path_started = true;
-                            }
-                            // Y座標を反転してBevyの座標系に合わせる
-                            builder.cubic_bezier_to(
-                                math::point(x1 as f32, -y1 as f32),
-                                math::point(x2 as f32, -y2 as f32),
-                                math::point(x as f32, -y as f32),
-                            );
-                        }
-                        PathSegment::ClosePath { abs: _ } => {
-                            // For ClosePath, we just end with closed=true
-                            if path_started {
-                                path_started = false;
-                                builder.end(true);
-                            }
-                        }
-                        _ => {
-                            println!("Unsupported SVG command: {:?}", seg);
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("Error parsing SVG: {}, falling back to rectangle", e);
-                    return self.create_fallback_rectangle();
-                }
-            }
-        }
-
-        // If path is still open, close it
-        if path_started {
-            builder.end(false);
-        }
-
-        Ok(builder.build())
-    }
-
-    /// フォールバック用の矩形パスを作成
-    fn create_fallback_rectangle(&self) -> Result<Path, Box<dyn std::error::Error>> {
-        let (piece_width, piece_height) = self.piece_size;
-        let half_width = piece_width / 2.0;
-        let half_height = piece_height / 2.0;
-
-        let mut builder = Path::builder();
-        builder.begin(math::point(-half_width, half_height));
-        builder.line_to(math::point(half_width, half_height));
-        builder.line_to(math::point(half_width, -half_height));
-        builder.line_to(math::point(-half_width, -half_height));
-        builder.end(true); // end(true) for closed path
-
-        Ok(builder.build())
-    }
-
-    /// 全てのピース形状を事前生成
     pub fn generate_all_shapes(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let (grid_width, grid_height) = self.grid_size;
 
@@ -970,132 +812,14 @@ impl JigsawShapeGenerator {
     pub fn get_shape(&self, x: usize, y: usize) -> Option<&JigsawPieceShape> {
         self.shape_cache.get(&(x, y))
     }
-
-    /// 形状内での当たり判定用（実際のメッシュ形状を使用）
-    pub fn point_in_shape(&self, x: usize, y: usize, point: Vec2) -> bool {
-        if let Some(shape) = self.get_shape(x, y) {
-            // まず境界チェックで高速に除外
-            if !shape.bounds.contains(point) {
-                return false;
-            }
-
-            // 実際のメッシュ形状での精密判定
-            self.point_in_mesh(&shape.mesh, point)
-        } else {
-            false
-        }
-    }
-
-    /// メッシュの三角形を使った点内判定（Ray-casting アルゴリズム）
-    fn point_in_mesh(&self, mesh: &Mesh, point: Vec2) -> bool {
-        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-            Some(bevy::render::mesh::VertexAttributeValues::Float32x3(pos)) => pos,
-            _ => return false,
-        };
-
-        let indices = match mesh.indices() {
-            Some(Indices::U32(idx)) => idx,
-            Some(Indices::U16(_idx)) => {
-                // U16をU32に変換
-                return self.point_in_mesh_u16(mesh, point);
-            }
-            _ => return false,
-        };
-
-        // Ray-casting: 点から右方向に水平線を引いて、メッシュの辺との交点数を数える
-        let mut intersections = 0;
-        let ray_y = point.y;
-
-        // 全ての三角形の辺をチェック
-        for triangle in indices.chunks(3) {
-            let v0 = &positions[triangle[0] as usize];
-            let v1 = &positions[triangle[1] as usize];
-            let v2 = &positions[triangle[2] as usize];
-
-            // 三角形の各辺について交点チェック
-            intersections +=
-                self.count_ray_edge_intersections(point, ray_y, [v0[0], v0[1]], [v1[0], v1[1]]);
-            intersections +=
-                self.count_ray_edge_intersections(point, ray_y, [v1[0], v1[1]], [v2[0], v2[1]]);
-            intersections +=
-                self.count_ray_edge_intersections(point, ray_y, [v2[0], v2[1]], [v0[0], v0[1]]);
-        }
-
-        // 奇数個の交点 = 点が内部にある
-        intersections % 2 == 1
-    }
-
-    /// U16インデックス用の点内判定
-    fn point_in_mesh_u16(&self, mesh: &Mesh, point: Vec2) -> bool {
-        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-            Some(bevy::render::mesh::VertexAttributeValues::Float32x3(pos)) => pos,
-            _ => return false,
-        };
-
-        let indices = match mesh.indices() {
-            Some(Indices::U16(idx)) => idx,
-            _ => return false,
-        };
-
-        let mut intersections = 0;
-        let ray_y = point.y;
-
-        for triangle in indices.chunks(3) {
-            let v0 = &positions[triangle[0] as usize];
-            let v1 = &positions[triangle[1] as usize];
-            let v2 = &positions[triangle[2] as usize];
-
-            intersections +=
-                self.count_ray_edge_intersections(point, ray_y, [v0[0], v0[1]], [v1[0], v1[1]]);
-            intersections +=
-                self.count_ray_edge_intersections(point, ray_y, [v1[0], v1[1]], [v2[0], v2[1]]);
-            intersections +=
-                self.count_ray_edge_intersections(point, ray_y, [v2[0], v2[1]], [v0[0], v0[1]]);
-        }
-
-        intersections % 2 == 1
-    }
-
-    /// 水平線と線分の交点数を計算
-    fn count_ray_edge_intersections(
-        &self,
-        point: Vec2,
-        ray_y: f32,
-        edge_start: [f32; 2],
-        edge_end: [f32; 2],
-    ) -> usize {
-        let y1 = edge_start[1];
-        let y2 = edge_end[1];
-
-        // 水平線が線分のY範囲内にない場合は交点なし
-        if (y1 > ray_y) == (y2 > ray_y) {
-            return 0;
-        }
-
-        // 水平線と線分の交点のX座標を計算
-        let x1 = edge_start[0];
-        let x2 = edge_end[0];
-        let intersection_x = x1 + (ray_y - y1) * (x2 - x1) / (y2 - y1);
-
-        // 交点が点より右側にある場合のみカウント
-        if intersection_x > point.x {
-            1
-        } else {
-            0
-        }
-    }
 }
 
-/// メッシュデータをクローンするヘルパー関数
 pub fn clone_mesh_from_shape(shape: &JigsawPieceShape) -> Mesh {
     let positions = shape.mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
     let uvs = shape.mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap();
     let indices = shape.mesh.indices().unwrap();
 
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    );
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::all());
 
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs.clone());
@@ -1106,6 +830,3 @@ pub fn clone_mesh_from_shape(shape: &JigsawPieceShape) -> Mesh {
 
     mesh
 }
-
-// TODO: 後でカスタムマテリアルを実装してテクスチャマッピングを行う
-// 現在はシンプルな色付き形状で動作確認

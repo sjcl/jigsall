@@ -1,4 +1,3 @@
-use crate::components::*;
 use crate::resources::*;
 use bevy::prelude::*;
 
@@ -22,14 +21,12 @@ pub fn performance_frame_end(mut perf_monitor: ResMut<PerformanceMonitor>, time:
     perf_monitor.frame_count += 1;
 
     // デバッグ: 異常に高速なフレームを検出
-    if perf_monitor.debug_level == PerformanceDebugLevel::High {
-        if delta_time.as_nanos() < 100_000 {
-            // 0.1ms未満
-            println!(
-                "⚠️  WARNING: Extremely fast frame detected: {:.3}ms",
-                delta_time.as_secs_f32() * 1000.0
-            );
-        }
+    if perf_monitor.debug_level == PerformanceDebugLevel::High && delta_time.as_nanos() < 100_000 {
+        // 0.1ms未満
+        println!(
+            "⚠️  WARNING: Extremely fast frame detected: {:.3}ms",
+            delta_time.as_secs_f32() * 1000.0
+        );
     }
 }
 
@@ -56,11 +53,11 @@ pub fn should_report_performance(perf_monitor: Res<PerformanceMonitor>) -> bool 
 /// パフォーマンスレポート生成システム
 pub fn performance_report_system(
     mut perf_monitor: ResMut<PerformanceMonitor>,
-    piece_query: Query<Entity, With<PuzzlePiece>>,
-    cache: Res<PieceSelectionCache>,
+    store: Res<PieceDataStore>,
+    collision: Res<PieceCollisionSystem>,
     time: Res<Time>,
 ) {
-    let piece_count = piece_query.iter().count();
+    let piece_count = store.pieces.len();
 
     // Bevyの正確なフレーム時間を使用
     let delta_time = time.delta();
@@ -77,14 +74,14 @@ pub fn performance_report_system(
 
     // サニティチェック: 異常な値を検出
     let fps_clamped = if fps > 1000.0 || fps.is_nan() || fps.is_infinite() {
-        fps.min(1000.0).max(0.0)
+        fps.clamp(0.0, 1000.0)
     } else {
         fps
     };
 
     let frame_time_clamped =
         if frame_time_ms > 1000.0 || frame_time_ms.is_nan() || frame_time_ms.is_infinite() {
-            frame_time_ms.min(1000.0).max(0.0)
+            frame_time_ms.clamp(0.0, 1000.0)
         } else {
             frame_time_ms
         };
@@ -108,7 +105,7 @@ pub fn performance_report_system(
 
             // システム別の時間を表示（上位5つ）
             let mut system_times: Vec<_> = perf_monitor.system_timings.iter().collect();
-            system_times.sort_by(|a, b| b.1.last_duration.cmp(&a.1.last_duration));
+            system_times.sort_by_key(|entry| std::cmp::Reverse(entry.1.last_duration));
 
             println!("  Top Systems by Last Duration:");
             for (i, (name, timing)) in system_times.iter().take(5).enumerate() {
@@ -129,7 +126,7 @@ pub fn performance_report_system(
                 fps_clamped,
                 frame_time_clamped,
                 piece_count,
-                cache.all_pieces.len()
+                collision.pieces.len()
             );
             println!(
                 "  Internal Timing: FPS={:.1}, Frame Time={:.2}ms (may be inaccurate)",
@@ -138,7 +135,7 @@ pub fn performance_report_system(
 
             // 全システムの詳細情報
             let mut system_times: Vec<_> = perf_monitor.system_timings.iter().collect();
-            system_times.sort_by(|a, b| b.1.average_duration().cmp(&a.1.average_duration()));
+            system_times.sort_by_key(|entry| std::cmp::Reverse(entry.1.average_duration()));
 
             println!("  System Performance Details:");
             for (name, timing) in system_times.iter() {
@@ -209,7 +206,7 @@ macro_rules! time_scope {
             let timing = $perf_monitor
                 .system_timings
                 .entry($scope_name.to_string())
-                .or_insert_with(|| SystemTiming::new($scope_name.to_string()));
+                .or_insert_with(SystemTiming::new);
             timing.record_timing(duration);
         }
 

@@ -3,15 +3,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 /// メインメニューUI
-pub fn draw_menu_ui(
-    mut contexts: EguiContexts,
-    mut game_state: ResMut<GameData>,
-    mut next_state: ResMut<NextState<AppState>>,
-) {
-    if game_state.current_screen != GameScreen::Menu {
-        return;
-    }
-
+pub fn draw_menu_ui(mut contexts: EguiContexts, mut next_state: ResMut<NextState<AppState>>) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -20,7 +12,7 @@ pub fn draw_menu_ui(
     egui::Area::new(egui::Id::new("title_background"))
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             ui.allocate_ui_with_layout(
                 screen_rect.size(),
                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
@@ -59,7 +51,7 @@ pub fn draw_menu_ui(
                 );
 
                 ui.label(
-                    egui::RichText::new("Multiplayer Jigsaw Puzzle")
+                    egui::RichText::new("Jigsaw Puzzle")
                         .size(18.0)
                         .color(egui::Color32::LIGHT_GRAY),
                 );
@@ -68,29 +60,14 @@ pub fn draw_menu_ui(
                 ui.separator();
                 ui.add_space(15.0);
 
-                // Host Game ボタン
+                // Game Setup ボタン
                 if ui
                     .add_sized(
                         [280.0, 50.0],
-                        egui::Button::new(egui::RichText::new("🎮 Host Game").size(20.0)),
+                        egui::Button::new(egui::RichText::new("🎮 Game Setup").size(20.0)),
                     )
                     .clicked()
                 {
-                    game_state.current_screen = GameScreen::HostSetup;
-                    game_state.is_host = true;
-                    next_state.set(AppState::GameSetup);
-                }
-
-                // Join Game ボタン
-                if ui
-                    .add_sized(
-                        [280.0, 50.0],
-                        egui::Button::new(egui::RichText::new("🔗 Join Game").size(20.0)),
-                    )
-                    .clicked()
-                {
-                    game_state.current_screen = GameScreen::JoinGame;
-                    game_state.is_host = false;
                     next_state.set(AppState::GameSetup);
                 }
 

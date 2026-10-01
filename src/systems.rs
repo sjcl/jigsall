@@ -2,7 +2,6 @@
 pub mod batching;
 pub mod collision;
 pub mod game_logic;
-pub mod id_management;
 pub mod image_loading;
 pub mod input_camera;
 pub mod performance;
@@ -13,7 +12,6 @@ pub mod puzzle_generation;
 pub use batching::*;
 pub use collision::*;
 pub use game_logic::*;
-pub use id_management::*;
 pub use image_loading::*;
 pub use input_camera::*;
 pub use performance::*;
