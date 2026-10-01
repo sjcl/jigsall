@@ -63,6 +63,21 @@ impl PieceDataStore {
             .collect();
         self.next_z_order = self.states.len() as u32;
     }
+    /// Rare snapshot restore. Reuses the local upload/readback lifecycle counter.
+    pub(crate) fn replace_snapshot_states(
+        &mut self,
+        states: Vec<GpuPieceState>,
+        next_z_order: u32,
+    ) {
+        *self = Self::default();
+        self.epoch = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+        self.placed_count = states
+            .iter()
+            .filter(|state| state.flags & PLACED != 0)
+            .count();
+        self.states = states;
+        self.next_z_order = next_z_order;
+    }
     pub fn len(&self) -> usize {
         self.states.len()
     }
