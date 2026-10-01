@@ -36,6 +36,9 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
                 ..default()
             })
             .set(RenderPlugin {
+                // Pixel readback must wait for Bevy's output pipelines as well
+                // as the puzzle pipelines; avoid startup compile timing races.
+                synchronous_pipeline_compilation: true,
                 render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
                     features: WgpuFeatures::TIMESTAMP_QUERY
                         | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS,
@@ -571,12 +574,7 @@ fn gpu_drag_transform_and_preview_without_readback() {
             .main_pipelines
             .iter()
             .any(|((_, opaque), id)| !opaque && cache.get_render_pipeline(*id).is_some())
-            && gpu
-                .sort
-                .is_some_and(|id| cache.get_compute_pipeline(id).is_some())
-            && gpu
-                .initialize
-                .is_some_and(|id| cache.get_compute_pipeline(id).is_some())
+            && gpu.sort_ready(cache)
         {
             break;
         }
@@ -951,7 +949,7 @@ fn gpu_transparency_and_visibility() {
         update_gpu(&mut app);
     }
     assert!(visible_ids(&app).is_empty());
-    // A transparent one-piece puzzle also works without any sort stages.
+    // A transparent one-piece puzzle also works with a partial radix workgroup.
     app.world_mut()
         .insert_resource(definition(UVec2::ONE, 64, 42));
     app.world_mut()
@@ -966,6 +964,104 @@ fn gpu_transparency_and_visibility() {
         update_gpu(&mut app);
     }
     assert_eq!(visible_ids(&app), vec![0]);
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_radix_sort_visible_counts_and_ties() {
+    use crate::resources::pieces::{MAX_Z, PLACED};
+    const COUNT: u32 = 1_000_000;
+    let (mut app, _, _) = gpu_app(128);
+    let def = definition(UVec2::splat(1000), 128, 42);
+    app.world_mut().insert_resource(def.clone());
+    app.world_mut().resource_mut::<PuzzleImage>().opaque = false;
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .initialize(vec![Vec2::splat(10000.0); COUNT as usize]);
+    let mut previous = vec![];
+    for visible_count in [0, 1, 255, 256, 257, 1000, 65_537, COUNT, 1000, 0] {
+        let mut expected: Vec<u32> = (0..visible_count)
+            .map(|i| (u64::from(i) * 8191 % u64::from(COUNT)) as u32)
+            .collect();
+        {
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            for &id in &previous {
+                store.states[id as usize].position = Vec2::splat(10000.0);
+                store.dirty_pieces.insert(PieceId(id));
+            }
+            for &id in &expected {
+                let state = &mut store.states[id as usize];
+                state.position = def.piece(id, Vec2::ZERO).correct_position;
+                state.z_order = match id % 11 {
+                    0 => 0,
+                    1 => 254,
+                    2 => 255,
+                    3 => 65534,
+                    4 => 65535,
+                    5 => MAX_Z,
+                    _ => (mix32(id) & 0x00ff_ffff).min(MAX_Z),
+                };
+                if id % 7 == 0 {
+                    state.flags |= PLACED;
+                }
+                store.dirty_pieces.insert(PieceId(id));
+            }
+            expected.sort_unstable_by_key(|&id| {
+                let state = store.states[id as usize];
+                (
+                    if state.flags & PLACED != 0 {
+                        0
+                    } else {
+                        state.z_order + 1
+                    },
+                    id,
+                )
+            });
+        }
+        wait_ready(&mut app);
+        update_gpu(&mut app);
+        update_gpu(&mut app);
+        let actual = visible_ids(&app);
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "visible count {visible_count}"
+        );
+        assert_eq!(
+            actual
+                .iter()
+                .zip(&expected)
+                .enumerate()
+                .find(|(_, (a, b))| a != b),
+            None,
+            "first differing ID at visible count {visible_count}",
+        );
+        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+        let dispatch = read_buffer(
+            &app,
+            &gpu.buffers
+                .as_ref()
+                .unwrap()
+                .sort
+                .as_ref()
+                .unwrap()
+                .dispatch,
+            24,
+        );
+        assert_eq!(
+            bytemuck::cast_slice::<u8, u32>(&dispatch),
+            &[
+                visible_count.div_ceil(256),
+                1,
+                1,
+                if visible_count == 0 { 0 } else { 256 },
+                1,
+                1
+            ],
+            "radix workgroups must depend on visible count, not million-piece capacity",
+        );
+        previous = expected;
+    }
 }
 
 fn gpu_ms(app: &App, name: &str) -> f64 {
@@ -1022,13 +1118,24 @@ fn procedural_gpu_benchmark() {
         size: Vec2::splat(side as f32),
         opaque: true,
     });
-    let mut csv=String::from("pieces,view,visible,placement_ms,state_ms,initial_upload_prep_ms,dirty_prep_us,frame_ms,cull_gpu_ms,draw_gpu_ms,point_gpu_ms,rectangle_gpu_ms,cpu_state_bytes,gpu_state_bytes,visible_bytes,selectable_bytes,cpu_image_bytes,gpu_image_bytes,pick_visible_bytes,sort_gpu_ms,selection_and_staging_bytes,meshes,piece_entities,draw_calls\n");
+    let mut csv=String::from("pieces,view,visible,placement_ms,state_ms,initial_upload_prep_ms,dirty_prep_us,frame_ms,cull_gpu_ms,draw_gpu_ms,point_gpu_ms,rectangle_gpu_ms,cpu_state_bytes,gpu_state_bytes,visible_bytes,selectable_bytes,cpu_image_bytes,gpu_image_bytes,pick_visible_bytes,sort_gpu_ms,selection_and_staging_bytes,meshes,piece_entities,draw_calls,sort_workgroups,sort_dispatches,sort_scratch_bytes\n");
     for grid in [
         UVec2::new(40, 25),
         UVec2::splat(100),
         UVec2::new(400, 250),
         UVec2::splat(1000),
     ] {
+        // Start each new session opaque, before buffer preparation can allocate
+        // optional radix scratch from the preceding transparent session's flag.
+        if !app.world().resource::<PuzzleImage>().opaque {
+            let handle = app.world().resource::<PuzzleImage>().handle.clone();
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            let mut image = images.get_mut(&handle).unwrap();
+            for pixel in image.data.as_mut().unwrap().chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
+        }
+        app.world_mut().resource_mut::<PuzzleImage>().opaque = true;
         let mut def = definition(grid, 100, 42);
         def.image_size = UVec2::splat(side);
         let size = def.image_size.as_vec2() / grid.as_vec2();
@@ -1104,9 +1211,17 @@ fn procedural_gpu_benchmark() {
             ("near", (1000.0 * size.x * size.y).sqrt() / 1024.0),
             ("medium", (10000.0 * size.x * size.y).sqrt() / 1024.0),
             ("entire", side as f32 / 1024.0 * 1.01),
+            (
+                "near_translucent",
+                (1000.0 * size.x * size.y).sqrt() / 1024.0,
+            ),
+            (
+                "medium_translucent",
+                (10000.0 * size.x * size.y).sqrt() / 1024.0,
+            ),
             ("entire_translucent", side as f32 / 1024.0 * 1.01),
         ] {
-            let translucent = name == "entire_translucent";
+            let translucent = name.ends_with("_translucent");
             if app.world().resource::<PuzzleImage>().opaque == translucent {
                 let handle = app.world().resource::<PuzzleImage>().handle.clone();
                 let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -1155,6 +1270,9 @@ fn procedural_gpu_benchmark() {
             }
             let ids = visible_ids(&app);
             assert!(ids.len() <= count);
+            if translucent {
+                assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+            }
             if name.starts_with("entire") {
                 assert_eq!(ids.len(), count);
             }
@@ -1209,7 +1327,19 @@ fn procedural_gpu_benchmark() {
             let image_bytes = u64::from(side) * u64::from(side) * 4;
             let sort_ms = sort / 30.0;
             let pick_bytes = b.pick_visible.size();
-            let row=format!("{count},{name},{},{placement:.4},{state_ms:.4},{prep:.4},{dirty:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{image_bytes},{image_bytes},{pick_bytes},{sort_ms:.4},{selection_bytes},{meshes},0,1\n",ids.len(),frame/30.0,cull/30.0,draw/30.0,point/5.0,rectangle/5.0,app.world().resource::<PieceDataStore>().states.capacity()*16,b.states.size(),b.visible.size(),b.selectable.size());
+            let sort_bytes = b.sort.as_ref().map_or(0, |s| {
+                s.scratch.size() + s.counts.size() + s.histogram.size() + s.dispatch.size()
+            });
+            let (sort_workgroups, sort_dispatches) = if translucent {
+                let dispatch = read_buffer(&app, &b.sort.as_ref().unwrap().dispatch, 24);
+                let workgroups = u32::from_le_bytes(dispatch[..4].try_into().unwrap());
+                assert_eq!(workgroups, (ids.len() as u32).div_ceil(256));
+                (workgroups, 11)
+            } else {
+                assert!(b.sort.is_none(), "opaque puzzles need no radix scratch");
+                (0, 0)
+            };
+            let row=format!("{count},{name},{},{placement:.4},{state_ms:.4},{prep:.4},{dirty:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{image_bytes},{image_bytes},{pick_bytes},{sort_ms:.4},{selection_bytes},{meshes},0,1,{sort_workgroups},{sort_dispatches},{sort_bytes}\n",ids.len(),frame/30.0,cull/30.0,draw/30.0,point/5.0,rectangle/5.0,app.world().resource::<PieceDataStore>().states.capacity()*16,b.states.size(),b.visible.size(),b.selectable.size());
             print!("{row}");
             csv.push_str(&row);
         }

@@ -1,11 +1,12 @@
 use super::*;
 
-fn groups(app: &App) -> [Option<BindGroupId>; 9] {
+fn groups(app: &App) -> [Option<BindGroupId>; 11] {
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
-    let mut ids = [None; 9];
+    let mut ids = [None; 11];
     ids[..7].copy_from_slice(&gpu.buffers.as_ref().unwrap().groups.ids());
     ids[7] = gpu.image_group.id();
     ids[8] = gpu.slots.first().and_then(|slot| slot.selection_group.id());
+    ids[9..].copy_from_slice(&gpu.buffers.as_ref().unwrap().groups.radix_ids());
     ids
 }
 fn exercise_selection(app: &mut App) {
@@ -31,7 +32,8 @@ fn gpu_bind_group_reuse_and_invalidation() {
     let initial = groups(&app);
     assert!(initial[..6].iter().all(Option::is_some));
     assert!(initial[6].is_none()); // Opaque frames do not allocate a sort group.
-    assert!(initial[7..].iter().all(Option::is_some));
+    assert!(initial[7..9].iter().all(Option::is_some));
+    assert!(initial[9..].iter().all(Option::is_none));
 
     app.world_mut()
         .insert_resource(SelectionOverlay(Some(Rect::new(-5.0, -5.0, 5.0, 5.0))));
@@ -117,6 +119,11 @@ fn gpu_bind_group_reuse_and_invalidation() {
         assert!(Instant::now() < deadline, "transparent pipeline timed out");
     }
     let transparent = groups(&app);
+    assert_ne!(
+        transparent[0], uniforms_changed[0],
+        "compute must bind new cull counts"
+    );
+    assert!(transparent[9..].iter().all(Option::is_some));
     for _ in 0..4 {
         update_gpu(&mut app);
     }
@@ -131,16 +138,17 @@ fn gpu_bind_group_reuse_and_invalidation() {
         .unwrap()
         .id();
 
-    // A larger epoch grows both the dynamic sort uniform and the readback slot.
+    // A larger epoch replaces radix buffers and grows the readback slot.
+    // The dynamic sort uniform retains its three fixed radix passes.
     reset_puzzle(&mut app, UVec2::new(16, 8));
     let larger = groups(&app);
-    for i in (0..7).chain([8]) {
+    for i in (0..7).chain([8, 9, 10]) {
         assert_ne!(larger[i], transparent[i]);
         assert!(larger[i].is_some());
     }
     assert_eq!(larger[7], transparent[7]);
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
-    assert_ne!(gpu.sort_uniform.buffer().unwrap().id(), old_sort_buffer);
+    assert_eq!(gpu.sort_uniform.buffer().unwrap().id(), old_sort_buffer);
     let slot_buffer = gpu.slots[0].bitset.id();
 
     // Smaller epochs retain slot capacity but must replace its selectable binding.

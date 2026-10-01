@@ -12,8 +12,9 @@ struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
 @group(0) @binding(3) var<storage,read_write> args:DrawArgs;
 @group(0) @binding(4) var<storage,read_write> selectable:array<u32>;
 @group(0) @binding(5) var<storage,read> drag_members:array<u32>;
-@compute @workgroup_size(256) fn cull(@builtin(global_invocation_id) invocation:vec3<u32>) {
-    let id=invocation.x;if id>=config.count {return;}
+@group(0) @binding(6) var<storage,read_write> group_counts:array<u32>;
+fn is_visible(id:u32)->bool {
+    if id>=config.count {return false;}
     if (id%32u)==0u {
         var word=0u;for(var bit=0u;bit<32u && id+bit<config.count;bit++) {
             let flags=states[id+bit].flags;
@@ -25,21 +26,34 @@ struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
     if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
         position+=config.drag_delta;
     }
-    if (state.flags&16u)!=0u && all(position+half>=config.view_min) && all(position-half<=config.view_max) {
+    return (state.flags&16u)!=0u && all(position+half>=config.view_min) && all(position-half<=config.view_max);
+}
+@compute @workgroup_size(256) fn cull(@builtin(global_invocation_id) invocation:vec3<u32>) {
+    let id=invocation.x;
+    if is_visible(id) {
         let dst=atomicAdd(&args.instance_count,1u);visible[dst]=id;
     }
 }
-@compute @workgroup_size(256) fn initialize_visible(@builtin(global_invocation_id) invocation:vec3<u32>) {
-    if invocation.x<config.capacity {visible[invocation.x]=0xffffffffu;}
-}
-struct SortUniform {stride:u32,span:u32,capacity:u32,pad:u32};
-@group(1) @binding(0) var<uniform> sort:SortUniform;
-fn rank(id:u32)->u32 {if id==0xffffffffu {return 0xffffffffu;}let s=states[id];return select(s.z_order+1u,0u,(s.flags&1u)!=0u);}
-// Ascending z for exact alpha blending. Sentinels sort behind all live entries.
-@compute @workgroup_size(256) fn sort_visible(@builtin(global_invocation_id) invocation:vec3<u32>) {
-    let i=invocation.x;let j=i^sort.stride;if j<=i || j>=sort.capacity {return;}
-    let a=visible[i];let b=visible[j];let ra=rank(a);let rb=rank(b);
-    let greater=ra>rb || (ra==rb && a>b);
-    let ascending=(i&sort.span)==0u;
-    if greater==ascending {visible[i]=b;visible[j]=a;}
+// Stable local compaction supplies ID order to the stable 24-bit radix sort.
+// Each group initially owns its original 256-ID range; no capacity padding.
+var<workgroup> visible_scan:array<u32,256>;
+@compute @workgroup_size(256) fn cull_ordered(
+    @builtin(global_invocation_id) invocation:vec3<u32>,
+    @builtin(local_invocation_index) lane:u32,
+    @builtin(workgroup_id) group:vec3<u32>,
+) {
+    let alive=is_visible(invocation.x);
+    visible_scan[lane]=u32(alive);
+    workgroupBarrier();
+    for(var step=1u;step<256u;step*=2u) {
+        var add=0u;if lane>=step {add=visible_scan[lane-step];}
+        workgroupBarrier();
+        visible_scan[lane]+=add;
+        workgroupBarrier();
+    }
+    if alive {visible[group.x*256u+visible_scan[lane]-1u]=invocation.x;}
+    if lane==255u {
+        let count=visible_scan[255];group_counts[group.x]=count;
+        atomicAdd(&args.instance_count,count);
+    }
 }

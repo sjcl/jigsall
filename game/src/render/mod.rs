@@ -93,6 +93,10 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
         include_str!("pick_visibility.wgsl"),
         "pick_visibility.wgsl",
     ));
+    let radix_sort = shaders.add(Shader::from_wgsl(
+        include_str!("radix_sort.wgsl"),
+        "radix_sort.wgsl",
+    ));
     app.sub_app_mut(RenderApp)
         .insert_resource(ready)
         .insert_resource(GpuRenderer::new(
@@ -101,6 +105,7 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
             draw,
             visibility,
             pick_visibility,
+            radix_sort,
         ))
         .init_resource::<ExtractedPuzzle>()
         .add_systems(ExtractSchedule, extract_puzzle)
@@ -139,9 +144,9 @@ pub struct PuzzleUniform {
 }
 #[derive(Clone, ShaderType)]
 struct SortUniform {
-    stride: u32,
-    span: u32,
-    capacity: u32,
+    shift: u32,
+    count: u32,
+    groups: u32,
     pad: u32,
 }
 #[derive(Resource, Default)]
@@ -210,7 +215,7 @@ fn extract_puzzle(
         view_min: a.min(b),
         view_max: a.max(b),
         count,
-        capacity: count.next_power_of_two(),
+        capacity: count,
         opaque: u32::from(image.opaque),
         reserved: 0,
         drag_delta: out.upload.drag.delta,
@@ -238,6 +243,7 @@ struct StateBuffers {
     states: Buffer,
     visible: Buffer,
     args: Buffer,
+    sort: Option<RadixBuffers>,
     selectable: Buffer,
     dummy_selection: Buffer,
     drag_members: Buffer,
@@ -247,6 +253,44 @@ struct StateBuffers {
     pick_visible: Buffer,
     pick_args: Buffer,
     groups: StateBindGroups,
+}
+#[derive(Clone)]
+struct RadixBuffers {
+    scratch: Buffer,
+    counts: Buffer,
+    histogram: Buffer,
+    dispatch: Buffer,
+}
+impl RadixBuffers {
+    fn new(device: &RenderDevice, count: u32) -> Self {
+        let groups = count.div_ceil(256);
+        Self {
+            scratch: buffer(
+                device,
+                "radix sort scratch IDs",
+                u64::from(count) * 4,
+                BufferUsages::STORAGE,
+            ),
+            counts: buffer(
+                device,
+                "ordered culling group counts",
+                u64::from(groups + 1) * 4,
+                BufferUsages::STORAGE,
+            ),
+            histogram: buffer(
+                device,
+                "radix bucket group offsets and totals",
+                u64::from(groups + 1) * 256 * 4,
+                BufferUsages::STORAGE,
+            ),
+            dispatch: buffer(
+                device,
+                "radix indirect dispatch",
+                24,
+                BufferUsages::STORAGE | BufferUsages::INDIRECT | BufferUsages::COPY_SRC,
+            ),
+        }
+    }
 }
 struct Slot {
     bitset: Buffer,
@@ -274,6 +318,7 @@ struct GpuRenderer {
     draw_shader: Handle<Shader>,
     compute_shader: Handle<Shader>,
     pick_compute_shader: Handle<Shader>,
+    sort_shader: Handle<Shader>,
     buffers: Option<StateBuffers>,
     sender: Sender<RawResult>,
     last_submitted: u64,
@@ -291,6 +336,7 @@ struct GpuRenderer {
     texture_layout: BindGroupLayoutDescriptor,
     selection_layout: BindGroupLayoutDescriptor,
     sort_layout: BindGroupLayoutDescriptor,
+    sort_dispatch_layout: BindGroupLayoutDescriptor,
     pick_compute_layout: BindGroupLayoutDescriptor,
     pick_cull: Option<CachedComputePipelineId>,
     main_pipelines: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
@@ -298,8 +344,12 @@ struct GpuRenderer {
     point_pipeline: Option<CachedRenderPipelineId>,
     rectangle_pipeline: Option<CachedRenderPipelineId>,
     cull: Option<CachedComputePipelineId>,
-    initialize: Option<CachedComputePipelineId>,
-    sort: Option<CachedComputePipelineId>,
+    cull_ordered: Option<CachedComputePipelineId>,
+    sort_prepare: Option<CachedComputePipelineId>,
+    sort_compact: Option<CachedComputePipelineId>,
+    sort_histogram: Option<CachedComputePipelineId>,
+    sort_scan: Option<CachedComputePipelineId>,
+    sort_scatter: Option<CachedComputePipelineId>,
     upload_bytes: u64,
     upload_calls: usize,
     drag_upload_bytes: u64,
@@ -311,12 +361,14 @@ impl GpuRenderer {
         draw: Handle<Shader>,
         compute: Handle<Shader>,
         pick_compute: Handle<Shader>,
+        radix_sort: Handle<Shader>,
     ) -> Self {
         Self {
             _shape: shape,
             draw_shader: draw,
             compute_shader: compute,
             pick_compute_shader: pick_compute,
+            sort_shader: radix_sort,
             buffers: None,
             sender,
             last_submitted: 0,
@@ -353,6 +405,7 @@ impl GpuRenderer {
                         storage_buffer_sized(false, None),
                         storage_buffer_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
+                        storage_buffer_sized(false, None),
                     ),
                 ),
             ),
@@ -377,10 +430,25 @@ impl GpuRenderer {
                 ),
             ),
             sort_layout: BindGroupLayoutDescriptor::new(
-                "puzzle sort",
+                "puzzle radix sort",
+                &BindGroupLayoutEntries::sequential(
+                    ShaderStages::COMPUTE,
+                    (
+                        uniform_buffer::<SortUniform>(true),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_sized(false, None),
+                        storage_buffer_sized(false, None),
+                    ),
+                ),
+            ),
+            sort_dispatch_layout: BindGroupLayoutDescriptor::new(
+                "radix dispatch preparation",
                 &BindGroupLayoutEntries::single(
                     ShaderStages::COMPUTE,
-                    uniform_buffer::<SortUniform>(true),
+                    storage_buffer_sized(false, None),
                 ),
             ),
             pick_compute_layout: BindGroupLayoutDescriptor::new(
@@ -404,12 +472,28 @@ impl GpuRenderer {
             point_pipeline: None,
             rectangle_pipeline: None,
             cull: None,
-            initialize: None,
-            sort: None,
+            cull_ordered: None,
+            sort_prepare: None,
+            sort_compact: None,
+            sort_histogram: None,
+            sort_scan: None,
+            sort_scatter: None,
             upload_bytes: 0,
             upload_calls: 0,
             drag_upload_bytes: 0,
         }
+    }
+    fn sort_ready(&self, cache: &PipelineCache) -> bool {
+        [
+            self.cull_ordered,
+            self.sort_prepare,
+            self.sort_compact,
+            self.sort_histogram,
+            self.sort_scan,
+            self.sort_scatter,
+        ]
+        .into_iter()
+        .all(|id| id.and_then(|id| cache.get_compute_pipeline(id)).is_some())
     }
     fn queue_pipelines(&mut self, cache: &PipelineCache, format: TextureFormat, opaque: bool) {
         if self.cull.is_none() {
@@ -420,19 +504,33 @@ impl GpuRenderer {
                 entry_point: Some("cull_pick".into()),
                 ..default()
             }));
-            for (entry, dest, sort) in [
-                ("cull", &mut self.cull, false),
-                ("initialize_visible", &mut self.initialize, false),
-                ("sort_visible", &mut self.sort, true),
+            for (entry, dest) in [
+                ("cull", &mut self.cull),
+                ("cull_ordered", &mut self.cull_ordered),
             ] {
-                let mut layout = vec![self.compute_layout.clone()];
-                if sort {
-                    layout.push(self.sort_layout.clone());
+                *dest = Some(cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                    label: Some(entry.into()),
+                    layout: vec![self.compute_layout.clone()],
+                    shader: self.compute_shader.clone(),
+                    entry_point: Some(entry.into()),
+                    ..default()
+                }));
+            }
+            for (entry, dest) in [
+                ("prepare_sort", &mut self.sort_prepare),
+                ("compact_visible", &mut self.sort_compact),
+                ("radix_histogram", &mut self.sort_histogram),
+                ("radix_scan", &mut self.sort_scan),
+                ("radix_scatter", &mut self.sort_scatter),
+            ] {
+                let mut layout = vec![self.sort_layout.clone()];
+                if entry == "prepare_sort" {
+                    layout.push(self.sort_dispatch_layout.clone());
                 }
                 *dest = Some(cache.queue_compute_pipeline(ComputePipelineDescriptor {
                     label: Some(entry.into()),
                     layout,
-                    shader: self.compute_shader.clone(),
+                    shader: self.sort_shader.clone(),
                     entry_point: Some(entry.into()),
                     ..default()
                 }));
@@ -576,7 +674,7 @@ fn prepare_buffers(
             ));
             return;
         }
-        let capacity = count.next_power_of_two();
+        let capacity = count;
         let states = buffer(
             &device,
             "dense piece states",
@@ -605,6 +703,7 @@ fn prepare_buffers(
                     | BufferUsages::COPY_DST
                     | BufferUsages::COPY_SRC,
             ),
+            sort: None,
             selectable: buffer(
                 &device,
                 "selectable bitset",
@@ -657,6 +756,9 @@ fn prepare_buffers(
     let Some(buffers) = &mut gpu.buffers else {
         return;
     };
+    if frame.config.opaque == 0 && buffers.sort.is_none() {
+        buffers.sort = Some(RadixBuffers::new(&device, buffers.capacity));
+    }
     if buffers.revision != frame.upload.revision {
         for range in frame.upload.ranges.iter() {
             queue.write_buffer(
@@ -776,8 +878,12 @@ fn puzzle_node(
     }
     for id in [
         gpu.cull.unwrap(),
-        gpu.initialize.unwrap(),
-        gpu.sort.unwrap(),
+        gpu.cull_ordered.unwrap(),
+        gpu.sort_prepare.unwrap(),
+        gpu.sort_compact.unwrap(),
+        gpu.sort_histogram.unwrap(),
+        gpu.sort_scan.unwrap(),
+        gpu.sort_scatter.unwrap(),
         gpu.pick_cull.unwrap(),
     ] {
         if let CachedPipelineState::Err(error) = cache.get_compute_pipeline_state(id) {
@@ -791,24 +897,17 @@ fn puzzle_node(
     let (Some(image), Some(main), Some(cull)) = (
         frame.image.and_then(|id| images.get(id)),
         cache.get_render_pipeline(gpu.main_pipelines[&(target.main_texture_format(), opaque)]),
-        gpu.cull.and_then(|id| cache.get_compute_pipeline(id)),
+        (if opaque { gpu.cull } else { gpu.cull_ordered })
+            .and_then(|id| cache.get_compute_pipeline(id)),
     ) else {
         return;
     };
-    if !opaque
-        && (gpu
-            .initialize
-            .and_then(|id| cache.get_compute_pipeline(id))
-            .is_none()
-            || gpu
-                .sort
-                .and_then(|id| cache.get_compute_pipeline(id))
-                .is_none())
-    {
+    if !opaque && !gpu.sort_ready(&cache) {
         return;
     }
     let args = buffers.args.clone();
     let capacity = buffers.capacity;
+    let sort = buffers.sort.clone();
     if gpu.depth.as_ref().is_none_or(|d| d.size != frame.target) {
         gpu.depth = Some(screen_target(
             &device,
@@ -822,34 +921,22 @@ fn puzzle_node(
     let image_group = gpu.image_bind_group(&device, &cache, image);
     queue.write_buffer(&args, 0, bytemuck::cast_slice(&[4u32, 0, 0, 0]));
     let mut offsets = vec![];
-    if !opaque && capacity > 1 {
+    if !opaque {
         gpu.sort_uniform.clear();
-        let mut span = 2;
-        while span <= capacity {
-            let mut stride = span / 2;
-            while stride > 0 {
-                offsets.push(gpu.sort_uniform.push(&SortUniform {
-                    stride,
-                    span,
-                    capacity,
-                    pad: 0,
-                }));
-                stride /= 2;
-            }
-            span *= 2;
+        for shift in [0, 8, 16] {
+            offsets.push(gpu.sort_uniform.push(&SortUniform {
+                shift,
+                count: capacity,
+                groups: capacity.div_ceil(256),
+                pad: 0,
+            }));
         }
         gpu.sort_uniform.write_buffer(&device, &queue);
     }
-    let sort_group = (!opaque && capacity > 1).then(|| gpu.sort_bind_group(&device, &cache));
+    let sort_groups = (!opaque).then(|| gpu.sort_bind_groups(&device, &cache));
     let diagnostics = context.diagnostic_recorder();
     let diagnostic_ref = diagnostics.as_deref();
     let encoder = context.command_encoder();
-    if !opaque {
-        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
-        pass.set_pipeline(cache.get_compute_pipeline(gpu.initialize.unwrap()).unwrap());
-        pass.set_bind_group(0, &compute_group, &[]);
-        pass.dispatch_workgroups(capacity.div_ceil(256), 1, 1);
-    }
     let visibility_span = diagnostic_ref.time_span(encoder, "puzzle_visibility");
     {
         let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
@@ -858,14 +945,45 @@ fn puzzle_node(
         pass.dispatch_workgroups(frame.config.count.div_ceil(256), 1, 1);
     }
     visibility_span.end(encoder);
-    if let Some(sort_group) = sort_group {
+    if let Some((sort_groups, dispatch_group)) = sort_groups {
+        let sort = sort.as_ref().unwrap();
         let sort_span = diagnostic_ref.time_span(encoder, "puzzle_sort");
-        for offset in offsets {
+        // The dispatch buffer is writable only in this pass; subsequent passes
+        // use it as INDIRECT without binding it as writable storage.
+        {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
-            pass.set_pipeline(cache.get_compute_pipeline(gpu.sort.unwrap()).unwrap());
-            pass.set_bind_group(0, &compute_group, &[]);
-            pass.set_bind_group(1, &sort_group, &[offset]);
+            pass.set_pipeline(
+                cache
+                    .get_compute_pipeline(gpu.sort_prepare.unwrap())
+                    .unwrap(),
+            );
+            pass.set_bind_group(0, &sort_groups[0], &[offsets[0]]);
+            pass.set_bind_group(1, &dispatch_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+            pass.set_pipeline(
+                cache
+                    .get_compute_pipeline(gpu.sort_compact.unwrap())
+                    .unwrap(),
+            );
+            pass.set_bind_group(0, &sort_groups[0], &[offsets[0]]);
             pass.dispatch_workgroups(capacity.div_ceil(256), 1, 1);
+        }
+        for (digit, offset) in offsets.into_iter().enumerate() {
+            // Compaction starts in scratch; three stable passes finish in visible.
+            let group = &sort_groups[1 - digit % 2];
+            for (pipeline, dispatch_offset) in [
+                (gpu.sort_histogram.unwrap(), 0),
+                (gpu.sort_scan.unwrap(), 12),
+                (gpu.sort_scatter.unwrap(), 0),
+            ] {
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+                pass.set_pipeline(cache.get_compute_pipeline(pipeline).unwrap());
+                pass.set_bind_group(0, group, &[offset]);
+                pass.dispatch_workgroups_indirect(&sort.dispatch, dispatch_offset);
+            }
         }
         sort_span.end(encoder);
     }
