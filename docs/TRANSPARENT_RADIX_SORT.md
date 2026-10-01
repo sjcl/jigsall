@@ -52,5 +52,3 @@ benchmarkは1k / 10k / 100k / 1Mで、不透明・透明それぞれのnear / me
 共有workspaceで別の初期化・メモリ変更も進行中だったため、基準`4fec6dc5fa3a960d69ad7ffe866fcacc3014f07c`に今回のrender差分を重ねた検証用コピーで、fmt、check、全target / 全feature clippy（warnings denied）、通常test、全feature test、build、GPU 4 testsとbenchmarkを実行し、全て成功しました。CPUの初期化計測はこのコピーの旧Vec経路です。全feature testのWindows profiling初期化は既知の`SymInitialize FAILED code 87`を出力しましたが、testとコマンドは成功しました。画素検証fixtureではBevyのoutput pipelineを含むstartupの非同期compile待ちをなくすため、pipeline compilationを同期化しています。runtimeのcompile設定は変更していません。
 
 最後に共有workspaceでもcheck、fmt、全target / 全feature clippyとGPU 4 testsを再実行して成功し、並行したdense state変更との組み合わせでも描画・選択・sort順序を確認しました。
-
-commit時に更新されたmasterのbind group cacheとも統合しました。radixのping-pong用2 groupsとdispatch準備用groupをsession内で再利用し、初めて透明へ切り替える際は新しいcull counts bufferのIDもcompute cache keyへ含めます。cacheの再利用・epoch切替・不透明→透明切替はGPU testで確認します。CSVはcache統合前の測定値です。

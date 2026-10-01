@@ -1,5 +1,4 @@
 use super::*;
-mod cache_tests;
 mod selection_bench;
 use crate::{
     resources::{
