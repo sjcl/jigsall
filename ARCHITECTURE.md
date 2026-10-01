@@ -27,7 +27,8 @@ puzzella
 | `game/src/render/mod.rs` | GPU buffers、Core2d pass、indirect draw、非同期readback |
 | `game/src/render/puzzle_shape.wgsl` | main / point / rectangle共通の形状・UV |
 | `game/src/render/puzzle_render.wgsl` | shader生成quad、画像・outline、ID / bitset出力 |
-| `game/src/render/visibility.wgsl` / `pick_visibility.wgsl` | culling、selectable bitset、透明sort、選択ROI |
+| `game/src/render/visibility.wgsl` / `pick_visibility.wgsl` | culling、selectable bitset、可視IDの安定圧縮、選択ROI |
+| `game/src/render/radix_sort.wgsl` | visible countからindirect dispatch、24bit Zの安定radix sort |
 | `game/src/selection/` | API、論理→物理座標、要求順序、readback復号 |
 | `ui/` | egui設定・メニュー・HUD・進捗 |
 
@@ -80,10 +81,10 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 
-opaqueは任意のinstance順でdepth test/write、半透明はGPU bitonic sortで後方→前方に並べblendし、depthを書きません。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。詳細は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
+opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけをGPU radix sort（8bit × 3 pass）で後方→前方に並べblendし、depthを書きません。透明経路ではID順に可視IDを圧縮してから安定sortし、同じZのID順も維持します。workgroup数はGPUのinstance_countからindirect dispatchで決め、CPU readbackは不要です。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。sortは[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、選択は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
 ## Multiplayerの境界と課題
 
 PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。transport導入時はsession identity、画像hash、snapshot、認証済みplayer、命令sequenceが必要です。通信・途中参加・切断時の保持解放・ネットワーク向けレート制限は未実装です。
 
-GPUは描画と選択の補助で、placed・所有権・snapを決めません。大規模な半透明画像ではGPU sortが最大の負荷です。大量選択では集合のメモリとCPU処理が増えます。異OS/GPU、通常windowの全手動操作、極端な重なり負荷は今後の確認対象です。
+GPUは描画と選択の補助で、placed・所有権・snapを決めません。cullingはO(N)、半透明sortは可視数に比例します。大量選択では集合のメモリとCPU処理が増え、極端な重なりではrasterとpickingの負荷が増えます。異OS/GPU、通常windowの全手動操作は今後の確認対象です。

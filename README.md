@@ -49,7 +49,7 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
                                                 shared shape / picking
 ```
 
-不透明画像はdepth test/write、半透明画像はGPU Z sortとalpha blendを使います。初期配置は中央の画像領域を避ける格子リングとseed付きshuffleでO(N)です。
+不透明画像はdepth test/write、半透明画像は可視IDだけを8bit × 3 passのGPU radix sortでZ順に並べてalpha blendします。初期配置は中央の画像領域を避ける格子リングとseed付きshuffleでO(N)です。
 
 | package | 責務 |
 | --- | --- |
@@ -59,7 +59,7 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 | `puzzella-puzzle` / `puzzle/` | v5形状のCPU参照、配置、grid、feature限定のv2生成・fingerprint解析 |
 | `puzzella-ui` / `ui/` | egui画面 |
 
-詳細は[ARCHITECTURE.md](ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](GPU_PICKING.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、v5の識別性と単色プレビューは[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
+詳細は[ARCHITECTURE.md](ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](GPU_PICKING.md)、透明sortの現行計測は[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、v5の識別性と単色プレビューは[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 ## 検証・計測
 

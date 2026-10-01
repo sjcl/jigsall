@@ -1,6 +1,6 @@
 # Procedural renderer 移行結果
 
-本書はgenerator v3移行時の記録です。v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のv5のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
+本書はgenerator v3移行時の記録です。以下の性能・メモリ数値は旧bitonic sort経路の実測です。現在の可視数に応じたradix sortと追加scratch領域は[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のv5のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 2026-10-01、基準22e0aa135c5bdc6a881a3fe2ab6d976087d728baからgenerator v3へ移行しました。100万ピースで個別Mesh・描画Entityは0、通常ピース描画は1 draw、CPU正本とGPU stateは各16 bytes/pieceです。実GPUで1k / 10k / 100k / 1Mを計測し、100万ピース全体表示を確認しました。
 
@@ -24,7 +24,7 @@
 | 14 | placement計算量 | 中央除外領域外に非重複格子リングを構築し、ChaCha8 Fisher–Yatesでshuffle。O(N)時間・O(N)領域。距離の全件重複探索なし |
 | 15 | 1k / 10k / 100k / 1M | 下表と[16行CSV](benchmarks/procedural-rtx5090.csv)にCPU・GPU・メモリ・visible・countを記録 |
 | 16 | 全体表示frame | 1M opaque平均2.1695 ms、translucent平均7.7960 ms（1024² offscreen、GPU同期完了wait込み） |
-| 17 | 最大ボトルネック | 半透明のGPU bitonic sort：1Mで210 dispatches、平均2.5750 ms。大量選択・重なりにも追加負荷あり |
+| 17 | 移行時の最大ボトルネック | 当時の半透明GPU bitonic sort：1Mで210 dispatches、平均2.5750 ms。現在はvisible countを対象としたradix sortへ変更済み |
 
 ## Hash / shape仕様
 
@@ -148,7 +148,7 @@ MBは10⁶ bytes、MiBは2²⁰ bytes。下表は要求した論理buffer / imag
 
 Ctrl、box、multi-drag、遅延応答、最終座標→Release→snap、focus loss / pause、placed lock、preview、session cleanupと再生成の通常テストを維持しました。ピース数に比例するEntity / Meshは作りません。ビルドした実行ファイルを8秒間起動し、初期化・継続動作・stderrにエラーがないことも確認しました。通常windowの全手動操作、macOS / Linux、異GPU / driverは未検証です。
 
-半透明はcapacity全体をbitonic sortし、nearでもO(capacity log² capacity)。1Mで210 passesが最大の定常負荷です。不透明はsortしません。改善候補はvisible countに合わせたsort、radix sort、dirty Z変更時の再利用です。
+移行時の半透明経路はcapacity全体のbitonic sortで、nearでもO(capacity log² capacity)、1Mで210 passesでした。現在は可視IDの安定圧縮と8bit × 3 passのradix sortに変更し、準備・圧縮込み11 dispatchです。histogramとscatterはGPUのvisible countからindirect dispatchします。不透明はsortしません。現行のnear / medium / entire計測、順序互換性、scratchメモリは[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)を参照してください。
 
 GPU cullingはO(N)。大量の重なりはraster / picking候補、全件rectangleはdecodeと選択集合更新の負荷になります。通常CPU idleに全件走査はありませんが、全選択などの明示操作と稀なZ再圧縮には大規模処理があります。
 
