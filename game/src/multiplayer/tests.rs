@@ -8,13 +8,18 @@ use puzzella_core::{
     apply_piece_command,
     session::{
         AuthorityEpoch, AuthorityEventEnvelope, ClientCommandEnvelope, ClientCommandSequence,
-        CommandSequenceStatus, MigrationState, RecoverySource, SessionId,
+        CommandSequenceStatus, ImageHash, MigrationState, RecoverySource, SessionDefinition,
+        SessionId,
     },
     CommandOutcome, PieceCommand, GENERATOR_VERSION,
 };
 use std::collections::HashSet;
 
 const SESSION: SessionId = SessionId(55);
+const SESSION_DEFINITION: SessionDefinition = SessionDefinition {
+    id: SESSION,
+    image_hash: ImageHash([0x42; 32]),
+};
 const A: PlayerId = PlayerId(1);
 const B: PlayerId = PlayerId(2);
 const C: PlayerId = PlayerId(3);
@@ -99,10 +104,11 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
     let mut a_store = fixture();
     // Cached progress is deliberately stale: it is absent from the protocol.
     a_store.placed_count = 99;
-    let mut session = AuthoritySession::new(SESSION, A, AuthorityCursor::new(3, 100));
+    let mut session = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(3, 100));
     session.accept_command(&envelope(3, B, 0)).unwrap();
     session.begin_graceful(B).unwrap();
-    let snapshot = GameSnapshot::capture(&a_store, &definition, SESSION, session.cursor()).unwrap();
+    let snapshot =
+        GameSnapshot::capture(&a_store, &definition, SESSION_DEFINITION, session.cursor()).unwrap();
     assert!(snapshot
         .pieces
         .iter()
@@ -124,6 +130,7 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
             &mut app.world_mut().resource_mut::<PieceDataStore>(),
             SnapshotExpectation {
                 session: SESSION,
+                image_hash: SESSION_DEFINITION.image_hash,
                 cursor: session.cursor(),
                 definition: &definition,
             },
@@ -143,6 +150,8 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
     )
     .unwrap();
     assert_eq!(new_cursor, AuthorityCursor::new(4, 0));
+    assert_eq!(snapshot.image_hash, SESSION_DEFINITION.image_hash);
+    assert_eq!(session.session_definition(), SESSION_DEFINITION);
     assert_eq!(session.host(), B);
     let store = app.world().resource::<PieceDataStore>();
     assert_restored(&snapshot, store);
@@ -221,7 +230,7 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
             cursor: AuthorityCursor::new(4, 805),
         },
     ];
-    let mut session = AuthoritySession::new(SESSION, A, AuthorityCursor::new(4, 801));
+    let mut session = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(4, 801));
     session.host_lost().unwrap();
     assert_eq!(
         session.accept_command(&envelope(4, B, 1)),
@@ -232,14 +241,19 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
         .choose_recovery_source(candidates.into_iter().rev())
         .unwrap();
     assert_eq!(chosen, candidates[1]);
-    let mut peer = AuthoritySession::new(SESSION, A, AuthorityCursor::new(4, 801));
+    let mut peer = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(4, 801));
     peer.host_lost().unwrap();
     peer.host_changed(C).unwrap();
     assert_eq!(peer.choose_recovery_source(candidates).unwrap(), chosen);
 
     let source_store = fixture();
-    let snapshot =
-        GameSnapshot::capture(&source_store, &definition, SESSION, chosen.cursor).unwrap();
+    let snapshot = GameSnapshot::capture(
+        &source_store,
+        &definition,
+        SESSION_DEFINITION,
+        chosen.cursor,
+    )
+    .unwrap();
     let mut recovered_store = fixture();
     let old_epoch = recovered_store.epoch;
     assert_eq!(
@@ -250,6 +264,7 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
     assert_restored(&snapshot, &recovered_store);
     assert!(recovered_store.epoch > old_epoch);
     assert_eq!(session.host(), C);
+    assert_eq!(session.session_definition(), SESSION_DEFINITION);
     assert_eq!(
         session.accept_command(&envelope(4, D, 0)),
         Err(ProtocolError::WrongEpoch)
@@ -326,11 +341,16 @@ fn ordinary_disconnect_releases_only_b_holds_marks_dirty_without_moving_or_snapp
 fn invalid_snapshots_are_rejected_atomically_without_panics() {
     let definition = definition();
     let cursor = AuthorityCursor::new(3, 100);
-    let snapshot = GameSnapshot::capture(&fixture(), &definition, SESSION, cursor).unwrap();
+    let snapshot =
+        GameSnapshot::capture(&fixture(), &definition, SESSION_DEFINITION, cursor).unwrap();
     let mut cases = Vec::new();
     let mut invalid = snapshot.clone();
     invalid.session = SessionId(999);
     cases.push((invalid, SnapshotError::WrongSession));
+    // Same session, dimensions and piece states; a different image is still rejected.
+    let mut invalid = snapshot.clone();
+    invalid.image_hash = ImageHash([0x43; 32]);
+    cases.push((invalid, SnapshotError::WrongImageHash));
     let mut invalid = snapshot.clone();
     invalid.pieces.pop();
     cases.push((
@@ -361,12 +381,11 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         invalid.cursor = wrong_cursor;
         cases.push((invalid, SnapshotError::WrongCursor));
     }
-    let mut invalid = snapshot.clone();
-    invalid.schema_version += 1;
-    cases.push((
-        invalid,
-        SnapshotError::UnsupportedSchema(SNAPSHOT_SCHEMA_VERSION + 1),
-    ));
+    for schema in [1, SNAPSHOT_SCHEMA_VERSION + 1] {
+        let mut invalid = snapshot.clone();
+        invalid.schema_version = schema;
+        cases.push((invalid, SnapshotError::UnsupportedSchema(schema)));
+    }
     let mut invalid = snapshot.clone();
     invalid.definition.seed += 1;
     cases.push((invalid, SnapshotError::WrongDefinition));
@@ -402,6 +421,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
             &mut store,
             SnapshotExpectation {
                 session: SESSION,
+                image_hash: SESSION_DEFINITION.image_hash,
                 cursor,
                 definition: &definition,
             },
@@ -426,7 +446,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
 #[test]
 fn failed_migration_never_activates_authority_or_changes_gpu_state() {
     let definition = definition();
-    let mut session = AuthoritySession::new(SESSION, A, AuthorityCursor::new(3, 100));
+    let mut session = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(3, 100));
     session.host_lost().unwrap();
     session.host_changed(B).unwrap();
     session
@@ -440,7 +460,22 @@ fn failed_migration_never_activates_authority_or_changes_gpu_state() {
     let states = store.states.clone();
     let epoch = store.epoch;
     let mut snapshot =
-        GameSnapshot::capture(&store, &definition, SESSION, session.cursor()).unwrap();
+        GameSnapshot::capture(&store, &definition, SESSION_DEFINITION, session.cursor()).unwrap();
+    let original_hash = snapshot.image_hash;
+    snapshot.image_hash = ImageHash([0x43; 32]);
+    assert_eq!(
+        install_migration_snapshot(&mut session, &mut store, &definition, &snapshot),
+        Err(MigrationInstallError::Snapshot(
+            SnapshotError::WrongImageHash
+        ))
+    );
+    assert_eq!(session.cursor(), AuthorityCursor::new(3, 100));
+    assert_eq!(session.host(), A);
+    assert_eq!(session.session_definition(), SESSION_DEFINITION);
+    assert!(!session.is_active());
+    assert_eq!(store.states, states);
+    assert_eq!(store.epoch, epoch);
+    snapshot.image_hash = original_hash;
     snapshot.pieces[0].position.y = f32::NAN;
     assert_eq!(
         install_migration_snapshot(&mut session, &mut store, &definition, &snapshot),
@@ -474,15 +509,22 @@ fn million_piece_snapshot_has_sixteen_byte_dense_states_and_round_trips() {
     definition.grid_size = UVec2::splat(1000);
     let mut source = PieceDataStore::default();
     source.initialize(vec![Vec2::ONE; 1_000_000]);
-    let snapshot =
-        GameSnapshot::capture(&source, &definition, SESSION, AuthorityCursor::new(8, 123)).unwrap();
+    let snapshot = GameSnapshot::capture(
+        &source,
+        &definition,
+        SESSION_DEFINITION,
+        AuthorityCursor::new(8, 123),
+    )
+    .unwrap();
     assert_eq!(snapshot.pieces.len(), 1_000_000);
+    assert_eq!(snapshot.image_hash, SESSION_DEFINITION.image_hash);
     let mut target = PieceDataStore::default();
     snapshot
         .install(
             &mut target,
             SnapshotExpectation {
                 session: SESSION,
+                image_hash: SESSION_DEFINITION.image_hash,
                 cursor: snapshot.cursor,
                 definition: &definition,
             },
@@ -498,7 +540,7 @@ fn million_piece_snapshot_has_sixteen_byte_dense_states_and_round_trips() {
 fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
     let mut store = fixture();
     release_player_holds(&mut store, A);
-    let mut session = AuthoritySession::new(SESSION, A, AuthorityCursor::new(4, 0));
+    let mut session = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(4, 0));
     let move_request = |control, tick, position| ClientCommandEnvelope {
         sequence: ClientCommandSequence::Move {
             after_control_sequence: control,

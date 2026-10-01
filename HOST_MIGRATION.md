@@ -23,6 +23,8 @@ Steamworks、socket、packet framing、実際のnetwork serializationは実装�
 | 型 | 責務 |
 | --- | --- |
 | `SessionId(u128)` | ゲームsessionの識別。backendが新sessionに一意なIDを割り当てる |
+| `ImageHash([u8; 32])` | 保持するencoded画像bytesのSHA-256。画像の内容識別 |
+| `SessionDefinition` | SessionIdと必須image_hash。AuthoritySession生成時に固定 |
 | `AuthorityEpoch(u64)` | host authorityの世代 |
 | `AuthoritySequence(u64)` | その世代で適用済みのauthority変更番号 |
 | `AuthorityCursor` | epoch、sequenceの辞書順比較 |
@@ -37,6 +39,14 @@ Steamworks、socket、packet framing、実際のnetwork serializationは実装�
 SteamIDからPlayerIdへの対応は将来のSessionBackendが管理する。
 envelopeのplayer/hostフィールドだけでは認証にならない。
 backendはcommand送信者、event送信者、snapshot提供者、owner変更通知を認証する。
+
+`AuthoritySession::new()` はSessionDefinitionを必須とし、image_hashを省略しない。
+同じsession内で画像は変更せず、host migration後も同じ定義を保持する。
+画像を差し替える場合は新SessionIdでsessionを作る。
+`ImageHash` の対象は元hostが保持・配信するencoded画像bytesそのもの。
+ファイル名、URL、画像寸法、GPU textureや各clientで再encodeした画像のhashではない。
+この基盤は32-byte digestの保持と一致検証を行う。画像bytesからのSHA-256計算と
+参加時/受信時の実bytes照合は次フェーズのbackend adapterが行う。
 
 AuthoritySequenceはcommand sequenceと別物。
 世代のbaselineはsequence 0で、hostが変更を確定すると
@@ -109,12 +119,13 @@ streamを分離しても、最後のMove欠落時にReleaseが最終位置を確
 
 ## Snapshot
 
-`game/src/multiplayer/snapshot.rs` のschema version 1:
+`game/src/multiplayer/snapshot.rs` のschema version 2（image_hash追加によりversion 1は拒否）:
 
 | フィールド | 内容 |
 | --- | --- |
 | `schema_version` | 形式の版番号 |
 | `session` | SessionId |
+| `image_hash` | sessionで合意したencoded画像bytesのSHA-256 |
 | `cursor` | snapshotが反映済みのAuthorityCursor |
 | `definition` | generator version、seed、grid、画像寸法、snap距離 |
 | `next_z_order` | 次のfront操作に使用するZ番号 |
@@ -136,10 +147,13 @@ per-piece Entity、Mesh、Handle、String、HashMapは追加しない。
 - 画像bytesやGPU texture
 
 `GameSnapshot::capture()` はsource storeを変更せず、presentation flagsを除いて保存する。
-`SnapshotExpectation` はsession/recovery交渉と現在のPuzzleDefinitionから作る信頼済みの期待値。
+`SnapshotExpectation` はsession/recovery交渉と現在のPuzzleDefinitionから作る期待値。
+image_hashはsession開始時に合意したSessionDefinitionから取得する。
+`install_migration_snapshot()` もAuthoritySessionのimage_hashを使い、受信snapshotの
+自己申告hashを期待値として採用しない。同じ画像寸法でも別hashなら復元を拒否する。
 snapshot自身から期待値を決めてvalidationを迂回してはいけない。
 
-install前にschema、session、cursorの完全一致、PuzzleDefinition.validate()、
+install前にschema、session、image_hash、cursorの完全一致、PuzzleDefinition.validate()、
 期待するdefinitionとの完全一致、piece count、全座標の有限性、
 next_z_order（piece_count以上、MAX_Z以下）、各z_order（next_z_order未満）、
 許可flagだけであることを検証する。
@@ -199,8 +213,27 @@ migration stateは失われたepoch以外をさらに除外し、未来epochへ�
 選択候補の最大cursorがローカル適用済みcursorより古ければ拒否し、凍結状態を維持する。
 例: local=4:806、候補最大=4:805は拒否。候補が揃うまで待つかローカルsnapshotを提供する。
 complete_migration()でも同じ下限を再検証し、選択済みsourceと一致しても巻き戻しを許可しない。
-同じcursorまたはより新しいcursorのsnapshotを正本として使い、全holdを解放する。
+この協力ゲームの信頼前提で、同じcursorまたはより新しいcursorのsnapshotを復旧の正本として使い、全holdを解放する。
 移行後、古いhostのcommand/eventはepoch不一致で拒否される。
+
+## Recovery の信頼モデル
+
+この基盤は参加peerを信頼する協力ゲーム向けで、host-authoritativeを
+悪意ある参加者に対するセキュリティ境界として扱わない。
+通常操作の決定権とcommand検証はhostに集約するが、abrupt recoveryで集めるcursorと
+snapshot内容はpeerの自己申告。例としてCが4:805を名乗り、形式検証を満たす状態を
+提供すれば、cursorの下限などの条件を満たす限り採用できる。
+source本人の認証、cursor一致、形式検証は、旧hostがその内容を確定した証明にはならない。
+image_hashも画像の同一性を確認するメタデータであり、snapshot全体の真正性を証明しない。
+peerが同じhashを申告して異なる画像bytesを送るケースは、backendでの実bytes照合が必要。
+
+将来、悪意あるpeerへの防御を必要とする場合は、旧host発行checkpointの検証を必須にする。
+checkpointはsession、cursor、PuzzleDefinition、image_hash、dense stateなどに結び付いた
+canonical snapshot hashを持ち、旧hostから認証済み経路で事前配信・cacheするか、
+署名と検証keyの管理を行う。提供peerが自己申告するsnapshot hashだけでは不足する。
+install前に内容のhashを再計算して照合し、検証できるcheckpointがない場合は復旧を拒否する。
+その設計では、旧hostが確定していても証明をpeerへ未配信の最新状態は復旧できない。
+今回の信頼モデルではこのcheckpoint認証を実装しない。
 
 ## 通常client disconnect
 
@@ -217,16 +250,16 @@ Steamもsocketも使わないテストを追加した。
 
 - core: per-player duplicate/stale、control gap拒否、Move gap許容、wrong session、古い/未来epoch。
 - core: channel順序逆転、Move先着後のGrab/Release受理、control参照の未来/古さ、stream不一致、両counterの上限。
-- core: graceful freeze、ACKのplayer/session/cursor検証、外部owner一致、sequence reset。
+- core: graceful freeze、ACKのplayer/session/cursor検証、外部owner一致、sequence reset、session画像identityの維持。
 - core: abrupt freeze、source選択、決定論的tie-break、epochの辞書順比較、local=4:806で最大4:805の候補拒否、completion時の巻き戻し防御。
 - core: eventのhost/session/epoch/sequence検証、counter上限、graceful中の突然切断。
 - game: A→B gracefulとCの復元、position/placed/Z/next_z維持、hold/highlight cleanup、
   placed_count再計算、実際のPieceUpload full upload、次idleの空upload、再Grab。
 - game: abrupt B=4:801/C=D=4:805、epoch 5:0と旧epoch command/eventの拒否。
 - game: Bが10/11/25を保持した状態から切断、他playerの12は維持、dirty IDs。
-- game: wrong session/count、NaN、±Infinity、unsupported generator/schema、
+- game: wrong session/image hash/count、NaN、±Infinity、unsupported generator/schema（旧version 1を含む）、
   古い/未来cursor、異なるdefinition、不正grid/Z/flagsをResultで原子的に拒否。
-- game: snapshot検証失敗時はauthorityを有効にしない。
+- game: snapshot検証失敗時はauthorityを有効にしない。image_hash不一致でもauthority/store/GPU epochを変更しない。
 - game: 実際のPieceStateでMove先着後もReleaseでき、再Grab後に前回dragの遅延Moveを拒否する。
 - game: 16-byte dense snapshotの100万ピースexport/install round trip。
 
@@ -264,13 +297,16 @@ GPU benchmarkは再実行しない。実GPUが必要な既存3件はdefaultでig
   例: ReleasePiece { id, final_position }。
   最後のunreliable Moveがlostしても古い座標でrelease/snapしないこと。
   今回のlocal PieceCommand::Release APIは変更しない。
-- image hash、compressed image bytesの保持、新hostから途中参加者への画像転送。
-  今回は参加済みclientが同じ画像を既に持つ前提。
+- compressed image bytesの保持、SHA-256計算、session参加時と画像受信時の実bytes照合、
+  新hostから途中参加者への画像転送。image_hashの型・必須メタデータ・snapshotとの
+  一致検証は実装済み。今回は参加済みclientが同じ画像を既に持つ前提。
 - reconnect timeout、再試行、ownerがrecovery途中で再び消失した場合の交渉再開、
   重複callbackの吸収、欠落eventの再送/resync。
 - runtime wiring時はgesture、pending selection/readback、overlay、queued command/event、
   GameData progress/completionを同期してから入力を再開する。
   PieceDataStoreのpresentation stateは既にresetするが、これらの別resourceのcleanupは
   次フェーズのbackend adapterが担当する。
-- lost hostの最新checkpointをpeerが十分な頻度で保持する仕組みとtrust policy。
+- lost hostの最新checkpointをpeerが十分な頻度で保持する仕組み。
+  trust policyは上記の参加peer信頼。セキュリティ境界へ変更する場合は旧hostの
+  checkpoint真正性を検証する別設計が必要。
 - cross-platform identity、latency/scoring、persistent saveはこのフェーズの範囲外。

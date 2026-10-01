@@ -5,12 +5,12 @@ use crate::resources::{
 };
 use bevy::math::Vec2;
 use puzzella_core::{
-    session::{AuthorityCursor, SessionId},
+    session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
     PieceId, PuzzleDefinition,
 };
 use serde::{Deserialize, Serialize};
 
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const SNAPSHOT_PLACED: u32 = 1;
 
 /// Dense row-major state, 16 bytes per piece. Only PLACED is a snapshot flag.
@@ -25,6 +25,7 @@ pub struct SnapshotPieceState {
 pub struct GameSnapshot {
     pub schema_version: u16,
     pub session: SessionId,
+    pub image_hash: ImageHash,
     pub cursor: AuthorityCursor,
     pub definition: PuzzleDefinition,
     pub next_z_order: u32,
@@ -34,6 +35,7 @@ pub struct GameSnapshot {
 #[derive(Clone, Copy, Debug)]
 pub struct SnapshotExpectation<'a> {
     pub session: SessionId,
+    pub image_hash: ImageHash,
     pub cursor: AuthorityCursor,
     pub definition: &'a PuzzleDefinition,
 }
@@ -42,6 +44,7 @@ pub enum SnapshotError {
     UnsupportedSchema(u16),
     InvalidDefinition(&'static str),
     WrongSession,
+    WrongImageHash,
     WrongCursor,
     WrongDefinition,
     WrongPieceCount { expected: usize, actual: usize },
@@ -62,7 +65,7 @@ impl GameSnapshot {
     pub fn capture(
         store: &PieceDataStore,
         definition: &PuzzleDefinition,
-        session: SessionId,
+        session: SessionDefinition,
         cursor: AuthorityCursor,
     ) -> Result<Self, SnapshotError> {
         // Validate before counting/indexing an untrusted definition.
@@ -71,7 +74,8 @@ impl GameSnapshot {
             .map_err(SnapshotError::InvalidDefinition)?;
         let snapshot = Self {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
-            session,
+            session: session.id,
+            image_hash: session.image_hash,
             cursor,
             definition: definition.clone(),
             next_z_order: store.next_z_order,
@@ -90,7 +94,8 @@ impl GameSnapshot {
                 .collect(),
         };
         snapshot.validate(SnapshotExpectation {
-            session,
+            session: session.id,
+            image_hash: session.image_hash,
             cursor,
             definition,
         })?;
@@ -104,6 +109,9 @@ impl GameSnapshot {
         }
         if self.session != expected.session {
             return Err(SnapshotError::WrongSession);
+        }
+        if self.image_hash != expected.image_hash {
+            return Err(SnapshotError::WrongImageHash);
         }
         if self.cursor != expected.cursor {
             return Err(SnapshotError::WrongCursor);

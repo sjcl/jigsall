@@ -45,6 +45,7 @@ impl std::error::Error for MigrationInstallError {}
 /// Transactional activation: validate transition and snapshot, restore all pieces,
 /// then publish the new host/epoch. Any rejection leaves both session and store intact.
 /// The backend must authenticate snapshot delivery as the selected recovery source.
+/// Trusted peers supply the cursor/content; this does not prove old-host provenance.
 pub fn install_migration_snapshot(
     session: &mut AuthoritySession,
     store: &mut PieceDataStore,
@@ -60,6 +61,7 @@ pub fn install_migration_snapshot(
             store,
             SnapshotExpectation {
                 session: session.session_id(),
+                image_hash: session.image_hash(),
                 cursor: snapshot.cursor, // Already matched the trusted recovery source above.
                 definition,
             },

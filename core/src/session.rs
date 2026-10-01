@@ -5,6 +5,16 @@ use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub u128);
+/// SHA-256 of the retained encoded image bytes, computed/verified by the backend.
+/// Content identity only: this digest does not authenticate a snapshot or its sender.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ImageHash(pub [u8; 32]);
+/// Immutable session identity. Image dimensions alone cannot identify the puzzle image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionDefinition {
+    pub id: SessionId,
+    pub image_hash: ImageHash,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AuthorityEpoch(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -187,6 +197,7 @@ pub struct RecoverySource {
 }
 /// Latest cursor wins; the lowest PlayerId breaks ties regardless of input order.
 /// This chooses snapshot data, never the new host. Authenticate candidates externally.
+/// Trusted-peer policy: cursors are peer claims, with no old-host provenance proof.
 pub fn select_recovery_source(
     session: SessionId,
     candidates: impl IntoIterator<Item = RecoverySource>,
@@ -220,24 +231,30 @@ pub enum MigrationState {
 /// Opt-in pure state; no ECS schedule, socket, host election or GPU lifecycle.
 #[derive(Clone, Debug)]
 pub struct AuthoritySession {
-    session: SessionId,
+    definition: SessionDefinition,
     host: PlayerId,
     cursor: AuthorityCursor,
     migration: MigrationState,
     commands: CommandSequenceTracker,
 }
 impl AuthoritySession {
-    pub fn new(session: SessionId, host: PlayerId, cursor: AuthorityCursor) -> Self {
+    pub fn new(definition: SessionDefinition, host: PlayerId, cursor: AuthorityCursor) -> Self {
         Self {
-            session,
+            definition,
             host,
             cursor,
             migration: MigrationState::Active,
-            commands: CommandSequenceTracker::new(session, cursor.epoch),
+            commands: CommandSequenceTracker::new(definition.id, cursor.epoch),
         }
     }
     pub fn session_id(&self) -> SessionId {
-        self.session
+        self.definition.id
+    }
+    pub fn session_definition(&self) -> SessionDefinition {
+        self.definition
+    }
+    pub fn image_hash(&self) -> ImageHash {
+        self.definition.image_hash
     }
     pub fn host(&self) -> PlayerId {
         self.host
@@ -283,7 +300,7 @@ impl AuthoritySession {
         envelope: &AuthorityEventEnvelope<T>,
     ) -> Result<(), ProtocolError> {
         self.require_active()?;
-        if envelope.session != self.session {
+        if envelope.session != self.definition.id {
             return Err(ProtocolError::WrongSession);
         }
         if envelope.cursor.epoch != self.cursor.epoch {
@@ -334,7 +351,7 @@ impl AuthoritySession {
         player: PlayerId,
         cursor: AuthorityCursor,
     ) -> Result<(), ProtocolError> {
-        if session != self.session {
+        if session != self.definition.id {
             return Err(ProtocolError::WrongSession);
         }
         let MigrationState::Graceful {
@@ -385,7 +402,7 @@ impl AuthoritySession {
                     return Err(ProtocolError::MissingAcknowledgement);
                 }
                 Some(RecoverySource {
-                    session: self.session,
+                    session: self.definition.id,
                     player: new_host,
                     cursor: final_cursor,
                 })
@@ -410,7 +427,7 @@ impl AuthoritySession {
             return Err(ProtocolError::InvalidTransition);
         };
         let chosen = select_recovery_source(
-            self.session,
+            self.definition.id,
             candidates
                 .into_iter()
                 .filter(|candidate| candidate.cursor.epoch == self.cursor.epoch),
@@ -441,7 +458,7 @@ impl AuthoritySession {
         session: SessionId,
         snapshot_cursor: AuthorityCursor,
     ) -> Result<AuthorityCursor, ProtocolError> {
-        if session != self.session {
+        if session != self.definition.id {
             return Err(ProtocolError::WrongSession);
         }
         let MigrationState::Recovering {
@@ -466,7 +483,7 @@ impl AuthoritySession {
             sequence: AuthoritySequence(0),
         };
         self.host = new_host;
-        self.commands = CommandSequenceTracker::new(self.session, epoch);
+        self.commands = CommandSequenceTracker::new(self.definition.id, epoch);
         self.migration = MigrationState::Active;
         Ok(self.cursor)
     }
@@ -477,6 +494,10 @@ mod tests {
     use super::*;
     use crate::PieceId;
     const SESSION: SessionId = SessionId(7);
+    const SESSION_DEFINITION: SessionDefinition = SessionDefinition {
+        id: SESSION,
+        image_hash: ImageHash([0x42; 32]),
+    };
     const A: PlayerId = PlayerId(1);
     const B: PlayerId = PlayerId(2);
     fn command(player: PlayerId, sequence: u64) -> ClientCommandEnvelope {
@@ -716,7 +737,7 @@ mod tests {
     }
     #[test]
     fn graceful_transfer_freezes_and_requires_exact_ack_and_owner() {
-        let mut state = AuthoritySession::new(SESSION, A, AuthorityCursor::new(3, 100));
+        let mut state = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(3, 100));
         state.accept_command(&command(A, 0)).unwrap();
         state.accept_command(&move_command(A, 0, 100)).unwrap();
         state.begin_graceful(B).unwrap();
@@ -762,6 +783,8 @@ mod tests {
             Ok(AuthorityCursor::new(4, 0))
         );
         assert_eq!(state.host(), B);
+        assert_eq!(state.session_definition(), SESSION_DEFINITION);
+        assert_eq!(state.image_hash(), SESSION_DEFINITION.image_hash);
         assert_eq!(
             state.accept_command(&command(A, 0)),
             Err(ProtocolError::WrongEpoch)
@@ -787,7 +810,7 @@ mod tests {
 
     #[test]
     fn abrupt_loss_waits_for_external_host_and_same_epoch_recovery() {
-        let mut state = AuthoritySession::new(SESSION, A, AuthorityCursor::new(4, 801));
+        let mut state = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(4, 801));
         state.host_lost().unwrap();
         assert_eq!(
             state.accept_command(&command(B, 0)),
@@ -842,7 +865,7 @@ mod tests {
     #[test]
     fn recovery_rejects_incomplete_candidates_behind_local_cursor_without_pinning_source() {
         let local = AuthorityCursor::new(4, 806);
-        let mut state = AuthoritySession::new(SESSION, A, local);
+        let mut state = AuthoritySession::new(SESSION_DEFINITION, A, local);
         state.host_lost().unwrap();
         state.host_changed(B).unwrap();
         let candidates = [
@@ -885,7 +908,7 @@ mod tests {
     fn completion_rechecks_local_cursor_even_when_snapshot_matches_selected_source() {
         for sequence in [805, 806, 807] {
             let local = AuthorityCursor::new(4, 806);
-            let mut state = AuthoritySession::new(SESSION, A, local);
+            let mut state = AuthoritySession::new(SESSION_DEFINITION, A, local);
             let source = RecoverySource {
                 session: SESSION,
                 player: B,
@@ -947,7 +970,7 @@ mod tests {
 
     #[test]
     fn events_reject_replays_wrong_sender_epoch_and_order_without_advancing() {
-        let mut state = AuthoritySession::new(SESSION, A, AuthorityCursor::new(3, 100));
+        let mut state = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(3, 100));
         let event = |session, host, epoch, sequence| AuthorityEventEnvelope {
             session,
             host,
@@ -997,7 +1020,11 @@ mod tests {
 
     #[test]
     fn counters_never_wrap_and_interrupted_graceful_transfer_can_recover() {
-        let mut state = AuthoritySession::new(SESSION, A, AuthorityCursor::new(u64::MAX, u64::MAX));
+        let mut state = AuthoritySession::new(
+            SESSION_DEFINITION,
+            A,
+            AuthorityCursor::new(u64::MAX, u64::MAX),
+        );
         assert_eq!(
             state.advance_authority(),
             Err(ProtocolError::CounterExhausted)
