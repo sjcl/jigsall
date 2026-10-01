@@ -1,5 +1,7 @@
 # Procedural renderer 移行結果
 
+本書はgenerator v3移行時の記録です。現在は付け根の輪郭を修正したv4です。最新の形状式と検証結果は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)を参照してください。
+
 2026-10-01、基準22e0aa135c5bdc6a881a3fe2ab6d976087d728baからgenerator v3へ移行しました。100万ピースで個別Mesh・描画Entityは0、通常ピース描画は1 draw、CPU正本とGPU stateは各16 bytes/pieceです。実GPUで1k / 10k / 100k / 1Mを計測し、100万ピース全体表示を確認しました。
 
 ## 必須17項目

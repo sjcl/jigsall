@@ -1,5 +1,9 @@
 #define_import_path puzzella::shape
 
+// Mirror puzzle/src/procedural.rs; changing shape constants changes generator compatibility.
+const ROOT_WIDTH_FACTOR:f32=0.60;
+const ROOT_HEIGHT_FACTOR:f32=0.25;
+const ROOT_BLEND_FACTOR:f32=0.04;
 struct EdgeProfile { polarity: f32, center: f32, width: f32, depth: f32, neck: f32, head: f32, asymmetry: f32 };
 fn mix32(value: u32) -> u32 {
     var x=value; x ^= x >> 16u; x *= 0x7feb352du;
@@ -51,13 +55,21 @@ fn sd_box(p: vec2<f32>,half: vec2<f32>,r:f32) -> f32 {
 fn smooth_min(a:f32,b:f32,k:f32) -> f32 {
     let h=clamp(0.5+0.5*(b-a)/k,0.0,1.0); return mix(b,a,h)-k*h*(1.0-h);
 }
+// Quarter-ellipse fillet: horizontal baseline tangent, vertical neck tangent.
+fn sd_root(q:vec2<f32>,neck_half:f32,root_half:f32,height:f32)->f32 {
+    let radii=vec2(root_half-neck_half,height);
+    let outside_ellipse=(1.0-length(vec2(abs(q.x)-root_half,q.y-height)/radii))*min(radii.x,radii.y);
+    return max(max(max(outside_ellipse,abs(q.x)-root_half),q.y-height),-q.y);
+}
 fn sd_tab(q:vec2<f32>,p:EdgeProfile,len:f32,short:f32) -> f32 {
     let depth=p.depth*short; let x=q.x-p.center*len; let neck=p.neck*len;
     let radii=vec2(p.head*len*0.5,depth*0.36);
     let head=(length(vec2(x-p.asymmetry*p.head*len,q.y-depth*0.62)/radii)-1.0)*min(radii.x,radii.y);
     let stem=sd_box(vec2(x,q.y-depth*0.23),vec2(neck*0.5,depth*0.28),min(neck,depth)*0.18);
-    let shoulder=sd_box(vec2(x,q.y),vec2(p.width*len*0.5,depth*0.06),depth*0.06);
-    return max(smooth_min(smooth_min(head,stem,depth*0.06),shoulder,depth*0.04),-q.y);
+    let neck_half=neck*0.5;
+    let root_half=neck_half+(p.width*len*0.5-neck_half)*ROOT_WIDTH_FACTOR;
+    let root=sd_root(vec2(x,q.y),neck_half,root_half,depth*ROOT_HEIGHT_FACTOR);
+    return max(smooth_min(smooth_min(head,stem,depth*0.06),root,depth*ROOT_BLEND_FACTOR),-q.y);
 }
 fn edge_distance(q:vec2<f32>,raw:vec2<u32>,len:f32,short:f32) -> f32 {
     if raw.x==0u {return q.y;}

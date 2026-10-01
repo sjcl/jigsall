@@ -1,8 +1,12 @@
-//! Generator v3. All integer operations and shape equations mirror puzzle_shape.wgsl.
+//! Generator v4. All integer operations and shape equations mirror puzzle_shape.wgsl.
 use bevy_math::{UVec2, Vec2};
 use puzzella_core::{PieceId, PuzzleDefinition};
 
 pub const MAX_TAB_DEPTH: f32 = 0.22;
+// Keep these constants identical to puzzle_shape.wgsl.
+pub const ROOT_WIDTH_FACTOR: f32 = 0.60;
+pub const ROOT_HEIGHT_FACTOR: f32 = 0.25;
+pub const ROOT_BLEND_FACTOR: f32 = 0.04;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeOrientation {
     Horizontal,
@@ -128,7 +132,18 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     let h = (0.5 + 0.5 * (b - a) / k).clamp(0.0, 1.0);
     b + (a - b) * h - k * h * (1.0 - h)
 }
-/// Rounded neck, elliptical head and rounded shoulder. The ellipse distance is
+/// A quarter-ellipse fillet outside the ellipse centered at (root_half, height).
+/// Its contour is horizontal at the baseline and vertical at the neck.
+fn sd_root(q: Vec2, neck_half: f32, root_half: f32, height: f32) -> f32 {
+    let radii = Vec2::new(root_half - neck_half, height);
+    let outside_ellipse = (1.0 - (Vec2::new(q.x.abs() - root_half, q.y - height) / radii).length())
+        * radii.min_element();
+    outside_ellipse
+        .max(q.x.abs() - root_half)
+        .max(q.y - height)
+        .max(-q.y)
+}
+/// Rounded neck, elliptical head and concave root fillets. Ellipse distance is
 /// a conservative approximation; the zero contour and complement are exact.
 pub fn sd_tab(q: Vec2, p: EdgeProfile, length: f32, short: f32) -> f32 {
     let depth = p.depth * short;
@@ -144,12 +159,20 @@ pub fn sd_tab(q: Vec2, p: EdgeProfile, length: f32, short: f32) -> f32 {
         Vec2::new(neck * 0.5, depth * 0.28),
         neck.min(depth) * 0.18,
     );
-    let shoulder = sd_box(
+    let neck_half = neck * 0.5;
+    let root_half = neck_half + (p.width * length * 0.5 - neck_half) * ROOT_WIDTH_FACTOR;
+    let root = sd_root(
         Vec2::new(x, q.y),
-        Vec2::new(p.width * length * 0.5, depth * 0.06),
-        depth * 0.06,
+        neck_half,
+        root_half,
+        depth * ROOT_HEIGHT_FACTOR,
     );
-    smooth_min(smooth_min(head, stem, depth * 0.06), shoulder, depth * 0.04).max(-q.y)
+    smooth_min(
+        smooth_min(head, stem, depth * 0.06),
+        root,
+        depth * ROOT_BLEND_FACTOR,
+    )
+    .max(-q.y)
 }
 pub fn edge_distance(q: Vec2, raw: [u32; 2], length: f32, short: f32) -> f32 {
     if raw[0] == 0 {
@@ -204,6 +227,92 @@ pub fn piece_uv(def: &PuzzleDefinition, id: PieceId, local: Vec2) -> Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn tab_half_width(p: EdgeProfile, length: f32, short: f32, y: f32) -> f32 {
+        let mut inside = 0.0;
+        let mut outside = p.width * length;
+        for _ in 0..32 {
+            let x = (inside + outside) * 0.5;
+            if sd_tab(Vec2::new(p.center * length + x, y), p, length, short) <= 0.0 {
+                inside = x;
+            } else {
+                outside = x;
+            }
+        }
+        (inside + outside) * 0.5
+    }
+    #[test]
+    fn root_width_decreases_smoothly_without_a_shelf() {
+        let edge = EdgeId {
+            orientation: EdgeOrientation::Horizontal,
+            x: 1,
+            y: 2,
+        };
+        for seed in 0..64 {
+            let p = decode_profile(raw_profile(seed, edge));
+            for (length, short) in [(100.0, 100.0), (200.0, 50.0), (50.0, 50.0)] {
+                let height = p.depth * short * ROOT_HEIGHT_FACTOR;
+                let neck_half = p.neck_width * length * 0.5;
+                let root_half =
+                    neck_half + (p.width * length * 0.5 - neck_half) * ROOT_WIDTH_FACTOR;
+                // Avoid y=0, where the whole canonical baseline is a zero contour.
+                let mut previous = tab_half_width(p, length, short, height * 0.00001);
+                let mut previous_root = root_half;
+                assert!((previous - root_half).abs() < (root_half - neck_half) * 0.01);
+                for step in 1..=128 {
+                    let y = height * step as f32 / 128.0;
+                    let width = tab_half_width(p, length, short, y);
+                    let t = y / height;
+                    let root_width = root_half - (root_half - neck_half) * (t * (2.0 - t)).sqrt();
+                    assert!(root_width <= previous_root);
+                    assert!(
+                        sd_root(Vec2::new(root_width, y), neck_half, root_half, height).abs()
+                            < short * 1e-5
+                    );
+                    // Even the first, steepest width sample is bounded and continuous.
+                    // The unchanged head/stem union can start widening at the neck.
+                    assert!((previous - width).abs() < (root_half - neck_half) * 0.15);
+                    previous = width;
+                    previous_root = root_width;
+                }
+                let low = tab_half_width(p, length, short, height * 0.01);
+                let mid = tab_half_width(p, length, short, height * 0.5);
+                assert!(root_half - low > (root_half - neck_half) * 0.10);
+                assert!(
+                    low - mid > (root_half - neck_half) * 0.60,
+                    "flat shoulder remains"
+                );
+            }
+        }
+    }
+    #[test]
+    fn root_contour_leaves_baseline_horizontally_and_joins_neck_vertically() {
+        let neck = 7.0;
+        let root = 16.6;
+        let height = 4.5;
+        let span = root - neck;
+        // Parametrize the quarter ellipse without numerical contour solving.
+        // At the root dy/dx approaches zero; at the neck dx/dy approaches zero.
+        for fraction in [0.01_f32, 0.02, 0.04] {
+            let dx = span * fraction;
+            let y = height * (1.0 - (1.0 - fraction * fraction).sqrt());
+            assert!(y / dx < 0.02);
+            let boundary = Vec2::new(root - dx, y);
+            assert!(sd_root(boundary, neck, root, height).abs() < 1e-5);
+            assert!(
+                sd_root(
+                    boundary + Vec2::new(0.0, height * 0.001),
+                    neck,
+                    root,
+                    height
+                ) > 0.0
+            );
+            assert!(sd_root(boundary - Vec2::new(0.0, y * 0.5), neck, root, height) < 0.0);
+            let dy = height * fraction;
+            let x = root - span * (1.0 - fraction * fraction).sqrt();
+            assert!((x - neck) / dy < 0.05);
+            assert!(sd_root(Vec2::new(x, height - dy), neck, root, height).abs() < 1e-5);
+        }
+    }
     #[test]
     fn profiles_are_safe_and_cover_styles_and_all_hash_inputs() {
         let e = EdgeId {

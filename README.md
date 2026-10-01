@@ -1,6 +1,6 @@
 # Puzzella
 
-任意の画像で遊ぶ、Rust + Bevy製のジグソーパズルゲームです。generator v3の解析形状をGPUで描画し、最大1000×1000ピースを扱います。ゲーム状態と命令検証はCPU側にあり、実ネットワーク通信は未実装です。
+任意の画像で遊ぶ、Rust + Bevy製のジグソーパズルゲームです。generator v4の解析形状をGPUで描画し、最大1000×1000ピースを扱います。ゲーム状態と命令検証はCPU側にあり、実ネットワーク通信は未実装です。
 
 ## 起動
 
@@ -16,7 +16,7 @@ cargo run --locked --release
 3. アスペクト比・目標ピース数・手動グリッドからサイズを設定し、seedとスナップ距離を調整します。
 4. 「Start Game」で初期配置とdense stateを生成します。GPU bufferとpipelineの準備後、プレイに進みます。
 
-同じ画像寸法・grid・seed・generator versionから、同じ整数形状パラメータ、安定PieceId、初期配置を再構成します。通常プレイはversion 3を要求します。v2は比較用featureとテストに残しています。異GPU間の浮動小数点・ラスタライズのbit一致は保証しません。
+同じ画像寸法・grid・seed・generator versionから、同じ整数形状パラメータ、安定PieceId、初期配置を再構成します。通常プレイはversion 4を要求します。v3からタブ付け根の輪郭が変わるため、旧versionの定義は拒否します。v2は比較用featureとテストに残しています。異GPU間の浮動小数点・ラスタライズのbit一致は保証しません。
 
 ## 操作
 
@@ -56,10 +56,10 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 | `puzzella` / `src/` | 起動・プラグイン登録 |
 | `puzzella-core` / `core/` | 安定ID、定義、命令検証、スナップ |
 | `puzzella-game` / `game/` | 状態遷移、入力、dense state、GPU描画・選択、画像読み込み |
-| `puzzella-puzzle` / `puzzle/` | v3形状のCPU参照、配置、grid、feature限定のv2生成 |
+| `puzzella-puzzle` / `puzzle/` | v4形状のCPU参照、配置、grid、feature限定のv2生成 |
 | `puzzella-ui` / `ui/` | egui画面 |
 
-詳細は[ARCHITECTURE.md](ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](GPU_PICKING.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)を参照してください。
+詳細は[ARCHITECTURE.md](ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](GPU_PICKING.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)を参照してください。
 
 ## 検証・計測
 
@@ -72,11 +72,11 @@ cargo test --locked --all-features
 cargo build --locked
 # 実GPU検証と1k〜1M計測
 cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-# v2 / v3形状比較
+# v2 / v4形状比較（6スタイルの凸・凹拡大も出力）
 cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
 ```
 
-2026-10-01、Windows / Rust 1.97 / RTX 5090（Vulkan）で通常37件と実GPU3件を確認しました。4096²画像・1024² offscreen・100万ピース全体表示は、不透明で平均2.17 ms、半透明で7.80 msです。同期GPU完了待ちを含むベンチマーク値で、通常ウィンドウのFPS保証ではありません。[報告書](PROCEDURAL_RENDERER.md)に計測条件と制限を記載しています。
+2026-10-01、Windows / Rust 1.97 / RTX 5090（Vulkan）で通常40件と実GPU3件を確認しました。v4の4096²画像・1024² offscreen・100万ピース全体表示は、不透明で平均1.76 ms、半透明で6.73 msです。同期GPU完了待ちを含むベンチマーク値で、通常ウィンドウのFPS保証ではありません。[v4報告書](ROOT_TRANSITION.md)に計測条件と制限を記載しています。
 
 ## プロファイリング
 

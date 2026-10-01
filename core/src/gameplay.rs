@@ -14,8 +14,8 @@ impl std::fmt::Display for PieceId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
-/// Version 3 uses quantized shared-edge profiles and analytic GPU shapes.
-pub const GENERATOR_VERSION: u16 = 3;
+/// Version 4 preserves the v3 profiles and replaces shelf-like roots with fillets.
+pub const GENERATOR_VERSION: u16 = 4;
 
 /// Frozen at game start. Image dimensions also participate in reconstruction.
 #[derive(Resource, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -152,6 +152,24 @@ pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_current_shape_version_is_accepted() {
+        let mut definition = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::splat(2),
+            image_size: UVec2::splat(100),
+            snap_distance: 5.0,
+        };
+        assert!(definition.validate().is_ok());
+        for old_version in [2, 3] {
+            definition.generator_version = old_version;
+            assert_eq!(
+                definition.validate(),
+                Err("Unsupported puzzle generator version")
+            );
+        }
+    }
     #[test]
     fn validates_ownership_and_finite_moves() {
         let mut s = PieceState::new(Vec2::ZERO);

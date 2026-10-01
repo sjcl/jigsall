@@ -1,6 +1,6 @@
 # Puzzella のアーキテクチャ
 
-2026-10-01。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、通常runtimeをprocedural GPU generator v3へ移行しました。数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)を参照してください。
+2026-10-01。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、procedural GPU rendererへ移行しました。現在は付け根を楕円弧に変更したgenerator v4です。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)を参照してください。
 
 ## Workspaceと責務
 

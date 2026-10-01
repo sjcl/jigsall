@@ -175,9 +175,6 @@ fn read_buffer(app: &App, source: &Buffer, size: u64) -> Vec<u8> {
     bytes
 }
 fn hash_parity(app: &App) {
-    let world = app.sub_app(RenderApp).world();
-    let device = world.resource::<RenderDevice>();
-    let queue = world.resource::<RenderQueue>();
     let mut inputs = vec![];
     let mut expected = vec![];
     for seed in [0, 1, 42, u64::MAX, 1 << 32, 0x123456789abcdef0] {
@@ -205,6 +202,115 @@ struct Input {low:u32,high:u32,orientation:u32,x:u32,y:u32};
 @group(0) @binding(1) var<storage,read_write> outputs:array<vec2<u32>>;
 @compute @workgroup_size(1) fn test_profile(@builtin(global_invocation_id) id:vec3<u32>) {
 let p=inputs[id.x];outputs[id.x]=raw_profile(vec2(p.low,p.high),p.orientation,p.x,p.y);}";
+    let bytes = compute_output(
+        app,
+        source,
+        "test_profile",
+        bytemuck::cast_slice(&inputs),
+        expected.len() as u64 * 8,
+        inputs.len() as u32,
+    );
+    assert_eq!(bytemuck::cast_slice::<u8, [u32; 2]>(&bytes), expected);
+}
+fn shape_parity(app: &App) {
+    let edge = EdgeId {
+        orientation: EdgeOrientation::Horizontal,
+        x: 0,
+        y: 1,
+    };
+    let mut inputs = vec![];
+    let mut expected = vec![];
+    for style in 1..=6 {
+        let raw = (0..10000)
+            .map(|seed| raw_profile(seed, edge))
+            .find(|raw| raw[0] & 7 == style)
+            .unwrap();
+        for polarity in [0, 8] {
+            let raw = [(raw[0] & !8) | polarity, raw[1]];
+            let p = decode_profile(raw);
+            for (length, short) in [(100.0, 100.0), (200.0, 50.0), (64.0, 64.0)] {
+                let root_half =
+                    (p.neck_width + (p.width - p.neck_width) * ROOT_WIDTH_FACTOR) * length * 0.5;
+                let height = p.depth * short * ROOT_HEIGHT_FACTOR;
+                for t in [
+                    -1.0, -0.01, 0.0, 0.0001, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.95, 1.0, 1.05,
+                    1.5, 2.0, 3.0, 4.0,
+                ] {
+                    for offset in [
+                        -1.1, -1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.1,
+                    ] {
+                        let q = Vec2::new(p.center * length + offset * root_half, t * height);
+                        inputs.push([
+                            raw[0],
+                            raw[1],
+                            length.to_bits(),
+                            short.to_bits(),
+                            q.x.to_bits(),
+                            q.y.to_bits(),
+                            0,
+                            0,
+                        ]);
+                        expected.push((
+                            [
+                                sd_tab(q, p, length, short),
+                                edge_distance(q, raw, length, short),
+                            ],
+                            short,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let source = include_str!("puzzle_shape.wgsl")
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "
+struct ShapeInput {raw:vec2<u32>,len:u32,short:u32,x:u32,y:u32,pad:vec2<u32>};
+@group(0) @binding(0) var<storage,read> inputs:array<ShapeInput>;
+@group(0) @binding(1) var<storage,read_write> outputs:array<vec2<f32>>;
+@compute @workgroup_size(64) fn test_shape(@builtin(global_invocation_id) id:vec3<u32>) {
+if id.x>=arrayLength(&inputs) {return;}
+let p=inputs[id.x];let q=vec2(bitcast<f32>(p.x),bitcast<f32>(p.y));
+let len=bitcast<f32>(p.len);let short=bitcast<f32>(p.short);
+outputs[id.x]=vec2(sd_tab(q,edge_profile(p.raw),len,short),edge_distance(q,p.raw,len,short));}";
+    let bytes = compute_output(
+        app,
+        source,
+        "test_shape",
+        bytemuck::cast_slice(&inputs),
+        expected.len() as u64 * 8,
+        (inputs.len() as u32).div_ceil(64),
+    );
+    for (index, (actual, (expected, short))) in bytemuck::cast_slice::<u8, [f32; 2]>(&bytes)
+        .iter()
+        .zip(expected)
+        .enumerate()
+    {
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                actual.is_finite() && (actual - expected).abs() <= short * 1e-5,
+                "GPU shape parity {index}: {actual} vs {expected}"
+            );
+            if expected.abs() > short * 1e-5 {
+                assert_eq!(actual.is_sign_negative(), expected.is_sign_negative());
+            }
+        }
+    }
+}
+fn compute_output(
+    app: &App,
+    source: String,
+    entry: &str,
+    input_bytes: &[u8],
+    output_bytes: u64,
+    workgroups: u32,
+) -> Vec<u8> {
+    let world = app.sub_app(RenderApp).world();
+    let device = world.resource::<RenderDevice>();
+    let queue = world.resource::<RenderQueue>();
     let shader = device
         .wgpu_device()
         .create_shader_module(ShaderModuleDescriptor {
@@ -215,19 +321,19 @@ let p=inputs[id.x];outputs[id.x]=raw_profile(vec2(p.low,p.high),p.orientation,p.
         label: Some("hash parity"),
         layout: None,
         module: &shader,
-        entry_point: Some("test_profile"),
+        entry_point: Some(entry),
         compilation_options: default(),
         cache: None,
     });
     let input = device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("hash cases"),
-        contents: bytemuck::cast_slice(&inputs),
+        contents: input_bytes,
         usage: BufferUsages::STORAGE,
     });
     let output = buffer(
         device,
         "raw profiles",
-        expected.len() as u64 * 8,
+        output_bytes,
         BufferUsages::STORAGE | BufferUsages::COPY_SRC,
     );
     let group = device
@@ -251,11 +357,10 @@ let p=inputs[id.x];outputs[id.x]=raw_profile(vec2(p.low,p.high),p.orientation,p.
         let mut pass = encoder.begin_compute_pass(&default());
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &group, &[]);
-        pass.dispatch_workgroups(inputs.len() as u32, 1, 1);
+        pass.dispatch_workgroups(workgroups, 1, 1);
     }
     queue.submit([encoder.finish()]);
-    let bytes = read_buffer(app, &output, expected.len() as u64 * 8);
-    assert_eq!(bytemuck::cast_slice::<u8, [u32; 2]>(&bytes), expected);
+    read_buffer(app, &output, output_bytes)
 }
 fn rendered_pixels(app: &mut App, target: Handle<Image>) -> Vec<u8> {
     let pixels = Arc::new(Mutex::new(None));
@@ -283,6 +388,7 @@ fn rendered_pixels(app: &mut App, target: Handle<Image>) -> Vec<u8> {
 fn gpu_raster_selection() {
     let (mut app, camera, target) = gpu_app(128);
     hash_parity(&app);
+    shape_parity(&app);
     let def = definition(UVec2::splat(2), 128, 42);
     app.world_mut().insert_resource(def.clone());
     app.world_mut()
