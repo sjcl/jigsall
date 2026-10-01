@@ -63,6 +63,18 @@ impl SnapScratch {
 }
 
 impl PieceDataStore {
+    /// Called only for correct grid neighbors known to share the authoritative root.
+    /// Reuse the closure's edge visits, including cycle edges with no new DSU union.
+    fn cache_connected_edge(&mut self, member: PieceId, neighbor: PieceId, direction: usize) {
+        let (edge, opposite) = CONNECTED_EDGE_PAIRS[direction];
+        for (id, bit) in [(member, edge), (neighbor, opposite)] {
+            if self.states[id.0 as usize].flags & bit == 0 {
+                self.states[id.0 as usize].flags |= bit;
+                self.dirty_pieces.insert(id);
+            }
+        }
+    }
+
     fn target_offset(&self, target: PieceId, scratch: &SnapScratch) -> Vec2 {
         if let Some(&offset) = scratch.rounded_offsets.get(&target) {
             return offset;
@@ -228,9 +240,14 @@ impl PieceDataStore {
             {
                 scratch.boundary_members += 1;
             }
-            for neighbor in geometry.neighbors(member).into_iter().flatten() {
+            for (direction, neighbor) in geometry.neighbors(member).into_iter().enumerate() {
+                let Some(neighbor) = neighbor else { continue };
                 let target = self.connectivity.find_root(neighbor);
-                if target == moving || !scratch.first_visit(target) {
+                if target == moving {
+                    self.cache_connected_edge(member, neighbor, direction);
+                    continue;
+                }
+                if !scratch.first_visit(target) {
                     continue;
                 }
                 let offset = self.target_offset(target, scratch);
@@ -288,6 +305,7 @@ impl PieceDataStore {
                 scratch.rounded_offsets.remove(&moving);
                 scratch.rounded_offsets.remove(&target);
                 moving = self.connectivity.union(moving, target);
+                self.cache_connected_edge(member, neighbor, direction);
             }
         }
         let representative = self.connectivity.minimum_member(moving);

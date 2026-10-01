@@ -62,6 +62,134 @@ fn assert_offset(store: &PieceDataStore, d: &PuzzleDefinition, id: u32, expected
     }
 }
 
+fn assert_render_edges(store: &PieceDataStore, d: &PuzzleDefinition) {
+    for (index, state) in store.states.iter().enumerate() {
+        let id = PieceId(index as u32);
+        let expected = d
+            .neighbors(id)
+            .into_iter()
+            .zip(CONNECTED_EDGE_PAIRS)
+            .filter_map(|(neighbor, (edge, _))| {
+                neighbor
+                    .filter(|&n| store.connectivity.same_component(id, n))
+                    .map(|_| edge)
+            })
+            .fold(0, |flags, edge| flags | edge);
+        assert_eq!(state.flags & CONNECTED_EDGES, expected, "piece {index}");
+    }
+}
+
+#[test]
+fn render_edge_cache_is_symmetric_and_dirties_only_the_joined_pair() {
+    assert_eq!(std::mem::size_of::<GpuPieceState>(), 16);
+    for (grid, edges) in [
+        (UVec2::new(3, 1), [CONNECTED_RIGHT, CONNECTED_LEFT]),
+        (UVec2::new(1, 3), [CONNECTED_BOTTOM, CONNECTED_TOP]),
+    ] {
+        let (d, mut s) = fixture(grid, [100.0, 100.0, 300.0].map(Vec2::splat));
+        let before = s.states.to_vec();
+        s.snap_unheld_component(PieceId(0), &d);
+        assert_eq!(
+            s.dirty_pieces.iter().collect::<Vec<_>>(),
+            [PieceId(0), PieceId(1)]
+        );
+        for (index, edge) in edges.into_iter().enumerate() {
+            assert_eq!(s.states[index].flags, before[index].flags | edge);
+            assert_eq!(s.states[index].position, before[index].position);
+            assert_eq!(s.states[index].z_order, before[index].z_order);
+        }
+        assert_eq!(s.states[2], before[2]);
+        assert_render_edges(&s, &d);
+        s.dirty_pieces.clear();
+        s.snap_unheld_component(PieceId(0), &d);
+        assert!(
+            s.dirty_pieces.is_empty(),
+            "cached edges never dirty the states again"
+        );
+    }
+}
+
+#[test]
+fn render_edge_cache_records_cycle_edges_l_shapes_and_holes() {
+    for members in [
+        vec![0],
+        vec![0, 1],
+        vec![0, 3],
+        vec![0, 1, 3, 4],
+        vec![0, 1, 3],
+        vec![0, 1, 2, 3, 5, 6, 7, 8],
+        (0..9).collect(),
+    ] {
+        let (d, mut s) = fixture(
+            UVec2::splat(3),
+            (0..9).map(|id| Vec2::splat(if members.contains(&id) { 100.0 } else { 500.0 })),
+        );
+        s.snap_unheld_component(PieceId(0), &d);
+        assert_eq!(s.connectivity.component_size(PieceId(0)), members.len());
+        assert_render_edges(&s, &d);
+    }
+}
+
+#[test]
+fn connected_outline_uploads_only_changed_states_and_stays_idle_during_drag() {
+    let (d, s) = fixture(UVec2::new(3, 1), [100.0, 100.0, 300.0].map(Vec2::splat));
+    let mut app = App::new();
+    app.insert_resource(s)
+        .insert_resource(d.clone())
+        .init_resource::<PieceUpload>()
+        .add_systems(Update, prepare_piece_upload);
+    app.update();
+    app.update(); // Drop the initial shared upload before incremental edits.
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .snap_unheld_component(PieceId(0), &d);
+    app.update();
+    let upload = app.world().resource::<PieceUpload>();
+    assert_eq!(upload.ranges.len(), 1);
+    assert_eq!(upload.ranges[0].start, 0);
+    assert_eq!(
+        upload.ranges[0].states.len() * std::mem::size_of::<GpuPieceState>(),
+        32
+    );
+    let revision = upload.revision;
+    for _ in 0..8 {
+        app.update();
+        assert_eq!(app.world().resource::<PieceUpload>().revision, revision);
+    }
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        let members = mask(3, &[0, 1]);
+        store.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::GrabGroup {
+                members: members.clone(),
+            },
+            Some(&d),
+        );
+        store.drag.members = members.words().clone();
+    }
+    app.update();
+    let revision = app.world().resource::<PieceUpload>().revision;
+    let before = app.world().resource::<PieceDataStore>().states.to_vec();
+    let allocation = app.world().resource::<PieceDataStore>().states.as_ptr();
+    let members = app
+        .world()
+        .resource::<PieceDataStore>()
+        .drag
+        .members
+        .clone();
+    for step in 0..64 {
+        app.world_mut().resource_mut::<PieceDataStore>().drag.delta = Vec2::splat(step as f32);
+        app.update();
+        let store = app.world().resource::<PieceDataStore>();
+        assert!(store.dirty_pieces.is_empty());
+        assert_eq!(&*store.states, before.as_slice());
+        assert_eq!(store.states.as_ptr(), allocation);
+        assert!(Arc::ptr_eq(&store.drag.members, &members));
+        assert_eq!(app.world().resource::<PieceUpload>().revision, revision);
+    }
+}
+
 #[test]
 fn correct_neighbors_connect_off_board_with_strict_threshold() {
     for (distance, connected) in [(5.0, false), (4.99, true)] {
@@ -96,6 +224,7 @@ fn physically_close_wrong_neighbors_cannot_connect_or_wrap_rows() {
     s.states[3].position = s.states[0].position + Vec2::X;
     release(&mut s, &d, &[0], Vec2::ZERO);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 1);
+    assert_render_edges(&s, &d);
     let (d, mut s) = fixture(
         UVec2::splat(2),
         [
@@ -107,6 +236,7 @@ fn physically_close_wrong_neighbors_cannot_connect_or_wrap_rows() {
     );
     release(&mut s, &d, &[1], Vec2::ZERO);
     assert!(!s.connectivity.same_component(PieceId(1), PieceId(2)));
+    assert_render_edges(&s, &d);
 }
 
 #[test]
@@ -149,6 +279,7 @@ fn large_same_offset_closure_scans_each_boundary_member_once() {
     assert_eq!(scratch.boundary_members, 10_000);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
     assert_offset(&s, &d, 0, Vec2::splat(10_000.0));
+    assert_render_edges(&s, &d);
 }
 
 #[test]
@@ -355,7 +486,10 @@ fn union_expands_selection_and_only_changed_dense_members_become_dirty() {
     s.dirty_pieces.clear();
     s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d));
     assert_eq!(s.selected_pieces.count(), 2);
-    assert_eq!(s.dirty_pieces.iter().collect::<Vec<_>>(), [PieceId(0)]);
+    assert_eq!(
+        s.dirty_pieces.iter().collect::<Vec<_>>(),
+        [PieceId(0), PieceId(1)]
+    );
 }
 
 #[test]
@@ -515,6 +649,7 @@ fn alternating_board_releases_union_without_rescanning_the_growing_cluster() {
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
     assert_eq!(s.placed_count, 10_000);
     assert_offset(&s, &d, 0, Vec2::ZERO);
+    assert_render_edges(&s, &d);
 }
 
 #[test]
@@ -670,7 +805,7 @@ fn fractional_closure_accepts_rounding_in_both_axes_without_moving_targets() {
                 state.position.to_array().map(f32::to_bits),
                 before.position.to_array().map(f32::to_bits)
             );
-            assert_eq!(state.flags, before.flags);
+            assert_eq!(state.flags & !CONNECTED_EDGES, before.flags);
             assert_eq!(state.z_order, before.z_order);
         }
     }

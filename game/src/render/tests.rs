@@ -1,4 +1,5 @@
 use super::*;
+mod outline_tests;
 mod selection_bench;
 use crate::{
     resources::{

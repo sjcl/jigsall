@@ -1,4 +1,4 @@
-#import puzzella::shape::{piece_profiles, piece_signed_distance, inside_piece, piece_uv}
+#import puzzella::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
@@ -39,13 +39,20 @@ struct VertexOutput {
     out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];return out;
 }
 fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
+fn selection_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
+    // Bits 5..8: top/right/bottom/left (resources/pieces.rs). An enclosed
+    // piece has no outline candidates. Coverage/picking still use every edge.
+    let connected=(vec4(flags)&vec4(32u,64u,128u,256u))!=vec4(0u);
+    return max_edge_distance(select(edges,vec4(-1e20),connected));
+}
 fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     if d>0.0 {discard;}
     let color=textureSample(image,image_sampler,in.uv);
     if color.a<=0.0 {discard;} return color;
 }
 @fragment fn fragment(in:VertexOutput)->@location(0) vec4<f32> {
-    let d=distance(in);let color=sample_visible(in,d);
+    let edges=piece_edge_distances(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));
+    let d=max_edge_distance(edges);let color=sample_visible(in,d);
     // Evaluate derivatives before the per-piece highlight branch.
     let aa=fwidth(d);
     var flags=in.flags&~6u;
@@ -54,8 +61,12 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     if (flags&6u)==0u {return color;}
     let width=min(16.0,min(config.size.x,config.size.y)*0.16)*0.5;
     var line=vec3(0.3,0.6,1.0);
-    if (flags&2u)!=0u {line=vec3(1.0,0.8,0.0);}
-    let coverage=1.0-smoothstep(width-aa,width+aa,abs(d));
+    var boundary=d;
+    if (flags&2u)!=0u {
+        line=vec3(1.0,0.8,0.0);
+        if (flags&480u)!=0u {boundary=selection_boundary_distance(edges,flags);}
+    }
+    let coverage=1.0-smoothstep(width-aa,width+aa,abs(boundary));
     return vec4(mix(color.rgb,line,coverage),color.a);
 }
 fn check_selectable(id:u32) {

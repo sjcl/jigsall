@@ -99,13 +99,19 @@ fn edge_distance(q:vec2<f32>,raw:vec2<u32>,len:f32,short:f32) -> f32 {
     if p.polarity>0.0 {return min(q.y,sd_tab(q,p,len,short));}
     return max(q.y,-sd_tab(vec2(q.x,-q.y),p,len,short));
 }
-fn piece_signed_distance(local:vec2<f32>,size:vec2<f32>,edges:array<vec2<u32>,4>) -> f32 {
+fn piece_edge_distances(local:vec2<f32>,size:vec2<f32>,edges:array<vec2<u32>,4>) -> vec4<f32> {
     let h=size*0.5; let s=min(size.x,size.y);
     let top=edge_distance(vec2(local.x+h.x,local.y-h.y),edges[0],size.x,s);
     let right=edge_distance(vec2(h.y-local.y,local.x-h.x),edges[1],size.y,s);
     let bottom=-edge_distance(vec2(local.x+h.x,local.y+h.y),edges[2],size.x,s);
     let left=-edge_distance(vec2(h.y-local.y,local.x+h.x),edges[3],size.y,s);
-    return max(max(top,right),max(bottom,left));
+    return vec4(top,right,bottom,left);
+}
+fn max_edge_distance(edges:vec4<f32>) -> f32 {
+    return max(max(edges.x,edges.y),max(edges.z,edges.w));
+}
+fn piece_signed_distance(local:vec2<f32>,size:vec2<f32>,edges:array<vec2<u32>,4>) -> f32 {
+    return max_edge_distance(piece_edge_distances(local,size,edges));
 }
 fn inside_piece(local:vec2<f32>,size:vec2<f32>,edges:array<vec2<u32>,4>) -> bool {
     return piece_signed_distance(local,size,edges)<=0.0;

@@ -89,6 +89,8 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 ## GPU presentation
 
+接続componentの黄色selection outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。idle / camera / selection / pointer dragに追加のCPU走査やstate uploadはなく、16-byte stateと既存bufferを維持します。snapshot schema 3のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverageは全辺、黄色outlineは未接続辺を使います。青previewとpoint / rectangle pickingは従来の全辺SDFを使います。全4辺が接続した内部pieceの黄色outlineは描画しません。
+
 Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 
 opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけをGPU radix sort（8bit × 3 pass）で後方→前方に並べblendし、depthを書きません。透明経路ではID順に可視IDを圧縮してから安定sortし、同じZのID順も維持します。workgroup数はGPUのinstance_countからindirect dispatchで決め、CPU readbackは不要です。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。sortは[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、選択は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。

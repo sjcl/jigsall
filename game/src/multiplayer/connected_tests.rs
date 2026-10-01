@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     interaction::{PieceInteraction, PointerFrame},
+    resources::pieces::{CONNECTED_EDGES, CONNECTED_EDGE_PAIRS},
     selection::{PuzzleSelection, SelectionMode, SelectionPayload, SelectionResult},
 };
 use bevy::prelude::*;
@@ -78,6 +79,18 @@ fn connected_snapshot_round_trip_preserves_positions_placement_and_edges() {
         for a in 0..8 {
             assert_eq!(restored.states[a].position, s.states[a].position);
             assert_eq!(restored.states[a].z_order, s.states[a].z_order);
+            let id = PieceId(a as u32);
+            let edges = d
+                .neighbors(id)
+                .into_iter()
+                .zip(CONNECTED_EDGE_PAIRS)
+                .filter_map(|(neighbor, (edge, _))| {
+                    neighbor
+                        .filter(|&n| s.connectivity.same_component(id, n))
+                        .map(|_| edge)
+                })
+                .fold(0, |flags, edge| flags | edge);
+            assert_eq!(restored.states[a].flags & CONNECTED_EDGES, edges);
             for b in 0..8 {
                 assert_eq!(
                     restored
@@ -87,6 +100,60 @@ fn connected_snapshot_round_trip_preserves_positions_placement_and_edges() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn snapshot_render_edges_are_derived_from_authority_including_sparse_cycles() {
+    let d = PuzzleDefinition {
+        generator_version: GENERATOR_VERSION,
+        seed: 42,
+        grid_size: UVec2::splat(2),
+        image_size: UVec2::splat(40),
+        snap_distance: 5.0,
+    };
+    let mut source = PieceDataStore::default();
+    source.initialize(
+        (0..4)
+            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.0))
+            .collect(),
+    );
+    source.snap_unheld_component(PieceId(0), &d);
+    let render_flags: Vec<_> = source
+        .states
+        .iter()
+        .map(|state| state.flags & CONNECTED_EDGES)
+        .collect();
+    let snapshot = GameSnapshot::capture(&source, &d, SESSION, expected(&d).cursor).unwrap();
+    assert_eq!(snapshot.schema_version, 3);
+    assert_eq!(snapshot.definition.generator_version, GENERATOR_VERSION);
+    assert!(snapshot
+        .pieces
+        .iter()
+        .all(|state| state.flags & CONNECTED_EDGES == 0));
+    // Corrupt only the presentation cache: capture must continue to use the DSU.
+    for state in source.states.iter_mut() {
+        state.flags ^= CONNECTED_EDGES;
+    }
+    assert_eq!(
+        GameSnapshot::capture(&source, &d, SESSION, expected(&d).cursor).unwrap(),
+        snapshot
+    );
+    for sparse in [false, true] {
+        let mut snapshot = snapshot.clone();
+        if sparse {
+            snapshot.pieces[2].flags &= !SNAPSHOT_CONNECTED_RIGHT;
+        }
+        let mut restored = PieceDataStore::default();
+        snapshot.install(&mut restored, expected(&d)).unwrap();
+        assert_eq!(
+            restored
+                .states
+                .iter()
+                .map(|state| state.flags & CONNECTED_EDGES)
+                .collect::<Vec<_>>(),
+            render_flags
+        );
     }
 }
 
@@ -217,7 +284,23 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
     let snapshot = GameSnapshot::capture(&source, &d, SESSION, expected(&d).cursor).unwrap();
     let mut restored = PieceDataStore::default();
     snapshot.install(&mut restored, expected(&d)).unwrap();
-    assert_eq!(source.states, restored.states);
+    // This fixture unions the DSU directly, bypassing the live render cache.
+    for (index, (before, after)) in source.states.iter().zip(restored.states.iter()).enumerate() {
+        assert_eq!(before.position, after.position, "piece {index}");
+        assert_eq!(before.z_order, after.z_order, "piece {index}");
+        assert_eq!(
+            before.flags,
+            after.flags & !CONNECTED_EDGES,
+            "piece {index}"
+        );
+        let edges = d
+            .neighbors(PieceId(index as u32))
+            .into_iter()
+            .zip(CONNECTED_EDGE_PAIRS)
+            .filter_map(|(neighbor, (edge, _))| neighbor.map(|_| edge))
+            .fold(0, |flags, edge| flags | edge);
+        assert_eq!(after.flags & CONNECTED_EDGES, edges, "piece {index}");
+    }
     assert_eq!(
         restored.connectivity.component_size(PieceId(777_777)),
         1_000_000
@@ -378,7 +461,14 @@ fn fractional_closure_is_identical_after_restore_and_preserves_target_positions(
         store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d));
         store.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d));
         assert_eq!(store.connectivity.component_size(PieceId(0)), 3);
-        assert_eq!(store.states[1..], targets);
+        for (state, before) in store.states[1..].iter().zip(targets) {
+            assert_eq!(
+                state.position.to_array().map(f32::to_bits),
+                before.position.to_array().map(f32::to_bits)
+            );
+            assert_eq!(state.z_order, before.z_order);
+            assert_eq!(state.flags & !CONNECTED_EDGES, before.flags);
+        }
         GameSnapshot::capture(store, &d, SESSION, expected(&d).cursor).unwrap();
     }
     assert_eq!(source.states, restored.states);

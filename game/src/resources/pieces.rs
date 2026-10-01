@@ -21,6 +21,21 @@ pub const SELECTED: u32 = 2;
 pub const PREVIEW: u32 = 4;
 pub const HELD: u32 = 8;
 pub const ENABLED: u32 = 16;
+// Presentation cache only; PieceConnectivity remains the connectivity authority.
+// Keep in sync with the highlight boundary mask in puzzle_render.wgsl.
+pub const CONNECTED_TOP: u32 = 1 << 5;
+pub const CONNECTED_RIGHT: u32 = 1 << 6;
+pub const CONNECTED_BOTTOM: u32 = 1 << 7;
+pub const CONNECTED_LEFT: u32 = 1 << 8;
+pub const CONNECTED_EDGES: u32 =
+    CONNECTED_TOP | CONNECTED_RIGHT | CONNECTED_BOTTOM | CONNECTED_LEFT;
+// PuzzleGeometry::neighbors order: left, right, up, down.
+pub(crate) const CONNECTED_EDGE_PAIRS: [(u32, u32); 4] = [
+    (CONNECTED_LEFT, CONNECTED_RIGHT),
+    (CONNECTED_RIGHT, CONNECTED_LEFT),
+    (CONNECTED_TOP, CONNECTED_BOTTOM),
+    (CONNECTED_BOTTOM, CONNECTED_TOP),
+];
 pub const MAX_Z: u32 = (1 << 24) - 2;
 mod snapping;
 #[repr(C)]

@@ -1,6 +1,6 @@
 //! Versioned gameplay snapshots: GPU flags/layout are not the protocol.
 use crate::resources::{
-    pieces::{ENABLED, MAX_Z, PLACED},
+    pieces::{CONNECTED_EDGE_PAIRS, ENABLED, MAX_Z, PLACED},
     GpuPieceState, PieceDataStore,
 };
 use bevy::math::Vec2;
@@ -230,15 +230,33 @@ impl GameSnapshot {
         let states = self
             .pieces
             .iter()
-            .map(|state| GpuPieceState {
-                position: state.position,
-                z_order: state.z_order,
-                flags: ENABLED
-                    | if state.flags & SNAPSHOT_PLACED != 0 {
-                        PLACED
-                    } else {
-                        0
-                    },
+            .enumerate()
+            .map(|(index, state)| {
+                let id = PieceId(index as u32);
+                // Derive from the restored DSU, including shared cycle edges
+                // implied by a sparse right/down snapshot. Never trust GPU flags.
+                let edges = self
+                    .definition
+                    .neighbors(id)
+                    .into_iter()
+                    .zip(CONNECTED_EDGE_PAIRS)
+                    .filter_map(|(neighbor, (edge, _))| {
+                        neighbor
+                            .filter(|&n| connectivity.same_component(id, n))
+                            .map(|_| edge)
+                    })
+                    .fold(0, |flags, edge| flags | edge);
+                GpuPieceState {
+                    position: state.position,
+                    z_order: state.z_order,
+                    flags: ENABLED
+                        | edges
+                        | if state.flags & SNAPSHOT_PLACED != 0 {
+                            PLACED
+                        } else {
+                            0
+                        },
+                }
             })
             .collect();
         store.replace_snapshot_states(states, self.next_z_order, connectivity);

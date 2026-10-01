@@ -58,6 +58,16 @@ point / Ctrl / final rectangleはcomponent全体へ展開し、union時は必要
 
 snapshot schema 3、`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`、16 bytes / pieceは変更しません。root IDを保存せず、右・下edgeから復元します。invalid border edge、inconsistent component、placed exact position、old schema reject、transactional install、migration round tripを維持します。integer / fractional offsetでDSU rootが変わる復元と、新resolverの単一snap・closure・board優先の復元前後一致をテストします。
 
+## 接続componentの選択outline
+
+選択outlineの接続辺cacheは既存16-byte `GpuPieceState.flags` のbit 5 / 6 / 7 / 8へtop / right / bottom / leftを保存します。authorityは引き続き`PieceConnectivity`です。固定offsetのclosureが既に列挙する正しいgrid neighborについて、union成立時と同じrootの辺を訪問した時に両側のbitを設定します。後者は2×2などの閉路の共有辺も記録します。bitが変わったpieceだけ既存dirty maskへ追加し、成長componentの追加走査・恒久allocation・GPU buffer・root ID uploadはありません。解決済みtargetのmember listも再走査しません。
+
+main fragmentは4辺のdistanceを一度計算し、全辺のmaxを従来どおりcoverage / discardへ使います。黄色selectionのboundaryだけ接続済み辺を候補から除外します。全4辺が接続したpieceにはoutlineがありません。rectangleの青previewはCPU component展開前のGPU hit maskなので従来のpiece outlineを維持します。point / rectangle pickingも従来の全辺SDFを使います。形状定数・fingerprint・generator versionは変更しません。
+
+cacheは結合処理とsnapshot installだけで更新し、selection変更・idle・camera・pointer dragに再計算も追加state uploadもありません。新しい2piece接続は両側の16-byte state、計32 bytesをdirty uploadします。既存のposition / hold変更は同じdirty bitへ合流します。大量closureの瞬間には多数の新しい接続辺がdirtyになりますが、uploadのrange結合と128 spans超での既存fallbackを維持します。snapshot schema 3は変更せず、captureはrender flagsを保存せずDSUからright/downを導出します。installは既存state生成のmap内で復元DSUの隣接関係から全4方向を再構成し、保存edgeに明示されない共有閉路辺も復元します。追加DSU lookupはこの明示的なO(N)復元時だけです。
+
+CPU testsは横 / 縦pair、未接続neighborとgrid外周、2×2の閉路・L字・穴あり・全4辺接続、10k closureの既存境界走査数、解決済みboard clusterへの接続、snapshotのcache非保存と疎な閉路辺からの復元、1M restore、2stateだけの32-byte upload、idle / frozen dragでstate allocationとupload revisionが変わらないことを検証します。実GPUの`gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads`はsingleton / 横 / 縦 / 2×2 / L字 / 穴あり / 内部pieceについて、境界から離れたpixelの画像色、外周outline、coverageとpoint / rectangle pickingの不変、camera / drag中のstate / membership / selection upload 0 bytesを検証します。既存`gpu_raster_selection`はsingletonの色とprocedural shape parity、`gpu_drag_transform_and_preview_without_readback`は青previewの既存表示も確認します。
+
 ## 計算量
 
 Nはpiece count、kはmoving membersと新たに吸収する未解決members、eはその最大4k grid edges、vはcandidate targetのauthority検証membersです。component resolverはmember走査・normalization・closureがO(k + v)、read-only DSU lookupが最悪O(e log N)、unionはpath compressionを使います。scalar Releaseのscratch初期化はNに依存せず、Group Releaseでは入力maskのiterationにO(N/32)が残ります。少数IDのdeduplicationは固定容量内で線形検索し、それを超えるsetだけO(N/32)でdenseへ昇格します。Releaseはrequested IDsのroot lookupとsort、component単位のauthority検証・member列挙を行います。Grabとselectionではcanonical出力maskのCOWが必要な場合があり、scalar GrabもN-bit入力maskを作ります。root検証はcacheし、unionしたrootには検証済みの状態を引き継ぎます。各memberの境界・placement・selection変更はRelease内で定数回程度に抑え、成長componentの繰り返し全走査を避けます。pointerとidleはO(1)です。
