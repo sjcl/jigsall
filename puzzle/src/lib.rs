@@ -2,9 +2,11 @@
 pub mod generation;
 pub mod grid;
 pub mod placement;
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 pub mod shape_data;
 pub mod shapes;
 pub use generation::{
-    create_all_pieces_sync, generate_shapes, PieceCreationResult, PieceData, ShapeGenerationResult,
+    generate_pieces, GenerationError, PieceCreationResult, PieceData, TessellationWorker,
 };
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 pub use shape_data::PieceShape;

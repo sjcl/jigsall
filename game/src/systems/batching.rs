@@ -12,17 +12,25 @@ use crate::resources::*;
 
 /// 複数のメッシュを1つに結合する
 pub fn combine_meshes(
-    meshes_with_transforms: Vec<(Mesh, Transform)>,
+    meshes_with_transforms: Vec<(&Mesh, Transform)>,
     _debug_level: &PerformanceDebugLevel,
 ) -> Result<Mesh, String> {
     if meshes_with_transforms.is_empty() {
         return Err("No meshes to combine".to_string());
     }
 
-    let mut combined_vertices: Vec<[f32; 3]> = Vec::new();
-    let mut combined_uvs: Vec<[f32; 2]> = Vec::new();
-    let mut combined_indices: Vec<u32> = Vec::new();
-    let mut combined_piece_ids: Vec<u32> = Vec::new();
+    let vertex_capacity = meshes_with_transforms
+        .iter()
+        .map(|(mesh, _)| mesh.count_vertices())
+        .sum();
+    let index_capacity = meshes_with_transforms
+        .iter()
+        .filter_map(|(mesh, _)| mesh.indices().map(Indices::len))
+        .sum();
+    let mut combined_vertices: Vec<[f32; 3]> = Vec::with_capacity(vertex_capacity);
+    let mut combined_uvs: Vec<[f32; 2]> = Vec::with_capacity(vertex_capacity);
+    let mut combined_indices: Vec<u32> = Vec::with_capacity(index_capacity);
+    let mut combined_piece_ids: Vec<u32> = Vec::with_capacity(vertex_capacity);
     let mut vertex_offset = 0u32;
     let mesh_count = meshes_with_transforms.len();
 
@@ -40,21 +48,7 @@ pub fn combine_meshes(
         };
 
         // インデックスを取得
-        let indices = match mesh.indices() {
-            Some(Indices::U32(indices)) => indices.clone(),
-            Some(Indices::U16(indices)) => indices.iter().map(|&i| i as u32).collect::<Vec<_>>(),
-            None => return Err("Mesh missing indices".to_string()),
-        };
-
-        // デバッグ: 最初の数個のメッシュでインデックス数を確認
-        if (combined_vertices.len() / 3) < 3 {
-            println!(
-                "🔍 Combine mesh #{}: {} vertices, {} indices",
-                combined_vertices.len() / 3,
-                positions.len(),
-                indices.len()
-            );
-        }
+        let indices = mesh.indices().ok_or("Mesh missing indices")?;
 
         // 頂点を変換行列で変換してから結合
         let transform_matrix = transform.to_matrix();
@@ -74,18 +68,25 @@ pub fn combine_meshes(
         }
 
         // インデックスを頂点オフセットを加えて追加
-        for &index in &indices {
-            combined_indices.push(index + vertex_offset);
+        match indices {
+            Indices::U16(indices) => combined_indices.extend(
+                indices
+                    .iter()
+                    .map(|&index| u32::from(index) + vertex_offset),
+            ),
+            Indices::U32(indices) => {
+                combined_indices.extend(indices.iter().map(|&index| index + vertex_offset))
+            }
         }
 
         vertex_offset += positions.len() as u32;
     }
 
-    println!(
-        "🔄 Combined {} meshes into single mesh: {} vertices, {} indices",
+    trace!(
         mesh_count,
-        combined_vertices.len(),
-        combined_indices.len()
+        vertices = combined_vertices.len(),
+        indices = combined_indices.len(),
+        "Combined piece meshes"
     );
 
     // 結合されたメッシュを作成
@@ -151,11 +152,7 @@ pub fn create_temporary_entities(
                 MeshMaterial2d(piece.render.material.clone()),
                 transform,
                 piece.definition.clone(),
-                PieceShape {
-                    vertices: piece.render.shape.vertices.clone(),
-                    indices: piece.render.shape.indices.clone(),
-                    shape_hash: piece.render.shape.shape_hash.clone(),
-                },
+                PieceStroke(piece.render.stroke.clone()),
                 TemporaryPieceEntity { piece_id: id },
             ))
             .id();
@@ -228,8 +225,8 @@ pub fn handle_batch_rebuild_requests(
             continue;
         }
         if let (Some(piece), Some(transform)) = (store.pieces.get(&id), store.transforms.get(&id)) {
-            if let Some(mesh) = meshes.get(&piece.render.mesh) {
-                inputs.push((mesh.clone(), *transform));
+            if meshes.contains(&piece.render.mesh) {
+                inputs.push((piece.render.mesh.clone(), *transform));
                 material = Some(piece.render.material.clone());
             }
         }
@@ -252,7 +249,7 @@ fn append_piece_batch(
     commands: &mut Commands,
     batch: &mut BatchManager,
     meshes: &mut Assets<Mesh>,
-    mut inputs: Vec<(Mesh, Transform)>,
+    mut inputs: Vec<(Handle<Mesh>, Transform)>,
     material: Handle<ColorMaterial>,
     debug_level: &PerformanceDebugLevel,
 ) {
@@ -266,6 +263,10 @@ fn append_piece_batch(
     for (_, transform) in &mut inputs {
         transform.translation.z -= layer;
     }
+    let inputs = inputs
+        .iter()
+        .filter_map(|(handle, transform)| meshes.get(handle).map(|mesh| (mesh, *transform)))
+        .collect();
     match combine_meshes(inputs, debug_level) {
         Ok(mesh) => {
             batch.batched_entities.push(
@@ -359,9 +360,9 @@ mod tests {
                     shape: PieceShapeData {
                         vertices: vec![],
                         indices: vec![],
-                        shape_hash: String::new(),
                     },
                     mesh: mesh.clone(),
+                    stroke: default(),
                     material: material.clone(),
                 },
             });

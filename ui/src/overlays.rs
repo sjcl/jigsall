@@ -114,13 +114,7 @@ pub fn draw_generation_progress_ui(
                 // 進捗率を計算
                 let progress_ratio = match progress.generation_phase {
                     GenerationPhase::NotStarted => 0.0,
-                    GenerationPhase::PreparingShapes => {
-                        progress.shapes_generated as f32 / progress.total_pieces.max(1) as f32 * 0.4
-                    }
-                    GenerationPhase::CreatingPieces => {
-                        0.4 + (progress.pieces_created as f32 / progress.total_pieces.max(1) as f32
-                            * 0.4)
-                    }
+                    GenerationPhase::GeneratingPieces => 0.0,
                     GenerationPhase::SpawningEntities => {
                         0.8 + (progress.pieces_created as f32 / progress.total_pieces.max(1) as f32
                             * 0.2)
@@ -132,17 +126,15 @@ pub fn draw_generation_progress_ui(
                 // フェーズ名
                 let phase_text = match progress.generation_phase {
                     GenerationPhase::NotStarted => "Starting...",
-                    GenerationPhase::PreparingShapes => "Generating shapes",
-                    GenerationPhase::CreatingPieces => "Creating pieces",
-                    GenerationPhase::SpawningEntities => "Spawning entities",
+                    GenerationPhase::GeneratingPieces => "Generating pieces",
+                    GenerationPhase::SpawningEntities => "Registering pieces",
                     GenerationPhase::Completed => "Completed",
                     GenerationPhase::Failed => "Failed",
                 };
 
                 // プログレスバー（フェーズに応じて適切な数値を表示）
                 let (current_count, label) = match progress.generation_phase {
-                    GenerationPhase::PreparingShapes => (progress.shapes_generated, "shapes"),
-                    GenerationPhase::CreatingPieces => (progress.pieces_created, "pieces"),
+                    GenerationPhase::GeneratingPieces => (0, "pieces"),
                     GenerationPhase::SpawningEntities => (progress.pieces_created, "spawned"),
                     _ => (0, "items"),
                 };

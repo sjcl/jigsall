@@ -1,7 +1,7 @@
 use crate::{components::*, resources::*};
 use bevy::prelude::*;
 use puzzella_core::*;
-use puzzella_puzzle::{create_all_pieces_sync, generate_shapes};
+use puzzella_puzzle::generate_pieces;
 
 /// CPU shape work and tessellation remain on workers; asset creation stays here.
 // CPU results, assets and presentation resources have separate ECS access.
@@ -13,7 +13,6 @@ pub fn spawn_puzzle_pieces_progressive(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut progress: ResMut<PieceGenerationProgress>,
-    mut stroke_cache: ResMut<StrokeMeshCache>,
     mut perf: ResMut<PerformanceMonitor>,
     mut next: ResMut<NextState<GameSubState>>,
     mut batch: ResMut<BatchManager>,
@@ -31,43 +30,22 @@ pub fn spawn_puzzle_pieces_progressive(
             definition.grid_size.x as usize,
             definition.grid_size.y as usize,
         );
-        progress.generation_phase = GenerationPhase::PreparingShapes;
+        progress.generation_phase = GenerationPhase::GeneratingPieces;
         let definition = definition.clone();
         let (sender, receiver) = crossbeam::channel::bounded(1);
         std::thread::spawn(move || {
-            let result = generate_shapes(&definition);
+            let result = generate_pieces(&definition).map_err(|error| error.to_string());
             let _ = sender.send(result);
         });
-        progress.bg_thread_receiver = Some(receiver);
+        progress.receiver = Some(receiver);
     }
 
-    if let Some(receiver) = &progress.bg_thread_receiver {
-        match receiver.try_recv() {
-            Ok(Ok(result)) => {
-                progress.shapes_generated = result.total_pieces;
-                progress.generation_phase = GenerationPhase::CreatingPieces;
-                let definition = definition.clone();
-                let (sender, receiver) = crossbeam::channel::bounded(1);
-                std::thread::spawn(move || {
-                    let result = create_all_pieces_sync(result, &definition);
-                    let _ = sender.send(result);
-                });
-                progress.piece_thread_receiver = Some(receiver);
-                progress.bg_thread_receiver = None;
-            }
-            Ok(Err(error)) => fail_generation(&mut progress, error),
-            Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                fail_generation(&mut progress, "Shape worker stopped".into())
-            }
-            Err(crossbeam::channel::TryRecvError::Empty) => {}
-        }
-    }
-    if let Some(receiver) = &progress.piece_thread_receiver {
+    if let Some(receiver) = &progress.receiver {
         match receiver.try_recv() {
             Ok(Ok(result)) => {
                 progress.pending_pieces = result.pieces.into();
                 progress.generation_phase = GenerationPhase::SpawningEntities;
-                progress.piece_thread_receiver = None;
+                progress.receiver = None;
             }
             Ok(Err(error)) => fail_generation(&mut progress, error),
             Err(crossbeam::channel::TryRecvError::Disconnected) => {
@@ -95,29 +73,23 @@ pub fn spawn_puzzle_pieces_progressive(
                 break;
             };
             let id = data.piece_component.id;
-            let mut mesh = data.mesh;
+            let mut mesh = data.geometry.fill.into_mesh();
             mesh.insert_attribute(
                 crate::selection::ATTRIBUTE_PIECE_ID,
                 vec![id.0; mesh.count_vertices()],
             );
             let mesh = meshes.add(mesh);
             commands.spawn(crate::selection::PuzzlePieceId(id));
-            if let Some(stroke) = data.stroke_mesh {
-                stroke_cache
-                    .stroke_meshes
-                    .insert(data.piece_shape.shape_hash.clone(), meshes.add(stroke));
-            }
+            let stroke = meshes.add(data.geometry.stroke.into_mesh());
             store.add_piece(StoredPieceData {
                 definition: data.piece_component,
                 state: data.state,
                 render: PieceRenderData {
-                    bounds: data.bounds,
-                    shape: PieceShapeData {
-                        vertices: data.piece_shape.vertices,
-                        indices: data.piece_shape.indices,
-                        shape_hash: data.piece_shape.shape_hash,
-                    },
+                    bounds: data.geometry.bounds,
+                    #[cfg(any(test, feature = "cpu-picking-debug"))]
+                    shape: data.geometry.shape,
                     mesh,
+                    stroke,
                     material: material.clone(),
                 },
             });
@@ -140,8 +112,7 @@ fn fail_generation(progress: &mut PieceGenerationProgress, error: String) {
     progress.is_generating = false;
     progress.generation_phase = GenerationPhase::Failed;
     progress.error = Some(error);
-    progress.bg_thread_receiver = None;
-    progress.piece_thread_receiver = None;
+    progress.receiver = None;
 }
 
 pub fn spawn_grid_reference(mut commands: Commands, image: Res<PuzzleImage>) {
@@ -172,25 +143,26 @@ mod tests {
     #[test]
     fn every_generated_triangle_is_pickable_at_its_drawn_position() {
         let def = definition(42);
-        let generated = create_all_pieces_sync(generate_shapes(&def).unwrap(), &def).unwrap();
+        let generated = generate_pieces(&def).unwrap();
         for data in generated.pieces {
             let id = data.piece_component.id;
             let position = data.state.position;
             let vertices: Vec<Vec2> = data
-                .piece_shape
+                .geometry
+                .shape
                 .vertices
                 .into_iter()
                 .map(Vec2::from)
                 .collect();
-            let indices = data.piece_shape.indices;
+            let indices = data.geometry.shape.indices;
             let mut collision = PieceCollisionSystem::default();
             collision.add_piece(PieceCollisionData {
                 piece_id: id,
                 position,
                 z_order: 0.0,
                 bounding_box: Rect {
-                    min: data.bounds.min + position,
-                    max: data.bounds.max + position,
+                    min: data.geometry.bounds.min + position,
+                    max: data.geometry.bounds.max + position,
                 },
                 vertices: vertices.clone(),
                 indices: indices.clone(),

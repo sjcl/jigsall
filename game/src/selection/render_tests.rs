@@ -213,9 +213,9 @@ fn spawn_fixture(
                 shape: PieceShapeData {
                     vertices: vec![],
                     indices: vec![],
-                    shape_hash: String::new(),
                 },
                 mesh: mesh.clone(),
+                stroke: default(),
                 material: material.clone(),
             },
         });
@@ -643,11 +643,7 @@ fn gpu_raster_selection() {
         .map(|(rank, &entity)| {
             let handle = &app.world().get::<Mesh2d>(entity).unwrap().0;
             (
-                app.world()
-                    .resource::<Assets<Mesh>>()
-                    .get(handle)
-                    .unwrap()
-                    .clone(),
+                app.world().resource::<Assets<Mesh>>().get(handle).unwrap(),
                 Transform::from_xyz(0., 0., rank as f32),
             )
         })
@@ -858,4 +854,107 @@ fn gpu_raster_selection() {
         gpu_result(&mut app, center, SelectionMode::Point),
         vec![PieceId(33)]
     );
+
+    // Exercise the native generator's U16 mesh on the actual picking buffers:
+    // the tab is selectable; the blank remains empty in point/rectangle modes.
+    use puzzella_puzzle::shapes::{EdgeId, EdgeOrientation, EdgeProfile};
+    let seed = (0..1000)
+        .find(|&seed| {
+            EdgeProfile::from_seed(
+                seed,
+                EdgeId {
+                    orientation: EdgeOrientation::Vertical,
+                    x: 1,
+                    y: 0,
+                },
+            )
+            .polarity
+                > 0.0
+                && EdgeProfile::from_seed(
+                    seed,
+                    EdgeId {
+                        orientation: EdgeOrientation::Horizontal,
+                        x: 0,
+                        y: 1,
+                    },
+                )
+                .polarity
+                    > 0.0
+        })
+        .unwrap();
+    let definition = puzzella_core::PuzzleDefinition {
+        generator_version: puzzella_core::GENERATOR_VERSION,
+        seed,
+        grid_size: UVec2::splat(2),
+        image_size: UVec2::splat(100),
+        snap_distance: 10.0,
+    };
+    let data = puzzella_puzzle::TessellationWorker::default()
+        .generate_piece(&definition, PieceId(0), Vec2::ZERO)
+        .unwrap();
+    let mesh = data.geometry.fill.into_mesh();
+    assert!(matches!(mesh.indices(), Some(Indices::U16(_))));
+    let target = app
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(Image::new_target_texture(
+            128,
+            128,
+            TextureFormat::Rgba8UnormSrgb,
+            None,
+        ));
+    app.world_mut()
+        .entity_mut(camera)
+        .insert((RenderTarget::Image(target.into()), Transform::default()));
+    app.world_mut().get_mut::<Camera>(camera).unwrap().viewport = None;
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<ColorMaterial>>()
+        .add(ColorMaterial::default());
+    spawn_fixture(&mut app, 65, mesh, material, Vec3::new(0.0, 0.0, 4.0));
+    let right = EdgeProfile::from_seed(
+        seed,
+        EdgeId {
+            orientation: EdgeOrientation::Vertical,
+            x: 1,
+            y: 0,
+        },
+    );
+    let bottom = EdgeProfile::from_seed(
+        seed,
+        EdgeId {
+            orientation: EdgeOrientation::Horizontal,
+            x: 0,
+            y: 1,
+        },
+    );
+    let tab = Vec2::new(25.0 + right.depth * 50.0 * 0.7, 25.0 - right.center * 50.0);
+    let blank = Vec2::new(
+        bottom.center * 50.0 - 25.0,
+        -25.0 + bottom.depth * 50.0 * 0.5,
+    );
+    for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+        let pixel = Vec2::new(64.0 + tab.x, 64.0 - tab.y);
+        assert_eq!(
+            gpu_result(
+                &mut app,
+                Rect {
+                    min: pixel,
+                    max: pixel + Vec2::ONE
+                },
+                mode
+            ),
+            vec![PieceId(65)]
+        );
+        let pixel = Vec2::new(64.0 + blank.x, 64.0 - blank.y);
+        assert!(!gpu_result(
+            &mut app,
+            Rect {
+                min: pixel,
+                max: pixel + Vec2::ONE
+            },
+            mode
+        )
+        .contains(&PieceId(65)));
+    }
 }

@@ -14,12 +14,8 @@ pub fn generate_placement_grid(
     seed: u64,
 ) -> Vec<Vec2> {
     let total_pieces = grid_width * grid_height;
+    let _span = info_span!("generate_placement_grid", total_pieces).entered();
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-
-    println!(
-        "🎯 Generating {} positions surrounding puzzle grid...",
-        total_pieces
-    );
 
     // パズルグリッド領域を計算
     let puzzle_area =
@@ -38,10 +34,6 @@ pub fn generate_placement_grid(
     // 必要に応じてフォールバック配置を追加
     if surrounding_positions.len() < total_pieces {
         let missing_pieces = total_pieces - surrounding_positions.len();
-        println!(
-            "🔄 Attempting fallback placement for {} remaining pieces...",
-            missing_pieces
-        );
 
         let fallback_positions = generate_fallback_positions(
             missing_pieces,
@@ -55,21 +47,11 @@ pub fn generate_placement_grid(
         );
 
         surrounding_positions.extend(fallback_positions);
-        println!(
-            "🆘 Fallback added {} positions, total: {}",
-            surrounding_positions.len() - (total_pieces - missing_pieces),
-            surrounding_positions.len()
-        );
     }
 
     // ランダムシャッフルで配置をランダム化
     let mut positions = surrounding_positions;
     positions.shuffle(&mut rng);
-
-    println!(
-        "✅ Generated {} positions surrounding puzzle",
-        positions.len()
-    );
 
     positions
 }
@@ -84,7 +66,7 @@ fn generate_spiral_positions(
     display_height: f32,
 ) -> Vec<Vec2> {
     let _span = info_span!("generate_spiral_positions").entered();
-    let mut positions = Vec::new();
+    let mut positions = Vec::with_capacity(num_pieces);
     let (puzzle_min, puzzle_max) = puzzle_area;
 
     // パズルの中心を配置の中心とする（画像の中心 = 原点）
@@ -114,19 +96,6 @@ fn generate_spiral_positions(
     let layer_spacing = piece_size * 1.1; // レイヤー間の距離
     let piece_spacing = piece_size * 0.9; // 同じレイヤー内のピース間距離
 
-    println!(
-        "🎯 Generating concentric circle layers from center ({:.1}, {:.1})",
-        center.x, center.y
-    );
-    println!(
-        "   📊 Exclusion area: ({:.1}, {:.1}) to ({:.1}, {:.1}), size: {:.1}x{:.1}",
-        puzzle_min.x, puzzle_min.y, puzzle_max.x, puzzle_max.y, exclusion_width, exclusion_height
-    );
-    println!(
-        "   🎯 Initial radius: {:.1}, Layer spacing: {:.1}, Piece spacing: {:.1}",
-        initial_radius, layer_spacing, piece_spacing
-    );
-
     let mut current_layer = 0;
     let mut radius = initial_radius;
     let max_screen_distance = (display_width.max(display_height)) * 2.0;
@@ -149,24 +118,10 @@ fn generate_spiral_positions(
             remaining_pieces, // 残り必要数を渡す
         );
 
-        let placed_count = layer_positions.len();
         positions.extend(layer_positions);
-
-        println!(
-            "   ⭕ Layer {}: radius {:.1}, placed {} pieces, total: {}/{}",
-            current_layer,
-            radius,
-            placed_count,
-            positions.len(),
-            num_pieces
-        );
 
         // 目標数に達したら完了
         if positions.len() >= num_pieces {
-            println!(
-                "✅ Target piece count reached, stopping at layer {}",
-                current_layer
-            );
             break;
         }
 
@@ -176,28 +131,8 @@ fn generate_spiral_positions(
 
         // 安全チェック：レイヤー数が多すぎる場合は停止
         if current_layer > 50 {
-            println!("⚠️ Maximum layer count reached, stopping");
             break;
         }
-    }
-
-    if positions.len() < num_pieces {
-        println!(
-            "⚠️ Could only place {} of {} pieces in {} layers",
-            positions.len(),
-            num_pieces,
-            current_layer
-        );
-        println!(
-            "   📐 May need fallback placement for remaining {} pieces",
-            num_pieces - positions.len()
-        );
-    } else {
-        println!(
-            "✅ Successfully placed {} pieces in {} concentric layers",
-            positions.len(),
-            current_layer
-        );
     }
 
     positions
@@ -233,25 +168,18 @@ fn generate_circle_layer(
     // 実際に配置を試行する数（必要数と推定数の小さい方）
     let target_pieces = estimated_pieces.min(max_pieces_needed);
 
+    layer_positions.reserve(target_pieces);
+
     // 実際の角度ステップを計算
     let angle_step = (2.0 * std::f32::consts::PI) / estimated_pieces as f32;
 
     // レイヤーごとに開始角度を少しずらす（均等分散のため）
     let start_angle = (layer_index as f32 * 0.1) % (2.0 * std::f32::consts::PI);
 
-    println!(
-        "     🎯 Layer {} target: {} pieces (estimated: {}, needed: {})",
-        layer_index, target_pieces, estimated_pieces, max_pieces_needed
-    );
-
     // 円周上の各位置にピースを配置試行
     for i in 0..estimated_pieces {
         // 必要数に達したら停止
         if layer_positions.len() >= target_pieces {
-            println!(
-                "     ✅ Layer {} completed: reached target {} pieces",
-                layer_index, target_pieces
-            );
             break;
         }
 
@@ -283,29 +211,7 @@ fn generate_circle_layer(
             )
         {
             layer_positions.push(position);
-
-            // 最初のいくつかのピースの詳細ログ
-            if layer_positions.len() <= 5 {
-                println!(
-                    "     📍 Layer {} piece #{} at ({:.1}, {:.1}), angle: {:.1}°",
-                    layer_index,
-                    layer_positions.len(),
-                    x,
-                    y,
-                    angle.to_degrees()
-                );
-            }
         }
-    }
-
-    // レイヤー完了ログ
-    if layer_positions.len() < target_pieces {
-        println!(
-            "     ⚠️ Layer {} partial: placed {} of {} target pieces",
-            layer_index,
-            layer_positions.len(),
-            target_pieces
-        );
     }
 
     layer_positions
@@ -372,7 +278,7 @@ fn generate_fallback_positions(
     display_height: f32,
     rng: &mut ChaCha8Rng,
 ) -> Vec<Vec2> {
-    let mut positions = Vec::new();
+    let mut positions = Vec::with_capacity(count);
 
     let (puzzle_min, puzzle_max) = puzzle_area;
     let piece_size = piece_width.max(piece_height);
@@ -385,8 +291,6 @@ fn generate_fallback_positions(
     };
     let spacing = piece_size * spacing_factor;
 
-    println!("🔄 Fallback: attempting grid-based placement...");
-
     // 四方向に均等に配置するための準備
     let grid_margin = piece_size * 0.6;
     let pieces_per_side = count.div_ceil(4); // 各方向の最大ピース数
@@ -395,7 +299,6 @@ fn generate_fallback_positions(
     let areas = [
         // 上側エリア
         (
-            "top",
             puzzle_min.x,
             puzzle_max.x,
             puzzle_max.y + grid_margin,
@@ -404,7 +307,6 @@ fn generate_fallback_positions(
         ),
         // 下側エリア
         (
-            "bottom",
             puzzle_min.x,
             puzzle_max.x,
             puzzle_min.y - grid_margin,
@@ -413,7 +315,6 @@ fn generate_fallback_positions(
         ),
         // 右側エリア
         (
-            "right",
             puzzle_max.x + grid_margin,
             spacing,
             puzzle_min.y,
@@ -422,7 +323,6 @@ fn generate_fallback_positions(
         ),
         // 左側エリア
         (
-            "left",
             puzzle_min.x - grid_margin,
             -spacing,
             puzzle_min.y,
@@ -431,16 +331,12 @@ fn generate_fallback_positions(
         ),
     ];
 
-    for (side_name, start_pos, step_or_end, fixed_coord, range_end, is_horizontal) in areas {
+    for (start_pos, step_or_end, fixed_coord, range_end, is_horizontal) in areas {
         if positions.len() >= count {
             break;
         }
 
         let pieces_this_side = (pieces_per_side).min(count - positions.len());
-        println!(
-            "   📍 Placing {} pieces on {} side",
-            pieces_this_side, side_name
-        );
 
         if is_horizontal {
             // 水平配置（上下）
@@ -506,10 +402,6 @@ fn generate_fallback_positions(
     // 残りピースをランダム配置で補完
     if positions.len() < count {
         let remaining = count - positions.len();
-        println!(
-            "🎲 Fallback: attempting random placement for {} pieces...",
-            remaining
-        );
 
         let max_attempts = remaining * 200;
         let mut attempts = 0;
@@ -532,7 +424,6 @@ fn generate_fallback_positions(
         }
     }
 
-    println!("✅ Fallback generated {} positions", positions.len());
     positions
 }
 
@@ -602,19 +493,6 @@ fn calculate_puzzle_grid_area(
 
     let exclusion_min = Vec2::new(min_x, min_y);
     let exclusion_max = Vec2::new(max_x, max_y);
-
-    println!(
-        "🚫 Exclusion area: ({:.1}, {:.1}) to ({:.1}, {:.1})",
-        min_x, min_y, max_x, max_y
-    );
-    println!(
-        "   📏 Image: {:.0}x{:.0}, Piece: {:.0}x{:.0}, Est. pieces: {:.0}",
-        display_width, display_height, piece_width, piece_height, total_pieces_estimate
-    );
-    println!(
-        "   🎚️ Base margin factor: {:.3}, Size adjusted: {:.3}, Final margin: {:.1}",
-        base_margin_factor, size_adjusted_margin, margin
-    );
 
     (exclusion_min, exclusion_max)
 }

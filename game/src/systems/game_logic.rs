@@ -222,9 +222,9 @@ mod tests {
                         shape: PieceShapeData {
                             vertices: vec![],
                             indices: vec![],
-                            shape_hash: String::new(),
                         },
                         mesh: mesh.clone(),
+                        stroke: default(),
                         material: material.clone(),
                     },
                 });

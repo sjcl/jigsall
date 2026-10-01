@@ -2,7 +2,6 @@ use bevy::prelude::*;
 use puzzella_core::PieceId;
 
 pub use puzzella_core::PuzzlePiece;
-pub use puzzella_puzzle::PieceShape;
 
 #[derive(Component)]
 pub struct MainCamera;
@@ -68,3 +67,7 @@ pub enum BatchRebuildReason {
 pub struct TemporaryPieceEntity {
     pub piece_id: PieceId,
 }
+
+/// Each generated piece owns its outline asset; no shape-string cache.
+#[derive(Component)]
+pub struct PieceStroke(pub Handle<Mesh>);

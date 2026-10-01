@@ -14,7 +14,10 @@ bevy_math.workspace = true
 bevy_mesh.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
-puzzle-paths.workspace = true
+rayon.workspace = true
 lyon.workspace = true
 lyon_tessellation.workspace = true
-svgtypes.workspace = true
+
+[features]
+default = []
+cpu-picking-debug = []

@@ -1,5 +1,40 @@
 //! Grid sizing shared by puzzle setup adapters.
-pub use puzzle_paths::generate_columns_rows_numbers;
+/// Choose exact divisor pairs whose piece dimensions are closest to square.
+/// Preserve the setup UI's former divisor ordering and tie-breaking behavior.
+pub fn generate_columns_rows_numbers(width: f32, height: f32, count: usize) -> (usize, usize) {
+    if count == 0 {
+        return (1, 1);
+    }
+    let mut pairs = Vec::new();
+    let mut divisor = 1;
+    while divisor <= count / divisor {
+        if count.is_multiple_of(divisor) {
+            pairs.push((divisor, count / divisor));
+        }
+        divisor += 1;
+    }
+    let mirrored: Vec<_> = pairs
+        .iter()
+        .rev()
+        .filter(|(a, b)| a != b)
+        .map(|&(a, b)| (b, a))
+        .collect();
+    pairs.extend(mirrored);
+    let mut best = pairs[0];
+    let mut difference = f32::MAX;
+    for (columns, rows) in pairs {
+        let candidate = (width / columns as f32 - height / rows as f32).abs();
+        if candidate < 1.0 {
+            return (columns, rows);
+        }
+        if candidate > difference {
+            break;
+        }
+        best = (columns, rows);
+        difference = candidate;
+    }
+    best
+}
 
 /// 縦横比保持スケールから最適なグリッドサイズを計算
 pub fn calculate_aspect_ratio_grid(

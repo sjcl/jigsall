@@ -2,12 +2,6 @@ use bevy::prelude::*;
 use puzzella_core::PieceId;
 use std::collections::{HashMap, HashSet};
 
-/// ストロークメッシュのキャッシュリソース
-#[derive(Resource, Default)]
-pub struct StrokeMeshCache {
-    pub stroke_meshes: HashMap<String, Handle<Mesh>>, // shape_hash -> stroke mesh handle
-}
-
 /// ハイライト表示用の共有マテリアルリソース
 #[derive(Resource)]
 pub struct HighlightMaterials {

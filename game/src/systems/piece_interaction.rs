@@ -142,12 +142,11 @@ pub fn highlight_selected_pieces(
     mut commands: Commands,
     pieces: Query<(
         Entity,
-        &PieceShape,
+        &PieceStroke,
         Has<SelectedPiece>,
         Has<SelectionPreview>,
     )>,
     outlines: Query<Entity, With<PieceOutline>>,
-    stroke_cache: Res<StrokeMeshCache>,
     mut state: ResMut<HighlightState>,
     materials: Res<HighlightMaterials>,
 ) {
@@ -159,26 +158,23 @@ pub fn highlight_selected_pieces(
     for entity in &outlines {
         commands.entity(entity).despawn();
     }
-    for (entity, shape, selected, preview) in &pieces {
+    for (entity, stroke, selected, preview) in &pieces {
         if !selected && !preview {
             continue;
         }
-        if let Some(mesh) = stroke_cache.stroke_meshes.get(&shape.shape_hash) {
-            let material = if selected {
-                materials.selected_material.clone()
-            } else {
-                materials.preview_material.clone()
-            };
-            commands.spawn((
-                Mesh2d(mesh.clone()),
-                MeshMaterial2d(material),
-                // Outlines are overlays: they stay above every piece and below
-                // the selection rectangle throughout depth compaction.
-                Transform::from_xyz(0.0, 0.0, 60.0),
-                PieceOutline,
-                ChildOf(entity),
-            ));
-        }
+        let material = if selected {
+            materials.selected_material.clone()
+        } else {
+            materials.preview_material.clone()
+        };
+        commands.spawn((
+            Mesh2d(stroke.0.clone()),
+            MeshMaterial2d(material),
+            // Outlines are overlays above every piece, below the selection box.
+            Transform::from_xyz(0.0, 0.0, 60.0),
+            PieceOutline,
+            ChildOf(entity),
+        ));
     }
     state.last_selected_pieces = selected;
     state.last_preview_pieces = preview;
@@ -195,6 +191,45 @@ pub fn should_render_selection_box(
 mod tests {
     use super::*;
     use crate::systems::game_logic::{apply_piece_commands, project_piece_states};
+
+    #[test]
+    fn outlines_follow_the_piece_owned_stroke_handle_and_clear_on_deselection() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_resource::<HighlightState>()
+            .add_systems(Update, highlight_selected_pieces);
+        let stroke = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Rectangle::new(10.0, 10.0));
+        let selected_material = app
+            .world_mut()
+            .resource_mut::<Assets<ColorMaterial>>()
+            .add(ColorMaterial::default());
+        app.insert_resource(HighlightMaterials {
+            preview_material: default(),
+            selected_material: selected_material.clone(),
+        });
+        let parent = app
+            .world_mut()
+            .spawn((PieceStroke(stroke.clone()), SelectedPiece))
+            .id();
+        app.update();
+        let mut query = app.world_mut().query_filtered::<(Entity, &Mesh2d, &MeshMaterial2d<ColorMaterial>, &ChildOf), With<PieceOutline>>();
+        let (entity, mesh, material, child) = query.single(app.world()).unwrap();
+        assert_eq!(mesh.0, stroke);
+        assert_eq!(material.0, selected_material);
+        assert_eq!(child.parent(), parent);
+        app.update();
+        assert!(
+            app.world().get_entity(entity).is_ok(),
+            "unchanged selection reuses outline"
+        );
+        app.world_mut().entity_mut(parent).remove::<SelectedPiece>();
+        app.update();
+        assert!(app.world().get_entity(entity).is_err());
+    }
 
     fn pointer_frame(app: &mut App, point: Vec2, pressed: bool, ctrl: bool) {
         let mut input = app.world_mut().resource_mut::<InputState>();
@@ -317,12 +352,9 @@ mod tests {
                     state: PieceState::new(position),
                     render: PieceRenderData {
                         bounds: Rect::new(-20.0, -20.0, 20.0, 20.0),
-                        shape: PieceShapeData {
-                            vertices,
-                            indices,
-                            shape_hash: String::new(),
-                        },
+                        shape: PieceShapeData { vertices, indices },
                         mesh: default(),
+                        stroke: default(),
                         material: default(),
                     },
                 });

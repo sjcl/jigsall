@@ -20,6 +20,8 @@ pub use generation::{GenerationPhase, PieceGenerationProgress};
 pub use images::{ImageLoadChannels, ImageLoadSender, PuzzleImage};
 pub use input::{GameUiPointerCapture, InputState};
 pub use performance::{PerformanceDebugLevel, PerformanceMonitor, SystemTiming};
-pub use pieces::{PieceDataStore, PieceRenderData, PieceShapeData, StoredPieceData};
+#[cfg(any(test, feature = "cpu-picking-debug"))]
+pub use pieces::PieceShapeData;
+pub use pieces::{PieceDataStore, PieceRenderData, StoredPieceData};
 pub use puzzella_core::PieceId;
-pub use rendering::{HighlightMaterials, HighlightState, PieceIdManager, StrokeMeshCache};
+pub use rendering::{HighlightMaterials, HighlightState, PieceIdManager};

@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use puzzella_core::{PieceId, PieceState, PuzzlePiece};
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 pub use puzzella_puzzle::PieceShape as PieceShapeData;
 use std::collections::{HashMap, HashSet};
 
@@ -27,10 +28,12 @@ pub struct StoredPieceData {
 /// Mesh, bounds, shape and handles are never included in gameplay snapshots.
 #[derive(Clone, Debug)]
 pub struct PieceRenderData {
-    #[allow(dead_code)] // Retained shape metadata for debug tools; GPU picking never reads it.
+    #[allow(dead_code)] // CPU debug picking reads bounds; GPU picking uses the mesh.
     pub bounds: Rect,
+    #[cfg(any(test, feature = "cpu-picking-debug"))]
     pub shape: PieceShapeData,
     pub mesh: Handle<Mesh>,
+    pub stroke: Handle<Mesh>,
     pub material: Handle<ColorMaterial>,
 }
 impl PieceDataStore {

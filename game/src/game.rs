@@ -20,7 +20,6 @@ impl Plugin for GamePlugin {
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<crate::interaction::PieceInteraction>()
             .init_resource::<PieceGenerationProgress>()
-            .init_resource::<StrokeMeshCache>()
             .init_resource::<PieceIdManager>()
             .init_resource::<PerformanceMonitor>()
             .init_resource::<HighlightState>()
@@ -195,7 +194,6 @@ fn cleanup_game(
     #[cfg(any(test, feature = "cpu-picking-debug"))] mut collision: ResMut<PieceCollisionSystem>,
     mut ids: ResMut<PieceIdManager>,
     mut progress: ResMut<PieceGenerationProgress>,
-    mut stroke: ResMut<StrokeMeshCache>,
     mut highlight: ResMut<HighlightState>,
     mut game: ResMut<GameData>,
     mut config: ResMut<PuzzleConfig>,
@@ -214,7 +212,6 @@ fn cleanup_game(
     }
     *ids = default();
     *progress = default();
-    *stroke = default();
     *highlight = default();
     *game = default();
     config.image_path.clear();

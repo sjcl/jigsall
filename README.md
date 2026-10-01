@@ -15,7 +15,7 @@ cargo run --locked --release
 1. メニューの「Game Setup」を選択します。
 2. 「Select Image」でPNG / JPEG / WebP / BMPを読み込みます。
 3. アスペクト比・目標ピース数・手動グリッドのいずれかでサイズを設定し、seedとスナップ距離を調整します。
-4. 「Start Game」で生成します。CPU処理は背景スレッド、asset登録は10ピース/フレームで進みます。
+4. 「Start Game」で生成します。単一背景workerからRayonでピースを並列生成し、asset登録は10ピース/フレームで進みます。
 
 同じ画像寸法・grid・seed・generator versionから、同じ形状・安定PieceId・初期配置を生成します。異機種や依存バージョン間の浮動小数点の完全一致は、今後の検証対象です。
 
@@ -41,7 +41,7 @@ cargo run --locked --release
 
 ## 設計
 
-Bevy 0.19.1 / bevy_egui 0.42へ更新しました。形状生成のpuzzle-pathsとlyon、同心円配置、カメラ、画像decode、egui設定UI、GPU picking、stroke cache、バッチ描画、性能計測を再利用しています。
+Bevy 0.19.1 / bevy_egui 0.42を使用します。形状生成はseed/EdgeIdから6種類のネイティブBezier形状を作るgenerator version 2へ移行し、SVGとstroke cacheを廃止しました。同心円配置、カメラ、画像decode、egui設定UI、GPU picking、バッチ描画、性能計測は維持しています。
 
 ```text
 Input → ClientCommand → gameplay logic → PieceState → Transform / rendering
@@ -54,7 +54,7 @@ Cargo workspaceで次の責務に分けています。依存バージョンは�
 | `puzzella` | `src/` | アプリの起動とプラグイン登録 |
 | `puzzella-core` | `core/` | 安定ID、パズル定義・状態、ClientCommand、純粋な命令検証・スナップ判定 |
 | `puzzella-game` | `game/` | Bevyの状態遷移、入力、非同期生成の制御、バッチ描画、GPU選択、画像読み込み |
-| `puzzella-puzzle` | `puzzle/` | seed付き形状・配置・Mesh生成、グリッド計算。WorldやGPU rendererに依存しない |
+| `puzzella-puzzle` | `puzzle/` | seed付き形状・配置・CPU geometry生成、グリッド計算。WorldやGPU rendererに依存しない |
 | `puzzella-ui` | `ui/` | egui画面と`GameUiPlugin`によるUIシステム登録 |
 
 `game/src/resources/`は状態・設定・入力・生成・画像・ピース・描画・バッチ・性能・CPUデバッグ判定に分けています。`selection/`は要求API、座標変換、GPU描画・readbackを分離しています。詳細なファイル配置と依存方向は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
@@ -76,7 +76,7 @@ cargo test -p puzzella-core --locked
 cargo test -p puzzella-puzzle --locked
 ```
 
-2026-10-01、Windows / Rust 1.97で上記チェックを通過し、27件の通常テストが成功しました。GPU pickingのoffscreenテストもRTX 5090で別途成功しています。所有者検証、seed付き形状・UV生成、1000ピース配置、完成・セッション遷移に加え、GPUのbitset境界・座標正規化・遅延結果の競合、生成した三角形のクリック判定、手前側選択、矩形の辺交差、R-tree更新、Ctrl / 範囲選択 / 複数移動、解放位置でのスナップ、UI入力の抑制、フォーカス喪失・ポーズ時の解放、カメラ座標同期、バッチ抽出・返却時の描画順・UV・透明度を検証しています。
+2026-10-01、Windows / Rust 1.97で上記チェックとall-features testを通過し、39件の通常テストが成功しました。GPU pickingのoffscreenテスト1件もRTX 5090で別途成功し、native U16 meshの凸部・凹部を確認しています。所有者検証、seed付き形状・UV・bounds生成、共有辺の一致、1/2/4 workerと任意生成順の再現性、self-intersection、1000ピース配置、完成・セッション遷移に加え、GPUのbitset境界・座標正規化・遅延結果の競合、生成した三角形のクリック判定、手前側選択、矩形の辺交差、R-tree更新、Ctrl / 範囲選択 / 複数移動、解放位置でのスナップ、UI入力の抑制、フォーカス喪失・ポーズ時の解放、カメラ座標同期、stroke handle、バッチ抽出・返却時の描画順・UV・透明度を検証しています。release生成の比較結果は[ARCHITECTURE.md](ARCHITECTURE.md)に記載しています。
 
 `cargo build --locked`も成功しました。実行ファイルを8秒間起動し、初期化メッセージの出力とプロセスの継続、stderrにエラーがないことを確認して終了しました。画面の目視検証は行っていません。
 

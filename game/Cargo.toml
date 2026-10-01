@@ -21,7 +21,8 @@ wgpu-hal.workspace = true
 
 [features]
 default = []
-cpu-picking-debug = ["dep:rstar"]
+cpu-picking-debug = ["dep:rstar", "puzzella-puzzle/cpu-picking-debug"]
 
 [dev-dependencies]
 rstar.workspace = true
+puzzella-puzzle = { workspace = true, features = ["cpu-picking-debug"] }
