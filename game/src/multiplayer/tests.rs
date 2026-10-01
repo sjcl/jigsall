@@ -52,7 +52,8 @@ fn fixture() -> PieceDataStore {
         store.bring_piece_to_front(id);
     }
     store.selected_pieces = HashSet::from([PieceId(1)]);
-    store.preview_pieces = HashSet::from([PieceId(2)]);
+    store.drag.members = vec![1, 2].into();
+    store.drag.delta = Vec2::new(11.0, 22.0);
     store.highlights_dirty = true;
     store.sync_highlights(); // Exercise private previous highlight caches too.
     store
@@ -93,7 +94,8 @@ fn assert_restored(snapshot: &GameSnapshot, store: &PieceDataStore) {
     );
     assert!(store.held_by.is_empty());
     assert!(store.selected_pieces.is_empty());
-    assert!(store.preview_pieces.is_empty());
+    assert!(store.drag.members.is_empty());
+    assert_eq!(store.drag.delta, Vec2::ZERO);
     assert!(store.dirty_pieces.is_empty());
     assert!(!store.highlights_dirty);
 }
@@ -115,7 +117,8 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
         .all(|state| state.flags & !SNAPSHOT_PLACED == 0));
     assert_eq!(a_store.held_by.len(), 2); // Capturing does not change the old host.
     assert!(a_store.states[1].flags & SELECTED != 0);
-    assert!(a_store.states[2].flags & PREVIEW != 0);
+    assert_eq!(a_store.drag.members.as_ref(), &[1, 2]);
+    assert_eq!(a_store.drag.delta, Vec2::new(11.0, 22.0));
 
     let mut app = App::new();
     app.insert_resource(fixture())
@@ -142,6 +145,10 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
         old_gpu_epoch
     );
     assert_eq!(app.world().resource::<PieceDataStore>().held_by.len(), 2);
+    assert_eq!(
+        app.world().resource::<PieceDataStore>().drag.delta,
+        Vec2::new(11.0, 22.0)
+    );
     app.update();
     assert!(app.world().resource::<PieceUpload>().initial.is_none());
     assert!(app.world().resource::<PieceUpload>().ranges.is_empty());
@@ -166,6 +173,8 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
     let upload = app.world().resource::<PieceUpload>();
     assert_eq!(upload.epoch, app.world().resource::<PieceDataStore>().epoch);
     assert_eq!(upload.definition.as_ref(), Some(&definition));
+    assert!(upload.drag.members.is_empty());
+    assert_eq!(upload.drag.delta, Vec2::ZERO);
     assert_eq!(
         upload.initial.as_ref().unwrap().as_ref(),
         app.world().resource::<PieceDataStore>().states
@@ -437,7 +446,8 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         assert_eq!(store.epoch, epoch);
         assert_eq!(store.held_by, original.held_by);
         assert_eq!(store.selected_pieces, original.selected_pieces);
-        assert_eq!(store.preview_pieces, original.preview_pieces);
+        assert_eq!(store.drag.members, original.drag.members);
+        assert_eq!(store.drag.delta, original.drag.delta);
         assert_eq!(store.dirty_pieces, original.dirty_pieces);
         assert_eq!(
             (store.placed_count, store.next_z_order),

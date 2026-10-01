@@ -6,11 +6,12 @@
 (`fix: smooth procedural tab roots with analytic fillets`)。
 
 このHEADから専用worktreeとbranch `codex/host-migration-foundation` を作成した。
-元checkoutにはgameplayのgenerator v5化とshape/renderer系の未コミット変更が
-存在したため、それらを保持し、取り込んだり戻したりしていない。
-このbranchのgeneratorはbaselineのv4のまま。
+初回実装では元checkoutのgenerator v5化とshape/renderer系の並行作業を保持した。
+その後、`master` の `4fec6dc5fa3a960d69ad7ffe866fcacc3014f07c`
+(`perf: move multi-drag transforms and selection previews to GPU`) へrebaseした。
+現在はmasterのgenerator v5とGPU drag/preview基盤を含む。
 snapshotは版番号を固定せず、現在の `PuzzleDefinition.validate()` に委譲する。
-並行作業が取り込まれたビルドではそのビルドの対応版を検証する。
+host migrationの変更は既存GPU hot pathやgeneratorへ追加処理を接続しない。
 
 追加APIはopt-inで、single-playerのBevy scheduleや入力経路には接続していない。
 通常frameに全件走査、追加upload、host判定は発生しない。
@@ -140,7 +141,7 @@ per-piece Entity、Mesh、Handle、String、HashMapは追加しない。
 意図的に含めない状態:
 
 - selected / preview flagsとその集合
-- held flag、holder identity、drag gesture
+- held flag、holder identity、drag gestureとGPU表示用のmembers/delta
 - ENABLED（現状全ピース共通なのでinstall時に再構築）
 - dirty IDs、GPU epoch、highlight caches、GPU readback
 - placed_count / progress（snapshotのPLACEDから再計算）
@@ -161,7 +162,8 @@ definitionはpiece_count計算より前に検証し、壊れたgridでもpanic�
 invalid snapshotはResultで拒否し、storeを変更しない。
 
 installはdense statesとplaced_count / next_z_orderを復元し、
-hold、selection、preview、以前のhighlight caches、dirty IDsを全て消す。
+store内のhold、selection、dragのmembers/delta、以前のhighlight caches、dirty IDsを全て消す。
+GPU側のbox previewなど別resourceのcleanupは、下記TODOのbackend adapterが担当する。
 placedとpositionとz_orderはそのまま保存する。migration時にsnapは実行しない。
 新しいローカルepochを割り当てるので、既存 `prepare_piece_upload()` の次回実行が
 full initial uploadを行い、古いGPU readbackは無効になる。
@@ -259,7 +261,7 @@ Steamもsocketも使わないテストを追加した。
 - core: abrupt freeze、source選択、決定論的tie-break、epochの辞書順比較、local=4:806で最大4:805の候補拒否、completion時の巻き戻し防御。
 - core: eventのhost/session/epoch/sequence検証、counter上限、graceful中の突然切断。
 - game: A→B gracefulとCの復元、ACK前のvalidationでstore/GPU epochを維持しuploadを起こさないこと、
-  owner移行後の復元、position/placed/Z/next_z維持、hold/highlight cleanup、
+  owner移行後の復元、position/placed/Z/next_z維持、hold/drag/highlight cleanup、
   placed_count再計算、実際のPieceUpload full upload、次idleの空upload、再Grab。
 - game: abrupt B=4:801/C=D=4:805、epoch 5:0と旧epoch command/eventの拒否。
 - game: Bが10/11/25を保持した状態から切断、他playerの12は維持、dirty IDs。
@@ -269,7 +271,7 @@ Steamもsocketも使わないテストを追加した。
 - game: 実際のPieceStateでMove先着後もReleaseでき、再Grab後に前回dragの遅延Moveを拒否する。
 - game: 16-byte dense snapshotの100万ピースexport/install round trip。
 
-検証コマンド（baseline worktree内）:
+検証コマンド（masterへrebaseした専用worktree内）:
 
 ~~~sh
 cargo fmt --all --check
@@ -281,9 +283,9 @@ cargo test --workspace --locked
 Cargo.toml / Cargo.lockを変更しない。
 renderer / selection / shader / GPU state layout / generator / benchmarkは変更しない。
 既存の入力、snap、session lifecycle、dense stateをworkspace testsで引き続き検証する。
-GPU benchmarkは再実行しない。実GPUが必要な既存3件はdefaultでignored。
+GPU/CPU benchmarkは再実行しない。実GPUが必要な既存4件とCPU benchmark 1件はdefaultでignored。
 
-実行結果: 上記4コマンドは全て成功。workspace testsは59件成功、3件ignored。
+masterへのrebase後の実行結果: 上記4コマンドは全て成功。workspace testsは70件成功、5件ignored。
 新規テストはcore 12件 + game 7件。Cargo.lockの開始時/終了時SHA256は
 `D52C7FBFE817D6178A851C4BA09A6D66AD48EEF105F476CFA6E1B08CD23B4458` で一致した。
 検証のworkspace成果物は専用worktree内のtargetへ分離し、外部dependencyの既存cacheだけを再利用した。source変更は専用worktreeに限定した。
