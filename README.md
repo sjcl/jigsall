@@ -1,186 +1,80 @@
-# Puzzella - ジグソーパズルゲーム
+# Puzzella
 
-Bevyゲームエンジンを使用した高性能ジグソーパズルゲームです。任意の画像を選択して、カスタマイズ可能なジグソーパズルを楽しめます。
+任意の画像で遊ぶ、Rust + Bevy製のジグソーパズルゲームです。第1フェーズでは既存のローカルゲームを整理し、将来のhost-authoritative multiplayerへ接続できるデータと命令の境界を作りました。実ネットワーク通信は未実装です。
 
-## 主要機能
+## 起動
 
-### 🧩 パズル機能
-- **任意の画像対応**: ファイルダイアログで画像を選択してパズル化
-- **プログレッシブ生成**: 大きなパズルも快適に生成（1000+ピース対応）
-- **リアルなジグソー形状**: puzzle-pathsライブラリによる本格的なピース形状
+Rust 1.95以上と、OSに対応するC/C++リンカーが必要です。Windowsの詳細は[WINDOWS_BUILD.md](WINDOWS_BUILD.md)を参照してください。
 
-### 🎮 操作機能  
-- **マルチ選択**: ボックス選択で複数ピースを同時選択
-- **マルチドラッグ**: 選択した複数ピースを同時移動
-- **スマート配置**: 正しい位置への自動スナップ、配置済みピースの自動選択解除
-- **高度なカメラ**: ズーム、パン、エッジスクロール対応
-
-### ⚡ パフォーマンス
-- **イベント駆動**: 効率的な処理でCPU使用量を最適化
-- **キャッシュシステム**: 選択、形状、位置の高速キャッシュ
-- **パフォーマンス監視**: F12キーでリアルタイム性能表示
-
-### 🌐 ユーザビリティ
-- **日本語UI**: 完全な日本語インターフェース対応
-- **ファイルダイアログ**: クロスプラットフォーム対応の画像選択
-- **レスポンシブUI**: 非同期画像読み込みでUIがブロックされない
-- **デバッグ機能**: Tracy、Chrome tracingによるプロファイリング対応
-
-## 使い方
-
-### 基本的なゲームの流れ
-
-1. **アプリケーション起動**
-   ```bash
-   cargo run
-   ```
-
-2. **画像選択**
-   - メインメニューから「Game Setup」を選択
-   - 「Select Image」ボタンでファイルダイアログを開く
-   - お好みの画像ファイル（PNG、JPEG、WebP、BMP対応）を選択
-
-3. **パズル設定**
-   - **アスペクト比モード**: 画像の縦横比に基づいて最適なグリッドを自動計算
-   - **目標ピース数モード**: 希望するピース数を指定（アプリが最適なグリッドを計算）
-   - **手動グリッドモード**: 横・縦のピース数を直接指定
-   - スナップ距離を調整（ピースが自動配置される距離）
-
-4. **ゲーム開始**
-   - 「🚀 Start Game」ボタンでパズル生成開始
-   - 大きなパズルの場合、プログレッシブ生成により段階的にピースが表示
-
-### 操作方法
-
-#### 基本操作
-- **ピース移動**: 左クリック＆ドラッグでピースを移動
-- **カメラ操作**: 右クリック＆ドラッグでカメラ移動
-- **ズーム**: マウスホイールでズームイン・アウト
-- **エッジスクロール**: ピースドラッグ中に画面端でカメラが自動移動
-
-#### 高度な選択操作
-- **単一選択**: ピースをクリックして選択
-- **ボックス選択**: 空きスペースでドラッグして複数ピースを範囲選択
-- **複数選択の追加**: Ctrlキーを押しながらクリックで選択に追加
-- **マルチドラッグ**: 複数選択したピースを同時に移動
-
-#### ショートカット
-- **F12**: パフォーマンス監視の表示切替（Off → Low → Medium → High → Off）
-- **ESC**: ゲーム中にポーズメニューを表示
-- **Tab**: プレイヤー情報オーバーレイ表示（ゲーム中のみ）
-
-## アーキテクチャ
-
-### コア構成
-- `src/main.rs` - アプリケーションエントリーポイント
-- `src/game.rs` - メインゲームプラグインとシステム統合
-- `src/components.rs` - ECSコンポーネント（PuzzlePiece, SelectedPiece, PickablePiece等）
-- `src/resources.rs` - ゲーム状態管理（AppState, InputState, PerformanceMonitor等）
-- `src/puzzle.rs` - パズル生成とピース作成
-- `src/jigsaw_shapes.rs` - lyon tessellationによる高品質ジグソー形状生成
-- `src/asset_reader.rs` - 外部ファイル管理とスレッドベース画像読み込み
-
-### モジュラーシステム (`src/systems/`)
-- `game_logic.rs` - ピース配置、スナップ、ゲーム状態管理（イベント駆動最適化）
-- `piece_interaction.rs` - マルチ選択、ボックス選択、ドラッグ、ハイライト
-- `puzzle_generation.rs` - プログレッシブパズル生成と背景スポーン
-- `image_loading.rs` - スレッドベース画像読み込みとcrossbeamチャンネル通信
-- `input_camera.rs` - カメラ制御、ズーム、パン、エッジスクロール
-- `performance.rs` - パフォーマンス監視、プロファイリング、デバッグシステム
-
-### モジュラーUI (`src/ui/`)
-- `menu.rs` - メインメニューインターフェース
-- `game_setup.rs` - ゲーム設定、画像選択、パズル設定
-- `game_play.rs` - ゲーム中UI要素とコントロール
-- `overlays.rs` - HUDオーバーレイ、プログレスバー、ステータス表示
-- `common.rs` - 共有UI ユーティリティとコンポーネント
-
-### 主要な特徴
-- **イベント駆動アーキテクチャ**: `PieceMoveCompleted` → `PiecePlacedEvent` による効率的更新
-- **マルチレイヤーキャッシュ**: 選択、ストロークメッシュ、位置境界の高速キャッシュ
-- **プログレッシブ生成**: 大きなパズルでの60fps維持のための背景生成
-- **スレッドセーフ通信**: crossbeamチャンネルによるメインスレッド通信
-
-## 開発とビルド
-
-### 開発環境要件
-```bash
-# 最新のRust toolchainが必要
-rustc 1.70.0+ (推奨)
-cargo 1.70.0+ (推奨)
+```sh
+cargo run --locked
+# 最適化版
+cargo run --locked --release
 ```
 
-### ビルド
-```bash
-# デバッグビルド（開発用）
-cargo build
+1. メニューの「Game Setup」を選択します。
+2. 「Select Image」でPNG / JPEG / WebP / BMPを読み込みます。
+3. アスペクト比・目標ピース数・手動グリッドのいずれかでサイズを設定し、seedとスナップ距離を調整します。
+4. 「Start Game」で生成します。CPU処理は背景スレッド、asset登録は10ピース/フレームで進みます。
 
-# リリースビルド（最適化済み）
-cargo build --release
+同じ画像寸法・grid・seed・generator versionから、同じ形状・安定PieceId・初期配置を生成します。異機種や依存バージョン間の浮動小数点の完全一致は、今後の検証対象です。
+
+## 操作
+
+| 操作 | 入力 |
+| --- | --- |
+| 選択・ドラッグ | 左クリック / ドラッグ |
+| 選択の追加・解除 | Ctrl + 左クリック |
+| ボックス選択 | 空きスペースから左ドラッグ |
+| 複数ピース移動 | 選択済みピースを左ドラッグ |
+| カメラpan | 右ドラッグ |
+| zoom | マウスホイール |
+| edge scrolling | ピースをドラッグして画面端へ |
+| pause / resume | Esc |
+| プレイヤー表示 | Tab |
+| 性能計測レベル切替 | F12 |
+| バッチ再構築 / 統計 | F9 / F10 |
+
+正解位置の近くでピースを離すとスナップし、全ピースを配置すると完成画面へ進みます。生成中・失敗時・ポーズ中・完成後はタイトルへ戻れます。
+
+## 設計
+
+Bevy 0.19.1 / bevy_egui 0.42へ更新しました。形状生成のpuzzle-pathsとlyon、同心円配置、カメラ、画像decode、egui設定UI、R-tree当たり判定、stroke cache、バッチ描画、性能計測を再利用しています。
+
+```text
+Input → ClientCommand → gameplay logic → PieceState → Transform / rendering
 ```
 
-### 実行
-```bash
-# 通常実行
-cargo run
+- `src/gameplay.rs`: 不変のPuzzleDefinition / PuzzlePiece、安定ID、可変PieceState、純粋な命令・スナップ判定
+- `src/networking.rs`: backendに依存しないローカル命令の入口
+- `src/game.rs`: Menu / GameSetup / InGame / GameCompleteと、InGame限定のInitializing / Playing / Paused
+- `src/systems/`: 既存の生成・選択・カメラ・描画・性能システム
+- `src/resources.rs`: 正本のピース記録とローカルの描画・当たり判定cache
 
-# リリースモードで実行（推奨）
-cargo run --release
+元画像のtextureは1枚。ピースのMesh / UV / outlineと、共有する通常materialで描画します。スナップと進捗は一時描画Entityの有無に依存しません。
+
+調査結果、変更・再利用・削除の理由、技術的負債、multiplayerの次の手順は[ARCHITECTURE.md](ARCHITECTURE.md)にまとめています。
+
+## 検証
+
+```sh
+cargo fmt --check
+cargo check --locked
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
 ```
 
-### プロファイリング
-```bash
-# Tracy profilerを使用
-cargo run --features tracy --release
+2026-10-01、Windows / Rust 1.97で上記チェックを通過し、8件のテストが成功しました。テスト対象は所有者検証、不正座標、スナップ閾値、seed付き形状・UV生成、1000ピース配置、ランダムfallback、Ctrl / box selectionとmulti-drag、Entityに依存しない完成判定、GamePluginの生成・ポーズ・完成・終了・再開始です。
 
-# Chrome tracingを使用
-cargo run --features chrome --release
+`cargo build --locked`も成功しました。実行ファイルを8秒間起動し、初期化メッセージの出力とプロセスの継続、stderrにエラーがないことを確認して終了しました。画面の目視検証は行っていません。
+
+実GPUでの1000+ピースのフレーム時間、ファイルdialogと全マウス操作、macOS / Linuxでの実行は追加確認が必要です。60fpsは測定済みの保証値ではありません。
+
+## プロファイリング
+
+```sh
+cargo run --locked --release --features tracy
+cargo run --locked --release --features chrome
 ```
 
-## 技術仕様
-
-### コア技術スタック
-- **Bevy 0.16.1**: モダンゲームエンジン（ECS、レンダリング、state管理）
-- **bevy_egui 0.35**: immediate mode GUI統合
-- **lyon 1.0**: 高品質2Dベクター図形tessellation
-- **puzzle-paths 0.0.9**: リアルなジグソーピース形状生成
-
-### システム統合
-- **crossbeam 0.8**: 高性能concurrent programming
-- **rfd 0.11**: クロスプラットフォームファイルダイアログ
-- **image 0.25**: 画像形式サポート（PNG、JPEG、WebP、BMP）
-- **instant 0.1**: 高精度タイミング測定
-
-### パフォーマンス機能
-- **60FPS目標**: 1000+ピースパズルでの滑らかな操作
-- **メモリ効率**: 効率的メッシュキャッシュとプログレッシブロード
-- **レスポンシブ**: 非ブロッキングI/Oと背景処理
-- **スケーラブル**: イベント駆動システムでパズル複雑度に対応
-
-## 互換性とプラットフォーム
-
-### サポートプラットフォーム
-- **Windows 10/11**: プライマリ開発・テストプラットフォーム ✅
-- **macOS**: 基本機能サポート ⚠️
-- **Linux**: 基本機能サポート ⚠️
-
-### 制限事項
-- **WSL**: winitライブラリの制限によりコンパイル不可 ❌
-- **ネットワーキング**: 現在無効化（将来の機能として計画中）
-
-### Windows最適化実行
-```bash
-# PowerShellまたはコマンドプロンプトで実行推奨
-cargo run --release
-```
-
-## 将来の機能
-
-- **マルチプレイヤー**: リアルタイム協力プレイ（技術基盤は実装済み）
-- **カスタムピース形状**: より多様なジグソー形状パターン
-- **保存・再開**: パズル進行状況の保存機能
-- **タイムアタック**: 競技モードと記録機能
-
----
-
-**Puzzella** - 高性能で使いやすいジグソーパズル体験をお楽しみください！ 🧩
+Windowsではwgpu-halを29.0.3に固定しています。29.0.4とgpu-allocator 0.28のWindows COM型の不一致を回避するためです。
