@@ -34,19 +34,19 @@ Main World: logical selection region + monotonic request ID
   → ExtractSchedule: visible rendered meshes / camera / material
   → physical scissor, buffers and cached pipeline
 Rectangle: zero bitset → scissored fragments without depth → atomicOr
-Point: clear R32Uint + reverse-Z depth → 1×1 scissor → front-most ID
+Point: physical pixel → crop projection → 1×1 R32Uint + reverse-Z depth → front-most ID
   → same command encoder copies bitset or ONE texel
   → submit → map_async → channel → latest-ID check
   → PieceId / identity Entity → existing selection / PieceCommand
 ```
 
-矩形は各fragmentで`atomicOr(selection[id / 32], 1 << (id % 32))`。depth attachmentがなく、同じ画素を覆う全ピースが記録される。クリックはinteger targetとGreaterEqualのreverse-Z depthによりGPUで最前面を決定する。バッチ内のZも元の頂点位置から反映される。CPUでクリック候補のZを比較する処理はない。bitsetのID 0は有効。整数targetだけ`id + 1`を格納し、0をnoneに使う。
+矩形は各fragmentで`atomicOr(selection[id / 32], 1 << (id % 32))`。depth attachmentがなく、同じ画素を覆う全ピースが記録される。クリックは画面上の選択画素をcrop projectionで1×1のinteger targetへ投影し、GreaterEqualのreverse-Z depthによりGPUで最前面を決定する。バッチ内のZも元の頂点位置から反映される。CPUでクリック候補のZを比較する処理はない。bitsetのID 0は有効。整数targetだけ`id + 1`を格納し、0をnoneに使う。
 
 ## 4. Readback / lifecycle
 
 矩形は最高PieceIdに対応するword数だけコピー。ID 0..9999なら313 words = **1,252 bytes**。クリックは**4 bytes**。full-screen ID textureのCPU転送はない。clear → render → copyは同じencoder内、mapはRenderSystems::Cleanupでsubmit後に登録する。poll/waitによる同期GPU待ちは追加していない。
 
-bitset/stagingは最大3slotのpool。busy slotは再利用せず、slotが埋まった場合は最新要求を次フレームに再試行。容量不足のidle slotだけpower-of-twoへ拡張する。uniform buffer、pipeline cache、texture bind group、render targetsも再利用する。target解像度変更時だけtextureを作り直す。
+bitset/stagingは最大3slotのpool。busy slotは再利用せず、slotが埋まった場合は最新要求を次フレームに再試行。容量不足のidle slotだけpower-of-twoへ拡張する。uniform buffer、pipeline cache、texture bind group、render targetsも再利用する。クリック用R32Uint / Depth32Floatは常に1×1で、通常画面の解像度変更時も再利用する。矩形用R8Unormだけ、矩形要求時に必要なphysical targetサイズで作成・更新する。クリックだけの操作では画面サイズのpicking attachmentを作成しない。
 
 入力はPendingPoint / Dragging / BoxSelectingを区別する。GPU待ちの間のpress・移動・release座標を保持し、遅延結果でも最後のMove → Releaseを発行する。矩形previewは4 input framesごと、releaseでは必ず新しい最終要求を発行し、その結果だけで確定する。pause、focus loss、Menuへの清掃、新しいgestureで古い要求を無効化する。
 
@@ -54,7 +54,7 @@ bitset/stagingは最大3slotのpool。busy slotは再利用せず、slotが埋�
 
 APIのregionはrender target左上を原点とする絶対logical座標。Camera::target_scaling_factorでphysicalへ変換し、四方向のドラッグをmin/maxで正規化する。矩形はfloor(min)/ceil(max)、クリックはfloor(position)の1画素。physical target boundsとphysical viewportで交差を取ってからscissorへ渡す。viewport offsetをカーソルから二重に引かない。
 
-実際のcamera clip_from_viewとGlobalTransformの逆行列を使い、picking viewportも通常描画と揃える。幅/高さゼロ、負座標、viewport外、NaN、zero targetは空結果となり、invalid scissorを渡さない。選択枠もlogicalの両端を現フレームのcameraでworldへ投影するため、pan/zoom中にGPU領域と同期する。
+実際のcamera clip_from_viewとGlobalTransformの逆行列を使う。矩形は通常描画のviewportを使用する。クリックはphysical pixelをviewport相対座標へ変換し、その1画素だけをcrop行列でNDC全体に拡大する。viewportとscissorは原点(0,0)・サイズ1×1、readback元も(0,0)とする。cropはclip空間のX/Yだけを変更し、Z/Wを保持する。幅/高さゼロ、負座標、viewport外、NaN、zero targetは空結果となり、invalid scissorを渡さない。選択枠もlogicalの両端を現フレームのcameraでworldへ投影するため、pan/zoom中にGPU領域と同期する。
 
 ## 6. Overlap / transparency
 
@@ -66,7 +66,7 @@ APIのregionはrender target左上を原点とする絶対logical座標。Camera
 
 CPU転送は矩形面積に依存せずO(max PieceId / 8)。idle時に同じrequestを再submitしない。fragment invocationはscissor内に制限するが、vertex processingは可視batch全体に対して行う。通常描画のバッチ化をそのまま再利用してdraw数を抑える。約1万IDでもbitset容量は小さい。
 
-ID texture、depth、矩形用attachmentはphysical targetサイズでGPU上に保持する（合計約9 bytes/pixel、driver overheadを除く）。clearはattachment全体に及ぶ。大量ピースの60fpsや4Kの処理時間は測定していない。さらに最適化する場合はクリック用crop projectionやattachmentのサイズ削減が拡張候補。
+クリック用attachmentは1×1 R32Uintと1×1 Depth32Floatで、format上は計8 bytes（実際のGPU割当・driver overheadを除く）。従来の4K ID/depth約63.3 MiBの画面サイズ依存を除去した。クリックのclearも1画素のみ。矩形用R8Unormは引き続きphysical targetサイズで保持し、4Kで約7.9 MiB、clearはattachment全体に及ぶ。大量ピースの60fpsや4Kの処理時間は測定していない。
 
 ## 8. Limitations
 
@@ -89,11 +89,17 @@ cargo test -p puzzella-game --locked gpu_raster_selection -- --ignored --nocaptu
 cargo build --locked
 ```
 
-通常テストは既存22件に、四方向/DPI/viewport/invalid region、bitset境界/10,000 ID容量、stale callback、遅延クリックのrelease座標、最終矩形とin-flight previewの競合を追加。実GPUテストは明示実行するignored testとして含める。GPUテストはbasic / 1pixel / mesh空白 / multiple / occlusion / alpha BlendとMask / camera translationとzoom / viewport offset / 四方向 / batch ID保持 / resource reuseを検証する。GPU待ちの期限付きloopとsleepはテスト側だけに存在する。
+通常テストは既存22件に、四方向/DPI/viewport/invalid region、bitset境界/10,000 ID容量、stale callback、遅延クリックのrelease座標、最終矩形とin-flight previewの競合を追加。実GPUテストは明示実行するignored testとして含める。GPUテストはbasic / 1pixel / mesh空白 / multiple / occlusion / alpha BlendとMask / camera translationとzoom / viewport offset / 四方向 / batch ID保持 / resource reuseに加え、画面中央以外の1画素ピースと隣接画素の非hit、通常targetの4K resize後もclick targetが1×1で同じtextureを再利用すること、クリックだけでは矩形attachmentを作成・resizeしないことを検証する。GPU待ちの期限付きloopとsleepはテスト側だけに存在する。
 
 ## 10. Click extension point
 
-クリックも今回の共通API・抽出・shader・poolへ実装済み。今後は同じvertex stageとalpha関数を共有したまま、click targetだけcrop projectionによる1×1 textureへ変更できる。hover要求、複数cameraや異なるmaterialの対応はrequest APIとpipeline specializationを拡張する。networkingの変更は不要。
+クリックも今回の共通API・抽出・shader・poolへ実装済み。クリック用crop projectionと1×1 ID/depth targetを実装済み。同じvertex stage・alpha関数・非同期readbackを引き続き共有する。hover要求、複数cameraや異なるmaterialの対応はrequest APIとpipeline specializationを拡張する。networkingの変更は不要。
 
 検証結果（2026-10-01 / Windows / Rust 1.97）: fmt、check、all-targets/all-features clippy（警告をエラー化）、build成功。通常27 tests passed / GPU test 1件は既定でignored。明示したGPUテストもNVIDIA GeForce RTX 5090で成功。
 実行ファイルの8秒起動確認も成功し、初期化出力・プロセス継続・stderrが空であることを確認した。目視でのゲーム操作検証は未実施。
+
+## 1×1 click target更新
+
+座標変換のunit testでは4K・viewport offset・1×1 viewport・DPI 2.5を対象に、画素の両端がNDCの±1、中心が0、隣接画素の中心が範囲外に変換されること、およびhomogeneous Z/Wが保持されることを確認する。クリックAPI、4 bytesのreadback、矩形のbitset方式は従来通り。
+
+今回の更新の検証結果: workspace通常テスト29件成功、実GPUテスト1件成功（NVIDIA GeForce RTX 5090）。fmt、workspace check、all-targets/all-features clippy（-D warnings）、build、diff checkも成功。

@@ -142,12 +142,14 @@ struct PendingMap {
     request: SelectionRequest,
     size: u64,
 }
-struct Targets {
-    size: UVec2,
+struct PointTargets {
     id: Texture,
     id_view: TextureView,
-    rect_view: TextureView,
     depth_view: TextureView,
+}
+struct RectangleTarget {
+    size: UVec2,
+    view: TextureView,
 }
 
 #[derive(Resource)]
@@ -157,7 +159,8 @@ struct GpuSelection {
     last_submitted: u64,
     slots: Vec<Slot>,
     maps: Vec<PendingMap>,
-    targets: Option<Targets>,
+    point_targets: Option<PointTargets>,
+    rectangle_target: Option<RectangleTarget>,
     uniforms: DynamicUniformBuffer<PickUniform>,
     pipelines: HashMap<(VertexBufferLayout, bool), CachedRenderPipelineId>,
     texture_groups: HashMap<AssetId<Image>, (TextureViewId, BindGroup)>,
@@ -172,7 +175,8 @@ impl GpuSelection {
             last_submitted: 0,
             slots: Vec::new(),
             maps: Vec::new(),
-            targets: None,
+            point_targets: None,
+            rectangle_target: None,
             uniforms: DynamicUniformBuffer::default(),
             pipelines: HashMap::new(),
             texture_groups: HashMap::new(),
@@ -285,35 +289,41 @@ fn new_slot(device: &RenderDevice, bytes: u64) -> Slot {
         busy: Arc::new(AtomicBool::new(false)),
     }
 }
-fn targets(device: &RenderDevice, size: UVec2) -> Targets {
-    let make = |format, usage| {
-        device.create_texture(&TextureDescriptor {
-            label: Some("puzzle selection target"),
-            size: Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format,
-            usage,
-            view_formats: &[],
-        })
-    };
-    let id = make(
+fn selection_texture(
+    device: &RenderDevice,
+    size: UVec2,
+    format: TextureFormat,
+    usage: TextureUsages,
+) -> Texture {
+    device.create_texture(&TextureDescriptor {
+        label: Some("puzzle selection target"),
+        size: Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format,
+        usage,
+        view_formats: &[],
+    })
+}
+fn point_targets(device: &RenderDevice) -> PointTargets {
+    let id = selection_texture(
+        device,
+        UVec2::ONE,
         TextureFormat::R32Uint,
         TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
     );
     let id_view = id.create_view(&default());
-    Targets {
-        size,
+    PointTargets {
         id,
         id_view,
-        rect_view: make(TextureFormat::R8Unorm, TextureUsages::RENDER_ATTACHMENT)
-            .create_view(&default()),
-        depth_view: make(
+        depth_view: selection_texture(
+            device,
+            UVec2::ONE,
             TextureFormat::Depth32Float,
             TextureUsages::RENDER_ATTACHMENT,
         )
@@ -429,13 +439,32 @@ fn selection_node(
     if gpu.slots[slot_index].bitset.size() < bytes {
         gpu.slots[slot_index] = new_slot(&device, bytes.next_power_of_two());
     }
-    if !gpu
-        .targets
+    // Point resources are always 1x1 and survive camera/target resolution changes.
+    // A click-only workload never allocates a full-resolution picking attachment.
+    if point {
+        gpu.point_targets
+            .get_or_insert_with(|| point_targets(&device));
+    } else if !gpu
+        .rectangle_target
         .as_ref()
         .is_some_and(|t| t.size == extracted.target)
     {
-        gpu.targets = Some(targets(&device, extracted.target));
+        gpu.rectangle_target = Some(RectangleTarget {
+            size: extracted.target,
+            view: selection_texture(
+                &device,
+                extracted.target,
+                TextureFormat::R8Unorm,
+                TextureUsages::RENDER_ATTACHMENT,
+            )
+            .create_view(&default()),
+        });
     }
+    let clip_from_world = if point {
+        point_crop_projection(extracted.viewport, region.min) * extracted.clip_from_world
+    } else {
+        extracted.clip_from_world
+    };
     gpu.uniforms.clear();
     let offsets: Vec<_> = draws
         .iter()
@@ -453,7 +482,7 @@ fn selection_node(
                 affine.translation.extend(0.0).extend(1.0),
             );
             gpu.uniforms.push(&PickUniform {
-                clip_from_model: extracted.clip_from_world * draw.transform,
+                clip_from_model: clip_from_world * draw.transform,
                 uv_from_mesh: uv,
                 alpha: draw.material.color.alpha(),
                 cutoff,
@@ -483,16 +512,28 @@ fn selection_node(
             slot.bitset.as_entire_buffer_binding(),
         )),
     );
-    let targets = gpu.targets.as_ref().unwrap();
+    let color_view = if point {
+        &gpu.point_targets.as_ref().unwrap().id_view
+    } else {
+        &gpu.rectangle_target.as_ref().unwrap().view
+    };
+    let depth_attachment = if point {
+        Some(RenderPassDepthStencilAttachment {
+            view: &gpu.point_targets.as_ref().unwrap().depth_view,
+            depth_ops: Some(Operations {
+                load: LoadOp::Clear(0.0),
+                store: StoreOp::Discard,
+            }),
+            stencil_ops: None,
+        })
+    } else {
+        None
+    };
     let encoder = context.command_encoder();
     encoder.clear_buffer(&slot.bitset, 0, None);
     {
         let attachments = [Some(RenderPassColorAttachment {
-            view: if point {
-                &targets.id_view
-            } else {
-                &targets.rect_view
-            },
+            view: color_view,
             depth_slice: None,
             resolve_target: None,
             ops: Operations {
@@ -503,17 +544,14 @@ fn selection_node(
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Some("PuzzleSelectionNode"),
             color_attachments: &attachments,
-            depth_stencil_attachment: point.then_some(RenderPassDepthStencilAttachment {
-                view: &targets.depth_view,
-                depth_ops: Some(Operations {
-                    load: LoadOp::Clear(0.0),
-                    store: StoreOp::Discard,
-                }),
-                stencil_ops: None,
-            }),
+            depth_stencil_attachment: depth_attachment,
             ..default()
         });
-        let viewport = extracted.viewport;
+        let viewport = if point {
+            URect::new(0, 0, 1, 1)
+        } else {
+            extracted.viewport
+        };
         pass.set_viewport(
             viewport.min.x as f32,
             viewport.min.y as f32,
@@ -522,7 +560,11 @@ fn selection_node(
             0.0,
             1.0,
         );
-        pass.set_scissor_rect(region.min.x, region.min.y, region.size.x, region.size.y);
+        if point {
+            pass.set_scissor_rect(0, 0, 1, 1);
+        } else {
+            pass.set_scissor_rect(region.min.x, region.min.y, region.size.x, region.size.y);
+        }
         for ((draw, mesh, pipeline, image), offset) in draws.iter().zip(offsets) {
             pass.set_pipeline(cache.get_render_pipeline(*pipeline).unwrap());
             pass.set_bind_group(0, &group, &[offset]);
@@ -549,13 +591,9 @@ fn selection_node(
     let copy_size = if point {
         encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
-                texture: &targets.id,
+                texture: &gpu.point_targets.as_ref().unwrap().id,
                 mip_level: 0,
-                origin: Origin3d {
-                    x: region.min.x,
-                    y: region.min.y,
-                    z: 0,
-                },
+                origin: Origin3d::ZERO,
                 aspect: TextureAspect::All,
             },
             TexelCopyBufferInfo {

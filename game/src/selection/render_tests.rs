@@ -212,7 +212,7 @@ fn gpu_result(app: &mut App, region: Rect, mode: SelectionMode) -> Vec<PieceId> 
     }
 }
 #[test]
-#[ignore = "requires a real GPU: cargo test --locked gpu_raster_selection -- --ignored --nocapture"]
+#[ignore = "requires a real GPU: cargo test -p puzzella-game --locked gpu_raster_selection -- --ignored --nocapture"]
 fn gpu_raster_selection() {
     let mut app = App::new();
     app.add_plugins(
@@ -272,11 +272,55 @@ fn gpu_raster_selection() {
         material.clone(),
         Vec3::Z,
     );
+    // One-pixel piece away from screen center distinguishes cropping from
+    // shrinking the entire scene, half-pixel errors and inverted Y coordinates.
+    spawn_fixture(
+        &mut app,
+        31,
+        Rectangle::new(1., 1.).into(),
+        material.clone(),
+        Vec3::new(21.5, 13.5, 2.),
+    );
     let point = Rect {
         min: Vec2::splat(32.5),
         max: Vec2::splat(32.5),
     };
     let rect = Rect::new(31., 31., 33., 33.);
+    assert_eq!(
+        gpu_result(&mut app, point, SelectionMode::Point),
+        vec![PieceId(9999)]
+    );
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuSelection>();
+    assert!(
+        gpu.rectangle_target.is_none(),
+        "clicks must not allocate a full-screen picking target"
+    );
+    let points = gpu.point_targets.as_ref().unwrap();
+    let one_pixel = Extent3d {
+        width: 1,
+        height: 1,
+        depth_or_array_layers: 1,
+    };
+    assert_eq!(points.id.size(), one_pixel);
+    assert_eq!(points.depth_view.texture().size(), one_pixel);
+    let point_texture = points.id.id();
+    let point_depth = points.depth_view.id();
+    assert_eq!(
+        gpu_result(
+            &mut app,
+            Rect::new(53.99, 18.01, 54., 19.),
+            SelectionMode::Point
+        ),
+        vec![PieceId(31)]
+    );
+    for (x, y) in [(52., 18.), (54., 18.), (53., 17.), (53., 19.)] {
+        assert!(gpu_result(
+            &mut app,
+            Rect::new(x, y, x + 1., y + 1.),
+            SelectionMode::Point
+        )
+        .is_empty());
+    }
     assert_eq!(
         gpu_result(&mut app, rect, SelectionMode::Rectangle),
         vec![PieceId(0), PieceId(9999)]
@@ -555,4 +599,77 @@ fn gpu_raster_selection() {
             .collect::<Vec<_>>(),
         buffers
     );
+    // Resizing the normal target to 4K must neither resize/recreate point
+    // attachments nor allocate/resize the rectangle attachment on a click.
+    let large_target =
+        app.world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(Image::new_target_texture(
+                3840,
+                2160,
+                TextureFormat::Rgba8UnormSrgb,
+                None,
+            ));
+    app.world_mut()
+        .entity_mut(camera)
+        .insert(RenderTarget::Image(large_target.into()));
+    assert_eq!(
+        gpu_result(
+            &mut app,
+            Rect::new(1941., 1066., 1942., 1067.),
+            SelectionMode::Point
+        ),
+        vec![PieceId(31)]
+    );
+    assert!(gpu_result(
+        &mut app,
+        Rect::new(1940., 1066., 1941., 1067.),
+        SelectionMode::Point
+    )
+    .is_empty());
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuSelection>();
+    let points = gpu.point_targets.as_ref().unwrap();
+    assert_eq!(points.id.size(), one_pixel);
+    assert_eq!(points.depth_view.texture().size(), one_pixel);
+    assert_eq!(points.id.id(), point_texture);
+    assert_eq!(points.depth_view.id(), point_depth);
+    assert_eq!(
+        gpu.rectangle_target.as_ref().unwrap().size,
+        UVec2::splat(64)
+    );
+    app.world_mut().get_mut::<Camera>(camera).unwrap().viewport = Some(Viewport {
+        physical_position: UVec2::new(123, 77),
+        physical_size: UVec2::new(3200, 1700),
+        ..default()
+    });
+    assert_eq!(
+        gpu_result(
+            &mut app,
+            Rect::new(1744., 913., 1745., 914.),
+            SelectionMode::Point
+        ),
+        vec![PieceId(31)]
+    );
+    assert_eq!(
+        gpu_result(
+            &mut app,
+            Rect::new(1723., 927., 1724., 928.),
+            SelectionMode::Point
+        ),
+        vec![PieceId(9999)]
+    );
+    assert_eq!(
+        gpu_result(
+            &mut app,
+            Rect::new(1723., 927., 1724., 928.),
+            SelectionMode::Rectangle
+        ),
+        vec![PieceId(0), PieceId(9999)]
+    );
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuSelection>();
+    assert_eq!(
+        gpu.rectangle_target.as_ref().unwrap().size,
+        UVec2::new(3840, 2160)
+    );
+    assert_eq!(gpu.point_targets.as_ref().unwrap().id.id(), point_texture);
 }
