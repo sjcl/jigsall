@@ -1,4 +1,5 @@
 use super::*;
+mod cache_tests;
 use crate::{
     resources::{
         pieces::{prepare_piece_upload, ENABLED},

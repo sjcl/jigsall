@@ -1,4 +1,7 @@
 //! One procedural indirect draw; GPU visibility and picking share buffers and shape.
+mod bind_groups;
+use bind_groups::{CachedBindGroup, StateBindGroups};
+
 use crate::{
     components::MainCamera,
     resources::{PieceUpload, PuzzleImage},
@@ -243,11 +246,13 @@ struct StateBuffers {
     capacity: u32,
     pick_visible: Buffer,
     pick_args: Buffer,
+    groups: StateBindGroups,
 }
 struct Slot {
     bitset: Buffer,
     staging: Buffer,
     busy: Arc<AtomicBool>,
+    selection_group: CachedBindGroup<BufferId>,
 }
 struct PendingMap {
     index: usize,
@@ -280,6 +285,7 @@ struct GpuRenderer {
     uniform: UniformBuffer<PuzzleUniform>,
     pick_uniform: UniformBuffer<PuzzleUniform>,
     sort_uniform: DynamicUniformBuffer<SortUniform>,
+    image_group: CachedBindGroup<(TextureViewId, SamplerId)>,
     draw_layout: BindGroupLayoutDescriptor,
     compute_layout: BindGroupLayoutDescriptor,
     texture_layout: BindGroupLayoutDescriptor,
@@ -322,6 +328,7 @@ impl GpuRenderer {
             uniform: default(),
             pick_uniform: default(),
             sort_uniform: default(),
+            image_group: default(),
             draw_layout: BindGroupLayoutDescriptor::new(
                 "procedural puzzle",
                 &BindGroupLayoutEntries::sequential(
@@ -489,7 +496,7 @@ impl GpuRenderer {
                 cache.queue_render_pipeline(desc(
                     "fragment",
                     format,
-                    Some(BlendState::ALPHA_BLENDING),
+                    (!opaque).then_some(BlendState::ALPHA_BLENDING),
                     true,
                     opaque,
                 ))
@@ -543,6 +550,10 @@ fn prepare_buffers(
     gpu.drag_upload_bytes = 0;
     if frame.upload.epoch == 0 {
         gpu.buffers = None;
+        gpu.image_group = default();
+        for slot in &mut gpu.slots {
+            slot.selection_group = default();
+        }
         return;
     }
     if gpu
@@ -635,7 +646,11 @@ fn prepare_buffers(
                     | BufferUsages::COPY_DST
                     | BufferUsages::COPY_SRC,
             ),
+            groups: default(),
         });
+        for slot in &mut gpu.slots {
+            slot.selection_group = default();
+        }
     }
     let mut bytes = 0;
     let mut calls = 0;
@@ -727,6 +742,7 @@ fn new_slot(device: &RenderDevice, bytes: u64) -> Slot {
             BufferUsages::COPY_DST | BufferUsages::MAP_READ,
         ),
         busy: Arc::new(AtomicBool::new(false)),
+        selection_group: default(),
     }
 }
 
@@ -791,14 +807,8 @@ fn puzzle_node(
     {
         return;
     }
-    let states = buffers.states.clone();
-    let visible = buffers.visible.clone();
     let args = buffers.args.clone();
-    let selectable = buffers.selectable.clone();
     let capacity = buffers.capacity;
-    let dummy_selection = buffers.dummy_selection.clone();
-    let drag_members = buffers.drag_members.clone();
-    let preview = buffers.preview.clone();
     if gpu.depth.as_ref().is_none_or(|d| d.size != frame.target) {
         gpu.depth = Some(screen_target(
             &device,
@@ -808,34 +818,8 @@ fn puzzle_node(
     }
     gpu.uniform.set(frame.config.clone());
     gpu.uniform.write_buffer(&device, &queue);
-    let compute_group = device.create_bind_group(
-        "puzzle compute",
-        &cache.get_bind_group_layout(&gpu.compute_layout),
-        &BindGroupEntries::sequential((
-            gpu.uniform.binding().unwrap(),
-            states.as_entire_buffer_binding(),
-            visible.as_entire_buffer_binding(),
-            args.as_entire_buffer_binding(),
-            selectable.as_entire_buffer_binding(),
-            drag_members.as_entire_buffer_binding(),
-        )),
-    );
-    let draw_group = device.create_bind_group(
-        "puzzle draw",
-        &cache.get_bind_group_layout(&gpu.draw_layout),
-        &BindGroupEntries::sequential((
-            gpu.uniform.binding().unwrap(),
-            states.as_entire_buffer_binding(),
-            visible.as_entire_buffer_binding(),
-            drag_members.as_entire_buffer_binding(),
-            preview.as_entire_buffer_binding(),
-        )),
-    );
-    let image_group = device.create_bind_group(
-        "puzzle texture",
-        &cache.get_bind_group_layout(&gpu.texture_layout),
-        &BindGroupEntries::sequential((&image.texture_view, &image.sampler)),
-    );
+    let (compute_group, draw_group, dummy_selection) = gpu.main_bind_groups(&device, &cache);
+    let image_group = gpu.image_bind_group(&device, &cache, image);
     queue.write_buffer(&args, 0, bytemuck::cast_slice(&[4u32, 0, 0, 0]));
     let mut offsets = vec![];
     if !opaque && capacity > 1 {
@@ -856,13 +840,7 @@ fn puzzle_node(
         }
         gpu.sort_uniform.write_buffer(&device, &queue);
     }
-    let sort_group = (!opaque && capacity > 1).then(|| {
-        device.create_bind_group(
-            "puzzle sort",
-            &cache.get_bind_group_layout(&gpu.sort_layout),
-            &BindGroupEntries::single(gpu.sort_uniform.binding().unwrap()),
-        )
-    });
+    let sort_group = (!opaque && capacity > 1).then(|| gpu.sort_bind_group(&device, &cache));
     let diagnostics = context.diagnostic_recorder();
     let diagnostic_ref = diagnostics.as_deref();
     let encoder = context.command_encoder();
@@ -898,10 +876,6 @@ fn puzzle_node(
         &device,
         &queue,
         &cache,
-        &states,
-        &visible,
-        &args,
-        &selectable,
         &image_group,
         encoder,
         diagnostics.as_deref(),
@@ -927,15 +901,7 @@ fn puzzle_node(
         pass.set_bind_group(0, &draw_group, &[]);
         pass.set_bind_group(1, &image_group, &[]);
         // Main fragment doesn't access group 2, but the explicit layout requires a binding.
-        let dummy = device.create_bind_group(
-            "unused selection",
-            &cache.get_bind_group_layout(&gpu.selection_layout),
-            &BindGroupEntries::sequential((
-                dummy_selection.as_entire_buffer_binding(),
-                selectable.as_entire_buffer_binding(),
-            )),
-        );
-        pass.set_bind_group(2, &dummy, &[]);
+        pass.set_bind_group(2, &dummy_selection, &[]);
         set_viewport!(pass, frame.viewport);
         pass.draw_indirect(&args, 0);
     }
@@ -953,15 +919,7 @@ fn puzzle_node(
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &draw_group, &[]);
             pass.set_bind_group(1, &image_group, &[]);
-            let dummy = device.create_bind_group(
-                "unused box selection",
-                &cache.get_bind_group_layout(&gpu.selection_layout),
-                &BindGroupEntries::sequential((
-                    dummy_selection.as_entire_buffer_binding(),
-                    selectable.as_entire_buffer_binding(),
-                )),
-            );
-            pass.set_bind_group(2, &dummy, &[]);
+            pass.set_bind_group(2, &dummy_selection, &[]);
             set_viewport!(pass, frame.viewport);
             pass.draw(0..4, 0..1);
         }
@@ -976,10 +934,6 @@ fn draw_selection(
     device: &RenderDevice,
     queue: &RenderQueue,
     cache: &PipelineCache,
-    states: &Buffer,
-    visible: &Buffer,
-    args: &Buffer,
-    selectable: &Buffer,
     image_group: &BindGroup,
     encoder: &mut CommandEncoder,
     diagnostics: Option<&DiagnosticsRecorder>,
@@ -1061,23 +1015,11 @@ fn draw_selection(
     config.view_max = a.max(b);
     gpu.pick_uniform.set(config);
     gpu.pick_uniform.write_buffer(device, queue);
+    let (cull_group, group) = gpu.pick_bind_groups(device, cache);
+    let bits = gpu.selection_bind_group(device, cache, point.then(|| index.unwrap()));
     let buffers = gpu.buffers.as_ref().unwrap();
-    let pick_ids = &buffers.pick_visible;
     let pick_args = &buffers.pick_args;
     queue.write_buffer(pick_args, 0, bytemuck::cast_slice(&[4u32, 0, 0, 0]));
-    let cull_group = device.create_bind_group(
-        "picking ROI culling",
-        &cache.get_bind_group_layout(&gpu.pick_compute_layout),
-        &BindGroupEntries::sequential((
-            gpu.pick_uniform.binding().unwrap(),
-            states.as_entire_buffer_binding(),
-            visible.as_entire_buffer_binding(),
-            args.as_entire_buffer_binding(),
-            pick_ids.as_entire_buffer_binding(),
-            pick_args.as_entire_buffer_binding(),
-            buffers.drag_members.as_entire_buffer_binding(),
-        )),
-    );
     let cull_span = diagnostics.time_span(encoder, "puzzle_pick_visibility");
     {
         let mut pass = encoder.begin_compute_pass(&default());
@@ -1086,30 +1028,11 @@ fn draw_selection(
         pass.dispatch_workgroups(frame.config.count.div_ceil(256), 1, 1);
     }
     cull_span.end(encoder);
-    let group = device.create_bind_group(
-        "procedural picking",
-        &cache.get_bind_group_layout(&gpu.draw_layout),
-        &BindGroupEntries::sequential((
-            gpu.pick_uniform.binding().unwrap(),
-            states.as_entire_buffer_binding(),
-            pick_ids.as_entire_buffer_binding(),
-            buffers.drag_members.as_entire_buffer_binding(),
-            buffers.dummy_selection.as_entire_buffer_binding(),
-        )),
-    );
     let bitset = if point {
         &gpu.slots[index.unwrap()].bitset
     } else {
         &buffers.preview
     };
-    let bits = device.create_bind_group(
-        "selection masks",
-        &cache.get_bind_group_layout(&gpu.selection_layout),
-        &BindGroupEntries::sequential((
-            bitset.as_entire_buffer_binding(),
-            selectable.as_entire_buffer_binding(),
-        )),
-    );
     encoder.clear_buffer(bitset, 0, None);
     let color = if point {
         &gpu.point.as_ref().unwrap().id_view
