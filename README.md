@@ -93,7 +93,7 @@ Windowsではwgpu-halを29.0.3に固定しています。29.0.4とgpu-allocator 
 
 ## GPU selection
 
-クリックはcrop projectionで画面上の1画素を1×1のID/depth textureへ投影し、GPU上で最前面のIDを決定します。4 bytesを非同期readbackし、クリック用textureは画面解像度に依存しません。矩形はscissor内のfragmentをatomic bitsetへ集約し、隠れたピースも返します。10,000 IDのreadbackは1,252 bytesです。パズルカメラはMsaa::Offで通常描画とpickingの画素coverageを一致させます。
+クリックはcrop projectionで画面上の1画素を1×1のID/depth textureへ投影し、GPU上で最前面の選択可能なIDを決定します。Point・Rectangle共通のselectable bitsetにより、配置済み・保持中のピースはfragment単位でdiscardします。4 bytesを非同期readbackし、クリック用textureは画面解像度に依存しません。矩形はscissor内のfragmentをatomic bitsetへ集約し、隠れた選択可能ピースも返します。10,000 IDのreadbackは1,252 bytesです。パズルカメラはMsaa::Offで通常描画とpickingの画素coverageを一致させます。
 
 実装・座標変換・非同期入力・制限・検証手順は[GPU_PICKING.md](GPU_PICKING.md)を参照してください。実GPUの自動テストは次で実行できます。
 

@@ -141,6 +141,52 @@ fn stale_callbacks_do_not_overwrite_latest_or_cross_sessions() {
         .is_none());
 }
 
+#[test]
+fn selectable_mask_tracks_placement_ownership_and_removed_ids() {
+    let mut app = App::new();
+    app.init_resource::<PieceDataStore>()
+        .init_resource::<Assets<Mesh>>();
+    for id in [0, 31, 32, 9999] {
+        spawn_fixture(
+            &mut app,
+            id,
+            Rectangle::new(1., 1.).into(),
+            Handle::default(),
+            Vec3::ZERO,
+        );
+    }
+    let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+    let mut bits = Vec::new();
+    extract_selectable_bitset(&store, &mut bits);
+    assert_eq!(bits.len(), 1252);
+    assert_eq!(
+        decode_ids(SelectionMode::Rectangle, &bits),
+        [0, 31, 32, 9999].map(PieceId)
+    );
+    store.pieces.get_mut(&PieceId(31)).unwrap().state.placed = true;
+    store.pieces.get_mut(&PieceId(32)).unwrap().state.held_by = Some(puzzella_core::PlayerId(1));
+    store.pieces.get_mut(&PieceId(9999)).unwrap().state.held_by = Some(puzzella_core::LOCAL_PLAYER);
+    extract_selectable_bitset(&store, &mut bits);
+    assert_eq!(
+        decode_ids(SelectionMode::Rectangle, &bits),
+        vec![PieceId(0)]
+    );
+    store.pieces.get_mut(&PieceId(32)).unwrap().state.held_by = None;
+    store.pieces.get_mut(&PieceId(9999)).unwrap().state.held_by = None;
+    extract_selectable_bitset(&store, &mut bits);
+    assert_eq!(
+        decode_ids(SelectionMode::Rectangle, &bits),
+        [0, 32, 9999].map(PieceId)
+    );
+    assert!(
+        !store.is_selectable(PieceId(1)),
+        "missing IDs are not selectable"
+    );
+    store.pieces.clear();
+    extract_selectable_bitset(&store, &mut bits);
+    assert_eq!(bits, vec![0; 4], "a smaller puzzle must clear old bits");
+}
+
 fn spawn_fixture(
     app: &mut App,
     id: u32,
@@ -183,7 +229,7 @@ fn spawn_fixture(
         ))
         .id()
 }
-fn gpu_result(app: &mut App, region: Rect, mode: SelectionMode) -> Vec<PieceId> {
+fn gpu_selection_result(app: &mut App, region: Rect, mode: SelectionMode) -> SelectionResult {
     // Let transform propagation, visibility and asset preparation catch up.
     for _ in 0..4 {
         app.update();
@@ -200,9 +246,7 @@ fn gpu_result(app: &mut App, region: Rect, mode: SelectionMode) -> Vec<PieceId> 
             .resource_mut::<PuzzleSelection>()
             .take_result(id)
         {
-            assert!(result.error.is_none(), "{:?}", result.error);
-            assert_eq!(result.entities.len(), result.piece_ids.len());
-            return result.piece_ids;
+            return result;
         }
         assert!(
             std::time::Instant::now() < deadline,
@@ -210,6 +254,12 @@ fn gpu_result(app: &mut App, region: Rect, mode: SelectionMode) -> Vec<PieceId> 
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+}
+fn gpu_result(app: &mut App, region: Rect, mode: SelectionMode) -> Vec<PieceId> {
+    let result = gpu_selection_result(app, region, mode);
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert_eq!(result.entities.len(), result.piece_ids.len());
+    result.piece_ids
 }
 #[test]
 #[ignore = "requires a real GPU: cargo test -p puzzella-game --locked gpu_raster_selection -- --ignored --nocapture"]
@@ -305,6 +355,55 @@ fn gpu_raster_selection() {
     assert_eq!(points.depth_view.texture().size(), one_pixel);
     let point_texture = points.id.id();
     let point_depth = points.depth_view.id();
+    // Keep the front piece's rendered Z unchanged: selection must not rely on
+    // placed/held pieces being behind movable pieces.
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .pieces
+        .get_mut(&PieceId(9999))
+        .unwrap()
+        .state
+        .placed = true;
+    for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+        assert_eq!(gpu_result(&mut app, rect, mode), vec![PieceId(0)]);
+    }
+    for player in [puzzella_core::PlayerId(1), puzzella_core::LOCAL_PLAYER] {
+        {
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            let state = &mut store.pieces.get_mut(&PieceId(9999)).unwrap().state;
+            state.placed = false;
+            state.held_by = Some(player);
+        }
+        for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+            assert_eq!(gpu_result(&mut app, rect, mode), vec![PieceId(0)]);
+        }
+    }
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .pieces
+        .get_mut(&PieceId(9999))
+        .unwrap()
+        .state
+        .held_by = None;
+    assert_eq!(
+        gpu_result(&mut app, point, SelectionMode::Point),
+        vec![PieceId(9999)]
+    );
+    // The rendered high ID survives removal from the canonical store. A smaller
+    // mask binding must reject it, even when the reused buffer has spare capacity.
+    let removed = app
+        .world_mut()
+        .resource_mut::<PieceDataStore>()
+        .pieces
+        .remove(&PieceId(9999))
+        .unwrap();
+    for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+        assert_eq!(gpu_result(&mut app, rect, mode), vec![PieceId(0)]);
+    }
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .pieces
+        .insert(PieceId(9999), removed);
     assert_eq!(
         gpu_result(
             &mut app,
@@ -561,7 +660,7 @@ fn gpu_raster_selection() {
     let combined = app.world_mut().resource_mut::<Assets<Mesh>>().add(combined);
     app.world_mut().spawn((
         Mesh2d(combined),
-        MeshMaterial2d(material),
+        MeshMaterial2d(material.clone()),
         Transform::default(),
         BatchedMeshEntity {
             piece_count: 2,
@@ -576,15 +675,53 @@ fn gpu_raster_selection() {
         gpu_result(&mut app, point, SelectionMode::Point),
         vec![PieceId(9999)]
     );
+    // Both IDs share a single draw. The fragment mask must reject only the
+    // unselectable front ID, rather than excluding the entire batch.
+    for held in [false, true] {
+        {
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            let state = &mut store.pieces.get_mut(&PieceId(9999)).unwrap().state;
+            state.placed = !held;
+            state.held_by = held.then_some(puzzella_core::PlayerId(1));
+        }
+        for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+            assert_eq!(gpu_result(&mut app, rect, mode), vec![PieceId(0)]);
+        }
+    }
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .pieces
+        .get_mut(&PieceId(0))
+        .unwrap()
+        .state
+        .placed = true;
+    for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+        assert!(gpu_result(&mut app, rect, mode).is_empty());
+    }
+    for id in [0, 9999] {
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .pieces
+            .get_mut(&PieceId(id))
+            .unwrap()
+            .state = PieceState::new(Vec2::ZERO);
+    }
+    assert_eq!(
+        gpu_result(&mut app, point, SelectionMode::Point),
+        vec![PieceId(9999)]
+    );
     // Idle frames reuse buffers and do not re-submit the same request.
     let render = app.sub_app(RenderApp);
     let gpu = render.world().resource::<GpuSelection>();
     assert!(gpu.slots.len() <= 3);
-    assert!(gpu.slots.iter().all(|s| s.bitset.size() >= 1252));
+    assert!(gpu
+        .slots
+        .iter()
+        .all(|s| s.bitset.size() >= 1252 && s.selectable.size() >= 1252));
     let buffers: Vec<_> = gpu
         .slots
         .iter()
-        .map(|s| (s.bitset.id(), s.staging.id()))
+        .map(|s| (s.bitset.id(), s.selectable.id(), s.staging.id()))
         .collect();
     let submitted = gpu.last_submitted;
     for _ in 0..8 {
@@ -595,7 +732,7 @@ fn gpu_raster_selection() {
     assert_eq!(
         gpu.slots
             .iter()
-            .map(|s| (s.bitset.id(), s.staging.id()))
+            .map(|s| (s.bitset.id(), s.selectable.id(), s.staging.id()))
             .collect::<Vec<_>>(),
         buffers
     );
@@ -672,4 +809,53 @@ fn gpu_raster_selection() {
         UVec2::new(3840, 2160)
     );
     assert_eq!(gpu.point_targets.as_ref().unwrap().id.id(), point_texture);
+    // A permanently invalid mesh returns a terminal error, then a repaired mesh
+    // can be picked by a new request without resetting the selection plugin.
+    let invalid = spawn_fixture(
+        &mut app,
+        33,
+        Rectangle::new(32., 32.).into(),
+        material,
+        Vec3::new(0., 0., 3.),
+    );
+    let invalid_mesh = app.world().get::<Mesh2d>(invalid).unwrap().0.clone();
+    app.world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .get_mut(&invalid_mesh)
+        .unwrap()
+        .remove_attribute(ATTRIBUTE_PIECE_ID);
+    let center = Rect::new(1723., 927., 1724., 928.);
+    for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+        let result = gpu_selection_result(&mut app, center, mode);
+        assert_eq!(
+            result.error.as_deref(),
+            Some("puzzle mesh missing ATTRIBUTE_PIECE_ID")
+        );
+        assert!(result.piece_ids.is_empty());
+        assert_eq!(
+            app.sub_app(RenderApp)
+                .world()
+                .resource::<GpuSelection>()
+                .last_submitted,
+            result.request_id
+        );
+        for _ in 0..8 {
+            app.update();
+        }
+        assert!(app
+            .world()
+            .resource::<PuzzleSelection>()
+            .completed
+            .is_none());
+    }
+    {
+        let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+        let mut mesh = meshes.get_mut(&invalid_mesh).unwrap();
+        let count = mesh.count_vertices();
+        mesh.insert_attribute(ATTRIBUTE_PIECE_ID, vec![33u32; count]);
+    }
+    assert_eq!(
+        gpu_result(&mut app, center, SelectionMode::Point),
+        vec![PieceId(33)]
+    );
 }

@@ -20,7 +20,7 @@ Bevy 0.19.1 / bevy_egui 0.42。lyon の indexed Mesh が形状の正本で、Mes
 - `SelectionResult { request_id, mode, piece_ids, entities, error }`
 - `PuzzleSelection`: request発行・取消・最新結果取得。IDはセッションを跨いで単調増加する。
 - `PuzzlePieceId`: 安定IDとidentity Entityの対応。
-- `extract_selection`: camera・対象cameraのVisibleEntities・Mesh/Transform/materialを共有抽出。
+- `extract_selection`: camera・対象cameraのVisibleEntities・Mesh/Transform/materialと、canonical stateからのselectable bitsetを共有抽出。
 - `selection_node`（pass label: PuzzleSelectionNode）: pipeline選択、clear、rasterize、copyを記録。
 - `map_results`: submit後に非同期mapを登録。
 - `receive_results`: channelを非同期受信し、最新requestだけデコード・Entityへ対応付ける。
@@ -32,21 +32,25 @@ Bevy 0.19.1 / bevy_egui 0.42。lyon の indexed Mesh が形状の正本で、Mes
 ```text
 Main World: logical selection region + monotonic request ID
   → ExtractSchedule: visible rendered meshes / camera / material
-  → physical scissor, buffers and cached pipeline
-Rectangle: zero bitset → scissored fragments without depth → atomicOr
-Point: physical pixel → crop projection → 1×1 R32Uint + reverse-Z depth → front-most ID
+  → physical scissor, selectable bitset, buffers and cached pipeline
+Rectangle: zero result bitset → scissored fragments → alpha/selectable discard → atomicOr (no depth)
+Point: physical pixel → crop projection → alpha/selectable discard → 1×1 ID/depth → nearest selectable ID
   → same command encoder copies bitset or ONE texel
   → submit → map_async → channel → latest-ID check
   → PieceId / identity Entity → existing selection / PieceCommand
 ```
 
-矩形は各fragmentで`atomicOr(selection[id / 32], 1 << (id % 32))`。depth attachmentがなく、同じ画素を覆う全ピースが記録される。クリックは画面上の選択画素をcrop projectionで1×1のinteger targetへ投影し、GreaterEqualのreverse-Z depthによりGPUで最前面を決定する。バッチ内のZも元の頂点位置から反映される。CPUでクリック候補のZを比較する処理はない。bitsetのID 0は有効。整数targetだけ`id + 1`を格納し、0をnoneに使う。
+矩形は各fragmentで`atomicOr(selection[id / 32], 1 << (id % 32))`。depth attachmentがなく、同じ画素を覆う全選択可能ピースが記録される。クリックは画面上の選択画素をcrop projectionで1×1のinteger targetへ投影し、GreaterEqualのreverse-Z depthによりGPUで最前面の選択可能ピースを決定する。バッチ内のZも元の頂点位置から反映される。CPUでクリック候補のZを比較する処理はない。bitsetのID 0は有効。整数targetだけ`id + 1`を格納し、0をnoneに使う。
+
+selectable bitsetは結果用bitsetとは別のread-only storage buffer。`PieceDataStore::is_selectable`をCPU入力と抽出で共有し、`!placed && held_by.is_none()`のIDだけbitを立てる。両fragment shaderはalpha判定後にこのbitを確認し、選択不可・canonical storeにないIDはdiscardする。クリックではIDとdepthへの書込みを防ぐため、最前面の選択不可ピース越しに背後の選択可能ピースを取得できる。バッチ内の複数IDもfragment単位で判定する。readback中の状態変化に備え、CPU側のselectability再確認も維持する。
 
 ## 4. Readback / lifecycle
 
 矩形は最高PieceIdに対応するword数だけコピー。ID 0..9999なら313 words = **1,252 bytes**。クリックは**4 bytes**。full-screen ID textureのCPU転送はない。clear → render → copyは同じencoder内、mapはRenderSystems::Cleanupでsubmit後に登録する。poll/waitによる同期GPU待ちは追加していない。
 
-bitset/stagingは最大3slotのpool。busy slotは再利用せず、slotが埋まった場合は最新要求を次フレームに再試行。容量不足のidle slotだけpower-of-twoへ拡張する。uniform buffer、pipeline cache、texture bind group、render targetsも再利用する。クリック用R32Uint / Depth32Floatは常に1×1で、通常画面の解像度変更時も再利用する。矩形用R8Unormだけ、矩形要求時に必要なphysical targetサイズで作成・更新する。クリックだけの操作では画面サイズのpicking attachmentを作成しない。
+結果bitset/selectable bitset/stagingは最大3slotのpool。busy slotは再利用せず、slotが埋まった場合は最新要求を次フレームに再試行。容量不足のidle slotだけpower-of-twoへ拡張する。selectable bitsetはidle slotにuploadし、in-flight要求の状態を上書きしない。binding範囲は現セッションのword数に限定し、以前の大きなパズルの余剰容量を参照させない。uniform buffer、pipeline cache、texture bind group、render targetsも再利用する。クリック用R32Uint / Depth32Floatは常に1×1で、通常画面の解像度変更時も再利用する。矩形用R8Unormだけ、矩形要求時に必要なphysical targetサイズで作成・更新する。クリックだけの操作では画面サイズのpicking attachmentを作成しない。
+
+mesh・texture・pipelineの準備中は次フレームへretryする。準備済みmeshの`ATTRIBUTE_PIECE_ID`欠落は永久エラーとして`RawResult.error`を返し、`last_submitted`を進める。同じ要求を再実行せず、入力は取消できる。mesh修復後の新しい要求は通常どおり処理する。
 
 入力はPendingPoint / Dragging / BoxSelectingを区別する。GPU待ちの間のpress・移動・release座標を保持し、遅延結果でも最後のMove → Releaseを発行する。矩形previewは4 input framesごと、releaseでは必ず新しい最終要求を発行し、その結果だけで確定する。pause、focus loss、Menuへの清掃、新しいgestureで古い要求を無効化する。
 
@@ -64,7 +68,7 @@ APIのregionはrender target左上を原点とする絶対logical座標。Camera
 
 ## 7. Performance
 
-CPU転送は矩形面積に依存せずO(max PieceId / 8)。idle時に同じrequestを再submitしない。fragment invocationはscissor内に制限するが、vertex processingは可視batch全体に対して行う。通常描画のバッチ化をそのまま再利用してdraw数を抑える。約1万IDでもbitset容量は小さい。
+CPU転送は矩形面積に依存せずO(max PieceId / 8)。selectable maskのuploadも同じ容量で、10,000 IDなら1,252 bytes。idle時に同じrequestを再submitしない。fragment invocationはscissor内に制限するが、vertex processingは可視batch全体に対して行う。通常描画のバッチ化をそのまま再利用してdraw数を抑える。約1万IDでもbitset容量は小さい。
 
 クリック用attachmentは1×1 R32Uintと1×1 Depth32Floatで、format上は計8 bytes（実際のGPU割当・driver overheadを除く）。従来の4K ID/depth約63.3 MiBの画面サイズ依存を除去した。クリックのclearも1画素のみ。矩形用R8Unormは引き続きphysical targetサイズで保持し、4Kで約7.9 MiB、clearはattachment全体に及ぶ。大量ピースの60fpsや4Kの処理時間は測定していない。
 
@@ -72,7 +76,7 @@ CPU転送は矩形面積に依存せずO(max PieceId / 8)。idle時に同じrequ
 
 - 現在のゲームのMesh2d / ColorMaterial / indexed triangle / MainCamera 1台を対象とする。Sprite、custom shaderによる変形・discard、render layers以外の独自clip、多camera別の選択には追加実装が必要。
 - MSAAを再度有効にする場合は整数targetと通常描画のsample coverageを再設計する必要がある。
-- alpha blendの複数ピース合成に対し、最前面の非ゼロalphaをクリックする。合成への寄与の大きさによる選択は行わない。
+- alpha blendの複数ピース合成に対し、選択可能ピースのうち最前面の非ゼロalphaをクリックする。合成への寄与の大きさによる選択は行わない。
 - GPU能力としてfragment writable storage、integer render targetが必要。backendごとの全環境確認は未実施。
 - 要求は抽出されたフレームのcamera/描画状態に対して実行する。GPU latencyによりpreview/確定に数フレームの遅延がある。
 - IDが疎になると最高IDまでbitset容量が必要。通常のrow-major IDは連続している。GPU storage binding limit超過はerror resultを返す。
@@ -103,3 +107,11 @@ cargo build --locked
 座標変換のunit testでは4K・viewport offset・1×1 viewport・DPI 2.5を対象に、画素の両端がNDCの±1、中心が0、隣接画素の中心が範囲外に変換されること、およびhomogeneous Z/Wが保持されることを確認する。クリックAPI、4 bytesのreadback、矩形のbitset方式は従来通り。
 
 今回の更新の検証結果: workspace通常テスト29件成功、実GPUテスト1件成功（NVIDIA GeForce RTX 5090）。fmt、workspace check、all-targets/all-features clippy（-D warnings）、build、diff checkも成功。
+
+## Selectability / error更新
+
+unit testでID 0・31・32・9999、配置済み・local/他playerの保持状態、解除・ID削除・空storeへの切替によるmask更新を確認する。実GPUテストでは選択不可の前面ピースのZを下げず、個別描画と同一バッチ内の双方でPointが背後のIDを取得し、Rectangleも選択可能IDだけ返すことを確認した。全対象が選択不可なら空結果となる。大きなmask bufferの再利用時も、canonical storeから削除された高IDは余剰容量から拾わない。
+
+`ATTRIBUTE_PIECE_ID`欠落はPoint・Rectangleとも期限内にerrorを返し、idle frameでは同じ要求を再実行しない。属性を修復した新規要求は成功する。selectable bufferも既存slotとともに再利用される。
+
+検証結果: workspace通常テスト30件成功、実GPUテスト1件成功（NVIDIA GeForce RTX 5090）。fmt、workspace check、all-targets/all-features clippy（-D warnings）、build、diff checkも成功。Rectangleのcrop target化は今回行っていない。

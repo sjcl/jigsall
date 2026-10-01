@@ -61,7 +61,7 @@ struct ExtractedSelection {
     viewport: URect,
     target: UVec2,
     clip_from_world: Mat4,
-    bitset_bytes: u64,
+    selectable_bits: Vec<u8>,
     draws: Vec<PickDraw>,
 }
 
@@ -102,7 +102,7 @@ fn extract_selection(
     extracted.target = target;
     extracted.viewport = viewport;
     extracted.clip_from_world = camera.clip_from_view() * transform.to_matrix().inverse();
-    extracted.bitset_bytes = bitset_bytes(store.pieces.keys().map(|id| id.0).max());
+    extract_selectable_bitset(&store, &mut extracted.selectable_bits);
     for &entity in visible.get(std::any::TypeId::of::<Mesh2d>()) {
         if let Ok((mesh, transform, material)) = pieces.get(entity) {
             if let Some(material) = materials.get(&material.0) {
@@ -122,6 +122,20 @@ fn bitset_bytes(max_id: Option<u32>) -> u64 {
     max_id.map_or(4, |id| (u64::from(id) / 32 + 1) * 4)
 }
 
+fn extract_selectable_bitset(store: &PieceDataStore, bits: &mut Vec<u8>) {
+    bits.clear();
+    bits.resize(
+        bitset_bytes(store.pieces.keys().map(|id| id.0).max()) as usize,
+        0,
+    );
+    for &id in store.pieces.keys() {
+        if store.is_selectable(id) {
+            // Little-endian u32 words, matching the shader's id / 32 addressing.
+            bits[id.0 as usize / 8] |= 1 << (id.0 % 8);
+        }
+    }
+}
+
 #[derive(Clone, ShaderType)]
 struct PickUniform {
     clip_from_model: Mat4,
@@ -134,6 +148,7 @@ struct PickUniform {
 
 struct Slot {
     bitset: Buffer,
+    selectable: Buffer,
     staging: Buffer,
     busy: Arc<AtomicBool>,
 }
@@ -187,6 +202,7 @@ impl GpuSelection {
                     (
                         uniform_buffer::<PickUniform>(true),
                         storage_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -280,6 +296,12 @@ fn new_slot(device: &RenderDevice, bytes: u64) -> Slot {
             usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }),
+        selectable: device.create_buffer(&BufferDescriptor {
+            label: Some("selectable puzzle pieces"),
+            size: bytes,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }),
         staging: device.create_buffer(&BufferDescriptor {
             label: Some("selection readback"),
             size: bytes.max(4),
@@ -368,6 +390,12 @@ fn selection_node(
             return;
         };
         if !mesh.layout.0.contains(ATTRIBUTE_PIECE_ID) {
+            let _ = gpu.sender.send(RawResult {
+                request,
+                bytes: vec![],
+                error: Some("puzzle mesh missing ATTRIBUTE_PIECE_ID".into()),
+            });
+            gpu.last_submitted = request.request_id;
             return;
         }
         let pipeline = gpu.pipeline(mesh, point, &cache);
@@ -414,7 +442,7 @@ fn selection_node(
         }
         draws.push((draw, mesh, pipeline, image_id));
     }
-    let bytes = extracted.bitset_bytes.max(4);
+    let bytes = extracted.selectable_bits.len() as u64;
     if bytes > device.limits().max_storage_buffer_binding_size {
         let _ = gpu.sender.send(RawResult {
             request,
@@ -504,12 +532,20 @@ fn selection_node(
     }
     gpu.uniforms.write_buffer(&device, &queue);
     let slot = &gpu.slots[slot_index];
+    // Only idle slots are overwritten, so in-flight requests keep their own mask.
+    queue.write_buffer(&slot.selectable, 0, &extracted.selectable_bits);
     let group = device.create_bind_group(
         "puzzle picking",
         &cache.get_bind_group_layout(&gpu.uniform_layout),
         &BindGroupEntries::sequential((
             gpu.uniforms.binding().unwrap(),
             slot.bitset.as_entire_buffer_binding(),
+            BindingResource::Buffer(BufferBinding {
+                buffer: &slot.selectable,
+                offset: 0,
+                // Exclude spare capacity left by a larger previous puzzle.
+                size: BufferSize::new(bytes),
+            }),
         )),
     );
     let color_view = if point {

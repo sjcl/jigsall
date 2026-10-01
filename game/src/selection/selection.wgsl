@@ -8,6 +8,7 @@ struct PickUniform {
 };
 @group(0) @binding(0) var<uniform> params: PickUniform;
 @group(0) @binding(1) var<storage, read_write> selection: array<atomic<u32>>;
+@group(0) @binding(2) var<storage, read> selectable: array<u32>;
 @group(1) @binding(0) var image: texture_2d<f32>;
 @group(1) @binding(1) var image_sampler: sampler;
 
@@ -32,14 +33,22 @@ fn check_alpha(uv: vec2<f32>) {
     if params.alpha_mode == 1u && alpha < params.cutoff { discard; }
     if params.alpha_mode == 2u && alpha <= 0.0 { discard; }
 }
+fn check_selectable(piece_id: u32) {
+    let word = piece_id / 32u;
+    if word >= arrayLength(&selectable) { discard; }
+    if (selectable[word] & (1u << (piece_id % 32u))) == 0u { discard; }
+}
 @fragment
 fn rectangle_fragment(in: VertexOutput) {
     check_alpha(in.uv);
+    check_selectable(in.piece_id);
     atomicOr(&selection[in.piece_id / 32u], 1u << (in.piece_id % 32u));
 }
 @fragment
 fn point_fragment(in: VertexOutput) -> @location(0) u32 {
     check_alpha(in.uv);
+    // Discard prevents unselectable fragments from writing ID or depth.
+    check_selectable(in.piece_id);
     // Only the integer target reserves zero; bitset ID zero remains valid.
     return in.piece_id + 1u;
 }

@@ -47,12 +47,6 @@ pub struct PointerFrame {
     pub over_ui: bool,
     pub focused: bool,
 }
-fn selectable(store: &PieceDataStore, id: PieceId) -> bool {
-    store
-        .pieces
-        .get(&id)
-        .is_some_and(|piece| !piece.state.placed && piece.state.held_by.is_none())
-}
 impl PieceInteraction {
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })
@@ -168,7 +162,7 @@ impl PieceInteraction {
                     .piece_ids
                     .first()
                     .copied()
-                    .filter(|&id| selectable(store, id));
+                    .filter(|&id| store.is_selectable(id));
                 if let Some(id) = hit {
                     if *ctrl {
                         if !store.selected_pieces.remove(&id) {
@@ -185,7 +179,7 @@ impl PieceInteraction {
                             .selected_pieces
                             .iter()
                             .copied()
-                            .filter(|&id| selectable(store, id))
+                            .filter(|&id| store.is_selectable(id))
                             .collect();
                         ids.sort_by(|a, b| {
                             store.transforms[a]
@@ -295,7 +289,7 @@ impl PieceInteraction {
                     store.preview_pieces = result
                         .piece_ids
                         .into_iter()
-                        .filter(|&id| selectable(store, id))
+                        .filter(|&id| store.is_selectable(id))
                         .collect();
                     if *released {
                         store.selected_pieces = if *additive {

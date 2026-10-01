@@ -34,6 +34,12 @@ pub struct PieceRenderData {
     pub material: Handle<ColorMaterial>,
 }
 impl PieceDataStore {
+    pub(crate) fn is_selectable(&self, id: PieceId) -> bool {
+        self.pieces
+            .get(&id)
+            .is_some_and(|piece| !piece.state.placed && piece.state.held_by.is_none())
+    }
+
     pub fn add_piece(&mut self, piece: StoredPieceData) {
         let id = piece.definition.id;
         let z = id.0 as f32 * 0.001;
