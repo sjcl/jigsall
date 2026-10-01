@@ -344,7 +344,8 @@ impl AuthoritySession {
         };
         Ok(())
     }
-    /// Only call after the target validates/installs the final snapshot.
+    /// Only call after the target validates and retains the final snapshot.
+    /// Install after the owner notification, when migration is completed.
     pub fn acknowledge_snapshot(
         &mut self,
         session: SessionId,

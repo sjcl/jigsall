@@ -180,14 +180,19 @@ installは一致を要求し、画像resourceを置き換えない。
 2. `begin_graceful(B)` でauthorityとcommand処理を凍結する。
    最終cursorは3:100に固定される。
 3. `GameSnapshot::capture()` でfinal snapshotを作り、Bへ転送する。
-4. Bが信頼済みexpectationでvalidate/installしてからACKする。
+4. Bが信頼済みexpectationで `snapshot.validate()` を行い、検証済みsnapshotを保持してACKする。
+   この時点ではstoreへinstallしない。
 5. `acknowledge_snapshot(session, B, final_cursor)` でACKを記録する。
    別session、別player、別cursorのACKは拒否する。
 6. 将来のSteam SetLobbyOwner後、認証済み通知から `host_changed(B)` を呼ぶ。
    ACK前のowner変更や別候補への変更はgraceful transitionでは拒否する。
-7. `install_migration_snapshot()` がsnapshotと遷移を検証し、全holdを解除して復元し、
-   B / epoch 4 / sequence 0として稼働を再開する。
+7. `install_migration_snapshot()` がsnapshotと遷移を検証し、ここで初めて一度だけ
+   dense stateを変換・installして全holdを解除し、B / epoch 4 / sequence 0として稼働を再開する。
 8. Aは退出し、Cも同じcursorと新authorityへ移行する。
+
+ACK前のvalidationはO(N)の検証走査だけで、dense stateの変換・割当やstore/GPU epochの変更は行わない。
+保持したsnapshotはACK後に変更せず、最終install時にも再検証する。
+検証はACK前とinstall前の2回、CPU側のsnapshot restoreはowner移行後の1回となる。
 
 最終helperはsessionのcopyでtransitionを事前検証してからstoreをinstallし、
 成功時だけ新sessionをpublishする。validation失敗やepoch上限でstore/sessionは変化しない。
@@ -253,7 +258,8 @@ Steamもsocketも使わないテストを追加した。
 - core: graceful freeze、ACKのplayer/session/cursor検証、外部owner一致、sequence reset、session画像identityの維持。
 - core: abrupt freeze、source選択、決定論的tie-break、epochの辞書順比較、local=4:806で最大4:805の候補拒否、completion時の巻き戻し防御。
 - core: eventのhost/session/epoch/sequence検証、counter上限、graceful中の突然切断。
-- game: A→B gracefulとCの復元、position/placed/Z/next_z維持、hold/highlight cleanup、
+- game: A→B gracefulとCの復元、ACK前のvalidationでstore/GPU epochを維持しuploadを起こさないこと、
+  owner移行後の復元、position/placed/Z/next_z維持、hold/highlight cleanup、
   placed_count再計算、実際のPieceUpload full upload、次idleの空upload、再Grab。
 - game: abrupt B=4:801/C=D=4:805、epoch 5:0と旧epoch command/eventの拒否。
 - game: Bが10/11/25を保持した状態から切断、他playerの12は維持、dirty IDs。

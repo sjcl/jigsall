@@ -124,21 +124,27 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
         .add_systems(Update, prepare_piece_upload);
     app.update(); // B already has GPU presentation state.
     let old_gpu_epoch = app.world().resource::<PieceUpload>().epoch;
-    // B validates and installs the final snapshot before sending its ACK.
+    // B validates and retains the final snapshot before sending its ACK.
     snapshot
-        .install(
-            &mut app.world_mut().resource_mut::<PieceDataStore>(),
-            SnapshotExpectation {
-                session: SESSION,
-                image_hash: SESSION_DEFINITION.image_hash,
-                cursor: session.cursor(),
-                definition: &definition,
-            },
-        )
+        .validate(SnapshotExpectation {
+            session: SESSION,
+            image_hash: SESSION_DEFINITION.image_hash,
+            cursor: session.cursor(),
+            definition: &definition,
+        })
         .unwrap();
     session
         .acknowledge_snapshot(SESSION, B, snapshot.cursor)
         .unwrap();
+    // Validation/ACK must not restore B's store or start another GPU upload.
+    assert_eq!(
+        app.world().resource::<PieceDataStore>().epoch,
+        old_gpu_epoch
+    );
+    assert_eq!(app.world().resource::<PieceDataStore>().held_by.len(), 2);
+    app.update();
+    assert!(app.world().resource::<PieceUpload>().initial.is_none());
+    assert!(app.world().resource::<PieceUpload>().ranges.is_empty());
     session.host_changed(B).unwrap();
     assert!(!session.is_active());
     let frozen_session = session.clone();
