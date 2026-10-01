@@ -25,7 +25,7 @@ Bevy 0.19.1 / bevy_egui 0.42。lyon の indexed Mesh が形状の正本で、Mes
 - `map_results`: submit後に非同期mapを登録。
 - `receive_results`: channelを非同期受信し、最新requestだけデコード・Entityへ対応付ける。
 
-実装: `crates/puzzella-game/src/selection/`。要求APIは`api.rs`、座標変換は`coordinates.rs`、GPU描画・readbackは`render.rs`、shaderは`selection.wgsl`、テストは`render_tests.rs`。
+実装: `game/src/selection/`。要求APIは`api.rs`、座標変換は`coordinates.rs`、GPU描画・readbackは`render.rs`、shaderは`selection.wgsl`、テストは`render_tests.rs`。
 
 ## 3. GPU flow
 

@@ -49,15 +49,15 @@ Input → ClientCommand → gameplay logic → PieceState → Transform / render
 
 Cargo workspaceで次の責務に分けています。依存バージョンはルートの`Cargo.toml`、解決結果は共通の`Cargo.lock`で管理します。
 
-| package | 責務 |
-| --- | --- |
-| `puzzella`（`src/main.rs`） | アプリの起動とプラグイン登録 |
-| `puzzella-core` | 安定ID、パズル定義・状態、ClientCommand、純粋な命令検証・スナップ判定 |
-| `puzzella-puzzle` | seed付き形状・配置・Mesh生成、グリッド計算。WorldやGPU rendererに依存しない |
-| `puzzella-game` | Bevyの状態遷移、入力、非同期生成の制御、バッチ描画、GPU選択、画像読み込み |
-| `puzzella-ui` | egui画面と`GameUiPlugin`によるUIシステム登録 |
+| package | ディレクトリ | 責務 |
+| --- | --- | --- |
+| `puzzella` | `src/` | アプリの起動とプラグイン登録 |
+| `puzzella-core` | `core/` | 安定ID、パズル定義・状態、ClientCommand、純粋な命令検証・スナップ判定 |
+| `puzzella-game` | `game/` | Bevyの状態遷移、入力、非同期生成の制御、バッチ描画、GPU選択、画像読み込み |
+| `puzzella-puzzle` | `puzzle/` | seed付き形状・配置・Mesh生成、グリッド計算。WorldやGPU rendererに依存しない |
+| `puzzella-ui` | `ui/` | egui画面と`GameUiPlugin`によるUIシステム登録 |
 
-`puzzella-game/src/resources/`は状態・設定・入力・生成・画像・ピース・描画・バッチ・性能・CPUデバッグ判定に分けています。`selection/`は要求API、座標変換、GPU描画・readbackを分離しています。詳細なファイル配置と依存方向は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
+`game/src/resources/`は状態・設定・入力・生成・画像・ピース・描画・バッチ・性能・CPUデバッグ判定に分けています。`selection/`は要求API、座標変換、GPU描画・readbackを分離しています。詳細なファイル配置と依存方向は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
 
 元画像のtextureは1枚。ピースのMesh / UV / outlineと、共有する通常materialで描画します。スナップと進捗は一時描画Entityの有無に依存しません。
 

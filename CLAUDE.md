@@ -22,9 +22,9 @@ Use release mode for performance measurements. Tracy and Chrome tracing remain a
 - Bevy 0.19.1 and bevy_egui 0.42. Windows pins wgpu-hal 29.0.3 for dependency compatibility.
 - AppState is Menu / GameSetup / InGame / GameComplete. GameSubState is Initializing / Playing / Paused and exists only inside InGame. There is no GameScreen or legacy compatibility state.
 - The Cargo workspace contains the thin `puzzella` binary and `puzzella-core`, `puzzella-puzzle`, `puzzella-game`, `puzzella-ui` libraries. Dependency versions and package metadata are inherited from the root manifest; all packages share one lockfile. See ARCHITECTURE.md for ownership and dependency direction.
-- `puzzella-core/src/gameplay.rs` owns serializable PuzzleDefinition, stable PieceId / PlayerId, immutable PuzzlePiece, mutable PieceState, and pure command / snap decisions. It depends only on ECS markers, math and serde, without rendering or UI.
-- `puzzella-core/src/commands.rs` provides the local ClientCommand boundary. There is no active transport, Renet integration, host / join implementation, or port UI.
-- `puzzella-puzzle` owns CPU shape / placement / mesh generation. `puzzella-game` owns the Bevy lifecycle, workers and presentation. `puzzella-ui` owns egui screens and GameUiPlugin. Resource definitions live in `puzzella-game/src/resources/`; GPU selection is split into API, coordinates and render modules under `selection/`.
+- `core/src/gameplay.rs` owns serializable PuzzleDefinition, stable PieceId / PlayerId, immutable PuzzlePiece, mutable PieceState, and pure command / snap decisions. It depends only on ECS markers, math and serde, without rendering or UI.
+- `core/src/commands.rs` provides the local ClientCommand boundary. There is no active transport, Renet integration, host / join implementation, or port UI.
+- `puzzella-puzzle` owns CPU shape / placement / mesh generation. `puzzella-game` owns the Bevy lifecycle, workers and presentation. `puzzella-ui` owns egui screens and GameUiPlugin. Resource definitions live in `game/src/resources/`; GPU selection is split into API, coordinates and render modules under `selection/`.
 - Input emits Grab / Move / Release commands. Game logic validates ownership and coordinates, then projects state into rendering and collision caches. Input must not directly change gameplay Transform values.
 - PieceDataStore holds all canonical piece records, including pieces without individual Entities. Temporary Entities and batch meshes are local presentation. Progress and snap must count the canonical store.
 - `interaction.rs` owns the Idle / Dragging / BoxSelecting gesture; `InputState` only samples pointer validity and camera state.
@@ -33,8 +33,8 @@ Use release mode for performance measurements. Tracy and Chrome tracing remain a
 
 ## Preserve these systems
 
-- `puzzella-puzzle/src/shapes.rs` / `shape_data.rs`: puzzle-paths, SVG geometry, lyon tessellation, original UVs and stroke meshes, shared PieceShape.
-- `puzzella-puzzle/src/placement.rs`: seeded concentric-circle and fallback placement / shuffle.
+- `puzzle/src/shapes.rs` / `shape_data.rs`: puzzle-paths, SVG geometry, lyon tessellation, original UVs and stroke meshes, shared PieceShape.
+- `puzzle/src/placement.rs`: seeded concentric-circle and fallback placement / shuffle.
 - `systems/puzzle_generation.rs`: background CPU generation, channels, then main-thread asset creation at ten pieces per frame. Workers never access World or GPU resources.
 - `systems/input_camera.rs`: pan, zoom, adaptive camera framing and edge scrolling.
 - `interaction.rs` / `piece_geometry.rs`: single / Ctrl / box selection, relative multi-drag offsets, asynchronous GPU results and final-release coordinates.

@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "crates/*"]
-default-members = [".", "crates/*"]
+members = [".", "core", "game", "puzzle", "ui"]
+default-members = [".", "core", "game", "puzzle", "ui"]
 resolver = "2"
 
 [workspace.package]
@@ -10,10 +10,10 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
-puzzella-core = { path = "crates/puzzella-core" }
-puzzella-puzzle = { path = "crates/puzzella-puzzle" }
-puzzella-game = { path = "crates/puzzella-game" }
-puzzella-ui = { path = "crates/puzzella-ui" }
+puzzella-core = { path = "core" }
+puzzella-puzzle = { path = "puzzle" }
+puzzella-game = { path = "game" }
+puzzella-ui = { path = "ui" }
 bevy = { version = "0.19.1", default-features = false, features = ["2d", "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace"] }
 bevy_asset = "0.19.1"
 bevy_ecs = "0.19.1"
