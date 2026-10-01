@@ -316,7 +316,7 @@ impl PieceInteraction {
                 finish_drag(members, store, &mut commands);
             }
             Gesture::BoxSelecting { original, .. } | Gesture::PendingPoint { original, .. } => {
-                store.selected_pieces = original
+                store.restore_selection(original)
             }
             Gesture::Idle => {}
         }
@@ -361,6 +361,51 @@ mod tests {
     fn apply(store: &mut PieceDataStore, commands: Vec<PieceCommand>) {
         for command in commands {
             store.apply_command(LOCAL_PLAYER, &command, None);
+        }
+    }
+
+    #[test]
+    fn local_selection_rollback_does_not_restore_other_players_or_placed_pieces() {
+        for box_selecting in [false, true] {
+            let mut store = PieceDataStore::default();
+            store.initialize(vec![Vec2::ZERO; 3]);
+            store.selected_pieces.fill();
+            let mut interaction = PieceInteraction::default();
+            let mut selection = PuzzleSelection::default();
+            let mut down = frame(Vec2::ZERO, true, true);
+            down.ctrl = true;
+            interaction.update(down, &mut store, &mut selection);
+            if box_selecting {
+                let request = selection.latest.unwrap();
+                selection.completed = Some(SelectionResult {
+                    request_id: request.request_id,
+                    mode: SelectionMode::Point,
+                    payload: SelectionPayload::Point(None),
+                    error: None,
+                });
+                interaction.update(
+                    frame(Vec2::splat(20.0), true, false),
+                    &mut store,
+                    &mut selection,
+                );
+                assert!(interaction.screen_selection_rect().is_some());
+            }
+            store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), None);
+            store.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(1)), None);
+            let mut placed = store.state(PieceId(2)).unwrap();
+            placed.placed = true;
+            store.set_state(PieceId(2), placed);
+            let commands = interaction.cancel(&mut store, &mut selection);
+            assert_eq!(
+                store.selected_pieces.iter().collect::<Vec<_>>(),
+                [PieceId(0)]
+            );
+            assert!(selection.latest.is_none());
+            apply(&mut store, commands);
+            assert_eq!(
+                store.selected_pieces.iter().collect::<Vec<_>>(),
+                [PieceId(0)]
+            );
         }
     }
 

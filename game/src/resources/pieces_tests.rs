@@ -2,6 +2,169 @@ use super::*;
 use crate::resources::{AppState, GameData, PerformanceMonitor};
 use puzzella_core::{GENERATOR_VERSION, LOCAL_PLAYER};
 #[test]
+fn local_selection_tracks_authority_changes_and_keeps_local_holds() {
+    let mut store = PieceDataStore::default();
+    store.initialize(vec![Vec2::ZERO; 4]);
+    store.selected_pieces.fill();
+    let mut state = store.state(PieceId(0)).unwrap();
+    state.held_by = Some(LOCAL_PLAYER);
+    store.set_state(PieceId(0), state);
+    assert!(store.selected_pieces.contains(&PieceId(0)));
+    store.sync_highlights();
+    state.held_by = Some(PlayerId(1));
+    store.set_state(PieceId(0), state);
+    assert!(!store.selected_pieces.contains(&PieceId(0)));
+    assert!(store.highlights_dirty);
+    state.held_by = None;
+    store.set_state(PieceId(0), state);
+    assert!(!store.selected_pieces.contains(&PieceId(0)));
+    let mut placed = store.state(PieceId(1)).unwrap();
+    placed.placed = true;
+    store.set_state(PieceId(1), placed);
+    let disabled = store.state(PieceId(2)).unwrap();
+    store.states[2].flags &= !ENABLED;
+    store.set_state(PieceId(2), disabled);
+    assert_eq!(
+        store.selected_pieces.iter().collect::<Vec<_>>(),
+        [PieceId(3)]
+    );
+}
+
+#[test]
+fn local_selection_survives_local_grab_but_not_other_players_grab() {
+    for bulk in [false, true] {
+        let mut store = PieceDataStore::default();
+        store.initialize(vec![Vec2::ZERO; 4]);
+        store.selected_pieces.fill();
+        let original = store.selected_pieces.clone();
+        let mut local = PieceBitSet::new(4);
+        local.insert(PieceId(0));
+        let command = if bulk {
+            PieceCommand::GrabGroup { members: local }
+        } else {
+            PieceCommand::Grab(PieceId(0))
+        };
+        assert_eq!(store.apply_command(LOCAL_PLAYER, &command, None).grabbed, 1);
+        assert_eq!(store.selected_pieces.count(), 4);
+        store.sync_highlights();
+        let mut remote = PieceBitSet::new(4);
+        remote.extend([PieceId(0), PieceId(1)]);
+        let command = if bulk {
+            PieceCommand::GrabGroup { members: remote }
+        } else {
+            PieceCommand::Grab(PieceId(1))
+        };
+        assert_eq!(store.apply_command(PlayerId(1), &command, None).grabbed, 1);
+        assert!(store.highlights_dirty);
+        assert_eq!(
+            store.selected_pieces.iter().collect::<Vec<_>>(),
+            [PieceId(0), PieceId(2), PieceId(3)]
+        );
+        assert_eq!(original.count(), 4, "rollback snapshot stays immutable");
+        store.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(0)), None);
+        assert!(store.selected_pieces.contains(&PieceId(0)));
+        store.apply_command(PlayerId(1), &PieceCommand::Release(PieceId(1)), None);
+        assert!(!store.selected_pieces.contains(&PieceId(1)));
+    }
+}
+
+#[test]
+fn local_selection_additive_original_is_revalidated_after_delayed_readback() {
+    let mut store = PieceDataStore::default();
+    store.initialize(vec![Vec2::ZERO; 6]);
+    store.selected_pieces.extend((0..4).map(PieceId));
+    let original = store.selected_pieces.clone();
+    store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), None);
+    store.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(1)), None);
+    let mut placed = store.state(PieceId(2)).unwrap();
+    placed.placed = true;
+    store.set_state(PieceId(2), placed);
+    let disabled = store.state(PieceId(3)).unwrap();
+    store.states[3].flags &= !ENABLED;
+    store.set_state(PieceId(3), disabled);
+    let mut members = PieceBitSet::new(6);
+    members.extend((0..5).map(PieceId));
+    store.commit_selection(members, Some(&original));
+    assert_eq!(
+        store.selected_pieces.iter().collect::<Vec<_>>(),
+        [PieceId(0), PieceId(4)]
+    );
+    assert_eq!(original.count(), 4);
+}
+
+#[test]
+fn dirty_mask_reuses_its_allocation_for_single_piece_and_bulk_uploads() {
+    let mut app = App::new();
+    app.init_resource::<PieceDataStore>()
+        .init_resource::<PieceUpload>()
+        .add_systems(Update, prepare_piece_upload);
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .initialize(vec![Vec2::ZERO; 1_000_000]);
+    app.update();
+    app.update();
+    let allocation = app
+        .world()
+        .resource::<PieceDataStore>()
+        .dirty_pieces
+        .words()
+        .as_ptr();
+    for id in [PieceId(10), PieceId(999_999), PieceId(33)] {
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .dirty_pieces
+            .insert(id);
+        app.update();
+        let store = app.world().resource::<PieceDataStore>();
+        assert_eq!(store.dirty_pieces.words().as_ptr(), allocation);
+        assert!(store.dirty_pieces.is_empty());
+        let upload = app.world().resource::<PieceUpload>();
+        assert_eq!(upload.ranges.len(), 1);
+        assert_eq!(upload.ranges[0].start, id.0);
+        assert_eq!(upload.ranges[0].states.len(), 1);
+    }
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .dirty_pieces
+        .fill();
+    app.update();
+    assert_eq!(
+        app.world()
+            .resource::<PieceDataStore>()
+            .dirty_pieces
+            .words()
+            .as_ptr(),
+        allocation
+    );
+    assert!(app
+        .world()
+        .resource::<PieceDataStore>()
+        .dirty_pieces
+        .is_empty());
+    assert_eq!(
+        app.world().resource::<PieceUpload>().ranges[0].states.len(),
+        1_000_000
+    );
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .dirty_pieces
+        .insert(PieceId(99));
+    app.update();
+    let upload = app.world().resource::<PieceUpload>();
+    assert_eq!(upload.ranges.len(), 1);
+    assert_eq!(upload.ranges[0].start, 99);
+    assert_eq!(upload.ranges[0].states.len(), 1);
+    assert_eq!(
+        app.world()
+            .resource::<PieceDataStore>()
+            .dirty_pieces
+            .words()
+            .as_ptr(),
+        allocation
+    );
+}
+
+#[test]
 fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
     let mut store = PieceDataStore::default();
     store.initialize(vec![Vec2::ZERO]);

@@ -1,6 +1,6 @@
 # Million-piece selection / bulk interaction
 
-2026-10-02。branch `perf/million-piece-selection`、基準 `014cab45fa61be5535cf857d62cabbe48204aeb8`。専用worktreeは `C:\Users\bebe\.codex\worktrees\million-selection\puzzella`。refreshしたorigin/masterから開始し、元workspaceの未コミット変更には触れていません。途中のmasterの変更も取り込んでいません。
+2026-10-02。branch `perf/million-piece-selection`、性能比較の基準 `014cab45fa61be5535cf857d62cabbe48204aeb8`。専用worktreeは `C:\Users\bebe\.codex\worktrees\million-selection\puzzella`。refreshしたorigin/masterから開始し、元workspaceの未コミット変更には触れていません。selection整合性・dirty mask再利用の追加修正は、文書をdocs/へ整理したmasterの`ca56bf8`に追従しています。載せ直し前後で検証済みコードとbenchmark CSVに差分がないことを確認しました。
 
 ## 変更前の調査
 
@@ -26,7 +26,9 @@
 
 selected_piecesとdirty_piecesをbitsetへ変更し、previous_selectedは削除しました。gestureのoriginalもbitsetです。ID Vecはgestureに保持しません。`PieceOwners`はdense PlayerId配列とoccupancy mask、playerごとのcached hold countを持ちます。全u64 PlayerIdが有効で、sentinel IDは予約しません。owner allocationは最初のholdで遅延確保し、bulk operationのplayer accountingはgroup単位で行います。
 
-`SelectionPayload::Point(Option<PieceId>)`と`Rectangle(PieceBitSet)`を分離しました。pointは4 bytes、final rectangleは4 × ceil(N / 32) bytesを受信し、wordのままmaskに変換します。寸法・末尾paddingを検証し、clipped / empty ROIのcopyを伴わない空応答は空maskへnormalizeします。latest requestと一致しない応答は従来どおり破棄します。GPU応答後に変わったplaced / ownershipをCPU authorityで再検証してからmaskをcommitし、additive selectionはoriginal maskとのunionです。
+`SelectionPayload::Point(Option<PieceId>)`と`Rectangle(PieceBitSet)`を分離しました。pointは4 bytes、final rectangleは4 × ceil(N / 32) bytesを受信し、wordのままmaskに変換します。寸法・末尾paddingを検証し、clipped / empty ROIのcopyを伴わない空応答は空maskへnormalizeします。latest requestと一致しない応答は従来どおり破棄します。GPU応答後に変わったplaced / ownershipをCPU authorityで再検証してからmaskをcommitします。additive selectionはoriginal側も再検証してからunionし、取消時のrollbackも同じ検証を行います。
+
+新しく選択できる条件`is_selectable`と、既存selectionを維持できる条件`is_valid_local_selection`を分けています。後者はENABLED、非PLACED、ownerがNoneまたはLOCAL_PLAYERであることを要求し、自分がdrag中の選択を維持します。scalar / bulkで他playerがGrabした時、placedになった時、`set_state`によるauthority更新時に変更IDだけをselectionから除外します。毎frameのretainは追加しません。共有snapshotがある場合の最初の変更だけ、最大125 KBのCOW copyを伴います。
 
 ```text
 rectangle final GPU bitset → RawResult bytes → PieceBitSet
@@ -57,7 +59,7 @@ Z順を保つsort用の一時VecはGrabのauthority処理中だけ残ります�
 
 所有者が変わったmemberはlocal dragの表示maskから除外します。全memberが拒否されたGrabも表示maskを消すため、別playerのholdにlocal deltaを適用しません。通常のpointer更新はこの検証を繰り返さず、authority変更時だけ処理します。
 
-dirty uploadもID Vec / HashSetへ戻しません。全stateがdirtyなら1個の正確なdense copyです。疎な変更は従来の連続rangeを保ち、fragmented bulkでrange数が128を越える場合は最初と最後のdirty IDの間を1 spanでuploadします。この場合だけunchanged gapsも含みますが、最大16 MB / 1Mで、数十万のallocation / queue writesを避けます。1 pieceの通常更新は引き続き16 bytesです。
+dirty uploadもID Vec / HashSetへ戻しません。全stateがdirtyなら1個の正確なdense copyです。疎な変更は従来の連続rangeを保ち、fragmented bulkでrange数が128を越える場合は最初と最後のdirty IDの間を1 spanでuploadします。この場合だけunchanged gapsも含みますが、最大16 MB / 1Mで、数十万のallocation / queue writesを避けます。1 pieceの通常更新は引き続き16 bytesです。range作成後にdirty maskをin-place clearし、次frameで同じword allocationを再利用します。frameごとの125 KB allocationは不要ですが、dirty frameのword走査とclearは残ります。
 
 ## Performance invariants
 
@@ -72,7 +74,8 @@ dirty uploadもID Vec / HashSetへ戻しません。全stateがdirtyなら1個�
 | rollback snapshot | O(1) Arc clone、mutation時だけ最大125 KBのcopy |
 | drag start | member検証O(selected + N/32)、相対Zのsortはworst-case O(selected log selected)。command 1個 |
 | drag release | O(selected)、command 1個、per-member完了eventなし |
-| dirty upload準備 | bounded range allocations。dense commitはcopy 1個、通常の単一変更は16 bytes |
+| authority変更後のselection | 変更IDだけを検証・除外。local holdは維持、毎frame走査なし |
+| dirty upload準備 | mask allocationを再利用、bounded range allocations。dense commitはcopy 1個、通常の単一変更は16 bytes |
 
 ## 1Mのメモリ
 
@@ -87,7 +90,7 @@ decimal bytes。Arc header、Vec / enum metadata、O(players) owner counts、Bev
 | original / rollback mask | 0 additional while shared; ≤125,000 on COW | pointer down snapshot |
 | CPU requested drag membership | ≤125,000 | 全選択で全件有効ならselected allocationを共有 |
 | CPU accepted membership | 0 additional if unchanged; ≤125,000 if filtered | authorityが拒否memberを除いた場合だけ別mask |
-| CPU dirty mask | 125,000 | HashSet / sorted ID Vecなし |
+| CPU dirty mask | 125,000 | HashSet / sorted ID Vecなし、clearしてallocationを再利用 |
 | dense owner IDs + occupancy | 8,125,000 | 8,000,000 + 125,000、first holdで確保、release後も再利用 |
 | GPU selected mask | 125,000 | 新規buffer |
 | GPU preview mask | 125,000 | 既存buffer |
@@ -139,55 +142,55 @@ CPU 5 samplesの中央値。stageの中央値の和と、totalの中央値は区
 
 | 1M CPU stage | 時間 |
 | --- | ---: |
-| select-all fill | 22.300 µs |
-| final bitset receive / decode | 56.000 µs |
-| selection authority revalidation / commit | 0.6146 ms |
-| highlight upload準備（state bytes = 0） | 6.400 µs |
-| total CPU finalization | 0.6774 ms |
-| shared selection snapshot clone + drop | 7.520 ns |
-| 125 KB deep copy + count | 52.600 µs |
-| old HashSet clone + drop comparison | 1.3876 ms |
-| pointer down / rollback snapshot | 0.900 µs |
-| drag membership + 1 command生成 | 0.6475 ms |
-| Grab ownership + relative Z | 5.0481 ms |
-| total drag start（upload準備除外） | 5.6836 ms |
-| Grab dirty upload準備（16 MB） | 1.8308 ms |
-| drag pointer update | 11.515 ns |
-| release command生成 | 1.000 µs |
-| delta commit + ownership release + snap判定 | 16.4342 ms |
-| total release（upload準備除外） | 16.4357 ms |
-| release dirty upload準備（16 MB / 1 range） | 2.2281 ms |
+| select-all fill | 22.800 µs |
+| final bitset receive / decode | 59.000 µs |
+| selection authority revalidation / commit | 0.6997 ms |
+| highlight upload準備（state bytes = 0） | 12.400 µs |
+| total CPU finalization | 0.7707 ms |
+| shared selection snapshot clone + drop | 7.620 ns |
+| 125 KB deep copy + count | 48.400 µs |
+| old HashSet clone + drop comparison | 1.4681 ms |
+| pointer down / rollback snapshot | 1.200 µs |
+| drag membership + 1 command生成 | 0.6536 ms |
+| Grab ownership + relative Z | 5.3492 ms |
+| total drag start（upload準備除外） | 6.0163 ms |
+| Grab dirty upload準備（16 MB） | 1.7821 ms |
+| drag pointer update | 11.812 ns |
+| release command生成 | 0.700 µs |
+| delta commit + ownership release + snap判定 | 16.5711 ms |
+| total release（upload準備除外） | 16.5716 ms |
+| release dirty upload準備（16 MB / 1 range） | 2.4280 ms |
 
 ownership、Z、snapはauthorityの同一loop / sort処理であるため、上記のcombined stageとして測定しています。1MのGrab / Release command数は各1、temporary ID VecはauthorityのZ sortのみです。CPU pointerの4サイズ間の中央値は以下です。
 
 | selected | pointer ns / update |
 | ---: | ---: |
-| 1,000 | 11.507 |
-| 10,000 | 11.517 |
-| 100,000 | 11.472 |
-| 1,000,000 | 11.515 |
+| 1,000 | 11.627 |
+| 10,000 | 11.586 |
+| 100,000 | 11.571 |
+| 1,000,000 | 11.812 |
 
-実GPU fixtureの1M rectangleは、GPU ROI + rectangle 0.516864 ms、125,000-byte readback。CPU receive 25.400 µs、selection commit 0.9070 ms、highlight準備 6.600 µs、total CPU finalization 0.9390 ms。highlight uploadは125,000 bytes、state uploadは0です。fixture内のGrab authorityは4.5206 ms、release authorityは19.2126 ms。headless CPU値とは別sample / cache条件です。
+実GPU fixtureの1M rectangleは、GPU ROI + rectangle 0.520448 ms、125,000-byte readback。CPU receive 30.800 µs、selection commit 1.0628 ms、highlight準備 8.900 µs、total CPU finalization 1.1025 ms。highlight uploadは125,000 bytes、state uploadは0です。fixture内のGrab authorityは5.7625 ms、release authorityは20.6162 ms。headless CPU値とは別sample / cache条件です。
 
 既存rendererの1M比較（各row 30-frame平均）は以下です。drawにmaterialな悪化は観測せず、opaque full drawはほぼ同値です。cull / sortの増減とwall timeの変動もそのまま残しています。single paired runの比較であり、統計的な無退行保証や他GPUへの外挿はしません。SDF coverage、GPU sort順序、visible counts、bind group reuse、drag / preview / readbackのcorrectness testsはすべて成功しています。
 
 | 1M view | frame before → after ms | cull before → after ms | draw before → after ms | sort before → after ms |
 | --- | --- | --- | --- | --- |
-| near | 1.1879 → 1.2762 | 0.0122 → 0.0124 | 0.0483 → 0.0413 | 0.0000 → 0.0000 |
-| medium | 1.1674 → 1.2670 | 0.0122 → 0.0127 | 0.0529 → 0.0561 | 0.0000 → 0.0000 |
-| entire | 1.9475 → 2.0158 | 0.0269 → 0.0276 | 0.4965 → 0.4898 | 0.0000 → 0.0000 |
-| near_translucent | 1.6737 → 1.3079 | 0.0151 → 0.0151 | 0.0494 → 0.0429 | 0.1313 → 0.1307 |
-| medium_translucent | 1.8018 → 1.5540 | 0.0153 → 0.0212 | 0.0527 → 0.0538 | 0.1229 → 0.1378 |
-| entire_translucent | 2.4526 → 2.0112 | 0.0167 → 0.0163 | 0.5000 → 0.4992 | 0.2402 → 0.2687 |
+| near | 1.1879 → 1.6384 | 0.0122 → 0.0133 | 0.0483 → 0.0422 | 0.0000 → 0.0000 |
+| medium | 1.1674 → 1.5538 | 0.0122 → 0.0133 | 0.0529 → 0.0546 | 0.0000 → 0.0000 |
+| entire | 1.9475 → 2.1959 | 0.0269 → 0.0278 | 0.4965 → 0.5020 | 0.0000 → 0.0000 |
+| near_translucent | 1.6737 → 1.8175 | 0.0151 → 0.0156 | 0.0494 → 0.0420 | 0.1313 → 0.1324 |
+| medium_translucent | 1.8018 → 1.7873 | 0.0153 → 0.0155 | 0.0527 → 0.0532 | 0.1229 → 0.1251 |
+| entire_translucent | 2.4526 → 2.7705 | 0.0167 → 0.0183 | 0.5000 → 0.4985 | 0.2402 → 0.2500 |
 
 記録: [CPU 20 samples](../benchmarks/million-selection-cpu.csv)、[1M rectangle GPU 5 samples](../benchmarks/million-selection-rtx5090.csv)、[current renderer 24 rows](../benchmarks/million-selection-renderer-rtx5090.csv)、[base renderer 24 rows](../benchmarks/million-selection-baseline-rtx5090.csv)、[environment](../benchmarks/million-selection-environment.json)。
 
-最終validation: fmt、check --locked、all-target / all-feature clippy（warnings denied）、通常test 86件、all-feature test 86件、build、実GPU 7 tests、CPU million-selection benchmark、既存multi-drag pointer benchmarkがすべて成功しました。all-featureのTracy / Windows symbol初期化は既存のSymInitialize code 87を出力しましたが、test / commandは成功しています。
+最終validation: fmt、check --locked、all-target / all-feature clippy（warnings denied）、通常test 91件、all-feature test 91件、build、実GPU 7 tests、CPU million-selection benchmark、既存multi-drag pointer benchmarkがすべて成功しました。all-featureのTracy / Windows symbol初期化は既存のSymInitialize code 87を出力しましたが、test / commandは成功しています。
 
 
 ## Correctness / 制限
 
-point / Ctrl add-remove、additive / empty rectangle、stale responses、preview / final ordering、rollback、1M全選択とdeselectを検証しています。single / multiple / 1M drag、finite pointer、focus loss / pause、exactly-once release、placed / mixed ownership、snap threshold / mixed snap、progress / completion、bounded serialized mask、invalid IDs / dimensions、migration restoreを検証しています。拒否されたGrab、scalar / bulk release後の別playerによる再Grab、古いHELD flagでもowner tableが有効な場合の拒否も検証します。fragmented dirty uploadは500,000 sparse IDsから1 spanへ縮約し、次のsingle editが16 bytesへ戻ることをassertします。
+point / Ctrl add-remove、additive / empty rectangle、stale responses、preview / final ordering、rollback、1M全選択とdeselectを検証しています。single / multiple / 1M drag、finite pointer、focus loss / pause、exactly-once release、placed / mixed ownership、snap threshold / mixed snap、progress / completion、bounded serialized mask、invalid IDs / dimensions、migration restoreを検証しています。拒否されたGrab、scalar / bulk release後の別playerによる再Grab、古いHELD flagでもowner tableが有効な場合の拒否も検証します。追加のselection回帰テストでは、scalar / bulk remote Grab後の除外、local holdの維持、authorityによるplaced / disabledへの変更、additive / PendingPoint・BoxSelecting rollbackでの古いoriginalの再検証を確認しています。dirty maskは1Mのsingle / dense更新でallocationのidentityを維持し、clear後に古いdirty bitsをuploadしないことを確認します。fragmented dirty uploadは500,000 sparse IDsから1 spanへ縮約し、次のsingle editが16 bytesへ戻ることをassertします。
 
 rendererのprocedural SDF、visibility compute、indirect draw、radix sort、preview passは維持しています。中級GPUは現在用意できないため未測定です。RTX 5090の数字を中級GPU性能へ外挿しません。将来の別GPUでは上記同じrelease commandsを実行し、adapter / backend / driver、CSV、window / resolutionとtexture条件を保存して比較してください。GPU testsはtimestamp対応adapterが必要です。
 

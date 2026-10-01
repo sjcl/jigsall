@@ -291,6 +291,10 @@ impl PieceDataStore {
         if state.held_by != Some(puzzella_core::LOCAL_PLAYER) {
             self.drag.remove(id);
         }
+        // Validate only the changed ID, not every selection on every input frame.
+        if !self.is_valid_local_selection(id) && self.selected_pieces.remove(&id) {
+            self.highlights_dirty = true;
+        }
         self.dirty_pieces.insert(id);
     }
     pub(crate) fn is_selectable(&self, id: PieceId) -> bool {
@@ -298,6 +302,18 @@ impl PieceDataStore {
             .get(id.0 as usize)
             .is_some_and(|s| s.flags & (PLACED | HELD) == 0 && s.flags & ENABLED != 0)
             && self.held_by.get(&id).is_none()
+    }
+    /// Existing local selections may include our own active drag, but never a
+    /// disabled/placed piece or another player's hold. Consult authoritative
+    /// owners rather than the render mirror's HELD flag.
+    pub(crate) fn is_valid_local_selection(&self, id: PieceId) -> bool {
+        self.states
+            .get(id.0 as usize)
+            .is_some_and(|s| s.flags & PLACED == 0 && s.flags & ENABLED != 0)
+            && self
+                .held_by
+                .get(&id)
+                .is_none_or(|owner| *owner == puzzella_core::LOCAL_PLAYER)
     }
     fn compact_z(&mut self) {
         // Extremely rare slow path after ~16M front operations.
@@ -336,9 +352,25 @@ impl PieceDataStore {
             normalized
         };
         if let Some(original) = original {
-            selected.union(original);
+            let mut original = original.clone();
+            original.retain(|id| self.is_valid_local_selection(id));
+            selected.union(&original);
         }
         self.selected_pieces = selected;
+        self.highlights_dirty = true;
+    }
+
+    /// Rollback is an explicit transition: don't resurrect an ID whose authority
+    /// changed while a point/rectangle readback was pending.
+    pub(crate) fn restore_selection(&mut self, mut original: PieceBitSet) {
+        original.retain(|id| self.is_valid_local_selection(id));
+        self.selected_pieces = if original.bit_len() == self.len() {
+            original
+        } else {
+            let mut normalized = PieceBitSet::new(self.len());
+            normalized.union(&original);
+            normalized
+        };
         self.highlights_dirty = true;
     }
 
@@ -381,6 +413,9 @@ impl PieceDataStore {
                     state.flags |= HELD;
                     state.z_order = self.next_z_order + rank as u32;
                     self.held_by.owners[id.0 as usize] = player;
+                    if player != puzzella_core::LOCAL_PLAYER && self.selected_pieces.remove(&id) {
+                        self.highlights_dirty = true;
+                    }
                 }
                 self.held_by.occupied.union(&accepted);
                 *self.held_by.counts.entry(player).or_default() += ids.len();
@@ -531,7 +566,9 @@ pub fn prepare_piece_upload(
         upload.initial = None;
         upload.revision += 1;
         let count = store.len();
-        let dirty = std::mem::replace(&mut store.dirty_pieces, PieceBitSet::new(count));
+        // Range construction only borrows the mask. Clear it after consuming the
+        // IDs and reuse the allocation, including on single-piece remote updates.
+        let dirty = &store.dirty_pieces;
         let mut ranges: Vec<UploadRange> = Vec::new();
         if dirty.count() == count && count != 0 {
             // A dense bulk commit is one exact allocation/copy, not a million
@@ -541,6 +578,7 @@ pub fn prepare_piece_upload(
                 states: store.states.to_vec(),
             }]
             .into();
+            store.dirty_pieces.clear();
             return;
         }
         for id in dirty.iter() {
@@ -570,6 +608,7 @@ pub fn prepare_piece_upload(
             }
         }
         upload.ranges = ranges.into();
+        store.dirty_pieces.clear();
     }
 }
 #[cfg(test)]
