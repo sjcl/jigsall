@@ -17,6 +17,7 @@ use bevy::{
     },
 };
 use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use puzzella_puzzle::fingerprint::{sample_profile, worst_case_profiles, EdgeFingerprint};
 use puzzella_puzzle::procedural::*;
 use std::{
     borrow::Cow,
@@ -220,11 +221,16 @@ fn shape_parity(app: &App) {
     };
     let mut inputs = vec![];
     let mut expected = vec![];
+    let mut profiles = worst_case_profiles();
     for style in 1..=6 {
-        let raw = (0..10000)
-            .map(|seed| raw_profile(seed, edge))
-            .find(|raw| raw[0] & 7 == style)
-            .unwrap();
+        profiles.push(
+            (0..10000)
+                .map(|seed| raw_profile(seed, edge))
+                .find(|raw| raw[0] & 7 == style)
+                .unwrap(),
+        );
+    }
+    for raw in profiles {
         for polarity in [0, 8] {
             let raw = [(raw[0] & !8) | polarity, raw[1]];
             let p = decode_profile(raw);
@@ -299,6 +305,66 @@ outputs[id.x]=vec2(sd_tab(q,edge_profile(p.raw),len,short),edge_distance(q,p.raw
             }
         }
     }
+}
+fn decode_parity(app: &App) {
+    let mut inputs = worst_case_profiles();
+    for style in 1..=6 {
+        for axis in 0..6 {
+            for sample in 0..256 {
+                let mut samples = [128; 6];
+                samples[axis] = sample;
+                let mut raw = sample_profile(style, samples);
+                raw[0] |= (sample & 1) << 3;
+                inputs.push(raw);
+            }
+        }
+    }
+    let source=include_str!("puzzle_shape.wgsl").lines().skip(1).collect::<Vec<_>>().join("\n")+"
+struct DecodeOutput {a:vec4<u32>,b:vec4<u32>,c:vec4<f32>,d:vec4<f32>};
+@group(0) @binding(0) var<storage,read> inputs:array<vec2<u32>>;
+@group(0) @binding(1) var<storage,read_write> outputs:array<DecodeOutput>;
+@compute @workgroup_size(64) fn test_decode(@builtin(global_invocation_id) id:vec3<u32>) {
+if id.x>=arrayLength(&inputs) {return;} let r=inputs[id.x];let p=edge_profile(r);
+outputs[id.x]=DecodeOutput(
+vec4((r.x&7u)-1u,u32(class_sample(r.x,4u,7u).x),u32(class_sample(r.x,12u,4u).x),u32(class_sample(r.x,20u,4u).x)),
+vec4(u32(class_sample(r.y,0u,4u).x),u32(class_sample(r.y,8u,4u).x),u32(class_sample(r.y,16u,7u).x),0u),
+vec4(p.polarity,p.center,p.width,p.depth),vec4(p.neck,p.head,p.asymmetry,0.0));}";
+    let bytes = compute_output(
+        app,
+        source,
+        "test_decode",
+        bytemuck::cast_slice(&inputs),
+        inputs.len() as u64 * 64,
+        (inputs.len() as u32).div_ceil(64),
+    );
+    for (&raw, actual) in inputs
+        .iter()
+        .zip(bytemuck::cast_slice::<u8, [u32; 16]>(&bytes))
+    {
+        let classes = EdgeFingerprint::from_raw(raw).classes().map(u32::from);
+        assert_eq!(&actual[..7], classes.as_slice());
+        let p = decode_profile(raw);
+        let expected = [
+            p.polarity,
+            p.center,
+            p.width,
+            p.depth,
+            p.neck_width,
+            p.head_width,
+            p.asymmetry,
+        ];
+        for (&bits, want) in actual[8..15].iter().zip(expected) {
+            let value = f32::from_bits(bits);
+            assert!(
+                value.is_finite() && (value - want).abs() < 1e-6,
+                "decode {raw:?}: {value} vs {want}"
+            );
+        }
+    }
+    println!(
+        "GPU decode parity: {} profiles (macro classes + 7 parameters)",
+        inputs.len()
+    );
 }
 fn compute_output(
     app: &App,
@@ -388,6 +454,7 @@ fn rendered_pixels(app: &mut App, target: Handle<Image>) -> Vec<u8> {
 fn gpu_raster_selection() {
     let (mut app, camera, target) = gpu_app(128);
     hash_parity(&app);
+    decode_parity(&app);
     shape_parity(&app);
     let def = definition(UVec2::splat(2), 128, 42);
     app.world_mut().insert_resource(def.clone());

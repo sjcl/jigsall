@@ -14,8 +14,8 @@ impl std::fmt::Display for PieceId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
-/// Version 4 preserves the v3 profiles and replaces shelf-like roots with fillets.
-pub const GENERATOR_VERSION: u16 = 4;
+/// Version 5 retains the v4 fillets and decodes distinct macro shape classes.
+pub const GENERATOR_VERSION: u16 = 5;
 
 /// Frozen at game start. Image dimensions also participate in reconstruction.
 #[derive(Resource, Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -162,7 +162,7 @@ mod tests {
             snap_distance: 5.0,
         };
         assert!(definition.validate().is_ok());
-        for old_version in [2, 3] {
+        for old_version in [2, 3, 4] {
             definition.generator_version = old_version;
             assert_eq!(
                 definition.validate(),

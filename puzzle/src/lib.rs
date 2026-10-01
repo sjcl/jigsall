@@ -1,5 +1,7 @@
 //! Seeded puzzle geometry and placement; no game World, renderer or UI.
 #[cfg(any(test, feature = "cpu-geometry-reference"))]
+pub mod fingerprint;
+#[cfg(any(test, feature = "cpu-geometry-reference"))]
 pub mod generation;
 pub mod grid;
 pub mod placement;

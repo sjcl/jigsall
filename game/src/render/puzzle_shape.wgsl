@@ -26,20 +26,41 @@ fn raw_profile(seed: vec2<u32>, orientation: u32, x: u32, y: u32) -> vec2<u32> {
         | ((mix32(base^(5u*0x9e3779b9u))>>24u)<<8u)
         | ((mix32(base^(6u*0x9e3779b9u))>>24u)<<16u));
 }
-fn variation(word: u32, shift: u32) -> f32 { return f32((word>>shift)&255u)/255.0*2.0-1.0; }
+fn class_sample(word:u32,shift:u32,count:u32)->vec2<f32> {
+    let scaled=((word>>shift)&255u)*count;
+    return vec2(f32(scaled>>8u),f32(scaled&255u)/255.0*2.0-1.0);
+}
+fn dimension(word:u32,shift:u32)->f32 {
+    let s=class_sample(word,shift,4u);
+    return (0.86+s.x*(0.28/3.0))*(1.0+s.y*0.01);
+}
 fn edge_profile(raw: vec2<u32>) -> EdgeProfile {
-    var base=vec4(0.46,0.18,0.14,0.28);
+    // Fold style-dependent ratios and depth intervals before per-fragment decoding.
+    // Width, depth low, neck/head ratio, head/width ratio; a separate depth step.
+    var base=vec4(0.46,0.18*0.85/0.99,0.14/0.28,0.28/0.46);
+    var depth_step=(min(0.18*1.15,0.215)/1.01-0.18*0.85/0.99)/3.0;
     switch raw.x&7u {
-        case 2u: {base=vec4(0.52,0.17,0.18,0.34);}
-        case 3u: {base=vec4(0.40,0.18,0.12,0.23);}
-        case 4u: {base=vec4(0.46,0.21,0.14,0.27);}
-        case 5u: {base=vec4(0.46,0.14,0.16,0.28);}
-        case 6u: {base=vec4(0.48,0.19,0.12,0.32);}
+        case 2u: {base=vec4(0.52,0.17*0.85/0.99,0.18/0.34,0.34/0.52);depth_step=(min(0.17*1.15,0.215)/1.01-0.17*0.85/0.99)/3.0;}
+        case 3u: {base=vec4(0.40,0.18*0.85/0.99,0.12/0.23,0.23/0.40);}
+        case 4u: {base=vec4(0.46,0.21*0.85/0.99,0.14/0.27,0.27/0.46);depth_step=(min(0.21*1.15,0.215)/1.01-0.21*0.85/0.99)/3.0;}
+        case 5u: {base=vec4(0.46,0.14*0.85/0.99,0.16/0.28,0.28/0.46);depth_step=(min(0.14*1.15,0.215)/1.01-0.14*0.85/0.99)/3.0;}
+        case 6u: {base=vec4(0.48,0.19*0.85/0.99,0.12/0.32,0.32/0.48);depth_step=(min(0.19*1.15,0.215)/1.01-0.19*0.85/0.99)/3.0;}
         default: {}
     }
-    return EdgeProfile(select(1.0,-1.0,(raw.x&8u)!=0u),0.5+variation(raw.x,4u)*0.025,
-        base.x*(1.0+variation(raw.x,12u)*0.035),base.y*(1.0+variation(raw.x,20u)*0.035),
-        base.z*(1.0+variation(raw.y,0u)*0.035),base.w*(1.0+variation(raw.y,8u)*0.035),variation(raw.y,16u)*0.025);
+    let width=base.x*dimension(raw.x,12u);
+    let head=width*base.w*dimension(raw.y,8u);
+    let n=class_sample(raw.y,0u,4u);
+    let neck=head*base.z*(0.70+n.x*0.16)*(1.0+n.y*0.01);
+    let d=class_sample(raw.x,20u,4u);
+    let depth=(base.y+depth_step*d.x)*(1.0+d.y*0.01);
+    let s=class_sample(raw.y,16u,7u);
+    let skew=-0.10+s.x*(0.20/6.0)+s.y*0.005;
+    let root=neck*0.5+(width-neck)*0.5*ROOT_WIDTH_FACTOR;
+    let envelope=max(root+0.00215,head*(0.5347222+abs(skew)));
+    let span=min(0.08,(0.5-0.185-envelope)/1.05);
+    let c=class_sample(raw.x,4u,7u);
+    let center=0.5+span*(-1.0+c.x/3.0+c.y*0.05);
+    return EdgeProfile(select(1.0,-1.0,(raw.x&8u)!=0u),center,width,depth,neck,head,skew);
 }
 fn piece_profiles(seed: vec2<u32>,grid: vec2<u32>,cell: vec2<u32>) -> array<vec2<u32>,4> {
     var edges: array<vec2<u32>,4>;
@@ -72,7 +93,8 @@ fn sd_tab(q:vec2<f32>,p:EdgeProfile,len:f32,short:f32) -> f32 {
     return max(smooth_min(smooth_min(head,stem,depth*0.06),root,depth*ROOT_BLEND_FACTOR),-q.y);
 }
 fn edge_distance(q:vec2<f32>,raw:vec2<u32>,len:f32,short:f32) -> f32 {
-    if raw.x==0u {return q.y;}
+    // sd_tab(q)>=-q.y makes the complement exactly q.y on this half-plane.
+    if raw.x==0u || ((raw.x&8u)==0u && q.y<=0.0) || ((raw.x&8u)!=0u && q.y>=0.0) {return q.y;}
     let p=edge_profile(raw);
     if p.polarity>0.0 {return min(q.y,sd_tab(q,p,len,short));}
     return max(q.y,-sd_tab(vec2(q.x,-q.y),p,len,short));

@@ -1,6 +1,6 @@
 # Puzzella のアーキテクチャ
 
-2026-10-01。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、procedural GPU rendererへ移行しました。現在は付け根を楕円弧に変更したgenerator v4です。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)を参照してください。
+2026-10-01。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、procedural GPU rendererへ移行しました。現在はv4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v5です。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 ## Workspaceと責務
 
@@ -17,6 +17,7 @@ puzzella
 | --- | --- |
 | `core/src/gameplay.rs` / `commands.rs` | row-major PieceId、PuzzleDefinition、CPU命令検証、snap |
 | `puzzle/src/procedural.rs` | u32 hash、packed EdgeProfile、解析形状・UVのCPU参照 |
+| `puzzle/src/fingerprint.rs` | feature / test限定のmacro fingerprint、輪郭descriptor、凍結v4測定参照 |
 | `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
 | `puzzle/src/shapes.rs` / `generation.rs` | feature / test限定のv2 Bezier・lyon・Rayon・U16 geometry |
 | `game/src/resources/pieces.rs` | 16-byte dense正本、sparse holder、選択集合、dirty upload |

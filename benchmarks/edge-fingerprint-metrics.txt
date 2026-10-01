@@ -1,0 +1,11 @@
+seed=42, edges=100000, theoretical=75264, distinct=55329
+style: [16685, 16687, 16637, 16348, 16820, 16823]
+center: [14615, 14449, 13974, 14321, 14077, 14400, 14164]
+width: [25121, 25168, 24942, 24769]
+depth: [25034, 25276, 24848, 24842]
+neck: [25028, 25092, 24981, 24899]
+head: [24928, 24807, 24945, 25320]
+skew: [14429, 14445, 14111, 14426, 13970, 14493, 14126]
+v4, descriptors=1024, nearest Hamming mean=7.2207, p10=3, median=7, zero=2, nearest IoU mean=0.979827
+v5, descriptors=1024, nearest Hamming mean=29.9639, p10=15, median=29, zero=0, nearest IoU mean=0.915429
+worst-case profiles tested=384, matching pairs=24, monochrome pieces=1000

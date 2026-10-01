@@ -1,4 +1,4 @@
-//! Generator v4. All integer operations and shape equations mirror puzzle_shape.wgsl.
+//! Generator v5. All integer operations and shape equations mirror puzzle_shape.wgsl.
 use bevy_math::{UVec2, Vec2};
 use puzzella_core::{PieceId, PuzzleDefinition};
 
@@ -77,6 +77,16 @@ pub fn raw_profile(seed: u64, edge: EdgeId) -> [u32; 2] {
         sample(4) | (sample(5) << 8) | (sample(6) << 16),
     ]
 }
+/// Uniform macro bins, with a small signed residual within each bin.
+pub(crate) fn class_sample(word: u32, shift: u32, count: u32) -> (u32, f32) {
+    let scaled = ((word >> shift) & 255) * count;
+    (scaled >> 8, (scaled & 255) as f32 / 255.0 * 2.0 - 1.0)
+}
+/// Conservative half envelope including both smooth unions, in edge-length units.
+pub fn profile_envelope(p: EdgeProfile) -> f32 {
+    let root = p.neck_width * 0.5 + (p.width - p.neck_width) * 0.5 * ROOT_WIDTH_FACTOR;
+    (root + 0.00215).max(p.head_width * (0.5347222 + p.asymmetry.abs()))
+}
 pub fn decode_profile(raw: [u32; 2]) -> EdgeProfile {
     let style = (raw[0] & 7).saturating_sub(1);
     let (width, depth, neck, head, style) = match style {
@@ -87,17 +97,36 @@ pub fn decode_profile(raw: [u32; 2]) -> EdgeProfile {
         4 => (0.46, 0.14, 0.16, 0.28, EdgeStyle::Shallow),
         _ => (0.48, 0.19, 0.12, 0.32, EdgeStyle::Pear),
     };
-    let v = |word: u32, shift: u32| ((word >> shift) & 255u32) as f32 / 255.0 * 2.0 - 1.0;
-    EdgeProfile {
+    let dimension = |word, shift| {
+        let (class, micro) = class_sample(word, shift, 4);
+        (0.86 + class as f32 * (0.28 / 3.0)) * (1.0 + micro * 0.01)
+    };
+    let base_width = width;
+    let width = base_width * dimension(raw[0], 12);
+    let head_width = width * (head / base_width) * dimension(raw[1], 8);
+    let (nc, nm) = class_sample(raw[1], 0, 4);
+    let neck_width = head_width * (neck / head) * (0.70 + nc as f32 * 0.16) * (1.0 + nm * 0.01);
+    let (dc, dm) = class_sample(raw[0], 20, 4);
+    let low = depth * 0.85 / 0.99;
+    let high = (depth * 1.15_f32).min(0.215) / 1.01;
+    let depth = (low + (high - low) * (dc as f32 / 3.0)) * (1.0 + dm * 0.01);
+    let (sc, sm) = class_sample(raw[1], 16, 7);
+    let asymmetry = -0.10 + sc as f32 * (0.20 / 6.0) + sm * 0.005;
+    let mut profile = EdgeProfile {
         polarity: if raw[0] & 8 == 0 { 1.0 } else { -1.0 },
         style,
-        center: 0.5 + v(raw[0], 4) * 0.025,
-        width: width * (1.0 + v(raw[0], 12) * 0.035),
-        depth: depth * (1.0 + v(raw[0], 20) * 0.035),
-        neck_width: neck * (1.0 + v(raw[1], 0) * 0.035),
-        head_width: head * (1.0 + v(raw[1], 8) * 0.035),
-        asymmetry: v(raw[1], 16) * 0.025,
-    }
+        center: 0.5,
+        width,
+        depth,
+        neck_width,
+        head_width,
+        asymmetry,
+    };
+    // Scale all seven classes together; clamping individual centers would collapse bins.
+    let span = 0.08_f32.min((0.5 - 0.185 - profile_envelope(profile)) / 1.05);
+    let (cc, cm) = class_sample(raw[0], 4, 7);
+    profile.center = 0.5 + span * (-1.0 + cc as f32 / 3.0 + cm * 0.05);
+    profile
 }
 pub fn piece_profiles(seed: u64, grid: UVec2, cell: UVec2) -> [[u32; 2]; 4] {
     [
@@ -175,7 +204,9 @@ pub fn sd_tab(q: Vec2, p: EdgeProfile, length: f32, short: f32) -> f32 {
     .max(-q.y)
 }
 pub fn edge_distance(q: Vec2, raw: [u32; 2], length: f32, short: f32) -> f32 {
-    if raw[0] == 0 {
+    // sd_tab(q) >= -q.y. On this half-plane the existing min/max complement
+    // is identically the baseline; avoid decoding parameters that cannot affect it.
+    if raw[0] == 0 || (raw[0] & 8 == 0 && q.y <= 0.0) || (raw[0] & 8 != 0 && q.y >= 0.0) {
         return q.y;
     }
     let p = decode_profile(raw);
@@ -328,8 +359,8 @@ mod tests {
             assert!(p.neck_width < p.head_width && p.head_width < p.width);
             assert!(
                 p.depth < MAX_TAB_DEPTH
-                    && p.center - p.width * 0.5 > 0.2
-                    && p.center + p.width * 0.5 < 0.8
+                    && p.center - profile_envelope(p) >= 0.185 - 1e-6
+                    && p.center + profile_envelope(p) <= 0.815 + 1e-6
             );
             assert!(sd_tab(Vec2::ONE, p, 100.0, 100.0).is_finite());
             for changed in [
@@ -357,7 +388,17 @@ mod tests {
         for seed in 0..30 {
             let a = piece_profiles(seed, grid, UVec2::ZERO);
             let b = piece_profiles(seed, grid, UVec2::X);
+            let c = piece_profiles(seed, grid, UVec2::Y);
             assert_eq!(a[1], b[3]);
+            assert_eq!(a[2], c[0]);
+            assert_eq!(
+                crate::fingerprint::EdgeFingerprint::from_raw(a[1]),
+                crate::fingerprint::EdgeFingerprint::from_raw(b[3])
+            );
+            assert_eq!(
+                crate::fingerprint::EdgeFingerprint::from_raw(a[2]),
+                crate::fingerprint::EdgeFingerprint::from_raw(c[0])
+            );
             assert_eq!(a[0], [0, 0]);
             assert_eq!(a[3], [0, 0]);
             for x in -25..26 {
