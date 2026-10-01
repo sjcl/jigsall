@@ -7,6 +7,7 @@ use bevy::prelude::*;
 // CPU results, assets and presentation resources have separate ECS access.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn_puzzle_pieces_progressive(
+    mut commands: Commands,
     definition: Option<Res<PuzzleDefinition>>,
     puzzle_image: Option<Res<PuzzleImage>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -93,13 +94,19 @@ pub fn spawn_puzzle_pieces_progressive(
             let Some(data) = progress.pending_pieces.pop_front() else {
                 break;
             };
-            let mesh = meshes.add(data.mesh);
+            let id = data.piece_component.id;
+            let mut mesh = data.mesh;
+            mesh.insert_attribute(
+                crate::selection::ATTRIBUTE_PIECE_ID,
+                vec![id.0; mesh.count_vertices()],
+            );
+            let mesh = meshes.add(mesh);
+            commands.spawn(crate::selection::PuzzlePieceId(id));
             if let Some(stroke) = data.stroke_mesh {
                 stroke_cache
                     .stroke_meshes
                     .insert(data.piece_shape.shape_hash.clone(), meshes.add(stroke));
             }
-            let id = data.piece_component.id;
             store.add_piece(StoredPieceData {
                 definition: data.piece_component,
                 state: data.state,

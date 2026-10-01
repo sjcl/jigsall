@@ -85,9 +85,9 @@ pub fn check_piece_placement_event_driven(
 /// Only changed IDs update local render/collision caches. State is the authority.
 pub fn project_piece_states(
     mut store: ResMut<PieceDataStore>,
-    mut collision: ResMut<PieceCollisionSystem>,
+    #[cfg(any(test, feature = "cpu-picking-debug"))] mut collision: ResMut<PieceCollisionSystem>,
     mut entities: Query<(&PuzzlePiece, &mut Transform)>,
-    perf: Res<PerformanceMonitor>,
+    #[cfg(any(test, feature = "cpu-picking-debug"))] perf: Res<PerformanceMonitor>,
 ) {
     let mut ids: Vec<_> = store.dirty_pieces.drain().collect();
     ids.sort_unstable();
@@ -96,6 +96,7 @@ pub fn project_piece_states(
             continue;
         };
         let state = piece.state;
+        #[cfg(any(test, feature = "cpu-picking-debug"))]
         let bounds = piece.render.bounds;
         if let Some(transform) = store.transforms.get_mut(&id) {
             transform.translation.x = state.position.x;
@@ -104,19 +105,22 @@ pub fn project_piece_states(
                 transform.translation.z = -20.0;
             }
         }
-        if state.placed {
-            collision.dragging_pieces.remove(&id);
-            collision.remove_piece(id);
-        } else {
-            if let Some(transform) = store.transforms.get(&id) {
-                collision.update_piece_z_order(id, transform.translation.z);
-            }
-            if state.held_by.is_some() {
-                collision.start_dragging_piece(id, &perf.debug_level);
-            }
-            collision.update_piece_position(id, state.position, bounds);
-            if state.held_by.is_none() {
-                collision.stop_dragging_piece(id, &perf.debug_level);
+        #[cfg(any(test, feature = "cpu-picking-debug"))]
+        {
+            if state.placed {
+                collision.dragging_pieces.remove(&id);
+                collision.remove_piece(id);
+            } else {
+                if let Some(transform) = store.transforms.get(&id) {
+                    collision.update_piece_z_order(id, transform.translation.z);
+                }
+                if state.held_by.is_some() {
+                    collision.start_dragging_piece(id, &perf.debug_level);
+                }
+                collision.update_piece_position(id, state.position, bounds);
+                if state.held_by.is_none() {
+                    collision.stop_dragging_piece(id, &perf.debug_level);
+                }
             }
         }
         if let Some(&entity) = store.temporary_entities.get(&id) {

@@ -12,7 +12,7 @@ pub fn handle_piece_input(
     ui_capture: Res<GameUiPointerCapture>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut store: ResMut<PieceDataStore>,
-    mut collision: ResMut<PieceCollisionSystem>,
+    mut selection: ResMut<crate::selection::PuzzleSelection>,
     mut commands: MessageWriter<ClientCommand>,
     mut contexts: EguiContexts,
     mut perf: ResMut<PerformanceMonitor>,
@@ -24,13 +24,14 @@ pub fn handle_piece_input(
             .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
     let frame = crate::interaction::PointerFrame {
         position: input.mouse_position,
+        screen_position: input.cursor_screen_position,
         pressed: mouse.pressed(MouseButton::Left),
         just_pressed: mouse.just_pressed(MouseButton::Left),
         ctrl: keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight),
         over_ui,
         focused: input.window_focused,
     };
-    for command in interaction.update(frame, &mut store, &mut collision) {
+    for command in interaction.update(frame, &mut store, &mut selection) {
         commands.write(ClientCommand {
             player: LOCAL_PLAYER,
             command,
@@ -40,12 +41,13 @@ pub fn handle_piece_input(
 }
 
 pub fn release_local_drag(
+    mut selection: ResMut<crate::selection::PuzzleSelection>,
     mut input: ResMut<InputState>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut store: ResMut<PieceDataStore>,
     mut commands: MessageWriter<ClientCommand>,
 ) {
-    for command in interaction.cancel(&mut store) {
+    for command in interaction.cancel(&mut store, &mut selection) {
         commands.write(ClientCommand {
             player: LOCAL_PLAYER,
             command,
@@ -85,15 +87,27 @@ pub fn sync_selection_markers(
         }
     }
 }
+#[allow(clippy::type_complexity)]
 pub fn render_selection_box(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     interaction: Res<crate::interaction::PieceInteraction>,
+    cameras: Query<(&Camera, &Transform), (With<MainCamera>, Without<SelectionBox>)>,
     mut boxes: Query<(Entity, &mut Transform), With<SelectionBox>>,
 ) {
     let rect = interaction
-        .selection_rect()
+        .screen_selection_rect()
+        .and_then(|rect| {
+            let (camera, transform) = cameras.single().ok()?;
+            let transform = GlobalTransform::from(*transform);
+            let a = camera.viewport_to_world_2d(&transform, rect.min).ok()?;
+            let b = camera.viewport_to_world_2d(&transform, rect.max).ok()?;
+            Some(Rect {
+                min: a.min(b),
+                max: a.max(b),
+            })
+        })
         .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
     if let Some(rect) = rect {
         let transform = Transform::from_translation(rect.center().extend(200.0))
@@ -184,7 +198,7 @@ mod tests {
         let mut input = app.world_mut().resource_mut::<InputState>();
         input.mouse_position = Some(point);
         input.window_focused = true;
-        input.cursor_screen_position = Some(Vec2::ZERO);
+        input.cursor_screen_position = Some(point);
         let mut mouse = app.world_mut().resource_mut::<ButtonInput<MouseButton>>();
         mouse.clear();
         if pressed {
@@ -199,11 +213,53 @@ mod tests {
             keys.release(KeyCode::ControlLeft);
         }
         app.update();
+        // Gesture tests inject a GPU response independently of render entities.
+        // The legacy debug oracle is only a test fixture, never a runtime fallback.
+        for _ in 0..4 {
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+            if let Some(request) = app
+                .world()
+                .resource::<crate::selection::PuzzleSelection>()
+                .latest
+            {
+                use crate::selection::*;
+                let mut collision = app.world_mut().resource_mut::<PieceCollisionSystem>();
+                let ids = match request.mode {
+                    SelectionMode::Point => collision
+                        .find_piece_at_position(request.region.min)
+                        .into_iter()
+                        .collect(),
+                    SelectionMode::Rectangle => {
+                        let rect = Rect {
+                            min: request.region.min.min(request.region.max),
+                            max: request.region.min.max(request.region.max),
+                        };
+                        if rect.width() > 0.0 && rect.height() > 0.0 {
+                            collision.find_pieces_with_detailed_rect_intersection(rect)
+                        } else {
+                            vec![]
+                        }
+                    }
+                };
+                app.world_mut().resource_mut::<PuzzleSelection>().completed =
+                    Some(SelectionResult {
+                        request_id: request.request_id,
+                        mode: request.mode,
+                        piece_ids: ids,
+                        entities: vec![],
+                        error: None,
+                    });
+            }
+            app.update();
+        }
     }
 
     fn input_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
+            .init_resource::<crate::selection::PuzzleSelection>()
             .init_resource::<InputState>()
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<crate::interaction::PieceInteraction>()
@@ -516,5 +572,145 @@ mod tests {
         assert_eq!(collision.pieces[&PieceId(0)].z_order, z0);
         assert_eq!(collision.pieces[&PieceId(1)].z_order, z1);
         assert_eq!(collision.rtree.size(), 2);
+    }
+
+    #[test]
+    fn delayed_point_result_preserves_press_and_release_coordinates() {
+        use crate::{interaction::*, selection::*};
+        let mut app = input_app();
+        let mut store = app.world_mut().remove_resource::<PieceDataStore>().unwrap();
+        let mut selection = PuzzleSelection::default();
+        let mut interaction = PieceInteraction::default();
+        let frame = |position, pressed, just_pressed| PointerFrame {
+            position: Some(position),
+            screen_position: Some(position),
+            pressed,
+            just_pressed,
+            ctrl: false,
+            over_ui: false,
+            focused: true,
+        };
+        assert!(interaction
+            .update(
+                frame(Vec2::new(107., 103.), true, true),
+                &mut store,
+                &mut selection
+            )
+            .is_empty());
+        let request = selection.latest.unwrap();
+        assert!(interaction
+            .update(
+                frame(Vec2::new(120., 130.), true, false),
+                &mut store,
+                &mut selection
+            )
+            .is_empty());
+        assert!(interaction
+            .update(
+                frame(Vec2::new(9., 5.), false, false),
+                &mut store,
+                &mut selection
+            )
+            .is_empty());
+        selection.completed = Some(SelectionResult {
+            request_id: request.request_id,
+            mode: request.mode,
+            piece_ids: vec![PieceId(0)],
+            entities: vec![],
+            error: None,
+        });
+        // Later pointer motion after release must not move the piece again.
+        let commands = interaction.update(
+            frame(Vec2::splat(500.), false, false),
+            &mut store,
+            &mut selection,
+        );
+        assert_eq!(
+            commands,
+            vec![
+                PieceCommand::Grab(PieceId(0)),
+                PieceCommand::Move {
+                    id: PieceId(0),
+                    position: Vec2::splat(2.)
+                },
+                PieceCommand::Release(PieceId(0))
+            ]
+        );
+        assert!(!interaction.is_dragging());
+        assert!(selection.latest.is_none());
+    }
+
+    #[test]
+    fn final_rectangle_supersedes_in_flight_preview() {
+        use crate::{interaction::*, selection::*};
+        let mut app = input_app();
+        let mut store = app.world_mut().remove_resource::<PieceDataStore>().unwrap();
+        let mut selection = PuzzleSelection::default();
+        let mut interaction = PieceInteraction::default();
+        let frame = |position, pressed, just_pressed| PointerFrame {
+            position: Some(position),
+            screen_position: Some(position),
+            pressed,
+            just_pressed,
+            ctrl: false,
+            over_ui: false,
+            focused: true,
+        };
+        interaction.update(
+            frame(Vec2::splat(50.), true, true),
+            &mut store,
+            &mut selection,
+        );
+        let point = selection.latest.unwrap();
+        selection.completed = Some(SelectionResult {
+            request_id: point.request_id,
+            mode: point.mode,
+            piece_ids: vec![],
+            entities: vec![],
+            error: None,
+        });
+        interaction.update(
+            frame(Vec2::new(400., 200.), true, false),
+            &mut store,
+            &mut selection,
+        );
+        let preview = selection.latest.unwrap();
+        interaction.update(
+            frame(Vec2::new(410., 210.), false, false),
+            &mut store,
+            &mut selection,
+        );
+        let final_request = selection.latest.unwrap();
+        assert!(final_request.request_id > preview.request_id);
+        selection.completed = Some(SelectionResult {
+            request_id: preview.request_id,
+            mode: preview.mode,
+            piece_ids: vec![PieceId(0)],
+            entities: vec![],
+            error: None,
+        });
+        interaction.update(
+            frame(Vec2::splat(500.), false, false),
+            &mut store,
+            &mut selection,
+        );
+        assert!(store.selected_pieces.is_empty());
+        selection.completed = Some(SelectionResult {
+            request_id: final_request.request_id,
+            mode: final_request.mode,
+            piece_ids: vec![PieceId(0), PieceId(1)],
+            entities: vec![],
+            error: None,
+        });
+        interaction.update(
+            frame(Vec2::splat(500.), false, false),
+            &mut store,
+            &mut selection,
+        );
+        assert_eq!(
+            store.selected_pieces,
+            HashSet::from([PieceId(0), PieceId(1)])
+        );
+        assert!(interaction.selection_rect().is_none());
     }
 }

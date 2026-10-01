@@ -41,7 +41,7 @@ cargo run --locked --release
 
 ## 設計
 
-Bevy 0.19.1 / bevy_egui 0.42へ更新しました。形状生成のpuzzle-pathsとlyon、同心円配置、カメラ、画像decode、egui設定UI、R-tree当たり判定、stroke cache、バッチ描画、性能計測を再利用しています。
+Bevy 0.19.1 / bevy_egui 0.42へ更新しました。形状生成のpuzzle-pathsとlyon、同心円配置、カメラ、画像decode、egui設定UI、GPU picking、stroke cache、バッチ描画、性能計測を再利用しています。
 
 ```text
 Input → ClientCommand → gameplay logic → PieceState → Transform / rendering
@@ -49,11 +49,12 @@ Input → ClientCommand → gameplay logic → PieceState → Transform / render
 
 - `src/gameplay.rs`: 不変のPuzzleDefinition / PuzzlePiece、安定ID、可変PieceState、純粋な命令・スナップ判定
 - `src/interaction.rs`: 単一のジェスチャー状態による選択・範囲選択・ドラッグと命令生成
-- `src/piece_geometry.rs`: 描画と同じindexed triangleによる点・矩形の当たり判定
+- `src/selection.rs` / `src/selection.wgsl`: 通常描画のGPU mesh bufferを共有するクリック・矩形選択
+- src/piece_geometry.rs: cpu-picking-debug feature / テスト専用の旧CPU判定
 - `src/networking.rs`: backendに依存しないローカル命令の入口
 - `src/game.rs`: Menu / GameSetup / InGame / GameCompleteと、InGame限定のInitializing / Playing / Paused
 - `src/systems/`: 既存の生成・選択・カメラ・描画・性能システム
-- `src/resources.rs`: 正本のピース記録とローカルの描画・当たり判定cache
+- `src/resources.rs`: 正本のピース記録とローカルの描画cache
 
 元画像のtextureは1枚。ピースのMesh / UV / outlineと、共有する通常materialで描画します。スナップと進捗は一時描画Entityの有無に依存しません。
 
@@ -68,7 +69,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 ```
 
-2026-10-01、Windows / Rust 1.97で上記チェックを通過し、22件のテストが成功しました。所有者検証、seed付き形状・UV生成、1000ピース配置、完成・セッション遷移に加え、生成した三角形のクリック判定、手前側選択、矩形の辺交差、R-tree更新、Ctrl / 範囲選択 / 複数移動、解放位置でのスナップ、UI入力の抑制、フォーカス喪失・ポーズ時の解放、カメラ座標同期、バッチ抽出・返却時の描画順・UV・透明度を検証しています。
+2026-10-01、Windows / Rust 1.97で上記チェックを通過し、27件の通常テストが成功しました。GPU pickingのoffscreenテストもRTX 5090で別途成功しています。所有者検証、seed付き形状・UV生成、1000ピース配置、完成・セッション遷移に加え、GPUのbitset境界・座標正規化・遅延結果の競合、生成した三角形のクリック判定、手前側選択、矩形の辺交差、R-tree更新、Ctrl / 範囲選択 / 複数移動、解放位置でのスナップ、UI入力の抑制、フォーカス喪失・ポーズ時の解放、カメラ座標同期、バッチ抽出・返却時の描画順・UV・透明度を検証しています。
 
 `cargo build --locked`も成功しました。実行ファイルを8秒間起動し、初期化メッセージの出力とプロセスの継続、stderrにエラーがないことを確認して終了しました。画面の目視検証は行っていません。
 
@@ -82,3 +83,13 @@ cargo run --locked --release --features chrome
 ```
 
 Windowsではwgpu-halを29.0.3に固定しています。29.0.4とgpu-allocator 0.28のWindows COM型の不一致を回避するためです。
+
+## GPU selection
+
+クリックはGPU上で最前面のIDを決定し、4 bytesを非同期readbackします。矩形はscissor内のfragmentをatomic bitsetへ集約し、隠れたピースも返します。10,000 IDのreadbackは1,252 bytesです。パズルカメラはMsaa::Offで通常描画とpickingの画素coverageを一致させます。
+
+実装・座標変換・非同期入力・制限・検証手順は[GPU_PICKING.md](GPU_PICKING.md)を参照してください。実GPUの自動テストは次で実行できます。
+
+```sh
+cargo test --locked gpu_raster_selection -- --ignored --nocapture
+```

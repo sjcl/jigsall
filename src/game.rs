@@ -7,7 +7,8 @@ use bevy_egui::EguiPostUpdateSet;
 pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<ClientCommand>()
+        app.add_plugins(crate::selection::PuzzleSelectionPlugin)
+            .add_message::<ClientCommand>()
             .add_message::<PieceMoveCompleted>()
             .add_message::<PiecePlacedEvent>()
             .add_message::<BatchRebuildRequest>()
@@ -19,7 +20,6 @@ impl Plugin for GamePlugin {
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<StrokeMeshCache>()
             .init_resource::<PieceIdManager>()
-            .init_resource::<PieceCollisionSystem>()
             .init_resource::<PerformanceMonitor>()
             .init_resource::<HighlightState>()
             .init_resource::<PieceDataStore>()
@@ -50,10 +50,6 @@ impl Plugin for GamePlugin {
                     auto_adjust_camera_zoom,
                 )
                     .chain(),
-            )
-            .add_systems(
-                OnEnter(GameSubState::Playing),
-                register_pieces_from_data_store_to_collision_system,
             )
             .add_systems(OnEnter(GameSubState::Paused), release_local_drag)
             .add_systems(
@@ -107,10 +103,6 @@ impl Plugin for GamePlugin {
                     toggle_game_menu.run_if(escape_just_pressed),
                     toggle_performance_debug.run_if(f12_just_pressed),
                     performance_report_system.run_if(should_report_performance),
-                    debug_collision_system_stats,
-                    test_ray_casting,
-                    test_collision_api,
-                    performance_test_collision_system,
                     monitor_batch_system,
                 )
                     .run_if(in_state(AppState::InGame)),
@@ -119,10 +111,27 @@ impl Plugin for GamePlugin {
                 Last,
                 performance_frame_end.run_if(performance_monitoring_enabled),
             );
+        #[cfg(any(test, feature = "cpu-picking-debug"))]
+        app.init_resource::<PieceCollisionSystem>()
+            .add_systems(
+                OnEnter(GameSubState::Playing),
+                register_pieces_from_data_store_to_collision_system,
+            )
+            .add_systems(
+                Update,
+                (
+                    debug_collision_system_stats,
+                    test_ray_casting,
+                    test_collision_api,
+                    performance_test_collision_system,
+                )
+                    .run_if(in_state(AppState::InGame)),
+            );
     }
 }
 fn setup_game(mut commands: Commands) {
-    commands.spawn((Camera2d, MainCamera));
+    // Single-sample normal rendering and picking share pixel coverage at edges.
+    commands.spawn((Camera2d, MainCamera, Msaa::Off));
 }
 fn setup_highlight_materials(mut commands: Commands, mut materials: ResMut<Assets<ColorMaterial>>) {
     commands.insert_resource(HighlightMaterials {
@@ -173,13 +182,15 @@ fn cleanup_game(
             With<BatchedMeshEntity>,
             With<GridReference>,
             With<SelectionBox>,
+            With<crate::selection::PuzzlePieceId>,
         )>,
     >,
     mut store: ResMut<PieceDataStore>,
     mut batch: ResMut<BatchManager>,
     mut input: ResMut<InputState>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
-    mut collision: ResMut<PieceCollisionSystem>,
+    mut selection: ResMut<crate::selection::PuzzleSelection>,
+    #[cfg(any(test, feature = "cpu-picking-debug"))] mut collision: ResMut<PieceCollisionSystem>,
     mut ids: ResMut<PieceIdManager>,
     mut progress: ResMut<PieceGenerationProgress>,
     mut stroke: ResMut<StrokeMeshCache>,
@@ -194,7 +205,11 @@ fn cleanup_game(
     *batch = default();
     *input = default();
     *interaction = default();
-    *collision = default();
+    selection.cancel();
+    #[cfg(any(test, feature = "cpu-picking-debug"))]
+    {
+        *collision = default();
+    }
     *ids = default();
     *progress = default();
     *stroke = default();

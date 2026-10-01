@@ -1,4 +1,6 @@
-# Puzzella 第1フェーズのアーキテクチャ
+# Puzzella のアーキテクチャ
+
+2026-10-01のGPU picking更新は[GPU_PICKING.md](GPU_PICKING.md)を参照。以下の第1フェーズで導入したR-tree/CPU triangle選択は、現在はcpu-picking-debug featureとテストに限定され、通常選択はGPUへ移行済みです。
 
 ## 調査結果と変更理由
 

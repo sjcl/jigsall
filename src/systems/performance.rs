@@ -54,10 +54,14 @@ pub fn should_report_performance(perf_monitor: Res<PerformanceMonitor>) -> bool 
 pub fn performance_report_system(
     mut perf_monitor: ResMut<PerformanceMonitor>,
     store: Res<PieceDataStore>,
-    collision: Res<PieceCollisionSystem>,
+    #[cfg(any(test, feature = "cpu-picking-debug"))] collision: Res<PieceCollisionSystem>,
     time: Res<Time>,
 ) {
     let piece_count = store.pieces.len();
+    #[cfg(any(test, feature = "cpu-picking-debug"))]
+    let collision_count = collision.pieces.len();
+    #[cfg(not(any(test, feature = "cpu-picking-debug")))]
+    let collision_count = 0;
 
     // Bevyの正確なフレーム時間を使用
     let delta_time = time.delta();
@@ -123,10 +127,7 @@ pub fn performance_report_system(
             println!("📊 DETAILED PERFORMANCE REPORT");
             println!(
                 "  FPS: {:.1}, Frame Time: {:.2}ms, Pieces: {}, Cache Size: {}",
-                fps_clamped,
-                frame_time_clamped,
-                piece_count,
-                collision.pieces.len()
+                fps_clamped, frame_time_clamped, piece_count, collision_count
             );
             println!(
                 "  Internal Timing: FPS={:.1}, Frame Time={:.2}ms (may be inaccurate)",

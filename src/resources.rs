@@ -6,12 +6,14 @@ use bevy::prelude::*;
 use bevy::sprite_render::ColorMaterial;
 use crossbeam::channel;
 use instant::Instant;
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 use rstar::{RTree, RTreeObject, AABB};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 
 /// ピースの当たり判定データ（CPU側で管理）
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PieceCollisionData {
     pub piece_id: PieceId,
@@ -23,6 +25,7 @@ pub struct PieceCollisionData {
 }
 
 /// rstar R-tree用のトレイト実装
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 impl RTreeObject for PieceCollisionData {
     type Envelope = AABB<[f32; 2]>;
 
@@ -35,6 +38,7 @@ impl RTreeObject for PieceCollisionData {
 }
 
 /// IDベースの当たり判定システム
+#[cfg(any(test, feature = "cpu-picking-debug"))]
 #[derive(Resource, Default)]
 pub struct PieceCollisionSystem {
     pub pieces: HashMap<PieceId, PieceCollisionData>,
@@ -43,6 +47,8 @@ pub struct PieceCollisionSystem {
     pub need_rebuild: bool,
 }
 
+#[cfg(any(test, feature = "cpu-picking-debug"))]
+#[allow(dead_code)]
 impl PieceCollisionSystem {
     pub fn add_piece(&mut self, collision_data: PieceCollisionData) {
         self.pieces.insert(collision_data.piece_id, collision_data);
@@ -306,15 +312,15 @@ impl PieceCollisionSystem {
         }
 
         let debug_info = format!(
-            "📍 Direct search (100px): {:?}\n📍 Nearest piece: {:?}\n📍 Large area (500px): {} pieces\n📍 Precise hits (100px): {} pieces\n📊 Piece position range: ({:.1}, {:.1}) to ({:.1}, {:.1})\n📏 Cursor distance from center: {:.1}px\n\n🔍 Detailed search:\n{}",
-            result,
-            nearest,
-            large_area_pieces.len(),
-            precise_hits.len(),
-            min_pos.x, min_pos.y, max_pos.x, max_pos.y,
-            ray_origin.distance(Vec2::ZERO),
-            detailed_debug
-        );
+        "📍 Direct search (100px): {:?}\n📍 Nearest piece: {:?}\n📍 Large area (500px): {} pieces\n📍 Precise hits (100px): {} pieces\n📊 Piece position range: ({:.1}, {:.1}) to ({:.1}, {:.1})\n📏 Cursor distance from center: {:.1}px\n\n🔍 Detailed search:\n{}",
+        result,
+        nearest,
+        large_area_pieces.len(),
+        precise_hits.len(),
+        min_pos.x, min_pos.y, max_pos.x, max_pos.y,
+        ray_origin.distance(Vec2::ZERO),
+        detailed_debug
+    );
 
         (result, debug_info)
     }
@@ -778,6 +784,7 @@ pub struct PieceIdManager {
     entity_to_id: HashMap<Entity, PieceId>,
 }
 impl PieceIdManager {
+    #[cfg(any(test, feature = "cpu-picking-debug"))]
     pub fn len(&self) -> usize {
         self.id_to_entity.len()
     }
@@ -907,6 +914,7 @@ pub struct PieceData {
     pub piece_component: PuzzlePiece,
     pub state: PieceState,
     pub piece_shape: PieceShape,
+    #[allow(dead_code)] // Retained shape metadata for debug tools; GPU picking never reads it.
     pub bounds: Rect,
 }
 
@@ -1148,6 +1156,7 @@ pub struct StoredPieceData {
 /// Mesh, bounds, shape and handles are never included in gameplay snapshots.
 #[derive(Clone, Debug)]
 pub struct PieceRenderData {
+    #[allow(dead_code)] // Retained shape metadata for debug tools; GPU picking never reads it.
     pub bounds: Rect,
     pub shape: PieceShapeData,
     pub mesh: Handle<Mesh>,

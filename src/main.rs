@@ -5,10 +5,13 @@ mod gameplay;
 mod interaction;
 mod jigsaw_shapes;
 mod networking;
+#[cfg(any(test, feature = "cpu-picking-debug"))]
+#[allow(dead_code)]
 mod piece_geometry;
 mod puzzle;
 mod puzzle_utils;
 mod resources;
+mod selection;
 mod systems;
 mod ui;
 

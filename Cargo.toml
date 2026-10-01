@@ -18,7 +18,7 @@ lyon_tessellation = "1.0"
 svgtypes = "0.15"
 crossbeam = "0.8"
 instant = "0.1"
-rstar = "0.12"
+rstar = { version = "0.12", optional = true }
 
 # wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
 # Keep the compatible patch until upstream aligns these dependencies.
@@ -28,7 +28,11 @@ wgpu-hal = "=29.0.3"
 # プロファイリング用の設定
 [features]
 default = []
+cpu-picking-debug = ["dep:rstar"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）
 tracy = ["bevy/trace_tracy"]
 # Chrome Tracingを使用する場合（ブラウザでの分析）
 chrome = ["bevy/trace_chrome"]
+
+[dev-dependencies]
+rstar = "0.12"

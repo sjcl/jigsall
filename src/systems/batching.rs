@@ -22,6 +22,7 @@ pub fn combine_meshes(
     let mut combined_vertices: Vec<[f32; 3]> = Vec::new();
     let mut combined_uvs: Vec<[f32; 2]> = Vec::new();
     let mut combined_indices: Vec<u32> = Vec::new();
+    let mut combined_piece_ids: Vec<u32> = Vec::new();
     let mut vertex_offset = 0u32;
     let mesh_count = meshes_with_transforms.len();
 
@@ -64,6 +65,13 @@ pub fn combine_meshes(
 
         // UV座標をそのまま追加
         combined_uvs.extend_from_slice(uvs);
+        if let Some(bevy::mesh::VertexAttributeValues::Uint32(ids)) =
+            mesh.attribute(crate::selection::ATTRIBUTE_PIECE_ID)
+        {
+            combined_piece_ids.extend_from_slice(ids);
+        } else {
+            combined_piece_ids.extend(std::iter::repeat_n(0, positions.len()));
+        }
 
         // インデックスを頂点オフセットを加えて追加
         for &index in &indices {
@@ -88,6 +96,7 @@ pub fn combine_meshes(
 
     combined_mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, combined_vertices);
     combined_mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, combined_uvs);
+    combined_mesh.insert_attribute(crate::selection::ATTRIBUTE_PIECE_ID, combined_piece_ids);
     combined_mesh.insert_indices(Indices::U32(combined_indices));
 
     Ok(combined_mesh)
