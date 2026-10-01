@@ -1,11 +1,25 @@
-[package]
-name = "puzzella"
+[workspace]
+members = [".", "crates/*"]
+default-members = [".", "crates/*"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
+publish = false
 
-[dependencies]
+[workspace.dependencies]
+puzzella-core = { path = "crates/puzzella-core" }
+puzzella-puzzle = { path = "crates/puzzella-puzzle" }
+puzzella-game = { path = "crates/puzzella-game" }
+puzzella-ui = { path = "crates/puzzella-ui" }
 bevy = { version = "0.19.1", default-features = false, features = ["2d", "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace"] }
+bevy_asset = "0.19.1"
+bevy_ecs = "0.19.1"
+bevy_log = "0.19.1"
+bevy_math = { version = "0.19.1", features = ["serialize"] }
+bevy_mesh = "0.19.1"
 bevy_egui = "0.42"
 serde = { version = "1.0", features = ["derive"] }
 image = "0.25"
@@ -18,21 +32,28 @@ lyon_tessellation = "1.0"
 svgtypes = "0.15"
 crossbeam = "0.8"
 instant = "0.1"
-rstar = { version = "0.12", optional = true }
+rstar = "0.12"
 
 # wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
 # Keep the compatible patch until upstream aligns these dependencies.
-[target.'cfg(windows)'.dependencies]
 wgpu-hal = "=29.0.3"
 
-# プロファイリング用の設定
+[package]
+name = "puzzella"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy.workspace = true
+puzzella-game.workspace = true
+puzzella-ui.workspace = true
+
 [features]
 default = []
-cpu-picking-debug = ["dep:rstar"]
+cpu-picking-debug = ["puzzella-game/cpu-picking-debug"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）
 tracy = ["bevy/trace_tracy"]
 # Chrome Tracingを使用する場合（ブラウザでの分析）
 chrome = ["bevy/trace_chrome"]
-
-[dev-dependencies]
-rstar = "0.12"

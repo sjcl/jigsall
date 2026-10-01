@@ -1,0 +1,27 @@
+[package]
+name = "puzzella-game"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+puzzella-core.workspace = true
+puzzella-puzzle.workspace = true
+bevy.workspace = true
+bevy_egui.workspace = true
+serde.workspace = true
+image.workspace = true
+crossbeam.workspace = true
+instant.workspace = true
+rstar = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+wgpu-hal.workspace = true
+
+[features]
+default = []
+cpu-picking-debug = ["dep:rstar"]
+
+[dev-dependencies]
+rstar.workspace = true

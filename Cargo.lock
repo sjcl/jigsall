@@ -4786,20 +4786,62 @@ name = "puzzella"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "puzzella-game",
+ "puzzella-ui",
+]
+
+[[package]]
+name = "puzzella-core"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "bevy_math",
+ "serde",
+]
+
+[[package]]
+name = "puzzella-game"
+version = "0.1.0"
+dependencies = [
+ "bevy",
  "bevy_egui",
  "crossbeam",
  "image",
  "instant",
+ "puzzella-core",
+ "puzzella-puzzle",
+ "rstar",
+ "serde",
+ "wgpu-hal",
+]
+
+[[package]]
+name = "puzzella-puzzle"
+version = "0.1.0"
+dependencies = [
+ "bevy_asset",
+ "bevy_ecs",
+ "bevy_log",
+ "bevy_math",
+ "bevy_mesh",
  "lyon",
  "lyon_tessellation",
+ "puzzella-core",
  "puzzle-paths",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
- "rfd",
- "rstar",
- "serde",
  "svgtypes",
- "wgpu-hal",
+]
+
+[[package]]
+name = "puzzella-ui"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_egui",
+ "puzzella-game",
+ "puzzella-puzzle",
+ "rfd",
 ]
 
 [[package]]

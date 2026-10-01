@@ -1,5 +1,46 @@
 # Puzzella のアーキテクチャ
 
+## Cargo workspace（2026-10-01）
+
+起動用の`puzzella`と4つのライブラリを1つのworkspaceにまとめています。共通のpackage属性・依存バージョンをルート`Cargo.toml`から継承し、`Cargo.lock`と`target/`を共有します。`default-members`に全packageを含めているため、ルートの`cargo test --locked`でも全crateのテストが実行されます。`cargo run --locked`は従来通り唯一のバイナリ`puzzella`を起動します。
+
+```text
+puzzella (src/main.rs)
+  ├── puzzella-ui
+  │     ├── puzzella-game
+  │     └── puzzella-puzzle
+  └── puzzella-game
+        ├── puzzella-core
+        └── puzzella-puzzle
+              └── puzzella-core
+```
+
+| package / ファイル | 所有する責務 |
+| --- | --- |
+| `crates/puzzella-core/src/gameplay.rs` | PuzzleDefinition / PuzzlePiece / PieceState、ID、命令検証、スナップ。依存はbevy_ecs・bevy_math・serdeのみ |
+| `crates/puzzella-core/src/commands.rs` | ClientCommand。実通信は未実装 |
+| `crates/puzzella-puzzle/src/generation.rs` | 同期CPU生成とworkerへ渡す結果型、生成再現性テスト |
+| `crates/puzzella-puzzle/src/shapes.rs` / `shape_data.rs` | SVG、lyon tessellation、元Mesh / UV / stroke、共通PieceShape |
+| `crates/puzzella-puzzle/src/placement.rs` / `grid.rs` | seed付き初期配置、グリッド寸法計算 |
+| `crates/puzzella-game/src/game.rs` / `systems/` | 状態遷移、入力→命令→状態→描画のスケジュール、worker受信と10ピース/フレームのasset登録 |
+| `crates/puzzella-game/src/resources/` | app・config・input・generation・images・pieces・rendering・batching・performance・collisionごとのリソース |
+| `crates/puzzella-game/src/selection/` | api.rs、coordinates.rs、render.rs、selection.wgsl、render_tests.rs。GPU内部はcrate外へ公開しない |
+| `crates/puzzella-game/src/interaction.rs` / `piece_geometry.rs` | 非同期選択のジェスチャーと、feature / テスト限定のCPU判定 |
+| `crates/puzzella-ui/src/lib.rs` / 各画面 | GameUiPlugin、egui登録とMenu・設定・プレイ・オーバーレイ |
+
+`PieceShape`と描画cacheの`PieceShapeData`は同じ形状型を共有し、重複定義を削除しています。ゲーム側の`resources`は明示的な再exportを提供します。`cpu-picking-debug`はルートからゲームcrateへ転送し、`tracy` / `chrome`とWindowsのwgpu-hal固定も維持しています。
+
+```sh
+cargo test -p puzzella-core --locked
+cargo test -p puzzella-puzzle --locked
+cargo test -p puzzella-game --locked
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+```
+
+分割後の通常テストはcoreの2件、puzzleの3件、gameの22件が成功し、実GPU選択テスト1件もRTX 5090で成功しました。workspace全体のcheck・警告をエラーにしたall-targets / all-features clippy・fmtと、バイナリのbuildが通過しています。実行ファイルは8秒間継続動作し、stderrは空でした。画面の目視操作と性能計測は行っていません。外部依存のバージョン・checksum・依存リストは分割前のlockfileから変更していません。
+
+以下はゲームの動作設計と、それまでの移行記録です。workspace分割では判定・生成アルゴリズム、システムの実行順、選択shaderを維持しています。
+
 2026-10-01のGPU picking更新は[GPU_PICKING.md](GPU_PICKING.md)を参照。以下の第1フェーズで導入したR-tree/CPU triangle選択は、現在はcpu-picking-debug featureとテストに限定され、通常選択はGPUへ移行済みです。
 
 ## 調査結果と変更理由

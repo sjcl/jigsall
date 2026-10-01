@@ -47,14 +47,17 @@ Bevy 0.19.1 / bevy_egui 0.42へ更新しました。形状生成のpuzzle-paths�
 Input → ClientCommand → gameplay logic → PieceState → Transform / rendering
 ```
 
-- `src/gameplay.rs`: 不変のPuzzleDefinition / PuzzlePiece、安定ID、可変PieceState、純粋な命令・スナップ判定
-- `src/interaction.rs`: 単一のジェスチャー状態による選択・範囲選択・ドラッグと命令生成
-- `src/selection.rs` / `src/selection.wgsl`: 通常描画のGPU mesh bufferを共有するクリック・矩形選択
-- src/piece_geometry.rs: cpu-picking-debug feature / テスト専用の旧CPU判定
-- `src/networking.rs`: backendに依存しないローカル命令の入口
-- `src/game.rs`: Menu / GameSetup / InGame / GameCompleteと、InGame限定のInitializing / Playing / Paused
-- `src/systems/`: 既存の生成・選択・カメラ・描画・性能システム
-- `src/resources.rs`: 正本のピース記録とローカルの描画cache
+Cargo workspaceで次の責務に分けています。依存バージョンはルートの`Cargo.toml`、解決結果は共通の`Cargo.lock`で管理します。
+
+| package | 責務 |
+| --- | --- |
+| `puzzella`（`src/main.rs`） | アプリの起動とプラグイン登録 |
+| `puzzella-core` | 安定ID、パズル定義・状態、ClientCommand、純粋な命令検証・スナップ判定 |
+| `puzzella-puzzle` | seed付き形状・配置・Mesh生成、グリッド計算。WorldやGPU rendererに依存しない |
+| `puzzella-game` | Bevyの状態遷移、入力、非同期生成の制御、バッチ描画、GPU選択、画像読み込み |
+| `puzzella-ui` | egui画面と`GameUiPlugin`によるUIシステム登録 |
+
+`puzzella-game/src/resources/`は状態・設定・入力・生成・画像・ピース・描画・バッチ・性能・CPUデバッグ判定に分けています。`selection/`は要求API、座標変換、GPU描画・readbackを分離しています。詳細なファイル配置と依存方向は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
 
 元画像のtextureは1枚。ピースのMesh / UV / outlineと、共有する通常materialで描画します。スナップと進捗は一時描画Entityの有無に依存しません。
 
@@ -63,10 +66,14 @@ Input → ClientCommand → gameplay logic → PieceState → Transform / render
 ## 検証
 
 ```sh
-cargo fmt --check
-cargo check --locked
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked
+cargo fmt --all --check
+cargo check --workspace --locked
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+cargo test --workspace --locked
+# ゲーム本体や描画をビルドせず、判定ロジックだけを検証
+cargo test -p puzzella-core --locked
+# 形状・UV・配置の再現性を検証
+cargo test -p puzzella-puzzle --locked
 ```
 
 2026-10-01、Windows / Rust 1.97で上記チェックを通過し、27件の通常テストが成功しました。GPU pickingのoffscreenテストもRTX 5090で別途成功しています。所有者検証、seed付き形状・UV生成、1000ピース配置、完成・セッション遷移に加え、GPUのbitset境界・座標正規化・遅延結果の競合、生成した三角形のクリック判定、手前側選択、矩形の辺交差、R-tree更新、Ctrl / 範囲選択 / 複数移動、解放位置でのスナップ、UI入力の抑制、フォーカス喪失・ポーズ時の解放、カメラ座標同期、バッチ抽出・返却時の描画順・UV・透明度を検証しています。
@@ -91,5 +98,5 @@ Windowsではwgpu-halを29.0.3に固定しています。29.0.4とgpu-allocator 
 実装・座標変換・非同期入力・制限・検証手順は[GPU_PICKING.md](GPU_PICKING.md)を参照してください。実GPUの自動テストは次で実行できます。
 
 ```sh
-cargo test --locked gpu_raster_selection -- --ignored --nocapture
+cargo test -p puzzella-game --locked gpu_raster_selection -- --ignored --nocapture
 ```

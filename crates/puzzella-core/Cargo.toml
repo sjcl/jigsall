@@ -1,0 +1,11 @@
+[package]
+name = "puzzella-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+bevy_ecs.workspace = true
+bevy_math.workspace = true
+serde.workspace = true

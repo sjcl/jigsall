@@ -1,0 +1,13 @@
+[package]
+name = "puzzella-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+puzzella-game.workspace = true
+puzzella-puzzle.workspace = true
+bevy.workspace = true
+bevy_egui.workspace = true
+rfd.workspace = true

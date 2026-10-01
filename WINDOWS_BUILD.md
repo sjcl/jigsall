@@ -20,10 +20,10 @@ cargo build --locked --release
 ## 開発チェック
 
 ```powershell
-cargo fmt --check
-cargo check --locked
-cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked
+cargo fmt --all --check
+cargo check --workspace --locked
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+cargo test --workspace --locked
 ```
 
 ## 依存関係の注意点
