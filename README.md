@@ -76,9 +76,13 @@ cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --t
 cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
 # 単色matching / 1000ピース / worst case / 輪郭識別性の測定
 cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_preview -- target
+# 無作為matching・5縦横比・各軸の実効寄与・人間向けHTML tool
+cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_assessment -- target/edge-assessment
 ```
 
 2026-10-01、Windows / Rust 1.97 / RTX 5090（Vulkan）で通常45件と実GPU3件を確認しました。v5の4096²画像・1024² offscreen・100万ピース全体表示のGPU drawは、3runの中央値で不透明0.5133 ms、半透明0.5189 msです。1024辺の最近傍輪郭距離はv4の約4.15倍になりました。[v5報告書](EDGE_FINGERPRINT.md)に全クラス、preview、計測条件と制限を記載しています。
+
+形状を変更せず識別性評価を強化した結果と、正誤・回答時間を記録するローカルHTML toolの使い方は[追加評価](EDGE_FINGERPRINT_EVALUATION.md)に記載しています。4:1の長辺を64 px幅で表示すると隣接classの一部が同じmaskになり、高解像度の形状差と小さな表示での識別性を分けて扱う必要があります。評価追加後の通常49件とブラウザQAを確認しました。
 
 ## プロファイリング
 

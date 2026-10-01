@@ -2,6 +2,8 @@
 use crate::procedural::{class_sample, edge_distance, sd_tab, EdgeProfile, EdgeStyle};
 use bevy_math::Vec2;
 
+pub mod assessment;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EdgeFingerprint {
     pub style: u8,

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>輪郭だけのマッチング · Puzzella v5</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#26343d;background:#faf9f6;color-scheme:light}*{box-sizing:border-box}
+body{max-width:1320px;margin:auto;padding:24px}h1{font-size:28px;margin:5px 0 8px}p{line-height:1.6}.eyebrow{color:#626d76;font-size:13px;letter-spacing:.08em}
+.settings{display:flex;flex-wrap:wrap;align-items:end;gap:14px;margin:22px 0;padding:18px;background:white;border:1px solid #d7dce0;border-radius:12px}
+label{font-size:13px;display:grid;gap:6px}select,input,button{font:inherit;border:1px solid #b6c0c7;border-radius:7px;padding:9px;background:white;color:inherit}
+button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-visible{outline:3px solid #266dc4;outline-offset:3px}.primary{background:#26343d;color:white;border-color:#26343d}
+.toolbar{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.status{min-height:30px;margin:12px 0;font-weight:600}
+.board{display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:start}.target{background:white;border:1px solid #d7dce0;padding:14px;border-radius:12px;position:sticky;top:14px}.target h2{font-size:18px;margin:4px 0}
+.candidates{display:grid;grid-template-columns:repeat(auto-fit,minmax(224px,1fr));gap:12px}.candidate{padding:10px 6px;background:white;border:2px solid #d7dce0;border-radius:10px}.candidate:disabled{opacity:1}.candidate.chosen{border-color:#91651e}.candidate.correct{border-color:#2d7753}
+.shape{display:block;width:200px;height:132px;max-width:100%;margin:auto}.shape path{fill:#c7c7c7;stroke:#26343d;stroke-width:.8;vector-effect:non-scaling-stroke}.number{display:block;font-size:14px;font-weight:600}.muted{color:#64717a;font-size:13px}
+.results{margin-top:28px;padding-top:20px;border-top:1px solid #d7dce0}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:9px;text-align:left;border-bottom:1px solid #e0e4e7;white-space:nowrap}
+@media(max-width:760px){body{padding:14px}.board{grid-template-columns:1fr}.target{position:static}.candidates{grid-template-columns:repeat(auto-fit,minmax(255px,1fr))}}
+</style>
+<div class="eyebrow">PUZZELLA · GENERATOR V5 · SHAPE STUDY</div>
+<h1>輪郭だけのマッチング</h1>
+<p>左の凸辺に対応する凹辺を、右の候補から1つ選んでください。全て同じ色で、形だけを比べます。</p>
+<div class="settings">
+  <label>参加者名（任意）<input id="participant" maxlength="60" placeholder="匿名"></label>
+  <label>Seed<select id="seed"></select></label>
+  <label>セルの縦横比<select id="aspect"><option>1:1</option><option>2:1</option><option>4:1</option><option>1:2</option><option>1:4</option></select></label>
+  <label>比較する辺<select id="orientation"><option value="H">水平辺</option><option value="V">垂直辺</option></select></label>
+  <label>候補数<select id="count"><option>8</option><option selected>10</option><option>12</option></select></label>
+  <label>問題数<select id="rounds"><option>10</option><option selected>20</option></select></label>
+  <button class="primary" id="start">開始</button>
+</div>
+<div class="toolbar"><span id="progress" class="muted">回答を選ぶと正解と時間が表示されます。</span><button id="next" disabled>次の問題</button><button id="stop" disabled>終了して設定に戻る</button></div>
+<div id="feedback" class="status" role="status" aria-live="polite">未開始</div>
+<div class="board"><section class="target"><h2>凸辺</h2><div id="target"></div><p class="muted">各辺の表示倍率は候補と同じです。</p></section><section id="candidates" class="candidates" aria-label="凹辺の候補"></section></div>
+<section class="results">
+  <h2>回答記録</h2><p id="summary"></p>
+  <div class="toolbar"><button id="csv">CSVを保存</button><button id="json">JSONを保存</button><button id="clear">記録を消去</button></div>
+  <p class="muted" id="storage">記録はこのブラウザに保存します。外部へ送信しません。別タブや離席があった問題は記録に印が付きます。</p>
+  <div class="scroll"><table><thead><tr><th>日時</th><th>Seed</th><th>縦横比 / 辺</th><th>問題</th><th>候補</th><th>結果</th><th>回答時間</th><th>中断</th></tr></thead><tbody id="records"></tbody></table></div>
+</section>
+<script id="matching-data" type="application/json">__MATCHING_DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('matching-data').textContent);
+const $=id=>document.getElementById(id);
+const key='puzzella-v5-human-matching-v1';
+let records=[],session=null,current=null,phase='idle';
+try{const saved=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(saved))records=saved;}catch{ $('storage').textContent='この環境ではブラウザ保存が使えません。CSV / JSONで記録を保存してください。'; }
+for(const seed of [...new Set(data.map(d=>d.seed))]) {const o=document.createElement('option');o.value=seed;o.textContent=seed;$('seed').append(o);}
+$('seed').value='42';
+function shape(edge,blank,ratioIndex){
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 200 132');svg.setAttribute('class','shape');svg.setAttribute('aria-hidden','true');
+  const path=document.createElementNS(svg.namespaceURI,'path');
+  const d=edge.contours[ratioIndex].map(([x,y],i)=>`${i?'L':'M'} ${x} ${48+(blank?y:-y)}`).join(' ');
+  path.setAttribute('d',d+' L 200 94 L 0 94 Z');svg.append(path);return svg;
+}
+function persist(){try{localStorage.setItem(key,JSON.stringify(records));}catch{ $('storage').textContent='ブラウザ保存に失敗しました。CSV / JSONで記録を保存してください。'; }}
+function renderRecords(){
+  $('records').replaceChildren();
+  for(const r of records.slice(-30).reverse()) {
+    const tr=document.createElement('tr');
+    const values=[new Date(r.answered_at).toLocaleString(),r.seed,`${r.aspect} / ${r.orientation}`,r.round,r.candidate_count,r.correct?'正解':'不正解',`${(r.response_ms/1000).toFixed(3)} 秒`,r.interrupted?'あり':'なし'];
+    for(const value of values){const td=document.createElement('td');td.textContent=String(value);tr.append(td);}$('records').append(tr);
+  }
+  const valid=records.filter(r=>!r.interrupted);const correct=valid.filter(r=>r.correct).length;
+  const mean=valid.length?valid.reduce((s,r)=>s+r.response_ms,0)/valid.length:0;
+  $('summary').textContent=`記録 ${records.length} 件 · 中断なし ${valid.length} 件 · 正答 ${correct} / ${valid.length} · 平均 ${(mean/1000).toFixed(3)} 秒`;
+  $('csv').disabled=$('json').disabled=$('clear').disabled=records.length===0;
+}
+function controls(active){for(const id of ['participant','seed','aspect','orientation','count','rounds','start'])$(id).disabled=active;$('stop').disabled=!active;}
+function renderQuestion(){
+  const round=session.dataset.rounds[session.round];const target=round.target;
+  // Every candidate count has its own independently shuffled, uniform sample.
+  const candidates=round.candidates[String(session.count)];
+  current={target,candidates,startedAt:null,interrupted:false};phase='painting';
+  $('target').replaceChildren(shape(session.dataset.edges[target],false,session.ratioIndex));$('candidates').replaceChildren();
+  candidates.forEach((index,slot)=>{
+    const button=document.createElement('button');button.className='candidate';button.disabled=true;button.setAttribute('aria-label',`候補 ${slot+1}`);
+    const label=document.createElement('span');label.className='number';label.textContent=`候補 ${slot+1}`;
+    button.append(shape(session.dataset.edges[index],true,session.ratioIndex),label);button.addEventListener('click',()=>answer(slot));$('candidates').append(button);
+  });
+  $('next').disabled=true;$('progress').textContent=`問題 ${session.round+1} / ${session.total} · Seed ${session.dataset.seed} · ${session.aspect} · ${session.dataset.orientation}`;$('feedback').textContent='輪郭を比べて選んでください。';
+  const question=current;
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    if(phase!=='painting'||current!==question)return;current.startedAt=performance.now();phase='asking';
+    for(const button of $('candidates').children)button.disabled=false;
+  }));
+}
+function answer(slot){
+  if(phase!=='asking')return;phase='answered';const now=performance.now();
+  const chosen=current.candidates[slot];const correct=chosen===current.target;const correctSlot=current.candidates.indexOf(current.target);
+  const edge=session.dataset.edges[current.target];const candidate=session.dataset.edges[chosen];
+  const mask=edge.display64[session.ratioIndex];const ambiguous=current.candidates.filter(i=>session.dataset.edges[i].display64[session.ratioIndex]===mask).length;
+  const r={schema_version:1,generator_version:5,session_id:session.id,participant:session.participant,seed:session.dataset.seed,aspect:session.aspect,orientation:session.dataset.orientation,edge_short_ratio:session.ratio,
+    round:session.round+1,candidate_count:session.count,chosen_slot:slot+1,correct_slot:correctSlot+1,correct,response_ms:Math.max(0,now-current.startedAt),interrupted:current.interrupted,
+    display64_equal_candidates:ambiguous,target_x:edge.x,target_y:edge.y,target_raw:edge.raw,target_classes:edge.classes,chosen_x:candidate.x,chosen_y:candidate.y,chosen_raw:candidate.raw,
+    candidate_edges:current.candidates.map(i=>({x:session.dataset.edges[i].x,y:session.dataset.edges[i].y,raw:session.dataset.edges[i].raw})),answered_at:new Date().toISOString()};
+  records.push(r);persist();renderRecords();
+  [...$('candidates').children].forEach((button,i)=>{button.disabled=true;if(i===slot)button.classList.add('chosen');if(i===correctSlot)button.classList.add('correct');});
+  $('feedback').textContent=`${correct?'正解':'不正解'} · 正解は候補 ${correctSlot+1} · ${(r.response_ms/1000).toFixed(3)} 秒${r.interrupted?' · 中断あり':''}`;
+  $('next').textContent=session.round+1===session.total?'結果を確認':'次の問題';$('next').disabled=false;
+}
+function stop(){phase='idle';session=null;current=null;controls(false);$('next').disabled=true;for(const b of $('candidates').children)b.disabled=true;$('feedback').textContent='終了しました。記録は保存されています。';}
+$('start').addEventListener('click',()=>{
+  const dataset=data.find(d=>d.seed===$('seed').value&&d.orientation===$('orientation').value);
+  const [w,h]=$('aspect').value.split(':').map(Number);const ratio=(dataset.orientation==='H'?w:h)/Math.min(w,h);
+  session={dataset,id:new Date().toISOString(),participant:$('participant').value.trim(),aspect:$('aspect').value,ratio,ratioIndex:[1,2,4].indexOf(ratio),count:Number($('count').value),total:Number($('rounds').value),round:0};
+  controls(true);renderQuestion();
+});
+$('next').addEventListener('click',()=>{if(phase!=='answered')return;if(++session.round>=session.total){stop();return;}renderQuestion();});
+$('stop').addEventListener('click',stop);
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&current&&['painting','asking'].includes(phase))current.interrupted=true;});
+function download(name,type,text){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('json').addEventListener('click',()=>download('v5-matching-results.json','application/json',JSON.stringify({schema_version:1,generator_version:5,records},null,2)));
+$('csv').addEventListener('click',()=>{
+  const fields=['schema_version','generator_version','session_id','participant','seed','aspect','orientation','edge_short_ratio','round','candidate_count','chosen_slot','correct_slot','correct','response_ms','interrupted','display64_equal_candidates','target_x','target_y','target_raw','target_classes','chosen_x','chosen_y','chosen_raw','candidate_edges','answered_at'];
+  // Quoting preserves commas/newlines; apostrophe prevents spreadsheet formula execution.
+  const quote=value=>{let s=Array.isArray(value)?JSON.stringify(value):String(value??'');if(/^[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};
+  const csv=[fields.join(','),...records.map(r=>fields.map(f=>quote(r[f])).join(','))].join('\r\n');download('v5-matching-results.csv','text/csv;charset=utf-8','\ufeff'+csv);
+});
+$('clear').addEventListener('click',()=>{if(confirm('保存した回答記録を全て消去しますか？')){records=[];persist();renderRecords();}});
+renderRecords();
+</script>
+</html>

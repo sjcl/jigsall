@@ -1,5 +1,7 @@
 # 辺の視覚的識別性の改善（generator v5）
 
+本書は初期v5の形状変更の記録です。意図的に特徴を選んだ旧matching図も含みます。形状を固定した無作為matching・縦横比・macro軸別の追加評価と人間向けtoolは[EDGE_FINGERPRINT_EVALUATION.md](EDGE_FINGERPRINT_EVALUATION.md)を参照してください。
+
 基準は`7d85e57a3ac5e6375f192b1f698e036f77200849`のgenerator v4です。既存6 styleと解析SDFを保ち、6個の8-bit sampleをmacro classとmicro variationとしてdecodeするgenerator v5へ変更しました。100k辺では55,329種類のmacro signatureを得ました。1024本の輪郭の最近傍Hamming距離は平均7.22から29.96へ約4.15倍になりました。100万opaque entireの描画は3回の中央値0.5133 msで、同条件のv4から+3.36%、0.55 msの目安内です。
 
 ## クラスと実値

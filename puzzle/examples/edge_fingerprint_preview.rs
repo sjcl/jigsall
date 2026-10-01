@@ -276,33 +276,19 @@ fn main() {
     closest_svg.push_str("</svg>");
     std::fs::write(dir.join("edge-fingerprint-nearest.svg"), closest_svg).unwrap();
     std::fs::write(dir.join("edge-fingerprint-nearest.csv"), nearest_csv).unwrap();
-    // Four intentionally different exemplars per style, found in real hashed edges.
-    let mut selected = Vec::new();
-    for style in 0..6 {
-        for case in 0..4 {
-            let &(_, raw) = edges
-                .iter()
-                .find(|&&(_, raw)| {
-                    let f = EdgeFingerprint::from_raw(raw);
-                    f.style == style
-                        && match case {
-                            0 => f.center_class == 0 && f.skew_class == 0 && f.depth_class == 0,
-                            1 => f.center_class == 6 && f.skew_class == 6 && f.depth_class == 3,
-                            2 => f.center_class == 3 && f.neck_class == 0 && f.head_class == 3,
-                            _ => f.center_class == 3 && f.neck_class == 3 && f.head_class == 0,
-                        }
-                })
-                .unwrap();
-            selected.push(raw);
-        }
-    }
+    // Uniform random internal edges; no style/class/silhouette filtering.
+    let selected: Vec<_> = puzzella_puzzle::fingerprint::assessment::random_edges(42, 0, 24, None)
+        .into_iter()
+        .map(|e| e.raw)
+        .collect();
+    let order = puzzella_puzzle::fingerprint::assessment::blank_permutation(42, 0, 24);
     let mut matching = svg(
         1460,
         1135,
-        "Shape-only matching: 24 tabs / shuffled complementary blanks (v5)",
+        "Random shape-only matching: 24 tabs / shuffled complementary blanks (v5)",
     );
     let mut key = String::from("tab,blank,raw0,raw1,style,center,width,depth,neck,head,skew\n");
-    // A coprime permutation, independent of any shape parameter.
+    // A separate RNG stream, independent of any shape parameter.
     for i in 0..24 {
         let x = 20.0 + (i % 3) as f32 * 230.0;
         let y = 100.0 + (i / 3) as f32 * 132.0;
@@ -315,7 +301,7 @@ fn main() {
             false,
             false,
         );
-        let j = (i * 7 + 11) % 24;
+        let j = order[i];
         edge_panel(
             &mut matching,
             selected[j],

@@ -44,3 +44,7 @@ required-features = ["cpu-geometry-reference"]
 [[example]]
 name = "edge_fingerprint_preview"
 required-features = ["cpu-geometry-reference"]
+
+[[example]]
+name = "edge_fingerprint_assessment"
+required-features = ["cpu-geometry-reference"]
