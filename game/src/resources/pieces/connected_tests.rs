@@ -553,7 +553,7 @@ fn board_has_priority_even_when_neighbor_is_closer() {
 }
 
 #[test]
-fn final_offset_union_requires_exact_equality() {
+fn final_offset_union_rejects_offsets_beyond_arithmetic_rounding() {
     let (d, mut s) = fixture(
         UVec2::splat(2),
         [100.0, 104.0, 105.0, 108.0].map(|x| Vec2::new(x, 50.0)),
@@ -622,4 +622,186 @@ fn invalid_nearest_component_is_rejected_as_a_whole_before_choosing_valid_target
         );
         assert_offset(&s, &d, 1, Vec2::new(103.0, 100.0));
     }
+}
+
+#[test]
+fn fractional_closure_accepts_rounding_in_both_axes_without_moving_targets() {
+    for (grid, image, offset, delta) in [
+        (
+            UVec2::new(3, 1),
+            UVec2::new(4096, 20),
+            Vec2::new(100.37, 0.0),
+            Vec2::new(4.0, 0.0),
+        ),
+        (
+            UVec2::new(1, 3),
+            UVec2::new(20, 4096),
+            Vec2::new(0.0, 100.37),
+            Vec2::new(0.0, 4.0),
+        ),
+    ] {
+        let d = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: grid,
+            image_size: image,
+            snap_distance: 5.0,
+        };
+        let mut s = PieceDataStore::default();
+        s.initialize(
+            (0..3)
+                .map(|id| {
+                    d.correct_position(PieceId(id)) + if id == 0 { offset - delta } else { offset }
+                })
+                .collect(),
+        );
+        let recovered = |id: u32| s.states[id as usize].position - d.correct_position(PieceId(id));
+        assert_ne!(recovered(1), recovered(2));
+        let targets = s.states[1..].to_vec();
+        let result = release(&mut s, &d, &[0], Vec2::ZERO);
+        assert_eq!((result.released, result.placed), (1, 0));
+        assert_eq!(s.connectivity.component_size(PieceId(0)), 3);
+        assert_eq!(
+            s.states[0].position,
+            d.correct_position(PieceId(0)) + offset
+        );
+        for (state, before) in s.states[1..].iter().zip(targets) {
+            assert_eq!(
+                state.position.to_array().map(f32::to_bits),
+                before.position.to_array().map(f32::to_bits)
+            );
+            assert_eq!(state.flags, before.flags);
+            assert_eq!(state.z_order, before.z_order);
+        }
+    }
+}
+
+#[test]
+fn fractional_closure_rejects_a_nearby_different_translation() {
+    let d = PuzzleDefinition {
+        generator_version: GENERATOR_VERSION,
+        seed: 42,
+        grid_size: UVec2::new(3, 1),
+        image_size: UVec2::new(4096, 20),
+        snap_distance: 5.0,
+    };
+    let mut s = PieceDataStore::default();
+    s.initialize(
+        [96.37, 100.37, 100.38]
+            .into_iter()
+            .enumerate()
+            .map(|(id, x)| d.correct_position(PieceId(id as u32)) + Vec2::new(x, 0.0))
+            .collect(),
+    );
+    let before = s.states[2];
+    release(&mut s, &d, &[0], Vec2::ZERO);
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 2);
+    assert!(!s.connectivity.same_component(PieceId(0), PieceId(2)));
+    assert_eq!(s.states[2], before);
+}
+
+#[test]
+fn closure_validates_every_target_member_against_the_fixed_offset() {
+    let d = PuzzleDefinition {
+        generator_version: GENERATOR_VERSION,
+        seed: 42,
+        grid_size: UVec2::splat(3),
+        image_size: UVec2::splat(4096),
+        snap_distance: 5.0,
+    };
+    let mut s = PieceDataStore::default();
+    s.initialize(
+        [
+            100.37, 100.37, 5000.0, 5000.0, 104.37, 5000.0, 5000.0, 100.37065, 5000.0,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(id, x)| d.correct_position(PieceId(id as u32)) + Vec2::new(x, 1000.0))
+        .collect(),
+    );
+    s.connectivity.union(PieceId(0), PieceId(1));
+    let final_offset = s.states[7].position - d.correct_position(PieceId(7));
+    assert!(matches_translation(
+        s.states[0].position,
+        d.correct_position(PieceId(0)),
+        final_offset
+    ));
+    assert!(!matches_translation(
+        s.states[1].position,
+        d.correct_position(PieceId(1)),
+        final_offset
+    ));
+    release(&mut s, &d, &[4], Vec2::ZERO);
+    assert!(s.connectivity.same_component(PieceId(4), PieceId(7)));
+    assert!(!s.connectivity.same_component(PieceId(4), PieceId(0)));
+}
+
+#[test]
+fn small_component_snap_on_a_million_piece_puzzle_keeps_scratch_masks_on_stack() {
+    for members in [1, 32] {
+        let (d, mut s) = fixture(
+            UVec2::splat(1000),
+            (0..1_000_000).map(|id| {
+                Vec2::new(
+                    10000.0 + if id > members { id as f32 * 20.0 } else { 0.0 },
+                    10000.0,
+                )
+            }),
+        );
+        for id in 1..members {
+            s.connectivity.union(PieceId(0), PieceId(id));
+        }
+        let mut scratch = snapping::SnapScratch::new(s.len(), &d);
+        assert_eq!(scratch.mask_heap_bytes(), 0);
+        s.resolve_component_snap(PieceId(0), &mut scratch);
+        assert_eq!(
+            s.connectivity.component_size(PieceId(0)),
+            members as usize + 1
+        );
+        assert_eq!(scratch.mask_heap_bytes(), 0);
+    }
+}
+
+#[test]
+fn growing_fractional_cluster_keeps_one_logical_offset_and_scans_boundaries_once() {
+    let d = PuzzleDefinition {
+        generator_version: GENERATOR_VERSION,
+        seed: 42,
+        grid_size: UVec2::splat(100),
+        image_size: UVec2::splat(4096),
+        snap_distance: 5.0,
+    };
+    let mut s = PieceDataStore::default();
+    s.initialize(
+        (0..10_000)
+            .map(|id| {
+                d.correct_position(PieceId(id))
+                    + Vec2::new(
+                        if (id % 100 + id / 100) % 2 == 0 {
+                            100.37
+                        } else {
+                            104.37
+                        },
+                        1000.37,
+                    )
+            })
+            .collect(),
+    );
+    let mut scratch = snapping::SnapScratch::new(s.len(), &d);
+    for id in 0..10_000 {
+        let root = s.connectivity.find_root(PieceId(id));
+        if !scratch.resolved.contains(&root) {
+            s.resolve_component_snap(root, &mut scratch);
+        }
+    }
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
+    assert_eq!(scratch.boundary_members, 10_000);
+    let offset = s.states[0].position - d.correct_position(PieceId(0));
+    assert!(s.states.iter().enumerate().all(|(id, state)| {
+        matches_translation(
+            state.position,
+            d.correct_position(PieceId(id as u32)),
+            offset,
+        )
+    }));
 }

@@ -18,14 +18,16 @@ pub(super) struct SnapScratch {
     snap_distance: f32,
     #[cfg(test)]
     pub(super) boundary_members: usize,
-    seen_targets: PieceBitSet,
-    touched: Vec<PieceId>,
-    validated: PieceBitSet,
-    eligible: PieceBitSet,
+    seen_targets: PieceScratchSet,
+    validated: PieceScratchSet,
+    eligible: PieceScratchSet,
     // Completed components never move again or rescan their exhausted boundary
     // during this Release, including a growing board cluster.
-    pub(super) resolved: PieceBitSet,
+    pub(super) resolved: PieceScratchSet,
     members: Vec<PieceId>,
+    // Keep the fixed logical translation only when representative subtraction
+    // rounds it differently. Keys are queried directly, never used for tie order.
+    rounded_offsets: HashMap<PieceId, Vec2>,
 }
 impl SnapScratch {
     pub(super) fn new(count: usize, definition: &PuzzleDefinition) -> Self {
@@ -34,33 +36,38 @@ impl SnapScratch {
             snap_distance: definition.snap_distance,
             #[cfg(test)]
             boundary_members: 0,
-            seen_targets: PieceBitSet::new(count),
-            touched: Vec::new(),
-            validated: PieceBitSet::new(count),
-            eligible: PieceBitSet::new(count),
-            resolved: PieceBitSet::new(count),
+            seen_targets: PieceScratchSet::new(count),
+            validated: PieceScratchSet::new(count),
+            eligible: PieceScratchSet::new(count),
+            resolved: PieceScratchSet::new(count),
             members: Vec::new(),
+            rounded_offsets: HashMap::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn mask_heap_bytes(&self) -> usize {
+        self.seen_targets.heap_bytes()
+            + self.validated.heap_bytes()
+            + self.eligible.heap_bytes()
+            + self.resolved.heap_bytes()
     }
 
     fn reset_targets(&mut self) {
-        // Clear only touched roots, never an N-bit mask per singleton.
-        for id in self.touched.drain(..) {
-            self.seen_targets.remove(&id);
-        }
+        self.seen_targets.clear();
     }
 
     fn first_visit(&mut self, target: PieceId) -> bool {
-        if !self.seen_targets.insert(target) {
-            return false;
-        }
-        self.touched.push(target);
-        true
+        self.seen_targets.insert(target)
     }
 }
 
 impl PieceDataStore {
-    fn target_offset(&self, target: PieceId, geometry: &PuzzleGeometry) -> Vec2 {
+    fn target_offset(&self, target: PieceId, scratch: &SnapScratch) -> Vec2 {
+        if let Some(&offset) = scratch.rounded_offsets.get(&target) {
+            return offset;
+        }
+        let geometry = &scratch.geometry;
         let representative = self.connectivity.minimum_member(target);
         self.states[representative.0 as usize].position - geometry.correct_position(representative)
     }
@@ -121,7 +128,7 @@ impl PieceDataStore {
                 } else if !scratch.first_visit(target) {
                     continue;
                 }
-                let offset = self.target_offset(target, &geometry);
+                let offset = self.target_offset(target, scratch);
                 // Minimum member is stable across union histories and snapshot restore.
                 let representative = self.connectivity.minimum_member(target);
                 let Some(candidate) = SnapCandidate::new(
@@ -192,7 +199,7 @@ impl PieceDataStore {
         scratch.reset_targets();
         scratch.members.clear();
         let mut moving = self.connectivity.find_root(moving);
-        let translation = self.target_offset(moving, &scratch.geometry);
+        let translation = self.target_offset(moving, scratch);
         if !translation.is_finite() {
             scratch.resolved.insert(moving);
             return 0;
@@ -226,9 +233,30 @@ impl PieceDataStore {
                 if target == moving || !scratch.first_visit(target) {
                     continue;
                 }
-                let offset = self.target_offset(target, &geometry);
-                // Exact offset equality, never another threshold or translation decision.
-                if offset != final_offset || !self.snap_target_is_eligible(target, offset, scratch)
+                let offset = self.target_offset(target, scratch);
+                let representative = self.connectivity.minimum_member(target);
+                // Recognize the same logical translation despite f32 add/sub
+                // rounding. This is not another distance-based snap decision.
+                if (offset != final_offset
+                    && !matches_translation(
+                        self.states[representative.0 as usize].position,
+                        geometry.correct_position(representative),
+                        final_offset,
+                    ))
+                    || !self.snap_target_is_eligible(target, offset, scratch)
+                {
+                    continue;
+                }
+                // Validate against ONE fixed offset, not accumulated edge error.
+                // Cached resolved offsets avoid rescanning growing aligned clusters.
+                if offset != final_offset
+                    && !self.connectivity.iter_component(target).all(|id| {
+                        matches_translation(
+                            self.states[id.0 as usize].position,
+                            geometry.correct_position(id),
+                            final_offset,
+                        )
+                    })
                 {
                     continue;
                 }
@@ -257,8 +285,16 @@ impl PieceDataStore {
                         }
                     }
                 }
+                scratch.rounded_offsets.remove(&moving);
+                scratch.rounded_offsets.remove(&target);
                 moving = self.connectivity.union(moving, target);
             }
+        }
+        let representative = self.connectivity.minimum_member(moving);
+        let recovered = self.states[representative.0 as usize].position
+            - geometry.correct_position(representative);
+        if recovered != final_offset {
+            scratch.rounded_offsets.insert(moving, final_offset);
         }
         self.placed_count += newly_placed;
         scratch.resolved.insert(moving);

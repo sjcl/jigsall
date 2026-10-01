@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use bytemuck::{Pod, Zeroable};
 use puzzella_core::{
-    PieceBitSet, PieceCommand, PieceConnectivity, PieceId, PieceState, PlayerId, PuzzleDefinition,
+    PieceBitSet, PieceCommand, PieceConnectivity, PieceId, PieceScratchSet, PieceState, PlayerId,
+    PuzzleDefinition,
 };
 use std::{
     collections::HashMap,
@@ -359,7 +360,7 @@ impl PieceDataStore {
         mut acceptable: impl FnMut(PieceId) -> bool,
     ) -> PieceBitSet {
         let mut members = self.connectivity.expand(requested);
-        let mut seen = PieceBitSet::new(self.len());
+        let mut seen = PieceScratchSet::new(self.len());
         for id in requested.iter().filter(|id| self.contains(*id)) {
             if self.connectivity.component_size(id) == 1 {
                 if !acceptable(id) {
@@ -445,11 +446,12 @@ impl PieceDataStore {
                 members.insert(*id);
                 self.grab_components(player, &members)
             }
-            PieceCommand::Release(id) if self.contains(*id) => {
-                let mut members = PieceBitSet::new(self.len());
-                members.insert(*id);
-                self.release_components(player, &members, Vec2::ZERO, definition)
-            }
+            PieceCommand::Release(id) if self.contains(*id) => self.release_roots(
+                player,
+                vec![self.connectivity.minimum_member(*id)],
+                Vec2::ZERO,
+                definition,
+            ),
             PieceCommand::Move { id, position } if self.contains(*id) && position.is_finite() => {
                 self.move_component(player, *id, *position, definition);
                 AppliedCommand::default()
@@ -558,20 +560,38 @@ impl PieceDataStore {
         delta: Vec2,
         definition: Option<&PuzzleDefinition>,
     ) -> AppliedCommand {
-        let accepted = self.canonical_members(requested, |id| {
-            self.states[id.0 as usize].flags & PLACED == 0 && self.held_by.get(&id) == Some(&player)
-        });
-        if accepted.is_empty() {
-            return AppliedCommand::default();
-        }
-        let mut seen = PieceBitSet::new(self.len());
-        for id in accepted.iter() {
+        let mut roots = Vec::new();
+        let mut partial_roots = PieceScratchSet::new(self.len());
+        for id in requested.iter() {
             let root = self.connectivity.minimum_member(id);
-            if !seen.contains(&root) {
-                seen.insert(root);
+            // Full masks already contain the minimum: emit that member only.
+            // Deduplication scratch is needed only for partial component masks.
+            if id == root || (!requested.contains(&root) && partial_roots.insert(root)) {
+                roots.push(root);
             }
         }
-        let roots: Vec<_> = seen.iter().collect();
+        roots.sort_unstable();
+        self.release_roots(player, roots, delta, definition)
+    }
+
+    fn release_roots(
+        &mut self,
+        player: PlayerId,
+        mut roots: Vec<PieceId>,
+        delta: Vec2,
+        definition: Option<&PuzzleDefinition>,
+    ) -> AppliedCommand {
+        roots.retain(|&root| {
+            self.connectivity.iter_component(root).all(|id| {
+                self.states[id.0 as usize].flags & PLACED == 0
+                    && self.held_by.get(&id) == Some(&player)
+            })
+        });
+        if roots.is_empty() {
+            return AppliedCommand::default();
+        }
+        let mut released = 0;
+        let clear_drag = player == puzzella_core::LOCAL_PLAYER && !self.drag.members.is_empty();
         // Commit ALL released translations before resolving any snap. A sibling
         // component in this same gesture is a target at its final release position.
         let geometry = definition.map(PuzzleDefinition::geometry);
@@ -606,16 +626,16 @@ impl PieceDataStore {
                 state.flags &= !HELD;
                 self.held_by.occupied.remove(&id);
                 self.dirty_pieces.insert(id);
+                released += 1;
+                if clear_drag {
+                    self.drag.remove(id);
+                }
             }
         }
-        let released = accepted.count();
         let count = self.held_by.counts.get_mut(&player).unwrap();
         *count -= released;
         if *count == 0 {
             self.held_by.counts.remove(&player);
-        }
-        if player == puzzella_core::LOCAL_PLAYER {
-            self.drag.exclude(&accepted);
         }
         let mut placed = 0;
         if let Some(definition) = definition {

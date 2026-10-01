@@ -348,3 +348,79 @@ fn connected_snapping_cpu_benchmark() {
     std::fs::create_dir_all("../target").unwrap();
     std::fs::write("../target/connected-snapping-cpu.csv", csv).unwrap();
 }
+
+#[test]
+#[ignore = "release small-operation benchmark; writes target/small-release-cpu.csv"]
+fn small_component_release_cpu_benchmark() {
+    assert!(!black_box(cfg!(debug_assertions)), "run with --release");
+    let mut csv = String::from("pieces,members,command,run,release_us,released,component_size\n");
+    for count in [1_000, 10_000, 100_000, 1_000_000] {
+        for members in [1, 8, 32] {
+            for command in ["group", "scalar"] {
+                for run in 0..10 {
+                    let d = connected_definition(count);
+                    let mut store = PieceDataStore::default();
+                    store.initialize(
+                        (0..count as u32)
+                            .map(|id| {
+                                d.correct_position(PieceId(id))
+                                    + Vec2::new(
+                                        10_000.0
+                                            + if id > members { id as f32 * 20.0 } else { 0.0 },
+                                        10_000.0,
+                                    )
+                            })
+                            .collect(),
+                    );
+                    for id in 1..members {
+                        store.connectivity.union(PieceId(0), PieceId(id));
+                    }
+                    let id = PieceId(members / 2);
+                    assert_eq!(
+                        store
+                            .apply_command(LOCAL_PLAYER, &PieceCommand::Grab(id), Some(&d))
+                            .grabbed,
+                        members as usize
+                    );
+                    let mut requested = PieceBitSet::new(count);
+                    requested.insert(id);
+                    let release = if command == "group" {
+                        PieceCommand::ReleaseGroup {
+                            members: requested,
+                            delta: Vec2::ONE,
+                        }
+                    } else {
+                        store.apply_command(
+                            LOCAL_PLAYER,
+                            &PieceCommand::Move {
+                                id,
+                                position: store.states[id.0 as usize].position + Vec2::ONE,
+                            },
+                            Some(&d),
+                        );
+                        PieceCommand::Release(id)
+                    };
+                    let target = store.states[members as usize].position;
+                    store.dirty_pieces.clear();
+                    let start = Instant::now();
+                    let outcome = black_box(store.apply_command(LOCAL_PLAYER, &release, Some(&d)));
+                    let elapsed = micros(start);
+                    assert_eq!(outcome.released, members as usize);
+                    assert_eq!(outcome.placed, 0);
+                    assert!(store.held_by.is_empty());
+                    let size = store.connectivity.component_size(PieceId(0));
+                    assert_eq!(size, members as usize + 1);
+                    assert_eq!(store.states[members as usize].position, target);
+                    let row = format!(
+                        "{count},{members},{command},{run},{elapsed:.3},{},{size}\n",
+                        outcome.released
+                    );
+                    print!("{row}");
+                    csv.push_str(&row);
+                }
+            }
+        }
+    }
+    std::fs::create_dir_all("../target").unwrap();
+    std::fs::write("../target/small-release-cpu.csv", csv).unwrap();
+}

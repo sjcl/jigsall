@@ -1,5 +1,5 @@
 //! Permanent connectivity without per-component allocations or entity hierarchies.
-use crate::{PieceBitSet, PieceId, MAX_PIECES};
+use crate::{PieceBitSet, PieceId, PieceScratchSet, MAX_PIECES};
 
 const ID_BITS: u32 = 20;
 const ID_MASK: u32 = (1 << ID_BITS) - 1;
@@ -127,7 +127,7 @@ impl PieceConnectivity {
             normalized.union(requested);
             normalized
         };
-        let mut seen = PieceBitSet::new(self.len());
+        let mut seen = PieceScratchSet::new(self.len());
         for id in requested.iter().filter(|id| (id.0 as usize) < self.len()) {
             if self.parent_or_size[id.0 as usize] < 0 && self.root_size(id) == 1 {
                 continue;
