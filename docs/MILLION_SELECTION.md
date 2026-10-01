@@ -180,7 +180,7 @@ ownership、Z、snapはauthorityの同一loop / sort処理であるため、上�
 | medium_translucent | 1.8018 → 1.5540 | 0.0153 → 0.0212 | 0.0527 → 0.0538 | 0.1229 → 0.1378 |
 | entire_translucent | 2.4526 → 2.0112 | 0.0167 → 0.0163 | 0.5000 → 0.4992 | 0.2402 → 0.2687 |
 
-記録: [CPU 20 samples](benchmarks/million-selection-cpu.csv)、[1M rectangle GPU 5 samples](benchmarks/million-selection-rtx5090.csv)、[current renderer 24 rows](benchmarks/million-selection-renderer-rtx5090.csv)、[base renderer 24 rows](benchmarks/million-selection-baseline-rtx5090.csv)、[environment](benchmarks/million-selection-environment.json)。
+記録: [CPU 20 samples](../benchmarks/million-selection-cpu.csv)、[1M rectangle GPU 5 samples](../benchmarks/million-selection-rtx5090.csv)、[current renderer 24 rows](../benchmarks/million-selection-renderer-rtx5090.csv)、[base renderer 24 rows](../benchmarks/million-selection-baseline-rtx5090.csv)、[environment](../benchmarks/million-selection-environment.json)。
 
 最終validation: fmt、check --locked、all-target / all-feature clippy（warnings denied）、通常test 86件、all-feature test 86件、build、実GPU 7 tests、CPU million-selection benchmark、既存multi-drag pointer benchmarkがすべて成功しました。all-featureのTracy / Windows symbol初期化は既存のSymInitialize code 87を出力しましたが、test / commandは成功しています。
 

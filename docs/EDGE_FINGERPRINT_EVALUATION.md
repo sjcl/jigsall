@@ -10,14 +10,14 @@ seedは`1, 42, 2026, 1311768467463790320`の4種類。1000×1000 gridの**1,998,
 
 既存`edge_fingerprint_preview`にあった「各styleの特徴的な例を探す」処理も削除し、24組の無作為抽出に置き換えました。[初期実装の報告](EDGE_FINGERPRINT.md)に保存された意図的選別の図は過去のfixtureです。現在の識別性の評価には、以下の無作為fixtureを使います。
 
-- [seed 1](benchmarks/edge-assessment/random-matching-1.png)
-- [seed 42](benchmarks/edge-assessment/random-matching-42.png)
-- [seed 2026](benchmarks/edge-assessment/random-matching-2026.png)
-- [seed 1311768467463790320](benchmarks/edge-assessment/random-matching-1311768467463790320.png)
+- [seed 1](../benchmarks/edge-assessment/random-matching-1.png)
+- [seed 42](../benchmarks/edge-assessment/random-matching-42.png)
+- [seed 2026](../benchmarks/edge-assessment/random-matching-2026.png)
+- [seed 1311768467463790320](../benchmarks/edge-assessment/random-matching-1311768467463790320.png)
 
-[manifest CSV](benchmarks/edge-assessment/random-matching-manifest.csv)に、seed、A/Bの対応、orientation、EdgeIdの座標、raw 2値を記録しています。各seedでA/Bが32個ずつ一度だけ現れ、同じrawを凸/凹へ反転しています。全て同じ塗り・線で、画像・class名・style名を手がかりにしません。
+[manifest CSV](../benchmarks/edge-assessment/random-matching-manifest.csv)に、seed、A/Bの対応、orientation、EdgeIdの座標、raw 2値を記録しています。各seedでA/Bが32個ずつ一度だけ現れ、同じrawを凸/凹へ反転しています。全て同じ塗り・線で、画像・class名・style名を手がかりにしません。
 
-![無作為matching、seed 42](benchmarks/edge-assessment/random-matching-42.png)
+![無作為matching、seed 42](../benchmarks/edge-assessment/random-matching-42.png)
 
 ## 2. 縦横比別の輪郭指標
 
@@ -50,7 +50,7 @@ normalized64とdisplay64はどちらも2048 bitsですが、yのsampling間隔�
 | 1:4 | H | 8.762 → **35.742** | 3.443 → **15.292** | 0 |
 | 1:4 | V | 8.944 → **35.960** | 0.415 → **3.216** | 48 |
 
-全seed別・集計値、p10、中央値、min、zero count、正規化Hamming、IoUは[aspect CSV](benchmarks/edge-assessment/aspect-silhouette-metrics.csv)に保存しています。`seed=all`は4seed内の最近傍結果を結合した集計です。4:1 Hのdisplay64ではv4のzero countが1335、v5が70でした。改善しても小さい表示での完全識別には至りません。
+全seed別・集計値、p10、中央値、min、zero count、正規化Hamming、IoUは[aspect CSV](../benchmarks/edge-assessment/aspect-silhouette-metrics.csv)に保存しています。`seed=all`は4seed内の最近傍結果を結合した集計です。4:1 Hのdisplay64ではv4のzero countが1335、v5が70でした。改善しても小さい表示での完全識別には至りません。
 
 ## 3. 各macro軸の実効寄与
 
@@ -71,7 +71,7 @@ widthを変えるとhead/neckの絶対幅、headを変えるとneck幅、これ�
 
 このcontext集合ではcenterが最大、neckが最小の寄与です。無作為contextの1:1 display64でもneckには4/192比較でHamming=0がありました。長辺4:1ではcenter以外の5軸にzeroがあります。表示幅やcontextによって、parameterが異なるだけではpixelとして区別できません。
 
-H/V・全5比・3raster・軸別・隣接境界別の値は[axis CSV](benchmarks/edge-assessment/axis-contribution.csv)です。`from_class=-1,to_class=-1`が軸の全境界を合わせた行、他は特定の隣接classの行です。各行に最も小さかった比較の変更前後rawを含めており、潰れた例を再構成できます。
+H/V・全5比・3raster・軸別・隣接境界別の値は[axis CSV](../benchmarks/edge-assessment/axis-contribution.csv)です。`from_class=-1,to_class=-1`が軸の全境界を合わせた行、他は特定の隣接classの行です。各行に最も小さかった比較の変更前後rawを含めており、潰れた例を再構成できます。
 
 ## 4. large head + wide + extreme skewの分離
 
@@ -94,7 +94,7 @@ normalized64ではratio1/2/4の全比較が非zero、display256でも全比較�
 
 下図はdisplay64で最も近かった変更前後のペアを、確認しやすい200 px幅で表示しています。図で微小差が見えても、64 pxのmaskで差がない場合があります。
 
-![最も分離が弱かった隣接class](benchmarks/edge-assessment/worst-class-separation.png)
+![最も分離が弱かった隣接class](../benchmarks/edge-assessment/worst-class-separation.png)
 
 ## 5. 人間向けのmatching tool
 
@@ -113,7 +113,7 @@ SVGの輪郭は既存Rust `sd_tab`のzero contourをofflineでsampleしたもの
 
 同じseedの繰り返しには学習効果があります。実験ではseed/順序、候補数、縦横比を記録して分けて集計してください。現時点では人間の測定値はありません。下図と自動テストの回答は**QA synthetic**で、人間の能力の評価には含めません。
 
-![人間向けmatching tool](benchmarks/edge-assessment/edge-matching-tool.png)
+![人間向けmatching tool](../benchmarks/edge-assessment/edge-matching-tool.png)
 
 ## 再生成と検証
 

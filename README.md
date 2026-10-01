@@ -4,7 +4,7 @@
 
 ## 起動
 
-Rust 1.95以上とOSに対応するC/C++リンカーが必要です。Windowsの詳細は[WINDOWS_BUILD.md](WINDOWS_BUILD.md)を参照してください。
+Rust 1.95以上とOSに対応するC/C++リンカーが必要です。Windowsの詳細は[WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md)を参照してください。
 
 ```sh
 cargo run --locked
@@ -59,7 +59,7 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 | `puzzella-puzzle` / `puzzle/` | v5形状のCPU参照、配置、grid、feature限定のv2生成・fingerprint解析 |
 | `puzzella-ui` / `ui/` | egui画面 |
 
-詳細は[ARCHITECTURE.md](ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](GPU_PICKING.md)、透明sortの現行計測は[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、v5の識別性と単色プレビューは[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
+詳細は[ARCHITECTURE.md](docs/ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](docs/GPU_PICKING.md)、透明sortの現行計測は[TRANSPARENT_RADIX_SORT.md](docs/TRANSPARENT_RADIX_SORT.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](docs/PROCEDURAL_RENDERER.md)、v4の付け根修正は[ROOT_TRANSITION.md](docs/ROOT_TRANSITION.md)、v5の識別性と単色プレビューは[EDGE_FINGERPRINT.md](docs/EDGE_FINGERPRINT.md)を参照してください。
 
 ## 検証・計測
 
@@ -80,9 +80,9 @@ cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-referenc
 cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_assessment -- target/edge-assessment
 ```
 
-2026-10-01、Windows / Rust 1.97 / RTX 5090（Vulkan）で通常45件と実GPU3件を確認しました。v5の4096²画像・1024² offscreen・100万ピース全体表示のGPU drawは、3runの中央値で不透明0.5133 ms、半透明0.5189 msです。1024辺の最近傍輪郭距離はv4の約4.15倍になりました。[v5報告書](EDGE_FINGERPRINT.md)に全クラス、preview、計測条件と制限を記載しています。
+2026-10-01、Windows / Rust 1.97 / RTX 5090（Vulkan）で通常45件と実GPU3件を確認しました。v5の4096²画像・1024² offscreen・100万ピース全体表示のGPU drawは、3runの中央値で不透明0.5133 ms、半透明0.5189 msです。1024辺の最近傍輪郭距離はv4の約4.15倍になりました。[v5報告書](docs/EDGE_FINGERPRINT.md)に全クラス、preview、計測条件と制限を記載しています。
 
-形状を変更せず識別性評価を強化した結果と、正誤・回答時間を記録するローカルHTML toolの使い方は[追加評価](EDGE_FINGERPRINT_EVALUATION.md)に記載しています。4:1の長辺を64 px幅で表示すると隣接classの一部が同じmaskになり、高解像度の形状差と小さな表示での識別性を分けて扱う必要があります。評価追加後の通常49件とブラウザQAを確認しました。
+形状を変更せず識別性評価を強化した結果と、正誤・回答時間を記録するローカルHTML toolの使い方は[追加評価](docs/EDGE_FINGERPRINT_EVALUATION.md)に記載しています。4:1の長辺を64 px幅で表示すると隣接classの一部が同じmaskになり、高解像度の形状差と小さな表示での識別性を分けて扱う必要があります。評価追加後の通常49件とブラウザQAを確認しました。
 
 ## プロファイリング
 

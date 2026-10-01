@@ -39,7 +39,7 @@ cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --t
 cargo test -p puzzella-game --release --locked procedural_gpu_benchmark -- --ignored --nocapture
 ```
 
-benchmarkは1k / 10k / 100k / 1Mで、不透明・透明それぞれのnear / medium / entireを計測します。GPU時間はtimestampで30 frames平均、frame時間はoffscreen描画とGPU同期waitを含むfixture時間です。sort時間は準備・圧縮を含み、cull時間は別に記録します。実測24行は[CSV](benchmarks/radix-sort-rtx5090.csv)に記録しています。1024² offscreen、4096² RGBA8画像、v5 shape、同じdense stateを正解位置へ並べた状態です。
+benchmarkは1k / 10k / 100k / 1Mで、不透明・透明それぞれのnear / medium / entireを計測します。GPU時間はtimestampで30 frames平均、frame時間はoffscreen描画とGPU同期waitを含むfixture時間です。sort時間は準備・圧縮を含み、cull時間は別に記録します。実測24行は[CSV](../benchmarks/radix-sort-rtx5090.csv)に記録しています。1024² offscreen、4096² RGBA8画像、v5 shape、同じdense stateを正解位置へ並べた状態です。
 
 | N | 透明view | visible | histogram / scatterのworkgroups / pass | sort GPU ms | cull GPU ms |
 | ---: | --- | ---: | ---: | ---: | ---: |

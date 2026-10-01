@@ -56,4 +56,4 @@ cargo test -p puzzella-game --release --locked procedural_gpu_benchmark -- --ign
 
 2026-10-01、RTX 5090 / Vulkanで成功しました。Rust / WGSL raw hash、約9604画素のCPU shapeと実描画coverage、tab・neck・blank、Z順序、alpha blend、透明穴越しの選択、tabだけの可視性、camera移動、pan / zoom / viewport offset、16-byte単一uploadとidle 0-byte uploadを確認しました。
 
-移行時の計測は1k / 10k / 100k / 1Mのnear / medium / entireと全体半透明表示です。[CSV](benchmarks/procedural-rtx5090.csv)と[計測条件](PROCEDURAL_RENDERER.md)を参照してください。現在のradix sortでは半透明のnear / medium / entireも計測し、[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)に記録しています。GPU完了waitは検証・計測fixture限定です。
+移行時の計測は1k / 10k / 100k / 1Mのnear / medium / entireと全体半透明表示です。[CSV](../benchmarks/procedural-rtx5090.csv)と[計測条件](PROCEDURAL_RENDERER.md)を参照してください。現在のradix sortでは半透明のnear / medium / entireも計測し、[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)に記録しています。GPU完了waitは検証・計測fixture限定です。

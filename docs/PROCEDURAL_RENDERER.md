@@ -22,7 +22,7 @@
 | 12 | dirty upload | 初期だけ全state転送。dirty IDをsortし連続rangeへcoalesce。ExtractはArc clone。実GPUで1個移動16 bytes / 1 write、idle 0 bytesをassert |
 | 13 | picking統合 | state・main visible・quad・profile・SDF・UV・alpha discardを共有。ROI computeで追加圧縮。point 1×1 / 4-byte readback、rectangle bitset、最大3 async slotsと要求順序を維持 |
 | 14 | placement計算量 | 中央除外領域外に非重複格子リングを構築し、ChaCha8 Fisher–Yatesでshuffle。O(N)時間・O(N)領域。距離の全件重複探索なし |
-| 15 | 1k / 10k / 100k / 1M | 下表と[16行CSV](benchmarks/procedural-rtx5090.csv)にCPU・GPU・メモリ・visible・countを記録 |
+| 15 | 1k / 10k / 100k / 1M | 下表と[16行CSV](../benchmarks/procedural-rtx5090.csv)にCPU・GPU・メモリ・visible・countを記録 |
 | 16 | 全体表示frame | 1M opaque平均2.1695 ms、translucent平均7.7960 ms（1024² offscreen、GPU同期完了wait込み） |
 | 17 | 移行時の最大ボトルネック | 当時の半透明GPU bitonic sort：1Mで210 dispatches、平均2.5750 ms。現在はvisible countを対象としたradix sortへ変更済み |
 
@@ -61,7 +61,7 @@ UVは((cell + .5) * piece_size + (local.x, -local.y)) / image_sizeです。tab�
 
 比較previewは同じseed / grid / sizeのv2輪郭とv3を並べます。v3側はCPU参照の1 px sampleです。version変更による輪郭差を明示し、旧保存形状との互換は主張しません。
 
-![v2 / v3比較](benchmarks/shape-comparison.png)
+![v2 / v3比較](../benchmarks/shape-comparison.png)
 
 ## 計測条件
 
@@ -165,4 +165,4 @@ cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --t
 cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
 ```
 
-benchmarkはtarget/procedural-benchmark.csvを更新します。今回の記録は[benchmarks/procedural-rtx5090.csv](benchmarks/procedural-rtx5090.csv)。通常lyon除外はcargo tree --locked -e normal -i lyonで確認できます。
+benchmarkはtarget/procedural-benchmark.csvを更新します。今回の記録は[benchmarks/procedural-rtx5090.csv](../benchmarks/procedural-rtx5090.csv)。通常lyon除外はcargo tree --locked -e normal -i lyonで確認できます。

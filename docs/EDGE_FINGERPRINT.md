@@ -41,9 +41,9 @@ depthは`low = base × 0.85 / 0.99`、`high = min(base × 1.15, 0.215) / 1.01`�
 | Shallow | 0.120202 | 0.133270 | 0.146338 | 0.159406 |
 | Pear | 0.163131 | 0.179711 | 0.196291 | 0.212871 |
 
-上表はmacro中心値です。実際のbyte値で得られる全classのmin/maxは[class-values CSV](benchmarks/edge-fingerprint-class-values.csv)に保存しました。他の5 sampleを128に固定し、幅・深さ・中心はedge/shortに対する比率、neck/headとhead/widthは比率を記録しています。headの絶対幅にはwidth側のmicroも乗るため最大約±2%、neckの絶対幅には3軸のmicroが乗り最大約±3%ですが、比較しやすい比率そのものは±1%です。全256 sampleを走査し、各軸の実値が厳密に増加し、microで隣のclassを逆転しないことをテストしています。
+上表はmacro中心値です。実際のbyte値で得られる全classのmin/maxは[class-values CSV](../benchmarks/edge-fingerprint-class-values.csv)に保存しました。他の5 sampleを128に固定し、幅・深さ・中心はedge/shortに対する比率、neck/headとhead/widthは比率を記録しています。headの絶対幅にはwidth側のmicroも乗るため最大約±2%、neckの絶対幅には3軸のmicroが乗り最大約±3%ですが、比較しやすい比率そのものは±1%です。全256 sampleを走査し、各軸の実値が厳密に増加し、microで隣のclassを逆転しないことをテストしています。
 
-![各軸だけを変更した例](benchmarks/edge-fingerprint-classes.png)
+![各軸だけを変更した例](../benchmarks/edge-fingerprint-classes.png)
 
 ## 分布と輪郭の識別性
 
@@ -61,7 +61,7 @@ seed 42、1000×1000 gridに収まる100,000個のinternal EdgeIdを使用しま
 | head | 24928, 24807, 24945, 25320 |
 | skew | 14429, 14445, 14111, 14426, 13970, 14493, 14126 |
 
-[histogram CSV](benchmarks/edge-fingerprint-histogram.csv)、[測定結果](benchmarks/edge-fingerprint-metrics.txt)も保存しています。
+[histogram CSV](../benchmarks/edge-fingerprint-histogram.csv)、[測定結果](../benchmarks/edge-fingerprint-metrics.txt)も保存しています。
 
 輪郭の比較には先頭1024 EdgeIdを使いました。100×100の正方セルを想定し、edge全幅のx=0..100、tabのy=0..22を64×32 pixel中心でsampleしたbinary mask（2048 bits、`EdgeSilhouetteDescriptor`）です。v5は実際の`edge_distance()`、v4はfeature限定の凍結decoderと同じv4 SDFを用います。polarityだけ凸に正規化し、centerは正規化しません。同じ1024本から自身を除いた最近傍をHamming距離で選び、そのペアのIoUも計算しました。shared edgeの反対側を非対応候補に混ぜていません。
 
@@ -74,27 +74,27 @@ seed 42、1000×1000 gridに収まる100,000個のinternal EdgeIdを使用しま
 | Hamming=0の辺数 | 2 | **0** |
 | 最近傍ペアの平均IoU（大きいほど似ている） | 0.979827 | **0.915429** |
 
-全ペアの最近傍記録は[nearest CSV](benchmarks/edge-fingerprint-nearest.csv)です。これはsquare-cell・指定seed・指定解像度での数値評価で、人間のmatching正答率の測定ではありません。極めて似たv5候補も残るため、完全一意性は主張しません。下図は各versionで特に近い4ペアです。
+全ペアの最近傍記録は[nearest CSV](../benchmarks/edge-fingerprint-nearest.csv)です。これはsquare-cell・指定seed・指定解像度での数値評価で、人間のmatching正答率の測定ではありません。極めて似たv5候補も残るため、完全一意性は主張しません。下図は各versionで特に近い4ペアです。
 
-![最近傍の輪郭](benchmarks/edge-fingerprint-nearest.png)
+![最近傍の輪郭](../benchmarks/edge-fingerprint-nearest.png)
 
 ## 単色のmatching・worst case・1000ピース
 
-24凸辺と、同じrawを凹へ反転した24辺を独立のcoprime permutationでシャッフルしています。6styleにつき、左中心/左lean/浅い、右中心/右lean/深い、中央/細い首/大head、中央/太い首/小headの4例を実hashから探しました。全形状のtexture/colorは同じです。[SVG](benchmarks/edge-fingerprint-preview.svg)と[解答・fingerprint CSV](benchmarks/edge-fingerprint-answer-key.csv)を用意しました。
+24凸辺と、同じrawを凹へ反転した24辺を独立のcoprime permutationでシャッフルしています。6styleにつき、左中心/左lean/浅い、右中心/右lean/深い、中央/細い首/大head、中央/太い首/小headの4例を実hashから探しました。全形状のtexture/colorは同じです。[SVG](../benchmarks/edge-fingerprint-preview.svg)と[解答・fingerprint CSV](../benchmarks/edge-fingerprint-answer-key.csv)を用意しました。
 
-![画像情報を使わないmatching](benchmarks/edge-fingerprint-preview.png)
+![画像情報を使わないmatching](../benchmarks/edge-fingerprint-preview.png)
 
 worst caseはcenter両端、最大width/head、skew両端、neck/depth各4class、全6styleの384 profilesです。下図は浅い/深い・細い/太い首を抜き出した36例（後半2列は凹）です。実SDFの横断面に対するoffline bisectionで輪郭を描いており、runtime shaderにsolverは追加していません。
 
-![最も厳しい組み合わせ](benchmarks/edge-fingerprint-worst.png)
+![最も厳しい組み合わせ](../benchmarks/edge-fingerprint-worst.png)
 
 40×25、seed 42の全1000ピースも同じ塗りで描きました。内側の線はこのpreview専用で、通常ゲームの未選択ピースへのoutlineは追加していません。共有輪郭から生成しているため組み立て時も凸凹が接合します。
 
-![1000ピースの単色パズル](benchmarks/edge-fingerprint-puzzle.png)
+![1000ピースの単色パズル](../benchmarks/edge-fingerprint-puzzle.png)
 
 v2は自然さの比較用featureとして維持し、6styleの拡大図も再生成して確認しました。hashとgeneratorが異なるためv2との完全一致を要求していません。
 
-![v2とv5の自然さの比較](benchmarks/fingerprint-v2-v5-roots.png)
+![v2とv5の自然さの比較](../benchmarks/fingerprint-v2-v5-roots.png)
 
 ## 安全性・互換性・parity
 
@@ -116,7 +116,7 @@ GPUではstyle定数とdepth区間をコンパイル時に畳み込みます。�
 
 Windows / Rust 1.97 / RTX 5090 / Vulkan / release、seed 42、4096² RGBA8画像、1024² offscreen、8 warmup後30 frame平均です。ピースを正解位置へ配置し、1M entireでは100万visibleをassertします。ベンチマークにだけGPU完了pollがあり、通常runtimeにはありません。
 
-完全なv4基準コミットでの[before CSV](benchmarks/fingerprint-v4-before.csv)とv5の[after CSV](benchmarks/fingerprint-v5-after.csv)では1M opaque draw **0.5075→0.4961 ms**、translucent draw **0.5172→0.5146 ms**でした。ばらつきを確認するため、同じv5 CPU fixtureでshaderをHEADのv4へ戻した3 runと、最終v5 shaderの3 runも測りました。GPU shape以外のstate/seed/grid/camera/buffer条件は共通です。各runは30 frame平均、以下はその3値の中央値です。
+完全なv4基準コミットでの[before CSV](../benchmarks/fingerprint-v4-before.csv)とv5の[after CSV](../benchmarks/fingerprint-v5-after.csv)では1M opaque draw **0.5075→0.4961 ms**、translucent draw **0.5172→0.5146 ms**でした。ばらつきを確認するため、同じv5 CPU fixtureでshaderをHEADのv4へ戻した3 runと、最終v5 shaderの3 runも測りました。GPU shape以外のstate/seed/grid/camera/buffer条件は共通です。各runは30 frame平均、以下はその3値の中央値です。
 
 | 1M view | visible | v4 draw ms | v5 draw ms | 変化 | v4の3run範囲 | v5の3run範囲 |
 | --- | ---: | ---: | ---: | ---: | --- | --- |
@@ -128,7 +128,7 @@ Windows / Rust 1.97 / RTX 5090 / Vulkan / release、seed 42、4096² RGBA8画像
 opaque entireは全runが0.55 ms以下、中央値が+5%目標内です。nearの最も遅いrunは0.0569 msで、単独比較では相対増加が大きく見えるため、無変動とは主張しません。translucentのGPU sort中央値は2.5515→2.5228 msで、alpha blend/透過穴/Z順序の実GPU回帰テストも通りました。GPU完了待ちを含むopaque entireのCPU wall timeはv4 1.4984〜1.8263 ms、v5 1.5506〜2.1860 ms、translucentはv4 6.4688〜6.9482 ms、v5 6.9847〜7.3491 msです。これらを通常ウィンドウのFPSやshader単体の速度として扱いません。
 
 repeatの全16条件（1k/10k/100k/1M × near/medium/entire/translucent）の記録:
-[v4-1](benchmarks/fingerprint-v4-repeat-1.csv)、[v4-2](benchmarks/fingerprint-v4-repeat-2.csv)、[v4-3](benchmarks/fingerprint-v4-repeat-3.csv)、[v5-1](benchmarks/fingerprint-v5-repeat-1.csv)、[v5-2](benchmarks/fingerprint-v5-repeat-2.csv)、[v5-3](benchmarks/fingerprint-v5-repeat-3.csv)。
+[v4-1](../benchmarks/fingerprint-v4-repeat-1.csv)、[v4-2](../benchmarks/fingerprint-v4-repeat-2.csv)、[v4-3](../benchmarks/fingerprint-v4-repeat-3.csv)、[v5-1](../benchmarks/fingerprint-v5-repeat-1.csv)、[v5-2](../benchmarks/fingerprint-v5-repeat-2.csv)、[v5-3](../benchmarks/fingerprint-v5-repeat-3.csv)。
 
 `GpuPieceState`/CPU dense stateは引き続き**16 bytes/piece**、profile storageは**0 bytes/piece**です。rawの`[u32;2]`と4辺のflat varyingを維持し、GPU storage、shared quad寸法、per-piece Mesh/Entity、draw数は増やしていません。1MではCPU/GPU state各16,000,000 bytes、visible/pick visible各4,194,304 bytes、selectable 125,000 bytes、selection+staging 262,144 bytes、画像CPU/GPU各67,108,864 bytes。per-piece Mesh/Entityは0、Bevy組み込みMesh assetが1、通常drawが1のままです。pickingと通常描画は同じshape moduleを使います。
 

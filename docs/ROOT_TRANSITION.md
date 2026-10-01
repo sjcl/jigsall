@@ -52,11 +52,11 @@ max(-y)のbaseline clippingは残しています。edge_distanceのpositive unio
 
 赤破線はv2のBezier、青の塗りと暗い輪郭はv4です。styleを揃えるためseedをgeneratorごとに探索し、各seedを図に記載しています。hashが異なるv2との完全一致を主張する比較ではありません。blankは同じpositive profileのpolarityを反転して実際のsubtract式をsampleしています。
 
-![6styleの凸・凹](benchmarks/root-v4-styles.png)
+![6styleの凸・凹](../benchmarks/root-v4-styles.png)
 
 全styleでrootは広い平坦な肩から曲線へ変わりました。Wideも横長boxの裾を持たず、Narrowはneckを維持、Deepは深さを維持、Shallowは短い接続でも曲率を保持、Pearはheadの非対称性を維持しています。
 
-![同じseedの組み立て比較](benchmarks/root-v4-assembled.png)
+![同じseedの組み立て比較](../benchmarks/root-v4-assembled.png)
 
 previewはCPU参照をsampleした検証図で、通常プレイの常時outlineではありません。通常ピースは引き続き画像色のみ、選択 / preview時だけ輪郭を描きます。
 
@@ -74,7 +74,7 @@ entireのGPU draw差は約-4%です。1回の計測で、GPU clockや環境負�
 
 旧1 ellipse + 2 rounded boxesと同様、今回もhead ellipse・stem rounded box・root ellipseの3つのlengthと2 smooth_minです。shaderへのloop、反復solver、三角関数、cubic root solveは追加していません。
 
-1k / 10k / 100k / 1M、opaqueのnear / medium / entireとentire translucentを再計測しました。元データは[before CSV](benchmarks/root-v3-before.csv)と[after CSV](benchmarks/root-v4-after.csv)です。
+1k / 10k / 100k / 1M、opaqueのnear / medium / entireとentire translucentを再計測しました。元データは[before CSV](../benchmarks/root-v3-before.csv)と[after CSV](../benchmarks/root-v4-after.csv)です。
 
 ## Generator compatibility
 

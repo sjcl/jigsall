@@ -70,7 +70,7 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 背景workerは中央除外領域外の格子リングslotを最終dense state領域へ直接書き込み、ChaCha8でshuffleしてからID順のZを割り当てます。main worldはその領域の所有権を受け取り、position Vecや全stateの初回uploadコピーを作りません。100万件の生成領域は16,000,000 bytesとArc headerです。GPU storage limitとpipelineエラーは生成失敗として表示します。GPU bufferとmain pipelineの準備後にPlayingへ進みます。ピースごとのasset登録phaseはありません。
 
-[CPU benchmark](game/examples/initialization_bench.rs)と[CSV](benchmarks/dense-initialization.csv)は4096²画像寸法・seed 42・releaseで各サイズ5回です。100万件の中央値はworker生成6.4783 ms、main側の所有権受け取り0.0024 ms、初回upload準備を含む`app.update` 0.0810 msでした。schedule overheadを含み、実GPU upload・GPU準備待ち・worker threadの起動時間は含みません。生成・受け取り・初回upload・共有解放後の編集で同じallocationを使うこともassertしています。論理allocationの削減であり、OS RSSのピークは未測定です。
+[CPU benchmark](../game/examples/initialization_bench.rs)と[CSV](../benchmarks/dense-initialization.csv)は4096²画像寸法・seed 42・releaseで各サイズ5回です。100万件の中央値はworker生成6.4783 ms、main側の所有権受け取り0.0024 ms、初回upload準備を含む`app.update` 0.0810 msでした。schedule overheadを含み、実GPU upload・GPU準備待ち・worker threadの起動時間は含みません。生成・受け取り・初回upload・共有解放後の編集で同じallocationを使うこともassertしています。論理allocationの削減であり、OS RSSのピークは未測定です。
 
 画像workerはデコード結果を`into_rgba8`で消費し、既にRGBA8ならpixel領域を再利用します。画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.19.1のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldにはImageの寸法などのmetadataとhandle、PuzzleImageのopaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
 

@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-Repository guidance for Claude Code. Read [INSTRUCTION.md](INSTRUCTION.md) for the development scope, [GPU_PICKING.md](GPU_PICKING.md) for the current GPU picking implementation and checks, and [ARCHITECTURE.md](ARCHITECTURE.md) for the gameplay architecture.
+Repository guidance for Claude Code. Read [INSTRUCTION.md](docs/INSTRUCTION.md) for the development scope, [GPU_PICKING.md](docs/GPU_PICKING.md) for the current GPU picking implementation and checks, and [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the gameplay architecture.
 
 ## Build and verification
 
-Rust 1.95+ is required. Windows is the verified build platform; see [WINDOWS_BUILD.md](WINDOWS_BUILD.md).
+Rust 1.95+ is required. Windows is the verified build platform; see [WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md).
 
 ```sh
 cargo run --locked
@@ -21,7 +21,7 @@ Use release mode for performance measurements. Tracy and Chrome tracing remain a
 
 - Bevy 0.19.1 and bevy_egui 0.42. Windows pins wgpu-hal 29.0.3 for dependency compatibility.
 - AppState is Menu / GameSetup / InGame / GameComplete. GameSubState is Initializing / Playing / Paused and exists only inside InGame. There is no GameScreen or legacy compatibility state.
-- The Cargo workspace contains the thin `puzzella` binary and `puzzella-core`, `puzzella-puzzle`, `puzzella-game`, `puzzella-ui` libraries. Dependency versions and package metadata are inherited from the root manifest; all packages share one lockfile. See ARCHITECTURE.md for ownership and dependency direction.
+- The Cargo workspace contains the thin `puzzella` binary and `puzzella-core`, `puzzella-puzzle`, `puzzella-game`, `puzzella-ui` libraries. Dependency versions and package metadata are inherited from the root manifest; all packages share one lockfile. See docs/ARCHITECTURE.md for ownership and dependency direction.
 - `core/src/gameplay.rs` owns serializable PuzzleDefinition, stable PieceId / PlayerId, immutable PuzzlePiece, mutable PieceState, and pure command / snap decisions. It depends only on ECS markers, math and serde, without rendering or UI.
 - `core/src/commands.rs` provides the local ClientCommand boundary. There is no active transport, Renet integration, host / join implementation, or port UI.
 - `puzzella-puzzle` owns CPU shape / placement / mesh generation. `puzzella-game` owns the Bevy lifecycle, workers and presentation. `puzzella-ui` owns egui screens and GameUiPlugin. Resource definitions live in `game/src/resources/`; GPU selection is split into API, coordinates and render modules under `selection/`.

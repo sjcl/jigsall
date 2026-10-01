@@ -32,4 +32,4 @@ Bevy 0.19.1 / bevy_egui 0.42を使用します。Windows向けのwgpu-halはCarg
 
 旧Renet試作は削除済みです。Renet importの変更や、gpu-allocatorの古いpatchを追加する必要はありません。
 
-形状生成・入力・状態の設計と今後の課題は[ARCHITECTURE.md](ARCHITECTURE.md)、操作方法は[README.md](README.md)を参照してください。
+形状生成・入力・状態の設計と今後の課題は[ARCHITECTURE.md](ARCHITECTURE.md)、操作方法は[README.md](../README.md)を参照してください。
