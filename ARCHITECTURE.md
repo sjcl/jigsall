@@ -35,7 +35,7 @@ puzzella
 
 ## CPU正本と入力
 
-`PieceDataStore.states: Vec<GpuPieceState>`が正本です。`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。holderはsparse HashMap、確定選択・dirty IDは集合です。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPUへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。
+`PieceDataStore.states: DensePieceStates`が正本です。内部は固定長の`Arc<[GpuPieceState]>`で、`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。holderはsparse HashMap、確定選択・dirty IDは集合です。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPUへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。
 
 ```text
 mouse / Ctrl / rectangle / multi-drag
@@ -55,7 +55,7 @@ Moveの最終座標を適用してからReleaseとsnapを処理します。snap�
 
 ## Dirty同期とZ順序
 
-Last scheduleで選択に変更がある場合だけflagsを同期します。初期化時は全stateを一度Arcへコピーし、その後はdirty IDをsortして連続rangeへまとめます。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
+Last scheduleで選択に変更がある場合だけflagsを同期します。初回uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。その後はdirty IDをsortして連続rangeへまとめます。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
 
 初期ZはID、next_zはpiece_count。Grabでnext_z++を割り当て、グループ内の順序を維持します。shaderは24-bit整数範囲のreverse-Zへ変換します。100万ピースでは約1577万回のfront操作まで再圧縮不要です。上限でのみ順序を保つO(N log N)のslow pathを実行します。
 
@@ -68,7 +68,11 @@ GameSubState: Initializing → Playing ⇄ Paused
 Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Failed
 ```
 
-背景workerは中央除外領域外に格子リングslotを生成し、ChaCha8でshuffleします。main worldが結果をdense state化します。GPU storage limitとpipelineエラーは生成失敗として表示します。GPU bufferとmain pipelineの準備後にPlayingへ進みます。ピースごとのasset登録phaseはありません。
+背景workerは中央除外領域外の格子リングslotを最終dense state領域へ直接書き込み、ChaCha8でshuffleしてからID順のZを割り当てます。main worldはその領域の所有権を受け取り、position Vecや全stateの初回uploadコピーを作りません。100万件の生成領域は16,000,000 bytesとArc headerです。GPU storage limitとpipelineエラーは生成失敗として表示します。GPU bufferとmain pipelineの準備後にPlayingへ進みます。ピースごとのasset登録phaseはありません。
+
+[CPU benchmark](game/examples/initialization_bench.rs)と[CSV](benchmarks/dense-initialization.csv)は4096²画像寸法・seed 42・releaseで各サイズ5回です。100万件の中央値はworker生成6.4783 ms、main側の所有権受け取り0.0024 ms、初回upload準備を含む`app.update` 0.0810 msでした。schedule overheadを含み、実GPU upload・GPU準備待ち・worker threadの起動時間は含みません。生成・受け取り・初回upload・共有解放後の編集で同じallocationを使うこともassertしています。論理allocationの削減であり、OS RSSのピークは未測定です。
+
+画像workerはデコード結果を`into_rgba8`で消費し、既にRGBA8ならpixel領域を再利用します。画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.19.1のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldにはImageの寸法などのmetadataとhandle、PuzzleImageのopaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
 
 完成画面ではパズルを残します。Menuへ戻る際、定義・state・画像・背景・選択・gesture・overlay・worker受信器・命令を清掃します。epochでGPU stateを作り直し、request IDをセッション間で再使用せず、前セッションの遅延readbackを無効にします。
 

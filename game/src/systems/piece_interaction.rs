@@ -218,10 +218,13 @@ mod tests {
                     vertices: vertices.iter().map(|&vertex| Vec2::from(vertex)).collect(),
                     indices: indices.clone(),
                 });
-            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
-            store.states.push(GpuPieceState::new(position, id));
-            store.next_z_order = 3;
         }
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .initialize(vec![Vec2::new(100.0, 100.0), Vec2::new(300.0, 100.0)]);
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .next_z_order = 3;
         app
     }
 

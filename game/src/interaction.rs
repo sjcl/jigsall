@@ -450,9 +450,9 @@ mod tests {
     fn cancellation_commits_last_valid_delta_once_and_releases_other_local_holds() {
         for focus_loss in [false, true] {
             let (mut interaction, mut store, mut selection) = begin(33);
-            store
-                .states
-                .push(GpuPieceState::new(Vec2::ZERO, PieceId(33)));
+            let mut states = store.states.to_vec();
+            states.push(GpuPieceState::new(Vec2::ZERO, PieceId(33)));
+            store.states = states.into();
             let mut other = store.state(PieceId(33)).unwrap();
             other.held_by = Some(LOCAL_PLAYER);
             store.set_state(PieceId(33), other);

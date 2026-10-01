@@ -1,7 +1,6 @@
 use crate::{components::*, resources::*};
 use bevy::prelude::*;
 use puzzella_core::PuzzleDefinition;
-use puzzella_puzzle::placement::generate_placement_grid;
 #[allow(clippy::too_many_arguments)]
 pub fn generate_puzzle_state(
     definition: Option<Res<PuzzleDefinition>>,
@@ -24,24 +23,15 @@ pub fn generate_puzzle_state(
         let def = definition.clone();
         let (tx, rx) = crossbeam::channel::bounded(1);
         std::thread::spawn(move || {
-            let size = def.image_size.as_vec2() / def.grid_size.as_vec2();
-            let positions = generate_placement_grid(
-                def.grid_size.x as usize,
-                def.grid_size.y as usize,
-                size.x,
-                size.y,
-                def.image_size.x as f32,
-                def.image_size.y as f32,
-                def.seed,
-            );
-            let _ = tx.send(Ok(positions));
+            let states = DensePieceStates::generate(&def);
+            let _ = tx.send(Ok(states));
         });
         progress.receiver = Some(rx);
     }
     if let Some(rx) = &progress.receiver {
         match rx.try_recv() {
-            Ok(Ok(positions)) => {
-                store.initialize(positions);
+            Ok(Ok(states)) => {
+                store.initialize_dense(states);
                 progress.pieces_created = store.len();
                 progress.receiver = None;
                 progress.generation_phase = GenerationPhase::UploadingGpu;

@@ -143,13 +143,14 @@ pub fn start_thread_image_load(
             );
             let dynamic_image = image::load_from_memory(&image_bytes)
                 .map_err(|e| format!("Failed to decode image: {}", e))?;
+            drop(image_bytes);
 
             // RGBA変換
             println!(
                 "🎨 WORKER THREAD [{:?}]: Image decode complete, starting RGBA conversion...",
                 std::thread::current().id()
             );
-            let rgba_image = dynamic_image.to_rgba8();
+            let rgba_image = dynamic_image.into_rgba8();
             let (width, height) = rgba_image.dimensions();
             let rgba_data = rgba_image.into_raw();
 
@@ -163,7 +164,8 @@ pub fn start_thread_image_load(
                 bevy::render::render_resource::TextureDimension::D2,
                 rgba_data,
                 bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                bevy::asset::RenderAssetUsages::all(),
+                // Bevy moves pixels into the render world and retains Image metadata.
+                bevy::asset::RenderAssetUsages::RENDER_WORLD,
             );
 
             println!(
@@ -206,4 +208,148 @@ pub fn start_thread_image_load(
         "🔍 MAIN THREAD [{:?}]: Worker thread spawned",
         std::thread::current().id()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::{
+        asset::RenderAssetUsages,
+        render::{render_asset::RenderAsset, texture::GpuImage},
+    };
+
+    #[test]
+    fn decoded_image_moves_pixels_to_render_world_and_keeps_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "puzzella-image-load-{}-{}.png",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let pixels = vec![
+            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 255, 255, 255, 255,
+        ];
+        image::RgbaImage::from_raw(2, 2, pixels.clone())
+            .unwrap()
+            .save(&path)
+            .unwrap();
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        start_thread_image_load("fixture.png".into(), path.clone(), tx);
+        let result = rx.recv_timeout(std::time::Duration::from_secs(10));
+        std::fs::remove_file(path).unwrap();
+        let mut image = result.unwrap().image.unwrap();
+        assert_eq!(image.asset_usage, RenderAssetUsages::RENDER_WORLD);
+        assert!(!crate::resources::images::image_is_opaque(&image));
+        let allocation = image.data.as_ref().unwrap().as_ptr();
+        let extracted = GpuImage::take_gpu_data(&mut image, None).unwrap();
+        assert_eq!(extracted.data.as_ref().unwrap().as_ptr(), allocation);
+        assert_eq!(extracted.data.as_ref().unwrap(), &pixels);
+        assert!(image.data.is_none());
+        assert_eq!(image.size(), UVec2::new(2, 2));
+        assert_eq!(
+            image.texture_descriptor.format,
+            extracted.texture_descriptor.format
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a real GPU"]
+    fn render_only_image_upload_keeps_metadata_and_pixel_values() {
+        use bevy::render::{
+            render_asset::RenderAssets,
+            render_resource::*,
+            renderer::{RenderDevice, RenderQueue},
+            RenderApp,
+        };
+        use std::time::Duration;
+
+        let mut app = App::new();
+        app.add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .disable::<bevy::log::LogPlugin>()
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+        );
+        app.finish();
+        app.cleanup();
+        let pixels = [
+            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 0, 255, 255, 255, 255,
+        ];
+        let mut image = Image::new(
+            Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            pixels.to_vec(),
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+        let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
+        app.update();
+        let image = app
+            .world()
+            .resource::<Assets<Image>>()
+            .get(&handle)
+            .unwrap();
+        assert!(image.data.is_none());
+        assert_eq!(image.size(), UVec2::splat(2));
+
+        let world = app.sub_app(RenderApp).world();
+        let image = world
+            .resource::<RenderAssets<GpuImage>>()
+            .get(&handle)
+            .unwrap();
+        let device = world.resource::<RenderDevice>();
+        let queue = world.resource::<RenderQueue>();
+        let staging = device.create_buffer(&BufferDescriptor {
+            label: Some("render-only image verification"),
+            size: 512,
+            usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&default());
+        encoder.copy_texture_to_buffer(
+            image.texture.as_image_copy(),
+            TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(2),
+                },
+            },
+            Extent3d {
+                width: 2,
+                height: 2,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        staging.slice(..).map_async(MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        device
+            .poll(PollType::Wait {
+                timeout: Some(Duration::from_secs(20)),
+                submission_index: None,
+            })
+            .unwrap();
+        rx.recv_timeout(Duration::from_secs(20)).unwrap().unwrap();
+        let bytes = staging.slice(..).get_mapped_range();
+        assert_eq!(&bytes[..8], &pixels[..8]);
+        assert_eq!(&bytes[256..264], &pixels[8..]);
+        drop(bytes);
+        staging.unmap();
+    }
 }

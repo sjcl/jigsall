@@ -1,3 +1,4 @@
+use super::pieces::DensePieceStates;
 use bevy::prelude::*;
 use crossbeam::channel;
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -16,6 +17,6 @@ pub struct PieceGenerationProgress {
     pub generation_phase: GenerationPhase,
     pub grid_size: (usize, usize),
     pub pieces_created: usize,
-    pub receiver: Option<channel::Receiver<Result<Vec<Vec2>, String>>>,
+    pub receiver: Option<channel::Receiver<Result<DensePieceStates, String>>>,
     pub error: Option<String>,
 }

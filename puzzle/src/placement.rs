@@ -13,29 +13,50 @@ pub fn generate_placement_grid(
     seed: u64,
 ) -> Vec<Vec2> {
     let count = grid_width * grid_height;
-    let spacing = Vec2::new(piece_width, piece_height) * 1.5;
-    let half_x = (display_width * 0.5 / spacing.x).ceil() as i32 + 1;
-    let half_y = (display_height * 0.5 / spacing.y).ceil() as i32 + 1;
     let mut positions = Vec::with_capacity(count);
-    let mut ring = 0;
-    while positions.len() < count {
-        let x = half_x + ring;
-        let y = half_y + ring;
-        let slots = (-x..x)
-            .map(|a| (a, y))
-            .chain((-y..y).rev().map(|b| (x, b + 1)))
-            .chain((-x..x).rev().map(|a| (a + 1, -y)))
-            .chain((-y..y).map(|b| (-x, b)));
-        for (x, y) in slots {
-            positions.push(Vec2::new(x as f32, y as f32) * spacing);
-            if positions.len() == count {
-                break;
-            }
-        }
-        ring += 1;
-    }
+    positions.extend(
+        placement_slots(
+            Vec2::new(piece_width, piece_height),
+            Vec2::new(display_width, display_height),
+        )
+        .take(count),
+    );
     positions.shuffle(&mut ChaCha8Rng::seed_from_u64(seed));
     positions
+}
+
+/// Fill and shuffle caller-owned storage without allocating a position Vec.
+/// The mapped values move with their positions during the seeded shuffle.
+pub fn fill_placement_grid<T>(
+    placements: &mut [T],
+    piece_size: Vec2,
+    display_size: Vec2,
+    seed: u64,
+    mut from_position: impl FnMut(Vec2) -> T,
+) {
+    for (slot, position) in placements
+        .iter_mut()
+        .zip(placement_slots(piece_size, display_size))
+    {
+        *slot = from_position(position);
+    }
+    placements.shuffle(&mut ChaCha8Rng::seed_from_u64(seed));
+}
+
+fn placement_slots(piece_size: Vec2, display_size: Vec2) -> impl Iterator<Item = Vec2> {
+    let spacing = piece_size * 1.5;
+    let half_x = (display_size.x * 0.5 / spacing.x).ceil() as i32 + 1;
+    let half_y = (display_size.y * 0.5 / spacing.y).ceil() as i32 + 1;
+    (0..).flat_map(move |ring| {
+        let x = half_x + ring;
+        let y = half_y + ring;
+        (-x..x)
+            .map(move |a| (a, y))
+            .chain((-y..y).rev().map(move |b| (x, b + 1)))
+            .chain((-x..x).rev().map(move |a| (a + 1, -y)))
+            .chain((-y..y).map(move |b| (-x, b)))
+            .map(move |(x, y)| Vec2::new(x as f32, y as f32) * spacing)
+    })
 }
 #[cfg(test)]
 mod tests {

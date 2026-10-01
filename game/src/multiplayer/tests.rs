@@ -181,7 +181,7 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
     assert_eq!(upload.drag.delta, Vec2::ZERO);
     assert_eq!(
         upload.initial.as_ref().unwrap().as_ref(),
-        app.world().resource::<PieceDataStore>().states
+        app.world().resource::<PieceDataStore>().states.as_ref()
     );
     assert!(upload.ranges.is_empty());
 

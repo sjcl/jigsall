@@ -17,5 +17,5 @@ pub use generation::{GenerationPhase, PieceGenerationProgress};
 pub use images::{ImageLoadChannels, ImageLoadSender, PuzzleImage};
 pub use input::{GameUiPointerCapture, InputState};
 pub use performance::{PerformanceDebugLevel, PerformanceMonitor, SystemTiming};
-pub use pieces::{GpuPieceState, PieceDataStore, PieceUpload};
+pub use pieces::{DensePieceStates, GpuPieceState, PieceDataStore, PieceUpload};
 pub use puzzella_core::PieceId;
