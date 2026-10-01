@@ -20,7 +20,7 @@ puzzella
 | `puzzle/src/fingerprint.rs` | feature / test限定のmacro fingerprint、輪郭descriptor、凍結v4測定参照 |
 | `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
 | `puzzle/src/shapes.rs` / `generation.rs` | feature / test限定のv2 Bezier・lyon・Rayon・U16 geometry |
-| `game/src/resources/pieces.rs` | 16-byte dense正本、sparse holder、選択集合、dirty upload |
+| `game/src/resources/pieces.rs` | 16-byte dense正本、sparse holder、確定選択、drag bitset / delta、dirty upload |
 | `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
 | `game/src/systems/game_logic.rs` | 命令適用、Release後のsnap、イベント駆動の進捗 |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
@@ -35,7 +35,7 @@ puzzella
 
 ## CPU正本と入力
 
-`PieceDataStore.states: Vec<GpuPieceState>`が正本です。`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。holderはsparse HashMap、選択・preview・dirty IDは集合です。
+`PieceDataStore.states: Vec<GpuPieceState>`が正本です。`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。holderはsparse HashMap、確定選択・dirty IDは集合です。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPUへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。
 
 ```text
 mouse / Ctrl / rectangle / multi-drag

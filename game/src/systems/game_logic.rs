@@ -67,7 +67,6 @@ pub fn check_piece_placement_event_driven(
             store.set_state(event.id, state);
             store.highlights_dirty = true;
             store.selected_pieces.remove(&event.id);
-            store.preview_pieces.remove(&event.id);
             store.dirty_pieces.insert(event.id);
             placed.write(PiecePlacedEvent { id: event.id });
         }

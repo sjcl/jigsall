@@ -2,6 +2,7 @@ struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
     selection_min:vec2<f32>,selection_max:vec2<f32>,selection_enabled:vec4<u32>,
+    drag_delta:vec2<f32>,drag_active:u32,preview_active:u32,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,first_instance:u32};
@@ -10,6 +11,7 @@ struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
 @group(0) @binding(2) var<storage,read_write> visible:array<u32>;
 @group(0) @binding(3) var<storage,read_write> args:DrawArgs;
 @group(0) @binding(4) var<storage,read_write> selectable:array<u32>;
+@group(0) @binding(5) var<storage,read> drag_members:array<u32>;
 @compute @workgroup_size(256) fn cull(@builtin(global_invocation_id) invocation:vec3<u32>) {
     let id=invocation.x;if id>=config.count {return;}
     if (id%32u)==0u {
@@ -19,7 +21,11 @@ struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
         }selectable[id/32u]=word;
     }
     let state=states[id];let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
-    if (state.flags&16u)!=0u && all(state.position+half>=config.view_min) && all(state.position-half<=config.view_max) {
+    var position=state.position;
+    if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
+        position+=config.drag_delta;
+    }
+    if (state.flags&16u)!=0u && all(position+half>=config.view_min) && all(position-half<=config.view_max) {
         let dst=atomicAdd(&args.instance_count,1u);visible[dst]=id;
     }
 }

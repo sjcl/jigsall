@@ -451,6 +451,192 @@ fn rendered_pixels(app: &mut App, target: Handle<Image>) -> Vec<u8> {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_drag_transform_and_preview_without_readback() {
+    use crate::resources::pieces::{DragTransform, HELD};
+    let (mut app, _, target) = gpu_app(128);
+    app.world_mut()
+        .insert_resource(definition(UVec2::splat(2), 128, 42));
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.initialize(vec![Vec2::ZERO; 4]);
+        for state in store.states.iter_mut().skip(1) {
+            state.flags = 0;
+        }
+    }
+    wait_ready(&mut app);
+    // Preview draws directly from its GPU bitset, with no staging allocation/map.
+    let request_id = app
+        .world_mut()
+        .resource_mut::<PuzzleSelection>()
+        .request_preview(Rect::new(0.0, 0.0, 128.0, 128.0));
+    // The rectangle pipeline compiles asynchronously, after main readiness.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app
+        .sub_app(RenderApp)
+        .world()
+        .resource::<GpuRenderer>()
+        .last_submitted
+        != request_id
+    {
+        update_gpu(&mut app);
+        assert!(Instant::now() < deadline, "preview submission timed out");
+    }
+    let pixels = rendered_pixels(&mut app, target.clone());
+    let edge = (64 * 128 + 32) * 4;
+    for (&actual, expected) in pixels[edge..edge + 3].iter().zip([149, 203, 255]) {
+        assert!(
+            (i32::from(actual) - expected).abs() <= 2,
+            "preview pixel: {:?}",
+            &pixels[edge..edge + 4]
+        );
+    }
+    {
+        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+        assert_eq!(gpu.last_submitted, request_id);
+        assert!(gpu.slots.is_empty());
+        assert!(gpu.maps.is_empty());
+        assert_eq!(gpu.upload_bytes, 0);
+        assert_eq!(
+            read_buffer(&app, &gpu.buffers.as_ref().unwrap().preview, 4),
+            1u32.to_le_bytes()
+        );
+    }
+    assert!(app
+        .world()
+        .resource::<PuzzleSelection>()
+        .completed
+        .is_none());
+    assert_eq!(
+        app.world().resource::<PieceDataStore>().states[0].flags,
+        ENABLED
+    );
+    // Cancellation hides the old bitset, and an empty/outside preview clears it.
+    app.world_mut().resource_mut::<PuzzleSelection>().cancel();
+    let pixels = rendered_pixels(&mut app, target.clone());
+    assert_eq!(&pixels[edge..edge + 4], &[255, 255, 255, 255]);
+    app.world_mut()
+        .resource_mut::<PuzzleSelection>()
+        .request_preview(Rect::new(200.0, 200.0, 210.0, 210.0));
+    update_gpu(&mut app);
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+    assert_eq!(
+        read_buffer(&app, &gpu.buffers.as_ref().unwrap().preview, 4),
+        0u32.to_le_bytes()
+    );
+    assert_eq!(
+        pick(
+            &mut app,
+            Rect::new(0.0, 0.0, 128.0, 128.0),
+            SelectionMode::Rectangle
+        ),
+        vec![PieceId(0)]
+    );
+    app.world_mut().resource_mut::<PuzzleSelection>().cancel();
+    // A CPU position outside the viewport is translated into view by GPU culling.
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.states[0].position = Vec2::new(128.0, 0.0);
+        store.states[0].flags = ENABLED | HELD;
+        store.dirty_pieces.insert(PieceId(0));
+        store.states[1].position = Vec2::new(128.0, 0.0);
+        store.states[1].flags = ENABLED | HELD;
+        store.dirty_pieces.insert(PieceId(1));
+        store.drag = DragTransform {
+            members: Arc::from([1u32]),
+            delta: Vec2::new(-128.0, 0.0),
+        };
+    }
+    update_gpu(&mut app);
+    assert_eq!(
+        app.sub_app(RenderApp)
+            .world()
+            .resource::<GpuRenderer>()
+            .drag_upload_bytes,
+        4
+    );
+    let pixels = rendered_pixels(&mut app, target.clone());
+    let center = (64 * 128 + 64) * 4;
+    assert_eq!(&pixels[center..center + 4], &[255, 255, 255, 255]);
+    assert_eq!(visible_ids(&app), vec![0]);
+    // The sorted alpha-blending path uses the same transform and membership.
+    app.world_mut().resource_mut::<PuzzleImage>().opaque = false;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        update_gpu(&mut app);
+        let world = app.sub_app(RenderApp).world();
+        let gpu = world.resource::<GpuRenderer>();
+        let cache = world.resource::<PipelineCache>();
+        if gpu
+            .main_pipelines
+            .iter()
+            .any(|((_, opaque), id)| !opaque && cache.get_render_pipeline(*id).is_some())
+            && gpu
+                .sort
+                .is_some_and(|id| cache.get_compute_pipeline(id).is_some())
+            && gpu
+                .initialize
+                .is_some_and(|id| cache.get_compute_pipeline(id).is_some())
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "transparent pipeline preparation timed out"
+        );
+    }
+    let pixels = rendered_pixels(&mut app, target.clone());
+    assert_eq!(&pixels[center..center + 4], &[255, 255, 255, 255]);
+    assert_eq!(visible_ids(&app), vec![0]);
+    assert_eq!(
+        app.world().resource::<PieceDataStore>().states[0].position,
+        Vec2::new(128.0, 0.0)
+    );
+    assert!(
+        pick(
+            &mut app,
+            Rect::new(63.0, 63.0, 65.0, 65.0),
+            SelectionMode::Point
+        )
+        .is_empty(),
+        "held pieces stay unselectable"
+    );
+    // Pointer frames upload neither piece states nor the immutable membership.
+    app.world_mut().resource_mut::<PieceDataStore>().drag.delta = Vec2::new(128.0, 0.0);
+    update_gpu(&mut app);
+    assert!(visible_ids(&app).is_empty());
+    {
+        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+        assert_eq!(gpu.upload_bytes, 0);
+        assert_eq!(gpu.drag_upload_bytes, 0);
+    }
+    // Release uploads the final CPU position and removes the temporary transform.
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.drag = default();
+        store.states[0].position = Vec2::ZERO;
+        store.states[0].flags = ENABLED;
+        store.dirty_pieces.insert(PieceId(0));
+    }
+    assert_eq!(
+        pick(
+            &mut app,
+            Rect::new(63.0, 63.0, 65.0, 65.0),
+            SelectionMode::Point
+        ),
+        vec![PieceId(0)]
+    );
+    let pixels = rendered_pixels(&mut app, target);
+    assert_eq!(&pixels[center..center + 4], &[255, 255, 255, 255]);
+    // Session replacement must not reuse membership or preview from the old epoch.
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .initialize(vec![Vec2::splat(1000.0); 4]);
+    update_gpu(&mut app);
+    assert!(visible_ids(&app).is_empty());
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_raster_selection() {
     let (mut app, camera, target) = gpu_app(128);
     hash_parity(&app);

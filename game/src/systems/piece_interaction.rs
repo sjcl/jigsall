@@ -113,6 +113,7 @@ mod tests {
                 .world()
                 .resource::<crate::selection::PuzzleSelection>()
                 .latest
+                .filter(|request| request.readback)
             {
                 use crate::selection::*;
                 let mut collision = app.world_mut().resource_mut::<PieceCollisionSystem>();
@@ -265,17 +266,19 @@ mod tests {
             .selected_pieces
             .is_empty());
         pointer_frame(&mut app, Vec2::new(400.0, 200.0), true, false);
-        assert_eq!(
+        assert!(
             app.world()
-                .resource::<PieceDataStore>()
-                .preview_pieces
-                .len(),
-            2
+                .resource::<crate::selection::PuzzleSelection>()
+                .preview_active
         );
         pointer_frame(&mut app, Vec2::new(400.0, 200.0), false, false);
         let store = app.world().resource::<PieceDataStore>();
         assert_eq!(store.selected_pieces.len(), 2);
-        assert!(store.preview_pieces.is_empty());
+        assert!(
+            !app.world()
+                .resource::<crate::selection::PuzzleSelection>()
+                .preview_active
+        );
     }
 
     #[test]
@@ -307,9 +310,14 @@ mod tests {
     #[test]
     fn focus_loss_and_pause_release_ownership_and_restore_picking() {
         use bevy::ecs::system::RunSystemOnce;
-        let mut app = input_app();
         for pause in [false, true] {
+            let mut app = input_app();
             pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
+            pointer_frame(&mut app, Vec2::new(120.0, 130.0), true, false);
+            assert_eq!(
+                app.world().resource::<PieceDataStore>().states[0].position,
+                Vec2::new(100.0, 100.0)
+            );
             app.world_mut()
                 .resource_mut::<ButtonInput<MouseButton>>()
                 .clear();
@@ -327,11 +335,11 @@ mod tests {
             let mut collision = app.world_mut().resource_mut::<PieceCollisionSystem>();
             assert!(collision.dragging_pieces.is_empty());
             assert_eq!(
-                collision.find_piece_at_position(Vec2::new(100.0, 100.0)),
+                collision.find_piece_at_position(Vec2::new(120.0, 130.0)),
                 Some(PieceId(0))
             );
             assert_eq!(collision.rtree.size(), 2);
-            pointer_frame(&mut app, Vec2::new(100.0, 100.0), false, false);
+            pointer_frame(&mut app, Vec2::new(120.0, 130.0), false, false);
         }
     }
 
@@ -432,7 +440,11 @@ mod tests {
         app.update();
         let store = app.world().resource::<PieceDataStore>();
         assert_eq!(store.selected_pieces, HashSet::from([PieceId(0)]));
-        assert!(store.preview_pieces.is_empty());
+        assert!(
+            !app.world()
+                .resource::<crate::selection::PuzzleSelection>()
+                .preview_active
+        );
         assert!(app
             .world()
             .resource::<crate::interaction::PieceInteraction>()

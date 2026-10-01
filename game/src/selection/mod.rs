@@ -49,6 +49,9 @@ fn receive_results(
     store: Res<PieceDataStore>,
 ) {
     for raw in inbox.0.try_iter() {
+        if !raw.request.readback {
+            continue;
+        }
         if !selection
             .latest
             .is_some_and(|r| r.request_id == raw.request.request_id)

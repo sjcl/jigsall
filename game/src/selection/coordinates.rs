@@ -114,6 +114,7 @@ mod tests {
         let viewport = URect::new(200, 100, 1200, 900);
         let request = SelectionRequest {
             request_id: 1,
+            readback: true,
             mode: SelectionMode::Point,
             region: Rect {
                 min: Vec2::new(97.4, 79.0),
@@ -142,6 +143,7 @@ mod normalization_tests {
         ] {
             let request = SelectionRequest {
                 request_id: 1,
+                readback: true,
                 region: Rect { min: a, max: b },
                 mode: SelectionMode::Rectangle,
             };
@@ -155,6 +157,7 @@ mod normalization_tests {
         }
         let make = |a, b, mode| SelectionRequest {
             request_id: 1,
+            readback: true,
             region: Rect { min: a, max: b },
             mode,
         };

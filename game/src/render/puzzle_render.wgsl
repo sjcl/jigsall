@@ -3,11 +3,14 @@ struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
     selection_min:vec2<f32>,selection_max:vec2<f32>,selection_enabled:vec4<u32>,
+    drag_delta:vec2<f32>,drag_active:u32,preview_active:u32,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
 @group(0) @binding(1) var<storage,read> states:array<PieceState>;
 @group(0) @binding(2) var<storage,read> visible:array<u32>;
+@group(0) @binding(3) var<storage,read> drag_members:array<u32>;
+@group(0) @binding(4) var<storage,read> preview:array<u32>;
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -23,7 +26,11 @@ struct VertexOutput {
     let id=visible[instance];let state=states[id];let cell=vec2(id%config.grid.x,id/config.grid.x);
     let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
     let local=corners[vi]*half;let edges=piece_profiles(config.seed,config.grid,cell);
-    var out:VertexOutput;out.position=config.clip_from_world*vec4(state.position+local,0.0,1.0);
+    var position=state.position;
+    if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
+        position+=config.drag_delta;
+    }
+    var out:VertexOutput;out.position=config.clip_from_world*vec4(position+local,0.0,1.0);
     // Reverse-Z in the exact 24-bit range; placed pieces have rank zero.
     let rank=select(state.z_order+2u,1u,(state.flags&1u)!=0u);
     out.position.z=f32(rank)/16777216.0*out.position.w;
@@ -40,10 +47,12 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     let d=distance(in);let color=sample_visible(in,d);
     // Evaluate derivatives before the per-piece highlight branch.
     let aa=fwidth(d);
-    if (in.flags&6u)==0u {return color;}
+    var flags=in.flags;
+    if config.preview_active!=0u && (flags&9u)==0u && (preview[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=4u;}
+    if (flags&6u)==0u {return color;}
     let width=min(16.0,min(config.size.x,config.size.y)*0.16)*0.5;
     var line=vec3(0.3,0.6,1.0);
-    if (in.flags&2u)!=0u {line=vec3(1.0,0.8,0.0);}
+    if (flags&2u)!=0u {line=vec3(1.0,0.8,0.0);}
     let coverage=1.0-smoothstep(width-aa,width+aa,abs(d));
     return vec4(mix(color.rgb,line,coverage),color.a);
 }

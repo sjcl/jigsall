@@ -32,20 +32,25 @@ impl GpuPieceState {
     }
 }
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
+/// Local presentation only. Membership is frozen once; pointer frames change delta.
+#[derive(Clone, Default)]
+pub struct DragTransform {
+    pub members: Arc<[u32]>,
+    pub delta: Vec2,
+}
 /// Dense CPU authority: no per-piece definition, transform, handle or entity.
 #[derive(Resource, Default)]
 pub struct PieceDataStore {
+    pub drag: DragTransform,
     pub states: Vec<GpuPieceState>,
     pub held_by: HashMap<PieceId, PlayerId>,
     pub selected_pieces: HashSet<PieceId>,
-    pub preview_pieces: HashSet<PieceId>,
     pub dirty_pieces: HashSet<PieceId>,
     pub placed_count: usize,
     pub next_z_order: u32,
     pub epoch: u64,
     pub highlights_dirty: bool,
     previous_selected: HashSet<PieceId>,
-    previous_preview: HashSet<PieceId>,
 }
 impl PieceDataStore {
     pub fn initialize(&mut self, positions: Vec<Vec2>) {
@@ -126,26 +131,18 @@ impl PieceDataStore {
         let ids: HashSet<_> = self
             .previous_selected
             .symmetric_difference(&self.selected_pieces)
-            .chain(
-                self.previous_preview
-                    .symmetric_difference(&self.preview_pieces),
-            )
             .copied()
             .collect();
         for id in ids {
             if let Some(s) = self.states.get_mut(id.0 as usize) {
-                s.flags &= !(SELECTED | PREVIEW);
+                s.flags &= !SELECTED;
                 if self.selected_pieces.contains(&id) {
                     s.flags |= SELECTED;
-                }
-                if self.preview_pieces.contains(&id) {
-                    s.flags |= PREVIEW;
                 }
                 self.dirty_pieces.insert(id);
             }
         }
         self.previous_selected.clone_from(&self.selected_pieces);
-        self.previous_preview.clone_from(&self.preview_pieces);
     }
 }
 #[derive(Clone, Default)]
@@ -155,6 +152,7 @@ pub struct UploadRange {
 }
 #[derive(Resource, Default, Clone)]
 pub struct PieceUpload {
+    pub drag: DragTransform,
     pub epoch: u64,
     pub revision: u64,
     pub definition: Option<PuzzleDefinition>,
@@ -166,6 +164,7 @@ pub fn prepare_piece_upload(
     mut upload: ResMut<PieceUpload>,
     definition: Option<Res<PuzzleDefinition>>,
 ) {
+    upload.drag = store.drag.clone();
     store.sync_highlights();
     if store.epoch != upload.epoch {
         upload.epoch = store.epoch;

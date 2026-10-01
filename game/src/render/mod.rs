@@ -130,6 +130,9 @@ pub struct PuzzleUniform {
     pub selection_min: Vec2,
     pub selection_max: Vec2,
     pub selection_enabled: UVec4,
+    pub drag_delta: Vec2,
+    pub drag_active: u32,
+    pub preview_active: u32,
 }
 #[derive(Clone, ShaderType)]
 struct SortUniform {
@@ -207,6 +210,9 @@ fn extract_puzzle(
         capacity: count.next_power_of_two(),
         opaque: u32::from(image.opaque),
         reserved: 0,
+        drag_delta: out.upload.drag.delta,
+        drag_active: u32::from(!out.upload.drag.members.is_empty()),
+        preview_active: u32::from(selection.preview_active),
         ..default()
     };
     if let Some(rect) = overlay.as_ref().and_then(|o| o.0) {
@@ -231,6 +237,9 @@ struct StateBuffers {
     args: Buffer,
     selectable: Buffer,
     dummy_selection: Buffer,
+    drag_members: Buffer,
+    current_drag: Arc<[u32]>,
+    preview: Buffer,
     capacity: u32,
     pick_visible: Buffer,
     pick_args: Buffer,
@@ -287,6 +296,7 @@ struct GpuRenderer {
     sort: Option<CachedComputePipelineId>,
     upload_bytes: u64,
     upload_calls: usize,
+    drag_upload_bytes: u64,
 }
 impl GpuRenderer {
     fn new(
@@ -320,6 +330,8 @@ impl GpuRenderer {
                         uniform_buffer::<PuzzleUniform>(false),
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -333,6 +345,7 @@ impl GpuRenderer {
                         storage_buffer_sized(false, None),
                         storage_buffer_sized(false, None),
                         storage_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -374,6 +387,7 @@ impl GpuRenderer {
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_sized(false, None),
                         storage_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -387,6 +401,7 @@ impl GpuRenderer {
             sort: None,
             upload_bytes: 0,
             upload_calls: 0,
+            drag_upload_bytes: 0,
         }
     }
     fn queue_pipelines(&mut self, cache: &PipelineCache, format: TextureFormat, opaque: bool) {
@@ -525,6 +540,7 @@ fn prepare_buffers(
 ) {
     gpu.upload_bytes = 0;
     gpu.upload_calls = 0;
+    gpu.drag_upload_bytes = 0;
     if frame.upload.epoch == 0 {
         gpu.buffers = None;
         return;
@@ -590,6 +606,19 @@ fn prepare_buffers(
                 4,
                 BufferUsages::STORAGE,
             ),
+            drag_members: buffer(
+                &device,
+                "drag membership bitset",
+                u64::from(count.div_ceil(32)) * 4,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            ),
+            current_drag: Arc::default(),
+            preview: buffer(
+                &device,
+                "GPU selection preview",
+                u64::from(count.div_ceil(32)) * 4,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            ),
             capacity,
             pick_visible: buffer(
                 &device,
@@ -627,6 +656,18 @@ fn prepare_buffers(
     }
     gpu.upload_bytes += bytes;
     gpu.upload_calls += calls;
+    let buffers = gpu.buffers.as_mut().unwrap();
+    if !Arc::ptr_eq(&buffers.current_drag, &frame.upload.drag.members) {
+        if !frame.upload.drag.members.is_empty() {
+            queue.write_buffer(
+                &buffers.drag_members,
+                0,
+                bytemuck::cast_slice(&frame.upload.drag.members),
+            );
+        }
+        buffers.current_drag = frame.upload.drag.members.clone();
+        gpu.drag_upload_bytes = frame.upload.drag.members.len() as u64 * 4;
+    }
 }
 fn texture(
     device: &RenderDevice,
@@ -756,6 +797,8 @@ fn puzzle_node(
     let selectable = buffers.selectable.clone();
     let capacity = buffers.capacity;
     let dummy_selection = buffers.dummy_selection.clone();
+    let drag_members = buffers.drag_members.clone();
+    let preview = buffers.preview.clone();
     if gpu.depth.as_ref().is_none_or(|d| d.size != frame.target) {
         gpu.depth = Some(screen_target(
             &device,
@@ -774,6 +817,7 @@ fn puzzle_node(
             visible.as_entire_buffer_binding(),
             args.as_entire_buffer_binding(),
             selectable.as_entire_buffer_binding(),
+            drag_members.as_entire_buffer_binding(),
         )),
     );
     let draw_group = device.create_bind_group(
@@ -783,6 +827,8 @@ fn puzzle_node(
             gpu.uniform.binding().unwrap(),
             states.as_entire_buffer_binding(),
             visible.as_entire_buffer_binding(),
+            drag_members.as_entire_buffer_binding(),
+            preview.as_entire_buffer_binding(),
         )),
     );
     let image_group = device.create_bind_group(
@@ -845,6 +891,21 @@ fn puzzle_node(
         }
         sort_span.end(encoder);
     }
+    // Populate the GPU preview before the main pass samples it this frame.
+    draw_selection(
+        &frame,
+        &mut gpu,
+        &device,
+        &queue,
+        &cache,
+        &states,
+        &visible,
+        &args,
+        &selectable,
+        &image_group,
+        encoder,
+        diagnostics.as_deref(),
+    );
     let draw_span = diagnostic_ref.time_span(encoder, "puzzle_draw");
     {
         let colors = [Some(target.get_color_attachment())];
@@ -906,20 +967,6 @@ fn puzzle_node(
         }
     }
     ready.epoch.store(frame.upload.epoch, Ordering::Release);
-    draw_selection(
-        &frame,
-        &mut gpu,
-        &device,
-        &queue,
-        &cache,
-        &states,
-        &visible,
-        &args,
-        &selectable,
-        &image_group,
-        encoder,
-        diagnostics.as_deref(),
-    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -941,11 +988,16 @@ fn draw_selection(
         return;
     };
     let Some(region) = frame.region else {
-        let _ = gpu.sender.send(RawResult {
-            request,
-            bytes: vec![],
-            error: None,
-        });
+        if request.mode == SelectionMode::Rectangle {
+            encoder.clear_buffer(&gpu.buffers.as_ref().unwrap().preview, 0, None);
+        }
+        if request.readback {
+            let _ = gpu.sender.send(RawResult {
+                request,
+                bytes: vec![],
+                error: None,
+            });
+        }
         gpu.last_submitted = request.request_id;
         return;
     };
@@ -962,21 +1014,25 @@ fn draw_selection(
         return;
     };
     let bytes = u64::from(frame.config.count.div_ceil(32)) * 4;
-    let index = if let Some(i) = gpu
+    let index = if !request.readback {
+        None
+    } else if let Some(i) = gpu
         .slots
         .iter()
         .position(|s| !s.busy.load(Ordering::Acquire))
     {
-        i
+        Some(i)
     } else if gpu.slots.len() < 3 {
         gpu.slots
             .push(new_slot(device, bytes.next_power_of_two().max(4)));
-        gpu.slots.len() - 1
+        Some(gpu.slots.len() - 1)
     } else {
         return;
     };
-    if gpu.slots[index].bitset.size() < bytes {
-        gpu.slots[index] = new_slot(device, bytes.next_power_of_two());
+    if let Some(index) = index {
+        if gpu.slots[index].bitset.size() < bytes {
+            gpu.slots[index] = new_slot(device, bytes.next_power_of_two());
+        }
     }
     if point {
         gpu.point.get_or_insert_with(|| point_targets(device));
@@ -1019,6 +1075,7 @@ fn draw_selection(
             args.as_entire_buffer_binding(),
             pick_ids.as_entire_buffer_binding(),
             pick_args.as_entire_buffer_binding(),
+            buffers.drag_members.as_entire_buffer_binding(),
         )),
     );
     let cull_span = diagnostics.time_span(encoder, "puzzle_pick_visibility");
@@ -1036,18 +1093,24 @@ fn draw_selection(
             gpu.pick_uniform.binding().unwrap(),
             states.as_entire_buffer_binding(),
             pick_ids.as_entire_buffer_binding(),
+            buffers.drag_members.as_entire_buffer_binding(),
+            buffers.dummy_selection.as_entire_buffer_binding(),
         )),
     );
-    let slot = &gpu.slots[index];
+    let bitset = if point {
+        &gpu.slots[index.unwrap()].bitset
+    } else {
+        &buffers.preview
+    };
     let bits = device.create_bind_group(
         "selection masks",
         &cache.get_bind_group_layout(&gpu.selection_layout),
         &BindGroupEntries::sequential((
-            slot.bitset.as_entire_buffer_binding(),
+            bitset.as_entire_buffer_binding(),
             selectable.as_entire_buffer_binding(),
         )),
     );
-    encoder.clear_buffer(&slot.bitset, 0, None);
+    encoder.clear_buffer(bitset, 0, None);
     let color = if point {
         &gpu.point.as_ref().unwrap().id_view
     } else {
@@ -1099,6 +1162,11 @@ fn draw_selection(
         pass.draw_indirect(pick_args, 0);
     }
     span.end(encoder);
+    gpu.last_submitted = request.request_id;
+    let Some(index) = index else {
+        return;
+    };
+    let slot = &gpu.slots[index];
     let size = if point {
         encoder.copy_texture_to_buffer(
             TexelCopyTextureInfo {
@@ -1123,7 +1191,7 @@ fn draw_selection(
         );
         4
     } else {
-        encoder.copy_buffer_to_buffer(&slot.bitset, 0, &slot.staging, 0, bytes);
+        encoder.copy_buffer_to_buffer(bitset, 0, &slot.staging, 0, bytes);
         bytes
     };
     slot.busy.store(true, Ordering::Release);
@@ -1132,7 +1200,6 @@ fn draw_selection(
         request,
         size,
     });
-    gpu.last_submitted = request.request_id;
 }
 fn map_results(mut gpu: ResMut<GpuRenderer>) {
     for map in std::mem::take(&mut gpu.maps) {

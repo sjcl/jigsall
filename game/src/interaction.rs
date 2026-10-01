@@ -1,8 +1,9 @@
 //! Pointer gestures consume asynchronous GPU results; gameplay uses PieceCommand.
+use crate::resources::pieces::DragTransform;
 use crate::{resources::*, selection::*};
 use bevy::prelude::*;
 use puzzella_core::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 
 #[derive(Default)]
 enum Gesture {
@@ -19,7 +20,8 @@ enum Gesture {
         ctrl: bool,
     },
     Dragging {
-        offsets: BTreeMap<PieceId, Vec2>,
+        ids: Vec<PieceId>,
+        anchor: Vec2,
     },
     BoxSelecting {
         #[allow(dead_code)] // World-space gesture anchor is also used by CPU gesture tests.
@@ -94,7 +96,6 @@ impl PieceInteraction {
         let point = frame.position.filter(|p| p.is_finite());
         let screen = frame.screen_position.filter(|p| p.is_finite());
         let mut commands = Vec::new();
-        let mut started_drag = false;
         // A new press supersedes a released gesture even if its readback is late.
         let finished = matches!(
             self.gesture,
@@ -184,22 +185,24 @@ impl PieceInteraction {
                                 .cmp(&store.states[b.0 as usize].z_order)
                                 .then(a.cmp(b))
                         });
-                        let offsets: BTreeMap<_, _> = ids
-                            .iter()
-                            .map(|&id| (id, store.states[id.0 as usize].position - *anchor))
-                            .collect();
-                        commands.extend(ids.into_iter().map(PieceCommand::Grab));
-                        // Retain press-to-release motion while the GPU was working.
-                        commands.extend(offsets.iter().map(|(&id, &offset)| PieceCommand::Move {
-                            id,
-                            position: *current + offset,
-                        }));
+                        let mut members = vec![0u32; store.len().div_ceil(32)];
+                        for &id in &ids {
+                            members[id.0 as usize / 32] |= 1 << (id.0 % 32);
+                        }
+                        let delta = *current - *anchor;
+                        store.drag = DragTransform {
+                            members: members.into(),
+                            delta: if delta.is_finite() { delta } else { Vec2::ZERO },
+                        };
+                        commands.extend(ids.iter().copied().map(PieceCommand::Grab));
                         if *released {
-                            commands.extend(offsets.keys().copied().map(PieceCommand::Release));
+                            finish_drag(&ids, store, &mut commands);
                             self.gesture = Gesture::Idle;
                         } else {
-                            self.gesture = Gesture::Dragging { offsets };
-                            started_drag = true;
+                            self.gesture = Gesture::Dragging {
+                                ids,
+                                anchor: *anchor,
+                            };
                         }
                         selection.cancel();
                     }
@@ -207,7 +210,6 @@ impl PieceInteraction {
                     if !*ctrl {
                         store.selected_pieces.clear();
                     }
-                    store.preview_pieces.clear();
                     self.gesture = Gesture::BoxSelecting {
                         anchor: *anchor,
                         current: *current,
@@ -223,15 +225,15 @@ impl PieceInteraction {
             }
         }
         match &mut self.gesture {
-            Gesture::Dragging { offsets } => {
-                if let Some(point) = point.filter(|_| !started_drag) {
-                    commands.extend(offsets.iter().map(|(&id, &offset)| PieceCommand::Move {
-                        id,
-                        position: point + offset,
-                    }));
+            Gesture::Dragging { ids, anchor } => {
+                if let Some(point) = point {
+                    let delta = point - *anchor;
+                    if delta.is_finite() {
+                        store.drag.delta = delta;
+                    }
                 }
                 if !frame.pressed {
-                    commands.extend(offsets.keys().copied().map(PieceCommand::Release));
+                    finish_drag(ids, store, &mut commands);
                     self.gesture = Gesture::Idle;
                 }
             }
@@ -266,35 +268,37 @@ impl PieceInteraction {
                     || (!was_released && *released)
                     || (!*released && *preview_ticks >= 4)
                 {
-                    *request_id = Some(selection.request(
-                        Rect {
-                            min: *screen_anchor,
-                            max: *screen_current,
-                        },
-                        SelectionMode::Rectangle,
-                    ));
+                    let rect = Rect {
+                        min: *screen_anchor,
+                        max: *screen_current,
+                    };
+                    *request_id = Some(if *released {
+                        selection.request(rect, SelectionMode::Rectangle)
+                    } else {
+                        selection.request_preview(rect)
+                    });
                     *preview_ticks = 0;
                 }
                 *preview_ticks = preview_ticks.saturating_add(1);
                 if let Some(result) = selection.take_result(request_id.unwrap()) {
-                    store.highlights_dirty = true;
                     if let Some(error) = result.error {
                         warn!(%error, "GPU rectangle selection failed");
                         return self.cancel(store, selection);
                     }
                     debug_assert_eq!(result.mode, SelectionMode::Rectangle);
-                    store.preview_pieces = result
-                        .piece_ids
-                        .into_iter()
-                        .filter(|&id| store.is_selectable(id))
-                        .collect();
                     if *released {
+                        store.highlights_dirty = true;
                         store.selected_pieces = if *additive {
                             original.clone()
                         } else {
                             HashSet::new()
                         };
-                        store.selected_pieces.extend(store.preview_pieces.drain());
+                        let ids = result
+                            .piece_ids
+                            .into_iter()
+                            .filter(|&id| store.is_selectable(id))
+                            .collect::<Vec<_>>();
+                        store.selected_pieces.extend(ids);
                         self.gesture = Gesture::Idle;
                         selection.cancel();
                     }
@@ -312,20 +316,196 @@ impl PieceInteraction {
         store.highlights_dirty = true;
         let gesture = std::mem::take(&mut self.gesture);
         selection.cancel();
+        let mut commands = Vec::new();
         let mut held: Vec<_> = store
             .held_by
             .iter()
             .filter_map(|(&id, &player)| (player == LOCAL_PLAYER).then_some(id))
             .collect();
         match gesture {
-            Gesture::Dragging { offsets } => held.extend(offsets.into_keys()),
+            Gesture::Dragging { ids, .. } => {
+                // Pause/focus loss commits the last displayed location before snap.
+                let members = store.drag.members.clone();
+                finish_drag(&ids, store, &mut commands);
+                held.retain(|id| {
+                    members
+                        .get(id.0 as usize / 32)
+                        .is_none_or(|word| word & (1 << (id.0 % 32)) == 0)
+                });
+            }
             Gesture::BoxSelecting { original, .. } => store.selected_pieces = original,
             Gesture::PendingPoint { original, .. } => store.selected_pieces = original,
             Gesture::Idle => {}
         }
         held.sort_unstable();
         held.dedup();
-        store.preview_pieces.clear();
-        held.into_iter().map(PieceCommand::Release).collect()
+        store.drag = default();
+        commands.extend(held.into_iter().map(PieceCommand::Release));
+        commands
+    }
+}
+
+fn finish_drag(ids: &[PieceId], store: &mut PieceDataStore, commands: &mut Vec<PieceCommand>) {
+    let delta = store.drag.delta;
+    commands.reserve(ids.len() * 2);
+    commands.extend(ids.iter().copied().map(|id| PieceCommand::Move {
+        id,
+        position: store.states[id.0 as usize].position + delta,
+    }));
+    commands.extend(ids.iter().copied().map(PieceCommand::Release));
+    store.drag = default();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::Arc, time::Instant};
+
+    fn frame(position: Vec2, pressed: bool, just_pressed: bool) -> PointerFrame {
+        PointerFrame {
+            position: Some(position),
+            screen_position: Some(position),
+            pressed,
+            just_pressed,
+            ctrl: false,
+            over_ui: false,
+            focused: true,
+        }
+    }
+    fn apply(store: &mut PieceDataStore, commands: Vec<PieceCommand>) {
+        for command in commands {
+            let id = command.piece_id();
+            let mut state = store.state(id).unwrap();
+            if let Some(outcome) = apply_piece_command(&mut state, LOCAL_PLAYER, &command) {
+                store.set_state(id, state);
+                if outcome == CommandOutcome::Grabbed {
+                    store.bring_piece_to_front(id);
+                }
+            }
+        }
+    }
+    fn begin(count: usize) -> (PieceInteraction, PieceDataStore, PuzzleSelection) {
+        let mut store = PieceDataStore::default();
+        store.initialize((0..count).map(|id| Vec2::new(id as f32, 0.0)).collect());
+        store.selected_pieces = (0..count).map(|id| PieceId(id as u32)).collect();
+        let mut selection = PuzzleSelection::default();
+        let mut interaction = PieceInteraction::default();
+        interaction.update(frame(Vec2::ZERO, true, true), &mut store, &mut selection);
+        let request = selection.latest.unwrap();
+        selection.completed = Some(SelectionResult {
+            request_id: request.request_id,
+            mode: request.mode,
+            piece_ids: vec![PieceId(0)],
+            entities: vec![],
+            error: None,
+        });
+        let commands =
+            interaction.update(frame(Vec2::ZERO, true, false), &mut store, &mut selection);
+        assert_eq!(commands.len(), count);
+        assert!(commands.iter().all(|c| matches!(c, PieceCommand::Grab(_))));
+        apply(&mut store, commands);
+        store.sync_highlights();
+        store.dirty_pieces.clear();
+        (interaction, store, selection)
+    }
+    #[test]
+    fn million_piece_drag_only_changes_delta_until_release() {
+        let (mut interaction, mut store, mut selection) = begin(1_000_000);
+        let members = store.drag.members.clone();
+        assert_eq!(members.len() * 4, 125_000);
+        for step in 1..=100 {
+            assert!(interaction
+                .update(
+                    frame(Vec2::splat(step as f32), true, false),
+                    &mut store,
+                    &mut selection
+                )
+                .is_empty());
+            assert!(Arc::ptr_eq(&members, &store.drag.members));
+            assert!(store.dirty_pieces.is_empty());
+        }
+        assert_eq!(store.states[999_999].position, Vec2::new(999_999.0, 0.0));
+        let commands = interaction.update(
+            frame(Vec2::new(150.0, 200.0), false, false),
+            &mut store,
+            &mut selection,
+        );
+        assert_eq!(commands.len(), 2_000_000);
+        assert!(store.drag.members.is_empty());
+        apply(&mut store, commands);
+        assert_eq!(
+            store.states[999_999].position,
+            Vec2::new(1_000_149.0, 200.0)
+        );
+        assert!(store.held_by.is_empty());
+        assert!(interaction
+            .update(
+                frame(Vec2::splat(500.0), false, false),
+                &mut store,
+                &mut selection
+            )
+            .is_empty());
+    }
+    #[test]
+    fn cancellation_commits_last_valid_delta_once_and_releases_other_local_holds() {
+        for focus_loss in [false, true] {
+            let (mut interaction, mut store, mut selection) = begin(33);
+            store
+                .states
+                .push(GpuPieceState::new(Vec2::ZERO, PieceId(33)));
+            let mut other = store.state(PieceId(33)).unwrap();
+            other.held_by = Some(LOCAL_PLAYER);
+            store.set_state(PieceId(33), other);
+            interaction.update(
+                frame(Vec2::new(10.0, 20.0), true, false),
+                &mut store,
+                &mut selection,
+            );
+            interaction.update(
+                frame(Vec2::splat(f32::NAN), true, false),
+                &mut store,
+                &mut selection,
+            );
+            let commands = if focus_loss {
+                let mut lost = frame(Vec2::splat(500.0), false, false);
+                lost.focused = false;
+                interaction.update(lost, &mut store, &mut selection)
+            } else {
+                interaction.cancel(&mut store, &mut selection)
+            };
+            assert_eq!(commands.len(), 67);
+            apply(&mut store, commands);
+            assert_eq!(store.states[32].position, Vec2::new(42.0, 20.0));
+            assert_eq!(store.states[33].position, Vec2::ZERO);
+            assert!(store.held_by.is_empty());
+            assert!(interaction.cancel(&mut store, &mut selection).is_empty());
+        }
+    }
+    #[test]
+    #[ignore = "release CPU benchmark"]
+    fn multi_drag_cpu_benchmark() {
+        if cfg!(debug_assertions) {
+            panic!("run with --release");
+        }
+        println!("selected,pointer_frames,total_us,ns_per_frame");
+        for count in [1_000, 10_000, 100_000, 1_000_000] {
+            let (mut interaction, mut store, mut selection) = begin(count);
+            let start = Instant::now();
+            for step in 0..100_000 {
+                let commands = interaction.update(
+                    frame(Vec2::splat(step as f32), true, false),
+                    &mut store,
+                    &mut selection,
+                );
+                assert!(std::hint::black_box(commands).is_empty());
+                std::hint::black_box(&store.drag);
+            }
+            let elapsed = start.elapsed();
+            println!(
+                "{count},100000,{:.3},{:.3}",
+                elapsed.as_secs_f64() * 1e6,
+                elapsed.as_secs_f64() * 1e9 / 100_000.0
+            );
+        }
     }
 }
