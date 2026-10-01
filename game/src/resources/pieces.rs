@@ -574,15 +574,17 @@ impl PieceDataStore {
         let roots: Vec<_> = seen.iter().collect();
         // Commit ALL released translations before resolving any snap. A sibling
         // component in this same gesture is a target at its final release position.
+        let geometry = definition.map(PuzzleDefinition::geometry);
         let states = &mut *self.states;
         for &root in &roots {
             let connected = self.connectivity.component_size(root) > 1;
-            let offset = definition
+            let offset = geometry
+                .as_ref()
                 .filter(|_| connected)
                 .map(|d| states[root.0 as usize].position - d.correct_position(root) + delta);
             let translated = |id: PieceId, position: Vec2| {
                 if connected {
-                    if let (Some(d), Some(offset)) = (definition, offset) {
+                    if let (Some(d), Some(offset)) = (geometry.as_ref(), offset) {
                         return d.correct_position(id) + offset;
                     }
                 }
@@ -617,17 +619,13 @@ impl PieceDataStore {
         }
         let mut placed = 0;
         if let Some(definition) = definition {
-            let mut scratch = snapping::SnapScratch::new(self.len());
-            seen.clear();
+            let mut scratch = snapping::SnapScratch::new(self.len(), definition);
             for root in roots {
-                if self.states[root.0 as usize].flags & PLACED == 0 && !seen.contains(&root) {
-                    placed += self.resolve_component_snap(root, definition, &mut scratch);
-                    // Absorbed released roots must not receive the delta or resolve twice.
-                    if self.states[root.0 as usize].flags & PLACED == 0 {
-                        for member in self.connectivity.iter_component(root) {
-                            seen.insert(member);
-                        }
-                    }
+                let current = self.connectivity.find_root(root);
+                if self.states[root.0 as usize].flags & PLACED == 0
+                    && !scratch.resolved.contains(&current)
+                {
+                    placed += self.resolve_component_snap(current, &mut scratch);
                 }
             }
         }
@@ -668,8 +666,7 @@ impl PieceDataStore {
         {
             self.resolve_component_snap(
                 id,
-                definition,
-                &mut snapping::SnapScratch::new(self.len()),
+                &mut snapping::SnapScratch::new(self.len(), definition),
             );
         }
     }

@@ -53,24 +53,23 @@ impl PuzzleDefinition {
     }
     #[inline]
     pub fn correct_position(&self, id: PieceId) -> Vec2 {
-        self.piece(id.0, Vec2::ZERO).correct_position
+        self.geometry().correct_position(id)
+    }
+
+    /// Precompute coordinate constants once for bulk operations. Arithmetic order
+    /// matches the generator, including the final y negation.
+    pub fn geometry(&self) -> PuzzleGeometry {
+        PuzzleGeometry {
+            grid_size: self.grid_size,
+            size: self.image_size.as_vec2() / self.grid_size.as_vec2(),
+            center: (self.grid_size.as_vec2() - Vec2::ONE) * 0.5,
+        }
     }
 
     /// Correct image neighbors only, in stable left/right/up/down order.
     #[inline]
     pub fn neighbors(&self, id: PieceId) -> [Option<PieceId>; 4] {
-        let width = self.grid_size.x;
-        if width == 0 || id.0 as usize >= self.piece_count() {
-            return [None; 4];
-        }
-        let x = id.0 % width;
-        let y = id.0 / width;
-        [
-            (x > 0).then(|| PieceId(id.0 - 1)),
-            (x + 1 < width).then(|| PieceId(id.0 + 1)),
-            (y > 0).then(|| PieceId(id.0 - width)),
-            (y + 1 < self.grid_size.y).then(|| PieceId(id.0 + width)),
-        ]
+        grid_neighbors(self.grid_size, id)
     }
     #[inline]
     pub fn piece(&self, index: u32, initial_position: Vec2) -> PuzzlePiece {
@@ -85,6 +84,43 @@ impl PuzzleDefinition {
         }
     }
 }
+/// Release-local coordinate constants; no persistent per-piece allocation.
+#[derive(Clone, Copy)]
+pub struct PuzzleGeometry {
+    grid_size: UVec2,
+    size: Vec2,
+    center: Vec2,
+}
+impl PuzzleGeometry {
+    #[inline]
+    pub fn correct_position(&self, id: PieceId) -> Vec2 {
+        let x = (id.0 % self.grid_size.x) as f32 - self.center.x;
+        let y = (id.0 / self.grid_size.x) as f32 - self.center.y;
+        Vec2::new(x * self.size.x, -(y * self.size.y))
+    }
+
+    #[inline]
+    pub fn neighbors(&self, id: PieceId) -> [Option<PieceId>; 4] {
+        grid_neighbors(self.grid_size, id)
+    }
+}
+
+#[inline]
+fn grid_neighbors(grid: UVec2, id: PieceId) -> [Option<PieceId>; 4] {
+    let width = grid.x;
+    if width == 0 || id.0 as usize >= grid.x as usize * grid.y as usize {
+        return [None; 4];
+    }
+    let x = id.0 % width;
+    let y = id.0 / width;
+    [
+        (x > 0).then(|| PieceId(id.0 - 1)),
+        (x + 1 < width).then(|| PieceId(id.0 + 1)),
+        (y > 0).then(|| PieceId(id.0 - width)),
+        (y + 1 < grid.y).then(|| PieceId(id.0 + width)),
+    ]
+}
+
 #[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PuzzlePiece {
     pub id: PieceId,
@@ -190,6 +226,35 @@ pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn precomputed_coordinates_exactly_match_generator_arithmetic() {
+        for (grid_size, image_size) in [
+            (UVec2::ONE, UVec2::ONE),
+            (UVec2::new(3, 2), UVec2::new(123, 4096)),
+            (UVec2::new(123, 79), UVec2::new(4096, 3071)),
+            (UVec2::splat(1000), UVec2::new(u32::MAX, 4096)),
+        ] {
+            let d = PuzzleDefinition {
+                generator_version: GENERATOR_VERSION,
+                seed: 42,
+                grid_size,
+                image_size,
+                snap_distance: 5.0,
+            };
+            let geometry = d.geometry();
+            for id in 0..d.piece_count() as u32 {
+                let expected = d.piece(id, Vec2::ZERO).correct_position;
+                let actual = geometry.correct_position(PieceId(id));
+                assert_eq!(
+                    actual.to_array().map(f32::to_bits),
+                    expected.to_array().map(f32::to_bits)
+                );
+                assert_eq!(d.correct_position(PieceId(id)), expected);
+                assert_eq!(geometry.neighbors(PieceId(id)), d.neighbors(PieceId(id)));
+            }
+        }
+    }
+
     #[test]
     fn only_current_shape_version_is_accepted() {
         let mut definition = PuzzleDefinition {

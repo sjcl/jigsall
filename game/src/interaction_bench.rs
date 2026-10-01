@@ -156,10 +156,15 @@ fn million_selection_cpu_benchmark() {
             assert_eq!(result.placed, 0);
             assert!(store.held_by.is_empty());
             let (store, release_upload, release_bytes, ranges) = upload(&mut app, store);
-            assert_eq!(
-                store.states[count - 1].position,
-                Vec2::new(count as f32 + 9.0, 10_020.0)
-            );
+            // Every singleton may choose a different neighbor under single-snap
+            // semantics. Assert the movement bound for ALL pieces, not one last ID.
+            for (id, state) in store.states.iter().enumerate() {
+                let released_position = Vec2::new(id as f32 + 10.0, 10_020.0);
+                assert!(
+                    puzzella_core::offset_distance_squared(state.position, released_position)
+                        < f64::from(definition.snap_distance).powi(2)
+                );
+            }
             assert_eq!(ranges, 1);
             let row=format!("{count},{run},{fill:.3},{receive:.3},{commit:.3},{highlight:.3},{snapshot_ns:.3},{copy:.3},{hashclone:.3},{down:.3},{members:.3},{grab:.3},{grab_upload:.3},{pointer:.3},{release_command:.3},{release:.3},{release_upload:.3},1,1,{},{},{grab_bytes},{release_bytes},{ranges}\n",count.div_ceil(32)*4,count*8+count.div_ceil(32)*4);
             print!("{row}");
@@ -193,7 +198,13 @@ fn connected_snapping_cpu_benchmark() {
     }
     let mut csv = String::from("pieces,scenario,run,connectivity_init_us,union_chain_us,iteration_us,expansion_us,grab_us,pointer_ns,release_us,connectivity_bytes,released,component_size\n");
     for count in [1_000, 10_000, 100_000, 1_000_000] {
-        for scenario in ["disconnected", "connected", "chain", "board"] {
+        for scenario in [
+            "disconnected",
+            "single_snap",
+            "closure",
+            "board",
+            "connected",
+        ] {
             for run in 0..5 {
                 let d = connected_definition(count);
                 let start = Instant::now();
@@ -219,7 +230,9 @@ fn connected_snapping_cpu_benchmark() {
                             d.correct_position(PieceId(id))
                                 + Vec2::new(
                                     10_000.0
-                                        + if scenario == "disconnected" {
+                                        + if scenario == "disconnected"
+                                            || (scenario == "single_snap" && id > 1)
+                                        {
                                             id as f32 * 20.0
                                         } else {
                                             0.0
@@ -252,7 +265,7 @@ fn connected_snapping_cpu_benchmark() {
                     expanded.count(),
                     if scenario == "connected" { count } else { 1 }
                 );
-                if scenario != "chain" {
+                if !matches!(scenario, "single_snap" | "closure") {
                     s.selected_pieces.fill();
                 } else {
                     s.selected_pieces = requested;
@@ -273,7 +286,14 @@ fn connected_snapping_cpu_benchmark() {
                 let start = Instant::now();
                 let grabbed = s.apply_command(LOCAL_PLAYER, &commands[0], Some(&d));
                 let grab = micros(start);
-                assert_eq!(grabbed.grabbed, if scenario == "chain" { 1 } else { count });
+                assert_eq!(
+                    grabbed.grabbed,
+                    if matches!(scenario, "single_snap" | "closure") {
+                        1
+                    } else {
+                        count
+                    }
+                );
                 s.dirty_pieces.clear();
                 let frozen = s.drag.members.clone();
                 let states = s.states.as_ptr();
@@ -313,7 +333,11 @@ fn connected_snapping_cpu_benchmark() {
                 let component_size = s.connectivity.component_size(PieceId(0));
                 assert_eq!(
                     component_size,
-                    if scenario == "disconnected" { 1 } else { count }
+                    match scenario {
+                        "disconnected" => 1,
+                        "single_snap" => 2,
+                        _ => count,
+                    }
                 );
                 let row = format!("{count},{scenario},{run},{init:.3},{union:.3},{iteration:.3},{expansion:.3},{grab:.3},{pointer:.3},{release:.3},{},{},{component_size}\n", s.connectivity.storage_bytes(), released.released);
                 print!("{row}");

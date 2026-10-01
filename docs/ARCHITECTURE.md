@@ -22,7 +22,7 @@ puzzella
 | `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
 | `puzzle/src/shapes.rs` / `generation.rs` | feature / test限定のv2 Bezier・lyon・Rayon・U16 geometry |
 | `game/src/resources/pieces.rs` | 16-byte dense正本、dense owner IDs、selection / dirty mask、bulk authority、drag bitset / delta、dirty upload |
-| `game/src/resources/pieces/snapping.rs` | Release単位のboundary frontier、決定論的なcomponent snap・union・一括配置 |
+| `game/src/resources/pieces/snapping.rs` | Release単位の単一snap判定、固定offsetのunion closure・一括配置 |
 | `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
 | `game/src/systems/game_logic.rs` | 命令適用、Release後のsnap、イベント駆動の進捗 |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
@@ -56,7 +56,7 @@ GPU pick / selection mask
 
 Moveの最終座標を適用してからReleaseとsnapを処理します。bulk grabとreleaseはそれぞれ1つのClientCommandで、pieceごとの完了・配置Messageも生成しません。連結componentは選択・ownership・移動・配置の単位です。scalar Grab / Move / Releaseもcomponent全体に適用し、同じresolverを使います。snap閾値はstrict `distance < snap_distance`。配置済みcomponentは再Grabできません。保持者の異なる命令と非有限座標を拒否します。
 
-永続連結は`PieceConnectivity`の`Vec<i32> parent_or_size`と`Vec<u32> next_member`で表現します。union-by-sizeとpath compressionを使い、循環listのsuccessor交換でmember listをO(1)結合します。余剰bitsに最小member IDを保存し、offsetの代表とRelease処理順をsnapshot復元前後で揃えます。100万ピースで追加8,000,000 bytes、componentごとのEntity / 恒久member Vecはありません。隣接はrow-major IDから上下左右だけを導出します。boardと隣接componentのoffset差を比較し、最小距離、同距離ならboard、次にtarget側のboundary PieceIdで決めます。連鎖中は最終offsetだけを変更し、吸収するcomponentのboundaryを結合前に一度だけ探索し、完了時に`correct_position + canonical_offset`から座標を再構成します。Release内で既に配置を完了した大componentの再走査も抑えます。詳細・計算量・計測・制限は[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。
+永続連結は`PieceConnectivity`の`Vec<i32> parent_or_size`と`Vec<u32> next_member`で表現します。union-by-sizeとpath compressionを使い、循環listのsuccessor交換でmember listをO(1)結合します。余剰bitsに最小member IDを保存し、offsetの代表とRelease処理順をsnapshot復元前後で揃えます。100万ピースで追加8,000,000 bytes、componentごとのEntity / 恒久member Vecはありません。隣接はrow-major IDから上下左右だけを導出します。Release直後のoffsetがstrict threshold内ならboardを優先しZEROへ配置します。範囲外の場合だけ、正しい隣接componentから最小offset距離、tieなら最小member PieceIdの順にtargetを1つ選びます。moving componentを一度だけ正規化し、以後のoffsetは固定します。同じoffsetのvalid・unheldな隣接componentだけをunion closureへ加え、targetの座標は動かしません。Release共通scratchはtarget検証と解決済みrootをcacheし、成長するcomponentの再走査を抑えます。詳細・計算量・計測・制限は[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。
 
 入力はPostUpdateのegui処理、camera pan / zoom / edge scrollingの後です。現Transformで座標変換し、UI上の押下を抑制します。開始済みdragはUIを横切っても継続・解放できます。pauseとfocus lossで保持を解放し、未確定の矩形選択を元に戻します。
 

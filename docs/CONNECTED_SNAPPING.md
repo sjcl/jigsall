@@ -1,126 +1,141 @@
 # 永続的なconnected-piece snapping
 
-2026-10-02。基準masterは`ca56bf8`。盤面外でも元画像の上下左右に隣接するピースだけを接続し、以後はcomponent全体を選択・保持・移動・配置します。Ctrlと矩形で複数の独立componentを同時dragする操作も維持します。
+2026-10-02。最新master `664f7bee9e3a06749fbf7c4eb00145c617212e86`をfetchして、branch `codex/simplify-connected-snapping`、専用worktree `C:\Users\bebe\.codex\worktrees\simplify-connected-snapping\puzzella`でresolverを簡略化しました。既存checkout、並行branch、masterには変更を加えていません。
 
-作業branchは`codex/connected-piece-snapping`、専用worktreeは`C:\Users\bebe\.codex\worktrees\connected-piece-snapping\puzzella`。開始時にorigin/masterをfetchし、ユーザー提示の`a1d8a38`より新しい`ca56bf8`を基準にしました。開始時の元checkoutや別worktreeの未コミット編集は取り込みませんでした。
+## Releaseの仕様
 
-master統合時には`1f08f4d`までの4 commitsも維持しました。selection rollback / additive selectionは、自分のholdを許可する最新masterの検証をcomponent全体へ適用し、他playerのGrabは全componentをselectionから除外します。dirty mask allocationの再利用、F3 performance overlay、uncached draw / picking binding修正も維持しています。以下のbenchmarkは単独実装時点（`d770ca7`）の記録です。
-
-統合後も必須6コマンドがすべて成功し、通常 / all-featuresそれぞれ132 tests passed（core24、game83、puzzle24、ui1）。releaseのignored testsも全10件成功（CPU benchmark3件、RTX 5090 GPU test / benchmark7件）。masterで追加された選択整合性・dirty mask再利用のテストに加え、接続componentのlocal / remote holdを含むadditive selectionとrollbackの回帰テストも成功しました。
-
-| 主な変更 | ファイル |
-| --- | --- |
-| 永続連結・純粋snap計算 | [connectivity.rs](../core/src/connectivity.rs)、[snapping.rs](../core/src/snapping.rs)、[gameplay.rs](../core/src/gameplay.rs) |
-| authority・連鎖resolver | [pieces.rs](../game/src/resources/pieces.rs)、[pieces/snapping.rs](../game/src/resources/pieces/snapping.rs) |
-| component選択・bulk drag | [interaction.rs](../game/src/interaction.rs) |
-| snapshot・disconnect・migration | [snapshot.rs](../game/src/multiplayer/snapshot.rs)、[multiplayer/mod.rs](../game/src/multiplayer/mod.rs) |
-| connected回帰テスト | [authority](../game/src/resources/pieces/connected_tests.rs)、[interaction](../game/src/connected_interaction_tests.rs)、[snapshot / migration](../game/src/multiplayer/connected_tests.rs) |
-| CPU計測 | [interaction_bench.rs](../game/src/interaction_bench.rs) |
-
-## Representationとauthority
-
-`puzzella-core::PieceConnectivity`はunion-by-sizeのDSUと循環member listです。childの`parent_or_size`はparent ID、負のroot wordの下位20 bitsはsizeです。`next_member`の下位20 bitsはsuccessorで、初期successorは自分自身、unionはrootのsuccessorを交換します。100万という上限で残るbitsへ最小member IDも分割保存し、追加配列なしで安定した座標計算の代表を得ます（root wordに上位11 bits、rootのnext wordに下位9 bits）。unionはpath compressionを使い、read-only root lookupは最悪O(log N)、member iterationはO(k)。component別の恒久Vec / HashMap / Bevy Entityはありません。
-
-| 常駐追加領域 | 1Mのbytes |
-| --- | ---: |
-| parent_or_size: i32 | 4,000,000 |
-| next_member: u32 | 4,000,000 |
-| 合計 | 8,000,000 |
-
-GPU stateとsnapshot stateは16 bytes / pieceのまま。connectivityはGPUへuploadしません。dense owners・occupancy・selected / dirty maskも維持します。既存の全選択CPU論理領域24,375,000 bytesにconnectivityを加えた32,375,000 bytesが常駐の目安です。allocator、画像、Bevy、driver、uploadや操作中の一時領域、RSSは別です。
+`offset = position - correct_position`。1回のReleaseで各moving componentのsnap translationを変更できるのは最大1回です。全選択componentのRelease deltaを先にcommitし、最小member PieceId順に独立して判定します。
 
 ```text
-GPU point ID / final rectangle bitset
-  → component expansion → GrabGroup
-  → authority expansion + whole-component accept/reject
-  → component ownership + relative Z
-  → frozen drag bitset + pointer delta
-  → ReleaseGroup → authority expansion + whole-component owner validation
-  → all released components' deltas committed once
-  → deterministic resolver
-      ├─ neighboring component union + chain frontier
-      └─ whole-component board placement
-  → dense state / dirty mask / cached placed_count
+Release deltaを全componentにcommit
+  ↓
+release直後のoffsetを確定
+  ↓
+boardのstrict threshold内ならboardを優先 → final offset = ZERO
+  または、正しいgrid neighborの最良targetへ1回だけsnap
+  候補なしならrelease直後のoffsetを維持
+  ↓
+moving componentをcorrect_position + final offsetへ正規化
+  ↓
+final offsetを固定
+  ↓
+同final-offset neighborとのunion closure
+  ↓
+終了
 ```
 
-client maskはownership単位として信用しません。部分maskでも全componentへ展開し、全memberのowner / placedを確認します。矛盾したcomponentは部分acceptせず、別componentは独立してacceptできます。Releaseは全componentのdeltaを先にcommitするため、同じgestureの隣接componentを古い位置へsnapしません。処理順はcomponentの最小member ID昇順。吸収済みreleased componentは再処理せず、deltaも二重適用しません。offsetの代表も最小memberなので、snapshot復元でDSU rootが変わっても計算順序と丸めが変わりません。
+board判定は `distance < snap_distance`。等号ではsnapしません。boardまで3、neighborまで1でもboardへ配置し、neighborとの候補比較は実行しません。board snapは全memberのpositionを正解座標、placedをtrue、holdを解除、Zを0にします。ZERO offsetですでに整列しているvalidな隣接componentも結合し、未配置memberがあれば同時に配置します。配置済みtargetはZEROから動きません。
 
-scalar Grab / Move / Releaseもcomponent全体を処理します。Moveは指定memberがtarget positionになるtranslationを求め、全memberを正解位置とoffsetから再構成します。bulk pointerはpresentationのみ。finite deltaの加算がoverflowする場合は全componentの移動を無視してholdを解放します。低水準`set_state`はsingleton専用です。disconnectもcomponentの全holdを解放し、移動・snap・分裂はしません。既に矛盾した混合ownerが存在する場合はそのcomponentの全ownerを解放します。
+board範囲外ではmoving componentの各memberの上下左右、最大4 neighborだけを調べます。別component、全memberがenabled・unheld、placementとtranslationがcomponent内で整合しているtargetのみ受け入れます。offset距離はf64の二乗で計算し、strict threshold内の最小距離、tieならtarget componentの最小member PieceIdで決めます。DSU root IDやHashMapのiteration順はtieに使いません。同じtarget rootは一度だけ評価し、遠いtargetの全member検証は行いません。
 
-## Snapと連鎖
+snap後のfinal offsetはimmutableです。追加unionはtargetの代表offsetとfinal offsetの**完全一致**を要求し、近いだけのcomponentは吸収しません。例えばfinal offset `(100, 50)` に対して `(101, 50)` や `(104, 50)` は結合しません。targetの位置を別offsetへ正規化する処理はありません。
 
-`offset = position - correct_position`。board候補はzero、component候補は正しいgrid neighborのtarget offset。offset差の距離がstrict `< snap_distance`の場合だけ候補になります。距離の二乗はf64で計算してoverflowを避けます。最小距離、同距離ではboard優先、さらにtarget側のboundary PieceId昇順で決定します。HashMap iteration順には依存しません。保持中のtargetへは結合しません。
+`A/B/C`のx offsetが`0/4/8`、thresholdが5の場合、boardを範囲外にする共通y offset 100を与えたauthority testで、AはBへ1回だけsnapし、ABのx offsetは4、Cは未接続のままであることを検証します。文字どおりのZERO offsetならboard優先によりAはboardへ配置されます。同じfinal offsetのcomponentを結合するclosureは許可され、新たに露出する正しいgrid boundaryも探索します。
 
-最初にmoving componentのboundaryを探索し、候補がなければ空間indexを構築しません。候補がある場合だけRelease-localなR-treeへoffsetを登録し、同一offsetはordered PieceId set付きの1点へまとめます。このindexはtranslation候補の検索に使い、GPU picking・readback・shaderは変更しません。
+## Resolverとscratch
 
-targetを吸収する前にそのmember listを一度探索し、新しいboundary候補を登録します。union後に探索すると成長中のcomponentを再走査してしまうため、その順序を避けます。indexにはtarget rootごとに最小boundary IDを1件保存し、吸収時のcandidate削除にもmember走査は不要です。既存候補もindexに残し、offsetが変われば距離を再評価します。遠いtargetの全memberは走査せず、実際に結合する候補になった時だけ全ownership / translationを検証し、Release単位のbitsetに結果をcacheします。
+`game/src/resources/pieces/snapping.rs`には単一candidateの選択、moving componentの正規化、固定offset closureだけを残しました。旧`CandidateIndex`、Release-local R-tree、`BTreeMap`、`BTreeSet`、candidate Vec、nearest再探索、translation更新loop、`CorrectBounds::merge`、`completed_placed`を削除しました。closure用member queueは移動先を再決定する用途には使いません。
 
-連鎖中は論理offsetと正解座標boundsだけを更新します。boundsでfiniteな再構成をO(1)検証し、一時member Vecに新たな未配置memberを集め、完了後に一度`correct_position + canonical_offset`へ正規化します。boardへ固定されたcomponentはzero offsetを維持し、zero offsetの隣接componentとも連結します。Release内で探索を完了した配置済みcomponentを再利用する場合、その大componentのboundaryやstateを再走査・再書込しません。board近くのまだずれたcomponentは自身のReleaseでboardへsnapします。
+incoming componentのmember listをunionの前にqueueへ追加し、成長するcomponentの全memberを毎回探索しません。Release内で解決済みのrootは一般化した`resolved` bitsetへ保存し、後続componentがそのtargetへsnapしてもtargetの境界・positionは再走査・再書込しません。absorbed released componentも再解決しません。追加unionによって先に解決したcomponentのtranslationは変わりません。
 
-f32加減算では任意のoffsetを全memberでbit単位に一致させられません。再構成で相対形状の誤差を丸めの範囲へ抑え、snapshotは各componentの同じ代表offsetに対して再構成を検証します。許容幅は座標scaleの4 × f32 epsilonで、edgeごとの誤差を足し合わせません。placed positionsは正解座標との完全一致を要求します。
+scratchの4 bitsets（seen targets、validated、eligible、resolved）はRelease全体で一度だけ確保します。component切替ではseen targetsのtouched rootsだけをclearします。touched Vecとclosure member Vecはcapacityを再利用し、disconnected singletonの候補重複除去はstack上の4 root配列で行い、seen bitsetの書込も省きます。singletonごとのtree/map/Vecの新規allocationはありません。1M時のscratch bitsetsは合計500,000 bytes、queueとtouched Vecはそれぞれ最大約4 MB、別にRelease root Vec等の操作中領域があります。恒久connectivityは8,000,000 bytesのままです。process RSSとallocator overheadは計測していません。
 
-## Selection・dirty・Z
+`rstar`はCPU collision / picking debugのため維持しますが、通常runtimeの必須依存からoptional dependencyへ変更し、`cpu-picking-debug` featureとdev-dependenciesだけで有効化します。Releaseにはspatial indexもordered treeもありません。Cargo.lockの変更は不要でした。
 
-point readbackは最大1 PieceId。CPUが全componentへ展開し、Ctrlも全memberを追加／解除します。final rectangle readbackは従来のbitsetで、一部memberへのhitを全componentへ展開します。遅延readback・additive rectangle・rollbackも現在のconnectivityとownershipで再検証します。矩形preview自体は従来のGPU hit maskです。
+## 座標計算
 
-drag startでcanonical membershipを固定し、pointer updateはdeltaだけ変更します。Grab / ReleaseのClientCommand数は各1。Grabとfront移動はcomponent内と複数選択全体のrelative Zを維持し、MAX_Zでのrare compactionも残します。placementは全memberを正解位置・placed・holdなし・Z zeroへ更新します。
+`PuzzleDefinition::correct_position()`は`PuzzlePiece`を構築しません。Release-local `PuzzleGeometry`にgrid寸法、piece size、centerを一度計算し、PieceIdのinteger division / moduloとmultiply / subtractで座標を求めます。generatorと同じ演算順序、特にyの積の後の符号反転を維持します。1×1、fractional size、非正方grid、1M gridと最大image寸法について全pieceの座標bitsが従来`piece().correct_position`と一致するテストを追加しました。neighbor計算も同じgrid helperを共有し、一時heap生成はなく、左右のrow wrapはありません。
 
-dirtyは変化したdense memberだけ。同じ位置でunionしたtargetはconnectivityだけが変わるのでstate upload不要。selectionは別maskだけ更新します。full dirtyのdense copy 1個、fragmented dirtyの最大128 rangesから1 spanへの縮約、単一変更16-byte rangeを維持します。
+f32の加減算では任意offsetを全memberでbit単位に保存できません。componentの代表は最小memberで、shape検証はその代表に対する再構成との差を座標scaleの4 × f32 epsilon以内に限定します。closureのoffset equalityにこの許容幅は使いません。placed positionsは正解座標との完全一致を要求します。
 
-## Snapshot schema 3
+## Authority・selection・snapshot
 
-| flags | bit |
-| --- | ---: |
-| SNAPSHOT_PLACED | 0 |
-| SNAPSHOT_CONNECTED_RIGHT | 1 |
-| SNAPSHOT_CONNECTED_DOWN | 2 |
+部分maskのcanonical expansion、全componentのownership accept/reject、mixed ownerの全体reject、scalar Grab / Move / Releaseのatomicity、remote holdのtarget拒否、disconnectの全component hold解放を維持します。複数の独立componentは1 GrabGroup / ReleaseGroupで操作でき、各componentは独立してsnapします。targetは静止し、同じgesture内の他componentが再translationされることはありません。
 
-captureは右・下のneighborが同じcomponentならedgeを保存します。root IDをwireへ保存しません。installはedgeからDSUを再構成し、schema、session / image / cursor / definition、count、finite position、Z、unknown flags、境界外edge、placedの誤座標、component内のplaced / translation不一致を全て検証してからstoreを置き換えます。schema 1 / 2は拒否します。
+point / Ctrl / final rectangleはcomponent全体へ展開し、union時は必要な未選択componentへだけselectionを伝播します。remote hold除外、rollbackとdelayed readbackのauthority再検証を維持します。rectangle previewは従来のGPU hit maskで、GPUにconnectivityを追加していません。pointerはfrozen drag maskを共有しdeltaだけを更新します。dense dirty uploadとrelative Zの既存境界も維持します。
 
-restoreはposition / Z / placed / connectivityを維持し、holds / selection / dragをresetし、GPU epochを更新します。local drag中のcapture拒否とmigrationのtransactional activationを維持します。
+snapshot schema 3、`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`、16 bytes / pieceは変更しません。root IDを保存せず、右・下edgeから復元します。invalid border edge、inconsistent component、placed exact position、old schema reject、transactional install、migration round tripを維持します。integer / fractional offsetでDSU rootが変わる復元と、新resolverの単一snap・closure・board優先の復元前後一致をテストします。
 
-## 計算量とMILLION_SELECTIONからの変更
+## 計算量
 
-Nはpiece count、kは展開member数、eは探索した最大4kのgrid edges、bは発見したboundary target ID数。bitsetの初期化・iterationにはO(N/32)があります。全piece stateを毎操作走査する処理はありません。
+Nはpiece count、kはmoving membersと新たに吸収する未解決members、eはその最大4k grid edges、vはcandidate targetのauthority検証membersです。component resolverはmember走査・normalization・closureがO(k + v)、read-only DSU lookupが最悪O(e log N)、unionはpath compressionを使います。Release共通bitset allocation / iterationはO(N/32)、accepted memberの列挙・root lookupも必要です。root検証はcacheし、unionしたrootには検証済みの状態を引き継ぎます。各memberの境界・placement・selection変更はRelease内で定数回程度に抑え、成長componentの繰り返し全走査を避けます。pointerとidleはO(1)です。
 
-| 経路 | 維持／変更 |
+## Benchmark
+
+比較対象は**今回fetchした旧resolver付きmaster** `664f7bee9e3a06749fbf7c4eb00145c617212e86`です。専用worktreeのignored target内へ`git archive`で隔離したソースに、新しいbenchmark harnessだけを適用しました。connected snapping導入前のcommitとの比較は行っていません。統合直前のfirst parentは`1f08f4d131eaf510ada8c321e3ca2baf0d25304e`で、過去の`ca56bf8`計測を今回のbaselineには使っていません。
+
+release / locked、4096² image、seed 42、1k / 10k / 100k / 1M、各scenario 5 samples、pointer 100,000 updates。両実装で同じharnessを使い、baseline計測後にworkspace 3crateのrelease cacheを削除し、新実装をbuildし直して追加テストが実行されることを確認してから順次計測しました。再現時はbaselineと新実装で別target directoryを使ってください。setup・Grab・union構築・pointer・Releaseの時間は別々に記録し、authority Release時間にGPU / upload / frame wall timeを含めません。
+
+| scenario | fixtureとassert |
 | --- | --- |
-| idle / unfocused idle | O(1)、全component走査なし、state / mask upload 0 |
-| pointer | O(1)、position更新・command・state / membership upload 0 |
-| point GPU | 最大1 ID / 4 bytes。CPU expansion O(k)追加 |
-| rectangle preview | GPUのみ、readbackなし |
-| rectangle final | O(N/32) readback、CPU expansionとcomponent検証O(k)追加 |
-| mask clone / rollback | Arc共有、connectivity変更後のrollbackのみ再展開 |
-| Grab | expansion / validation + 既存Z sort O(k log k)、1 command |
-| Release | resolverごとにO(k + e)のmember / edge処理 + Release共通O(N/32) + 候補index操作、1 command |
-| union | path compression + union-by-size、list splice O(1) |
-| snapshot | explicit O(N)にDSU再構成追加、16 bytes維持 |
-| GPU / dirty | renderer / shader変更なし、既存upload境界維持 |
+| disconnected | correct position + `(10000 + id * 20, 10000)`、全piece Release、結合なし |
+| single_snap | 0 / 1だけoffset `(10000, 10000)`、他は遠いoffset、0をdelta `(1, 1)`でRelease、size 2 |
+| closure | 全targetがoffset `(10000, 10000)`、0をdelta `(1, 1)`でRelease、固定offsetのclosureでsize N |
+| board | grid checkerboardのoffset `(±4, 0)`、全piece Release、全piece placed / size N |
+| connected | offset `(10000, 10000)`、事前に全Nをunion、全component Release |
 
-candidate indexは通常O(log b)のinsert / nearest検索。同一offsetの大量tieは1点へまとめます。異なるoffset点が多数同距離になる敵対的な配置では、同距離点数に応じたtie検証が残ります。1つの連鎖resolver内ではmember / edgeを定数回程度で処理し、配置済みtargetはRelease全体でも再走査を抑えます。別resolverが既に解決した未配置componentを異なるoffsetへ再吸収する場合は再訪問するため、任意のoffset分布についてRelease全体のworst-case線形性までは保証しません。scratch masksはRelease全体で一度確保し、componentごとにN-bit maskをzero初期化しません。一時root / pending-member Vecは各最大約4 MB、4個のscratch bitsetは計約0.5 MB（1M時）。他にcanonical masks、候補Vec、spatial index等が明示的な操作中のみ存在し、恒久8 MBには含みません。
+旧benchmarkの実fixtureはすでに同一offsetでの結合だったため、名称を`closure`へ明確化しました。translationを変えて遠方まで移動するbenchmarkはありません。各fixtureでreleased / placed / owner解放 / component sizeをassertします。pointerはmembership Arcとdense state pointerを固定し、state dirtyなしと各transition 1 commandをassertします。
 
-## Benchmarkとvalidation
+baseline再現は`664f7be`の隔離checkoutへ今回の`game/src/interaction_bench.rs`だけをコピーし、上記のconnected CPU benchmarkを実行します。旧`ca56bf8`専用baseline harnessは削除しました。過去CSVは当時の記録で、今回の比較表には使いません。
 
-release / locked、4096² image、seed 42、1k / 10k / 100k / 1M、各5 samples、pointer各100,000 updates。`connected_snapping_cpu_benchmark`は未連結、全体1 component、1 memberのReleaseからの連鎖結合、交互offsetの全体board配置の4 casesを分け、metadata初期化・union chain・iteration・expansion・Grab・pointer・Releaseを測定します。未連結fixtureは隣接offset差をthresholdより大きくして、Release後も未連結であることをassertします。board fixtureはgridのcheckerboardでoffset ±4を与え、近いboardへの配置後に大componentが成長する経路も測ります。GPU / upload / frame wall timeをCPU authority時間へ含めません。
+計測値・環境・validationは下記に今回の結果を記載します。
 
-baselineは基準masterのソースを専用worktreeのtarget内へ展開し、同じ未連結fixture・pointer暖機条件の計測testだけを追加して実行します。既存million-selectionとmulti-drag benchmarkも再実行します。
+計測環境はWindows 11 Pro 10.0.26200、Ryzen 9 9950X、Rust 1.97.0、RTX 5090 / Vulkan / NVIDIA 610.88。[環境JSON](../benchmarks/connected-snapping-environment.json)、[新CPU CSV](../benchmarks/connected-snapping-cpu.csv)、[旧master CPU CSV](../benchmarks/single-snap-old-master-cpu.csv)に全samplesとprovenanceを保存しています。以下は5回の中央値で、Releaseはmsです。
 
-計測環境はWindows 11、Ryzen 9 9950X、Rust 1.97.0、RTX 5090 / Vulkan / NVIDIA 610.88。[環境JSON](../benchmarks/connected-snapping-environment.json)、[新CPU CSV](../benchmarks/connected-snapping-cpu.csv)、[baseline CSV](../benchmarks/connected-snapping-baseline-release.csv)に条件と全samplesを保存しています。以下は各5回の中央値、Releaseはmsです。
+新resolver:
 
-| pieces | master未連結 | 新未連結 | 単一component | 1 memberからの全体連鎖 | checkerboard全体board配置 | 接続済みpointer ns |
+| pieces | disconnected | single snap | same-offset closure | board | already-connected | connected pointer ns |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 0.0164 | 0.1097 | 0.0375 | 0.1378 | 0.5868 | 11.679 |
-| 10,000 | 0.1628 | 1.0906 | 0.3746 | 1.4902 | 6.1306 | 11.774 |
-| 100,000 | 1.6382 | 11.1304 | 3.8558 | 15.4165 | 62.4450 | 11.863 |
-| 1,000,000 | 17.1576 | 112.9137 | 38.1059 | 162.9509 | 963.6666 | 11.780 |
+| 1,000 | 0.0515 | 0.0012 | 0.0453 | 0.1272 | 0.0304 | 11.615 |
+| 10,000 | 0.5060 | 0.0046 | 0.4749 | 1.2789 | 0.2925 | 11.851 |
+| 100,000 | 5.2783 | 0.0228 | 4.7237 | 13.5733 | 2.9183 | 11.732 |
+| 1,000,000 | 52.2758 | 0.4322 | 45.8704 | 131.5409 | 28.8865 | 11.530 |
 
-100万の単一componentではmetadata初期化1.0377 ms、union chain構築4.3551 ms、member iteration1.1342 ms、1 memberから全体へのexpansion4.5171 ms、Grab11.6614 ms。未連結Releaseは正しい隣接探索の追加で約6.58倍になりました。連鎖は1 memberのReleaseから100万memberを接続するまでを含みます。board 1M samplesは627.7–1041.7 msでばらつきもあるため、frame latencyが小さいとは解釈しません。いずれもpanic / OOMなし、owner解放と最終component size / placementをassertしています。
+旧master（同じfixture）:
 
-既存[million-selection CPU再計測](../benchmarks/connected-snapping-million-selection-cpu.csv)もfixtureを変更せず通りました。1Mのselection final commit1.6540 ms、pointer11.842 ns、Release1466.8007 ms、upload準備2.4618 ms。この既存fixtureの`position = (id, 10000)`は、新ルールでは隣接offsetが近くなって多数の連鎖結合を起こすため、従来の「単体を盤面へ判定するRelease」と処理内容が変わります。純粋な未連結のbefore / after比較は上表の同一fixtureを使います。[multi-drag CSV](../benchmarks/connected-snapping-multi-drag.csv)も1k–1Mで11.854–12.005 ns / pointer frame、commandはGrab / Release各1です。
+| pieces | disconnected | single snap | same-offset closure | board | already-connected |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 0.1120 | 0.0030 | 0.1409 | 0.6175 | 0.0370 |
+| 10,000 | 1.0792 | 0.0084 | 1.4422 | 6.3026 | 0.3674 |
+| 100,000 | 10.9321 | 0.0149 | 14.9232 | 63.5571 | 3.6569 |
+| 1,000,000 | 109.9164 | 0.2968 | 161.2626 | 905.7347 | 44.3986 |
 
-実GPUの[million-selection CSV](../benchmarks/connected-snapping-million-selection-rtx5090.csv)は2048²、rectangle GPU中央値0.521216 ms、readback125,000 bytes、selection upload125,000 bytes、selection時state upload 0。既存testはsamples間でpositionだけをresetするため、run 0は未連結から全体結合、run 1–4は永続的な1M componentです。接続済みrun 1–4のRelease中央値40.0 ms、CPU finalization中央値7.274 ms。pointer中のstate / drag-mask / selection uploadはすべて0をassertしました。[既存renderer再計測CSV](../benchmarks/connected-snapping-renderer-rtx5090.csv)は24 rows、1M全体viewのframe2.2984 ms、半透明2.3001 ms。shader・rendererの変更はありません。
+100万の比較:
 
-baselineを再現する場合、`ca56bf8`の隔離checkoutへ[baseline harness](../benchmarks/connected-snapping-baseline-harness.rs)を`game/src/baseline_release_bench.rs`としてコピーし、`game/src/interaction.rs`へ`#[cfg(test)] #[path = "baseline_release_bench.rs"] mod baseline_release_bench;`を追加して、`cargo test -p puzzella-game --release --locked connected_baseline_release_benchmark -- --ignored --nocapture --test-threads=1`を実行します。baselineと新実装には別のtarget directoryを使ってください。
+| 1M scenario | 旧master ms | 新resolver ms | 短縮率 |
+| --- | ---: | ---: | ---: |
+| disconnected | 109.9164 | 52.2758 | 52.4% |
+| single_snap | 0.2968 | 0.4322 | -45.6% |
+| closure | 161.2626 | 45.8704 | 71.6% |
+| board | 905.7347 | 131.5409 | 85.5% |
+| connected | 44.3986 | 28.8865 | 34.9% |
+
+disconnectedはstack上のsingleton候補重複除去も含めて約2.10倍、boardは約6.89倍、already-connectedは約1.54倍速くなりました。same-offset closureは約3.52倍です。小さなReleaseのsingle snapは1M puzzle上で旧0.2968 ms → 新0.4322 msと遅く、100kでも旧0.0149 ms → 新0.0228 msでした。少数memberのReleaseでもN-bit masksの確保・初期化が残るため、小操作のコストはpiece countに依存します。これは今回残る性能課題です。single snapの1M全samplesは新0.4057–0.5556 msで、allocationと短時間測定のばらつきもあります。
+
+既存[million-selection CPU](../benchmarks/connected-snapping-million-selection-cpu.csv)も同じfixtureで成功しました。1Mのfinal commit 1.6226 ms、Release 128.8948 ms、pointer 11.863 ns、upload準備 2.1377 msです。fixtureの`position = (id, 10000)`では隣接snapが発生するため、上表の純disconnectedとは異なります。旧仕様に依存した最後のpieceの位置assertを、全pieceがrelease直後からthreshold未満しか動かないassertへ変更しました。
+
+[multi-drag CSV](../benchmarks/connected-snapping-multi-drag.csv)は1k / 10k / 100k / 1Mで12.585 / 11.968 / 11.885 / 11.878 ns。pointer中はmembership Arcとdense state pointerが変わらず、dirtyなし、Grab / Release各1 commandを維持しました。
+
+実GPUの[million-selection CSV](../benchmarks/connected-snapping-million-selection-rtx5090.csv)は2048²、rectangle GPU中央値 0.516608 ms、readback / selection upload各125,000 bytes、selection時state upload 0、pointer中state / membership / selection upload 0をassertしました。初回は未連結、run 1–4は永続的な1M componentです。run 1–4のauthority Release中央値 100.4497 msでした。[既存renderer CSV](../benchmarks/connected-snapping-renderer-rtx5090.csv)も24 rowsを保存しました。shader / renderer / GPU picking / connectivity uploadの変更はありません。
+
+必須6コマンドは最終コードですべてexit 0。通常とall-featuresそれぞれ140 passed / 0 failed / 10 ignored（core25、game90、puzzle24、ui1）。releaseのcore/game通常testsは115 passed、CPU benchmark3件、実GPU test / benchmark7件もすべて成功しました。strict threshold、no chained translation、same-offset closure、board priority、wrong neighbor、独立multi-release、remote / mixed ownership、placed target、selection / rollback、dirty range、snapshot境界 / schema / root independence、migration、100万member round tripを含みます。
+
+| 変更ファイル | 内容 |
+| --- | --- |
+| `core/src/gameplay.rs`, `core/src/lib.rs` | precomputed geometry、generatorと座標bitsの一致テスト、neighbor helper |
+| `core/src/snapping.rs` | boardとneighborの新しい役割に合わせてcandidate説明・旧tie testを整理 |
+| `game/src/resources/pieces.rs`, `pieces/snapping.rs` | Release共有scratch、単一snap、固定offset union、singleton fast path |
+| `game/src/resources/pieces/connected_tests.rs`, `game/src/multiplayer/connected_tests.rs` | 新仕様とauthority / snapshotの回帰検証 |
+| `game/src/interaction_bench.rs` | 5 scenariosと全pieceの移動上限検証 |
+| `game/Cargo.toml` | rstarをCPU picking用optional dependencyへ変更 |
+| `docs/CONNECTED_SNAPPING.md`, `docs/ARCHITECTURE.md` | 現仕様・計算量・比較・再現手順 |
+| `benchmarks/connected-snapping-*.csv`, `single-snap-old-master-cpu.csv`, environment JSON | CPU / GPU / rendererの実測更新、同じfixtureのbaseline保存 |
+| `benchmarks/connected-snapping-baseline-harness.rs` | 旧baseline専用の不要harnessを削除 |
+
+`core/src/connectivity.rs`、`game/src/interaction.rs`、`game/src/multiplayer/snapshot.rs`のproduction codeは変更していません。snapshot wire format・multiplayer・selectionの既存invariantを検証で維持しました。
+
+
+## 再実行
 
 ```sh
 cargo fmt --check
@@ -136,6 +151,4 @@ cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --t
 cargo test -p puzzella-game --release --locked render_only_image_upload_keeps_metadata_and_pixel_values -- --ignored --nocapture --test-threads=1
 ```
 
-上記6つの必須検証はすべて成功。通常とall-featuresの各testは122 passed / 0 failed / 11 ignored（core24、game74、puzzle24）。ignoredもreleaseで全て実行し、CPU benchmark3件、RTX 5090実GPU test / benchmark8件が成功しました。strict threshold、誤隣接、component同士の連鎖、部分mask / 矛盾owner、scalar、Z compaction、selection / rollback、dirty range、snapshot境界 / 旧schema / atomic reject、migration後の全体drag、100万member round tripを検証しています。DSU rootとmember listの順が異なる復元前後で整数・fractional offsetのsnap結果が同じことも確認しています。
-
-回転・分裂、transport実装・途中dragのpeer presentation同期、異OS / GPU検証、process RSS測定は含みません。f32 rounding、spatial indexの敵対的tie cost、異なるresolverによる未配置componentの再訪問、explicitな大selection / release / snapshotのCPU costは残ります。idle / pointerのO(1)、GPU pickingとbitset readback、各1 ClientCommand、dirty upload境界は維持できましたが、Releaseの実時間、selection finalization、mainのmetadata初期化とCPU常駐memoryは増えています。
+残る課題はexplicitな大selection / Grab / Releaseのmember列挙、最大4 edges / memberのCPU探索、authority validationとsnapshotのO(N)処理です。board優先でも全memberの配置・dirty更新・unionは必要で、frame latency全体の保証ではありません。回転・分裂、transport、異OS / GPU、RSSは今回の変更に含みません。

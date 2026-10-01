@@ -12,7 +12,7 @@ pub fn offset_distance_squared(a: Vec2, b: Vec2) -> f64 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SnapCandidate {
     pub offset: Vec2,
-    /// None is the board; ties prefer board, then the smaller boundary PieceId.
+    /// None is the board (checked first); neighbors use their stable minimum PieceId.
     pub target: Option<PieceId>,
     pub distance_squared: f64,
 }
@@ -73,10 +73,8 @@ mod tests {
     fn strict_threshold_and_stable_ties() {
         assert!(SnapCandidate::new(Vec2::new(5.0, 0.0), Vec2::ZERO, None, 5.0).is_none());
         assert!(SnapCandidate::new(Vec2::new(4.99, 0.0), Vec2::ZERO, None, 5.0).is_some());
-        let board = SnapCandidate::new(Vec2::X, Vec2::ZERO, None, 5.0).unwrap();
         let piece =
             SnapCandidate::new(Vec2::X, Vec2::new(2.0, 0.0), Some(PieceId(0)), 5.0).unwrap();
-        assert!(board.precedes(&piece));
         let lower = SnapCandidate {
             target: Some(PieceId(1)),
             ..piece

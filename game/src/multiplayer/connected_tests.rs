@@ -293,3 +293,62 @@ fn assert_snapshot_root_independence(image_size: UVec2, fractional: Vec2) {
     }
     assert_eq!(source.states, restored.states);
 }
+
+#[test]
+fn fixed_offset_snap_closure_and_board_priority_survive_snapshot_restore() {
+    for (offsets, expected_size, expected_offset, placed) in [
+        (
+            [0.0, 4.0, 8.0, 12.0].map(|x| Vec2::new(x, 100.0)),
+            2,
+            Vec2::new(4.0, 100.0),
+            0,
+        ),
+        (
+            [0.0, 4.0, 4.0, 4.0].map(|x| Vec2::new(x, 100.0)),
+            4,
+            Vec2::new(4.0, 100.0),
+            0,
+        ),
+        (
+            [3.0, 4.0, 100.0, 200.0].map(|x| Vec2::new(x, 0.0)),
+            1,
+            Vec2::ZERO,
+            1,
+        ),
+    ] {
+        let d = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::new(4, 1),
+            image_size: UVec2::new(80, 20),
+            snap_distance: 5.0,
+        };
+        let mut source = PieceDataStore::default();
+        source.initialize(
+            offsets
+                .into_iter()
+                .enumerate()
+                .map(|(id, offset)| d.correct_position(PieceId(id as u32)) + offset)
+                .collect(),
+        );
+        let snapshot = GameSnapshot::capture(&source, &d, SESSION, expected(&d).cursor).unwrap();
+        let mut restored = PieceDataStore::default();
+        snapshot.install(&mut restored, expected(&d)).unwrap();
+        for store in [&mut source, &mut restored] {
+            store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d));
+            let result =
+                store.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d));
+            assert_eq!(result.placed, placed);
+            assert_eq!(store.connectivity.component_size(PieceId(0)), expected_size);
+            assert_eq!(
+                store.states[0].position,
+                d.correct_position(PieceId(0)) + expected_offset
+            );
+        }
+        assert_eq!(source.states, restored.states);
+        let capture = |store: &PieceDataStore| {
+            GameSnapshot::capture(store, &d, SESSION, expected(&d).cursor).unwrap()
+        };
+        assert_eq!(capture(&source).pieces, capture(&restored).pieces);
+    }
+}

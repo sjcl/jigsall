@@ -121,7 +121,7 @@ fn single_component_and_component_component_merges_share_the_resolver() {
 }
 
 #[test]
-fn one_release_chains_through_changing_offsets_without_revisiting_members() {
+fn one_release_never_moves_the_absorbed_component_to_another_offset() {
     let (d, mut s) = fixture(
         UVec2::new(6, 1),
         [100.0, 100.0, 104.0, 104.0, 108.0, 108.0].map(|x| Vec2::new(x, 100.0)),
@@ -129,21 +129,23 @@ fn one_release_chains_through_changing_offsets_without_revisiting_members() {
     for id in [0, 2, 4] {
         s.connectivity.union(PieceId(id), PieceId(id + 1));
     }
-    let mut scratch = snapping::SnapScratch::new(s.len());
-    s.resolve_component_snap(PieceId(0), &d, &mut scratch);
-    assert_eq!(scratch.boundary_members, 6);
-    assert_eq!(s.connectivity.component_size(PieceId(0)), 6);
-    assert_offset(&s, &d, 0, Vec2::new(108.0, 100.0));
+    let mut scratch = snapping::SnapScratch::new(s.len(), &d);
+    s.resolve_component_snap(PieceId(0), &mut scratch);
+    assert_eq!(scratch.boundary_members, 4);
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 4);
+    assert!(!s.connectivity.same_component(PieceId(0), PieceId(4)));
+    assert_offset(&s, &d, 0, Vec2::new(104.0, 100.0));
+    assert_offset(&s, &d, 4, Vec2::new(108.0, 100.0));
 }
 
 #[test]
-fn large_aligned_chain_scans_each_boundary_member_once() {
+fn large_same_offset_closure_scans_each_boundary_member_once() {
     let (d, mut s) = fixture(
         UVec2::splat(100),
         std::iter::repeat_n(Vec2::splat(10_000.0), 10_000),
     );
-    let mut scratch = snapping::SnapScratch::new(s.len());
-    s.resolve_component_snap(PieceId(0), &d, &mut scratch);
+    let mut scratch = snapping::SnapScratch::new(s.len(), &d);
+    s.resolve_component_snap(PieceId(0), &mut scratch);
     assert_eq!(scratch.boundary_members, 10_000);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
     assert_offset(&s, &d, 0, Vec2::splat(10_000.0));
@@ -323,17 +325,17 @@ fn snapping_to_placed_target_places_all_absorbed_members() {
 }
 
 #[test]
-fn nearest_candidate_and_root_ties_are_deterministic() {
+fn nearest_candidate_and_minimum_member_ties_are_deterministic() {
     for _ in 0..20 {
-        // Middle piece has equally distant correct neighbors; root 0 wins.
+        // Middle piece has equally distant correct neighbors; stable PieceId 0 wins.
         let (d, mut s) = fixture(
             UVec2::new(3, 1),
             [100.0, 102.0, 104.0].map(|x| Vec2::new(x, 100.0)),
         );
         release(&mut s, &d, &[1], Vec2::ZERO);
-        assert_eq!(s.connectivity.component_size(PieceId(1)), 3);
-        // It then chains to root 2, so the final canonical offset is root 2's.
-        assert_offset(&s, &d, 1, Vec2::new(104.0, 100.0));
+        assert_eq!(s.connectivity.component_size(PieceId(1)), 2);
+        assert!(!s.connectivity.same_component(PieceId(1), PieceId(2)));
+        assert_offset(&s, &d, 1, Vec2::new(100.0, 100.0));
         let (d, mut s) = fixture(
             UVec2::new(3, 1),
             [98.0, 102.0, 106.0].map(|x| Vec2::new(x, 100.0)),
@@ -343,11 +345,6 @@ fn nearest_candidate_and_root_ties_are_deterministic() {
         assert!(!s.connectivity.same_component(PieceId(1), PieceId(2)));
         assert_offset(&s, &d, 1, Vec2::new(98.0, 100.0));
     }
-    // Neighbor is closer than the board, so board is not given unconditional priority.
-    let (d, mut s) = fixture(UVec2::new(2, 1), [Vec2::new(4.0, 0.0), Vec2::new(6.0, 0.0)]);
-    release(&mut s, &d, &[0], Vec2::ZERO);
-    assert_eq!(s.placed_count, 0);
-    assert_offset(&s, &d, 0, Vec2::new(6.0, 0.0));
 }
 
 #[test]
@@ -433,15 +430,16 @@ fn overflowing_release_ignores_translation_for_whole_component() {
 }
 
 #[test]
-fn chain_reconsiders_previously_discovered_boundary_after_translation_changes() {
+fn nearby_boundary_at_another_offset_is_not_reconsidered_after_snap() {
     let (d, mut s) = fixture(
         UVec2::splat(2),
         [108.0, 100.0, 104.0, 100.0].map(|x| Vec2::new(x, 100.0)),
     );
     s.connectivity.union(PieceId(1), PieceId(3));
     release(&mut s, &d, &[1], Vec2::ZERO);
-    assert_eq!(s.connectivity.component_size(PieceId(1)), 4);
-    assert_offset(&s, &d, 1, Vec2::new(108.0, 100.0));
+    assert_eq!(s.connectivity.component_size(PieceId(1)), 3);
+    assert!(!s.connectivity.same_component(PieceId(1), PieceId(0)));
+    assert_offset(&s, &d, 1, Vec2::new(104.0, 100.0));
 }
 
 #[test]
@@ -481,7 +479,7 @@ fn finite_scalar_singleton_move_still_accepts_an_overflowing_difference() {
 }
 
 #[test]
-fn alternating_board_candidates_reuse_completed_placed_components() {
+fn alternating_board_releases_union_without_rescanning_the_growing_cluster() {
     let grid = UVec2::splat(100);
     let (d, mut s) = fixture(
         grid,
@@ -517,4 +515,111 @@ fn alternating_board_candidates_reuse_completed_placed_components() {
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
     assert_eq!(s.placed_count, 10_000);
     assert_offset(&s, &d, 0, Vec2::ZERO);
+}
+
+#[test]
+fn no_chained_translation_from_zero_four_eight() {
+    // A common y offset keeps the board out of range; x offsets are 0, 4, 8.
+    let (d, mut s) = fixture(
+        UVec2::new(3, 1),
+        [0.0, 4.0, 8.0].map(|x| Vec2::new(x, 100.0)),
+    );
+    release(&mut s, &d, &[0], Vec2::ZERO);
+    assert!(s.connectivity.same_component(PieceId(0), PieceId(1)));
+    assert!(!s.connectivity.same_component(PieceId(0), PieceId(2)));
+    assert_offset(&s, &d, 0, Vec2::new(4.0, 100.0));
+    assert_offset(&s, &d, 2, Vec2::new(8.0, 100.0));
+}
+
+#[test]
+fn same_final_offset_closure_includes_newly_exposed_neighbors() {
+    let (d, mut s) = fixture(
+        UVec2::new(4, 1),
+        [0.0, 4.0, 4.0, 4.0].map(|x| Vec2::new(x, 100.0)),
+    );
+    release(&mut s, &d, &[0], Vec2::ZERO);
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 4);
+    assert_offset(&s, &d, 0, Vec2::new(4.0, 100.0));
+}
+
+#[test]
+fn board_has_priority_even_when_neighbor_is_closer() {
+    let (d, mut s) = fixture(UVec2::new(2, 1), [Vec2::new(3.0, 0.0), Vec2::new(4.0, 0.0)]);
+    release(&mut s, &d, &[0], Vec2::ZERO);
+    assert_eq!(s.placed_count, 1);
+    assert_offset(&s, &d, 0, Vec2::ZERO);
+    assert_offset(&s, &d, 1, Vec2::new(4.0, 0.0));
+    assert!(!s.connectivity.same_component(PieceId(0), PieceId(1)));
+}
+
+#[test]
+fn final_offset_union_requires_exact_equality() {
+    let (d, mut s) = fixture(
+        UVec2::splat(2),
+        [100.0, 104.0, 105.0, 108.0].map(|x| Vec2::new(x, 50.0)),
+    );
+    release(&mut s, &d, &[0], Vec2::ZERO);
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 2);
+    assert_offset(&s, &d, 0, Vec2::new(104.0, 50.0));
+    assert_offset(&s, &d, 2, Vec2::new(105.0, 50.0));
+    assert_offset(&s, &d, 3, Vec2::new(108.0, 50.0));
+}
+
+#[test]
+fn multiple_released_components_snap_independently_and_never_move_resolved_targets() {
+    let (d, mut s) = fixture(
+        UVec2::new(4, 1),
+        [100.0, 104.0, 108.0, 112.0].map(|x| Vec2::new(x, 100.0)),
+    );
+    let result = release(&mut s, &d, &[0, 1, 2, 3], Vec2::ZERO);
+    assert_eq!(result.released, 4);
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 3);
+    assert_offset(&s, &d, 0, Vec2::new(104.0, 100.0));
+    assert_offset(&s, &d, 3, Vec2::new(112.0, 100.0));
+
+    let (d, mut s) = fixture(
+        UVec2::new(6, 1),
+        [100.0, 104.0, 500.0, 600.0, 604.0, 700.0].map(|x| Vec2::new(x, 100.0)),
+    );
+    release(&mut s, &d, &[0, 3], Vec2::ZERO);
+    assert_offset(&s, &d, 0, Vec2::new(104.0, 100.0));
+    assert_offset(&s, &d, 3, Vec2::new(604.0, 100.0));
+    assert_eq!(s.connectivity.component_size(PieceId(0)), 2);
+    assert_eq!(s.connectivity.component_size(PieceId(3)), 2);
+}
+
+#[test]
+fn invalid_nearest_component_is_rejected_as_a_whole_before_choosing_valid_target() {
+    for invalid in ["owner", "translation", "placed", "disabled"] {
+        let (d, mut s) = fixture(
+            UVec2::splat(2),
+            [98.0, 100.0, 98.0, 103.0].map(|x| Vec2::new(x, 100.0)),
+        );
+        s.connectivity.union(PieceId(0), PieceId(2));
+        match invalid {
+            "owner" => {
+                s.held_by.insert(PieceId(2), PlayerId(1));
+            }
+            "translation" => {
+                s.states[2].position += Vec2::splat(20.0);
+            }
+            "placed" => {
+                s.states[2].flags |= PLACED;
+            }
+            "disabled" => {
+                s.states[2].flags &= !ENABLED;
+            }
+            _ => unreachable!(),
+        }
+        release(&mut s, &d, &[1], Vec2::ZERO);
+        assert!(
+            s.connectivity.same_component(PieceId(1), PieceId(3)),
+            "{invalid}"
+        );
+        assert!(
+            !s.connectivity.same_component(PieceId(1), PieceId(0)),
+            "{invalid}"
+        );
+        assert_offset(&s, &d, 1, Vec2::new(103.0, 100.0));
+    }
 }
