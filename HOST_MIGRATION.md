@@ -164,8 +164,10 @@ B=4:801、C=4:805、D=4:805ならCがsnapshot source。
 新hostは外部通知でCでもBでもよく、source選定はhost選出ではない。
 `select_recovery_source()` 自体は同session内のcursorをepoch/sequenceの辞書順で比較する。
 migration stateは失われたepoch以外をさらに除外し、未来epochへの飛び越しを認めない。
-最良checkpointが最後にhostで処理した状態より古いことはあり得る。
-そのsnapshotの位置を正本として使い、全holdを解放する。
+選択候補の最大cursorがローカル適用済みcursorより古ければ拒否し、凍結状態を維持する。
+例: local=4:806、候補最大=4:805は拒否。候補が揃うまで待つかローカルsnapshotを提供する。
+complete_migration()でも同じ下限を再検証し、選択済みsourceと一致しても巻き戻しを許可しない。
+同じcursorまたはより新しいcursorのsnapshotを正本として使い、全holdを解放する。
 移行後、古いhostのcommand/eventはepoch不一致で拒否される。
 
 ## 通常client disconnect
@@ -183,7 +185,7 @@ Steamもsocketも使わないテストを追加した。
 
 - core: per-player duplicate/stale/gap、wrong session、古い/未来epoch。
 - core: graceful freeze、ACKのplayer/session/cursor検証、外部owner一致、sequence reset。
-- core: abrupt freeze、source選択、決定論的tie-break、epochの辞書順比較。
+- core: abrupt freeze、source選択、決定論的tie-break、epochの辞書順比較、local=4:806で最大4:805の候補拒否、completion時の巻き戻し防御。
 - core: eventのhost/session/epoch/sequence検証、counter上限、graceful中の突然切断。
 - game: A→B gracefulとCの復元、position/placed/Z/next_z維持、hold/highlight cleanup、
   placed_count再計算、実際のPieceUpload full upload、次idleの空upload、再Grab。
@@ -208,8 +210,8 @@ renderer / selection / shader / GPU state layout / generator / benchmarkは変�
 既存の入力、snap、session lifecycle、dense stateをworkspace testsで引き続き検証する。
 GPU benchmarkは再実行しない。実GPUが必要な既存3件はdefaultでignored。
 
-実行結果: 上記4コマンドは全て成功。workspace testsは52件成功、3件ignored。
-新規テストはcore 6件 + game 6件。Cargo.lockの開始時/終了時SHA256は
+実行結果: 上記4コマンドは全て成功。workspace testsは54件成功、3件ignored。
+新規テストはcore 8件 + game 6件。Cargo.lockの開始時/終了時SHA256は
 `D52C7FBFE817D6178A851C4BA09A6D66AD48EEF105F476CFA6E1B08CD23B4458` で一致した。
 検証には既存targetのビルドキャッシュを使用し、source変更は専用worktreeに限定した。
 

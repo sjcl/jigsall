@@ -354,6 +354,10 @@ impl AuthoritySession {
         if source.is_some() {
             return Err(ProtocolError::InvalidTransition);
         }
+        // Incomplete peer responses must not roll back locally applied authority.
+        if chosen.cursor < self.cursor {
+            return Err(ProtocolError::WrongSnapshotCursor);
+        }
         *source = Some(chosen);
         Ok(chosen)
     }
@@ -381,7 +385,7 @@ impl AuthoritySession {
         else {
             return Err(ProtocolError::InvalidTransition);
         };
-        if snapshot_cursor != source.cursor {
+        if snapshot_cursor != source.cursor || snapshot_cursor < self.cursor {
             return Err(ProtocolError::WrongSnapshotCursor);
         }
         let epoch = AuthorityEpoch(
@@ -581,6 +585,80 @@ mod tests {
             Ok(AuthorityCursor::new(5, 0))
         );
         assert_eq!(state.host(), B);
+    }
+
+    #[test]
+    fn recovery_rejects_incomplete_candidates_behind_local_cursor_without_pinning_source() {
+        let local = AuthorityCursor::new(4, 806);
+        let mut state = AuthoritySession::new(SESSION, A, local);
+        state.host_lost().unwrap();
+        state.host_changed(B).unwrap();
+        let candidates = [
+            RecoverySource {
+                session: SESSION,
+                player: B,
+                cursor: AuthorityCursor::new(4, 801),
+            },
+            RecoverySource {
+                session: SESSION,
+                player: PlayerId(3),
+                cursor: AuthorityCursor::new(4, 805),
+            },
+        ];
+        let pending = state.migration().clone();
+        assert_eq!(
+            state.choose_recovery_source(candidates),
+            Err(ProtocolError::WrongSnapshotCursor)
+        );
+        assert_eq!(state.cursor(), local);
+        assert_eq!(state.host(), A);
+        assert_eq!(state.migration(), &pending);
+        assert_eq!(state.recovery_source(), None);
+        assert!(!state.is_active());
+
+        // A later complete response at the local cursor is still accepted.
+        let current = RecoverySource {
+            session: SESSION,
+            player: B,
+            cursor: local,
+        };
+        assert_eq!(state.choose_recovery_source([current]), Ok(current));
+        assert_eq!(
+            state.complete_migration(SESSION, local),
+            Ok(AuthorityCursor::new(5, 0))
+        );
+    }
+
+    #[test]
+    fn completion_rechecks_local_cursor_even_when_snapshot_matches_selected_source() {
+        for sequence in [805, 806, 807] {
+            let local = AuthorityCursor::new(4, 806);
+            let mut state = AuthoritySession::new(SESSION, A, local);
+            let source = RecoverySource {
+                session: SESSION,
+                player: B,
+                cursor: AuthorityCursor::new(4, sequence),
+            };
+            // Seed the negotiated state directly to exercise completion independently
+            // of selection, including a stale source accepted by an older implementation.
+            state.migration = MigrationState::Recovering {
+                new_host: Some(B),
+                source: Some(source),
+            };
+            let pending = state.migration().clone();
+            let result = state.complete_migration(SESSION, source.cursor);
+            if sequence < local.sequence.0 {
+                assert_eq!(result, Err(ProtocolError::WrongSnapshotCursor));
+                assert_eq!(state.cursor(), local);
+                assert_eq!(state.host(), A);
+                assert_eq!(state.migration(), &pending);
+                assert!(!state.is_active());
+            } else {
+                assert_eq!(result, Ok(AuthorityCursor::new(5, 0)));
+                assert_eq!(state.host(), B);
+                assert!(state.is_active());
+            }
+        }
     }
 
     #[test]
