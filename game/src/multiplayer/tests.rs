@@ -52,10 +52,14 @@ fn fixture() -> PieceDataStore {
         store.bring_piece_to_front(id);
     }
     store.selected_pieces = HashSet::from([PieceId(1)]);
-    store.drag.members = vec![1, 2].into();
-    store.drag.delta = Vec2::new(11.0, 22.0);
     store.highlights_dirty = true;
     store.sync_highlights(); // Exercise private previous highlight caches too.
+    store
+}
+fn dragging_fixture() -> PieceDataStore {
+    let mut store = fixture();
+    store.drag.members = vec![0b110].into(); // Membership bitset for pieces 1 and 2.
+    store.drag.delta = Vec2::new(11.0, 22.0);
     store
 }
 fn envelope(epoch: u64, player: PlayerId, sequence: u64) -> ClientCommandEnvelope {
@@ -117,11 +121,11 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
         .all(|state| state.flags & !SNAPSHOT_PLACED == 0));
     assert_eq!(a_store.held_by.len(), 2); // Capturing does not change the old host.
     assert!(a_store.states[1].flags & SELECTED != 0);
-    assert_eq!(a_store.drag.members.as_ref(), &[1, 2]);
-    assert_eq!(a_store.drag.delta, Vec2::new(11.0, 22.0));
+    assert!(a_store.drag.members.is_empty());
+    assert_eq!(a_store.drag.delta, Vec2::ZERO);
 
     let mut app = App::new();
-    app.insert_resource(fixture())
+    app.insert_resource(dragging_fixture())
         .insert_resource(definition.clone())
         .init_resource::<PieceUpload>()
         .add_systems(Update, prepare_piece_upload);
@@ -183,7 +187,7 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
 
     // A second client also activates the same authority generation.
     let mut c_session = frozen_session;
-    let mut c_store = fixture();
+    let mut c_store = dragging_fixture();
     install_migration_snapshot(&mut c_session, &mut c_store, &definition, &snapshot).unwrap();
     assert_restored(&snapshot, &c_store);
     assert_eq!(c_session.cursor(), session.cursor());
@@ -261,7 +265,10 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
     peer.host_changed(C).unwrap();
     assert_eq!(peer.choose_recovery_source(candidates).unwrap(), chosen);
 
-    let source_store = fixture();
+    let mut source_store = dragging_fixture();
+    let authoritative_states = source_store.states.clone();
+    // An abrupt recovery source discards prediction without committing its delta.
+    source_store.drag = default();
     let snapshot = GameSnapshot::capture(
         &source_store,
         &definition,
@@ -269,7 +276,11 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
         chosen.cursor,
     )
     .unwrap();
-    let mut recovered_store = fixture();
+    assert_eq!(source_store.states, authoritative_states);
+    for (piece, authoritative) in snapshot.pieces.iter().zip(&authoritative_states) {
+        assert_eq!(piece.position, authoritative.position);
+    }
+    let mut recovered_store = dragging_fixture();
     let old_epoch = recovered_store.epoch;
     assert_eq!(
         install_migration_snapshot(&mut session, &mut recovered_store, &definition, &snapshot)
@@ -353,6 +364,37 @@ fn ordinary_disconnect_releases_only_b_holds_marks_dirty_without_moving_or_snapp
 }
 
 #[test]
+fn capture_rejects_active_local_drag_without_changing_the_store() {
+    let mut store = dragging_fixture();
+    store.drag.delta = Vec2::new(100.0, 200.0);
+    let original = dragging_fixture();
+    let epoch = store.epoch;
+    let members = store.drag.members.clone();
+    assert_eq!(
+        GameSnapshot::capture(
+            &store,
+            &definition(),
+            SESSION_DEFINITION,
+            AuthorityCursor::new(3, 100),
+        ),
+        Err(SnapshotError::ActiveLocalDrag)
+    );
+    assert_eq!(store.states, original.states);
+    assert_eq!(store.epoch, epoch);
+    assert_eq!(store.drag.members, members);
+    assert_eq!(store.drag.delta, Vec2::new(100.0, 200.0));
+    assert_eq!(store.held_by, original.held_by);
+    assert_eq!(store.selected_pieces, original.selected_pieces);
+    assert_eq!(store.dirty_pieces, original.dirty_pieces);
+    assert_eq!(store.placed_count, original.placed_count);
+    assert_eq!(store.next_z_order, original.next_z_order);
+    assert_eq!(store.highlights_dirty, original.highlights_dirty);
+    store.highlights_dirty = true;
+    store.sync_highlights();
+    assert_eq!(store.states, original.states); // Private highlight cache remains valid.
+}
+
+#[test]
 fn invalid_snapshots_are_rejected_atomically_without_panics() {
     let definition = definition();
     let cursor = AuthorityCursor::new(3, 100);
@@ -428,8 +470,8 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         cases.push((invalid, SnapshotError::InvalidFlags(PieceId(1))));
     }
     for (invalid, error) in cases {
-        let mut store = fixture();
-        let original = fixture(); // private caches are checked by continued highlight sync below.
+        let mut store = dragging_fixture();
+        let original = dragging_fixture(); // private caches are checked by continued highlight sync below.
         let states = store.states.clone();
         let epoch = store.epoch;
         let result = invalid.install(
@@ -472,11 +514,16 @@ fn failed_migration_never_activates_authority_or_changes_gpu_state() {
             cursor: session.cursor(),
         }])
         .unwrap();
-    let mut store = fixture();
+    let mut store = dragging_fixture();
     let states = store.states.clone();
     let epoch = store.epoch;
-    let mut snapshot =
-        GameSnapshot::capture(&store, &definition, SESSION_DEFINITION, session.cursor()).unwrap();
+    let mut snapshot = GameSnapshot::capture(
+        &fixture(),
+        &definition,
+        SESSION_DEFINITION,
+        session.cursor(),
+    )
+    .unwrap();
     let original_hash = snapshot.image_hash;
     snapshot.image_hash = ImageHash([0x43; 32]);
     assert_eq!(

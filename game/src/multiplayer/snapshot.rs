@@ -41,6 +41,7 @@ pub struct SnapshotExpectation<'a> {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SnapshotError {
+    ActiveLocalDrag,
     UnsupportedSchema(u16),
     InvalidDefinition(&'static str),
     WrongSession,
@@ -62,12 +63,16 @@ impl std::error::Error for SnapshotError {}
 
 impl GameSnapshot {
     /// Explicit checkpoint only: O(N), with no per-piece entity/map allocation.
+    /// The adapter must finish or discard local presentation drag before capture.
     pub fn capture(
         store: &PieceDataStore,
         definition: &PuzzleDefinition,
         session: SessionDefinition,
         cursor: AuthorityCursor,
     ) -> Result<Self, SnapshotError> {
+        if !store.drag.members.is_empty() {
+            return Err(SnapshotError::ActiveLocalDrag);
+        }
         // Validate before counting/indexing an untrusted definition.
         definition
             .validate()

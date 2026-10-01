@@ -148,6 +148,11 @@ per-piece Entity、Mesh、Handle、String、HashMapは追加しない。
 - 画像bytesやGPU texture
 
 `GameSnapshot::capture()` はsource storeを変更せず、presentation flagsを除いて保存する。
+`store.drag.members` が空でなければ、dense stateを割り当てる前に
+`SnapshotError::ActiveLocalDrag` を返す。deltaがzeroでもactiveなmembersがあれば拒否する。
+現在の表示位置は `states.position + drag.delta` なので、active drag中のdense stateだけを
+保存すると、そのdragの開始位置まで戻る可能性がある。captureはdeltaをpositionへ加算せず、
+確定・破棄・Release・snapの判断はruntime adapterが行う。
 `SnapshotExpectation` はsession/recovery交渉と現在のPuzzleDefinitionから作る期待値。
 image_hashはsession開始時に合意したSessionDefinitionから取得する。
 `install_migration_snapshot()` もAuthoritySessionのimage_hashを使い、受信snapshotの
@@ -179,18 +184,21 @@ installは一致を要求し、画像resourceを置き換えない。
 例: Aがhost、B/Cがclient、cursor 3:100。
 
 1. SessionBackendが次host候補Bを外部で決める。
-2. `begin_graceful(B)` でauthorityとcommand処理を凍結する。
-   最終cursorは3:100に固定される。
-3. `GameSnapshot::capture()` でfinal snapshotを作り、Bへ転送する。
-4. Bが信頼済みexpectationで `snapshot.validate()` を行い、検証済みsnapshotを保持してACKする。
+2. runtime adapterが新規入力を停止し、host自身のGPU dragをfinishする。
+   Move(final position)とReleaseを生成するだけでなく、hostでcommandを適用し、
+   snap判定とauthority state/cursorの確定まで済ませる。pending commandも処理する。
+3. その後 `begin_graceful(B)` でauthorityとcommand処理を凍結する。
+   この例の最終cursor 3:100はdrag確定後の値。
+4. `GameSnapshot::capture()` でfinal snapshotを作り、Bへ転送する。
+5. Bが信頼済みexpectationで `snapshot.validate()` を行い、検証済みsnapshotを保持してACKする。
    この時点ではstoreへinstallしない。
-5. `acknowledge_snapshot(session, B, final_cursor)` でACKを記録する。
+6. `acknowledge_snapshot(session, B, final_cursor)` でACKを記録する。
    別session、別player、別cursorのACKは拒否する。
-6. 将来のSteam SetLobbyOwner後、認証済み通知から `host_changed(B)` を呼ぶ。
+7. 将来のSteam SetLobbyOwner後、認証済み通知から `host_changed(B)` を呼ぶ。
    ACK前のowner変更や別候補への変更はgraceful transitionでは拒否する。
-7. `install_migration_snapshot()` がsnapshotと遷移を検証し、ここで初めて一度だけ
+8. `install_migration_snapshot()` がsnapshotと遷移を検証し、ここで初めて一度だけ
    dense stateを変換・installして全holdを解除し、B / epoch 4 / sequence 0として稼働を再開する。
-8. Aは退出し、Cも同じcursorと新authorityへ移行する。
+9. Aは退出し、Cも同じcursorと新authorityへ移行する。
 
 ACK前のvalidationはO(N)の検証走査だけで、dense stateの変換・割当やstore/GPU epochの変更は行わない。
 保持したsnapshotはACK後に変更せず、最終install時にも再検証する。
@@ -205,12 +213,17 @@ backendはsourceとcursorの通知を各peerに伝え、同じ交渉結果を再
 ## Abrupt loss と recovery source
 
 1. `host_lost()` で直ちに凍結する。正常transfer途中のhost lossもこの経路へ切り替える。
+   runtime adapterはpeer自身の未確定local drag/predictionを破棄し、
+   `drag.members = empty` / `drag.delta = zero` にする。deltaをcanonical stateへcommitしない。
+   現在のfinishや通常cancelの確定経路はMove/Releaseを生成するため、この破棄には使わない。
 2. Steam Lobby等の外部backendが新ownerを選び、`host_changed(new_host)` を通知する。
    owner通知が先に来た場合、Activeから直接recoveryへ入ることもできる。
 3. peerのsession / player / last applied cursorを収集する。
 4. `choose_recovery_source()` で同session・失われたepochの候補に限定して選ぶ。
    cursor最大、同cursorなら最小PlayerIdが勝つ。入力順序によらない。
-5. 選んだsourceからsnapshotを受け、認証済みsourceと完全一致するcursorを確認する。
+5. source peerはprediction破棄後、最後に受信・適用済みのauthoritative dense stateから
+   `GameSnapshot::capture()` する。選んだsourceからsnapshotを受け、
+   認証済みsourceと完全一致するcursorを確認する。
 6. `install_migration_snapshot()` で復元し、epoch + 1 / sequence 0で再開する。
 
 B=4:801、C=4:805、D=4:805ならCがsnapshot source。
@@ -265,6 +278,7 @@ Steamもsocketも使わないテストを追加した。
   placed_count再計算、実際のPieceUpload full upload、次idleの空upload、再Grab。
 - game: abrupt B=4:801/C=D=4:805、epoch 5:0と旧epoch command/eventの拒否。
 - game: Bが10/11/25を保持した状態から切断、他playerの12は維持、dirty IDs。
+- game: active local drag（membersあり、delta=(100, 200)）のcapture拒否とstore全状態の維持。
 - game: wrong session/image hash/count、NaN、±Infinity、unsupported generator/schema（旧version 1を含む）、
   古い/未来cursor、異なるdefinition、不正grid/Z/flagsをResultで原子的に拒否。
 - game: snapshot検証失敗時はauthorityを有効にしない。image_hash不一致でもauthority/store/GPU epochを変更しない。
@@ -285,8 +299,8 @@ renderer / selection / shader / GPU state layout / generator / benchmarkは変�
 既存の入力、snap、session lifecycle、dense stateをworkspace testsで引き続き検証する。
 GPU/CPU benchmarkは再実行しない。実GPUが必要な既存4件とCPU benchmark 1件はdefaultでignored。
 
-masterへのrebase後の実行結果: 上記4コマンドは全て成功。workspace testsは70件成功、5件ignored。
-新規テストはcore 12件 + game 7件。Cargo.lockの開始時/終了時SHA256は
+masterへのrebase後の実行結果: 上記4コマンドは全て成功。workspace testsは71件成功、5件ignored。
+新規テストはcore 12件 + game 8件。Cargo.lockの開始時/終了時SHA256は
 `D52C7FBFE817D6178A851C4BA09A6D66AD48EEF105F476CFA6E1B08CD23B4458` で一致した。
 検証のworkspace成果物は専用worktree内のtargetへ分離し、外部dependencyの既存cacheだけを再利用した。source変更は専用worktreeに限定した。
 
@@ -310,6 +324,8 @@ masterへのrebase後の実行結果: 上記4コマンドは全て成功。works
   一致検証は実装済み。今回は参加済みclientが同じ画像を既に持つ前提。
 - reconnect timeout、再試行、ownerがrecovery途中で再び消失した場合の交渉再開、
   重複callbackの吸収、欠落eventの再送/resync。
+- runtime adapterでgraceful前のlocal drag確定と、abrupt loss時のprediction破棄を接続する。
+  captureのActiveLocalDragガードは実装済み。入力経路の変更・自動commitはこの基盤には含めない。
 - runtime wiring時はgesture、pending selection/readback、overlay、queued command/event、
   GameData progress/completionを同期してから入力を再開する。
   PieceDataStoreのpresentation stateは既にresetするが、これらの別resourceのcleanupは
