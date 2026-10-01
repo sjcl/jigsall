@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::{
-    pieces::{prepare_piece_upload, ENABLED, HELD, MAX_Z, PLACED, PREVIEW, SELECTED},
+    pieces::{prepare_piece_upload, ENABLED, HELD, MAX_Z, PLACED, SELECTED},
     PieceUpload,
 };
 use bevy::prelude::*;
@@ -438,7 +438,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         invalid.cursor = wrong_cursor;
         cases.push((invalid, SnapshotError::WrongCursor));
     }
-    for schema in [1, SNAPSHOT_SCHEMA_VERSION + 1] {
+    for schema in [1, 2, SNAPSHOT_SCHEMA_VERSION + 1] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = schema;
         cases.push((invalid, SnapshotError::UnsupportedSchema(schema)));
@@ -464,7 +464,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         invalid.pieces[1].z_order = z_order;
         cases.push((invalid, SnapshotError::InvalidZOrder(PieceId(1))));
     }
-    for flags in [SELECTED, PREVIEW, HELD, ENABLED, 1 << 31] {
+    for flags in [1 << 5, 1 << 6, HELD, ENABLED, 1 << 31] {
         let mut invalid = snapshot.clone();
         invalid.pieces[1].flags |= flags;
         cases.push((invalid, SnapshotError::InvalidFlags(PieceId(1))));

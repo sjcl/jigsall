@@ -1,0 +1,42 @@
+{
+  "date": "2026-10-02",
+  "timezone": "Asia/Tokyo",
+  "os": "Windows-11-10.0.26200-SP0",
+  "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+  "rust": "1.97.0 (2d8144b78 2026-07-07)",
+  "adapter": "NVIDIA GeForce RTX 5090",
+  "backend": "Vulkan",
+  "driver": "NVIDIA 610.88",
+  "branch": "codex/connected-piece-snapping",
+  "base_commit": "ca56bf85f39287be4308e0dbd325f6a0cd15a960",
+  "worktree": "C:\\Users\\bebe\\.codex\\worktrees\\connected-piece-snapping\\puzzella",
+  "profile": "release",
+  "locked": true,
+  "image_size": [
+    4096,
+    4096
+  ],
+  "seed": 42,
+  "sizes": [
+    1000,
+    10000,
+    100000,
+    1000000
+  ],
+  "samples_per_size_and_scenario": 5,
+  "pointer_updates_per_sample": 100000,
+  "scenarios": [
+    "disconnected",
+    "connected",
+    "chain",
+    "board"
+  ],
+  "baseline_scenario": "disconnected",
+  "disconnected_fixture": "correct_position(id) + (10000 + id * 20, 10000)",
+  "connected_fixture": "correct_position(id) + (10000, 10000), union all before measurement",
+  "chain_fixture": "same aligned offset, release only PieceId(0)",
+  "board_fixture": "correct_position(id) + (checkerboard +/-4, 0), release all",
+  "persistent_connectivity_bytes_at_1m": 8000000,
+  "peak_rss_measured": false,
+  "other_gpu_or_os_measured": false
+}
