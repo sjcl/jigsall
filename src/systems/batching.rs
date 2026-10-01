@@ -188,14 +188,36 @@ pub fn handle_batch_rebuild_requests(
         return;
     }
     let start = perf.start_system_timing("handle_batch_rebuild_requests");
-    if let Some(entity) = batch.batched_entity.take() {
+    for entity in batch.batched_entities.drain(..) {
         commands.entity(entity).despawn();
     }
-    let mut piece_ids: Vec<_> = batch.batched_pieces.iter().copied().collect();
-    piece_ids.sort_unstable();
-    let mut inputs = Vec::with_capacity(piece_ids.len());
+    // A transparent combined mesh is sorted as one draw. Split it wherever an
+    // extracted piece occurs, so extraction/return cannot change stacking.
+    let mut piece_ids: Vec<_> = store.pieces.keys().copied().collect();
+    piece_ids.sort_by(|a, b| {
+        store.transforms[a]
+            .translation
+            .z
+            .total_cmp(&store.transforms[b].translation.z)
+            .then(a.cmp(b))
+    });
+    let now = std::time::Instant::now();
+    let mut inputs = Vec::new();
     let mut material = None;
     for id in piece_ids {
+        if !batch.batched_pieces.contains(&id) {
+            if let Some(material) = material.take() {
+                append_piece_batch(
+                    &mut commands,
+                    &mut batch,
+                    &mut meshes,
+                    std::mem::take(&mut inputs),
+                    material,
+                    &perf.debug_level,
+                );
+            }
+            continue;
+        }
         if let (Some(piece), Some(transform)) = (store.pieces.get(&id), store.transforms.get(&id)) {
             if let Some(mesh) = meshes.get(&piece.render.mesh) {
                 inputs.push((mesh.clone(), *transform));
@@ -203,32 +225,56 @@ pub fn handle_batch_rebuild_requests(
             }
         }
     }
-    let now = std::time::Instant::now();
-    let count = inputs.len();
-    if !inputs.is_empty() {
-        match combine_meshes(inputs, &perf.debug_level) {
-            Ok(mesh) => {
-                if let Some(material) = material {
-                    batch.batched_entity = Some(
-                        commands
-                            .spawn((
-                                Mesh2d(meshes.add(mesh)),
-                                MeshMaterial2d(material),
-                                Transform::default(),
-                                BatchedMeshEntity {
-                                    piece_count: count,
-                                    last_updated: now,
-                                },
-                            ))
-                            .id(),
-                    );
-                }
-            }
-            Err(error) => error!("Batch rebuild failed: {error}"),
-        }
+    if let Some(material) = material {
+        append_piece_batch(
+            &mut commands,
+            &mut batch,
+            &mut meshes,
+            inputs,
+            material,
+            &perf.debug_level,
+        );
     }
     batch.record_rebuild(now.elapsed());
     perf.end_system_timing("handle_batch_rebuild_requests", start);
+}
+
+fn append_piece_batch(
+    commands: &mut Commands,
+    batch: &mut BatchManager,
+    meshes: &mut Assets<Mesh>,
+    mut inputs: Vec<(Mesh, Transform)>,
+    material: Handle<ColorMaterial>,
+    debug_level: &PerformanceDebugLevel,
+) {
+    let Some((_, first)) = inputs.first() else {
+        return;
+    };
+    let layer = first.translation.z;
+    let count = inputs.len();
+    // Keep world-space vertex positions while giving the batch a sortable
+    // entity depth between its neighboring extracted pieces.
+    for (_, transform) in &mut inputs {
+        transform.translation.z -= layer;
+    }
+    match combine_meshes(inputs, debug_level) {
+        Ok(mesh) => {
+            batch.batched_entities.push(
+                commands
+                    .spawn((
+                        Mesh2d(meshes.add(mesh)),
+                        MeshMaterial2d(material),
+                        Transform::from_xyz(0.0, 0.0, layer),
+                        BatchedMeshEntity {
+                            piece_count: count,
+                            last_updated: std::time::Instant::now(),
+                        },
+                    ))
+                    .id(),
+            );
+        }
+        Err(error) => error!("Batch rebuild failed: {error}"),
+    }
 }
 
 pub fn monitor_batch_system(
@@ -249,5 +295,161 @@ pub fn monitor_batch_system(
         for mesh in &query {
             info!(pieces = mesh.piece_count, elapsed = ?mesh.last_updated.elapsed(), "Batch mesh");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gameplay::*;
+
+    #[test]
+    fn extraction_splits_depth_ranges_and_return_preserves_order_uvs_and_alpha() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<PieceDataStore>()
+            .init_resource::<PieceIdManager>()
+            .init_resource::<BatchManager>()
+            .init_resource::<PerformanceMonitor>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .add_message::<PiecePlacedEvent>()
+            .add_message::<BatchRebuildRequest>()
+            .add_systems(
+                Update,
+                (
+                    reconcile_piece_rendering,
+                    cleanup_temporary_entities,
+                    create_temporary_entities,
+                    handle_batch_rebuild_requests,
+                )
+                    .chain(),
+            );
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Rectangle::new(10.0, 10.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<ColorMaterial>>()
+            .add(ColorMaterial::default());
+        for (index, z) in [4.0, 0.0, 2.0, 1.0, 3.0].into_iter().enumerate() {
+            let id = PieceId(index as u32);
+            let position = Vec2::new(index as f32 * 100.0, 0.0);
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            store.add_piece(StoredPieceData {
+                definition: PuzzlePiece {
+                    id,
+                    grid_position: UVec2::ZERO,
+                    correct_position: Vec2::ZERO,
+                    initial_position: position,
+                },
+                state: PieceState::new(position),
+                render: PieceRenderData {
+                    bounds: Rect::new(-5.0, -5.0, 5.0, 5.0),
+                    shape: PieceShapeData {
+                        vertices: vec![],
+                        indices: vec![],
+                        shape_hash: String::new(),
+                    },
+                    mesh: mesh.clone(),
+                    material: material.clone(),
+                },
+            });
+            store.transforms.get_mut(&id).unwrap().translation.z = z;
+            app.world_mut().resource_mut::<BatchManager>().add_piece(id);
+        }
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .selected_pieces
+            .insert(PieceId(2));
+        app.update();
+        let batch = app.world().resource::<BatchManager>();
+        assert_eq!(batch.batched_entities.len(), 2);
+        assert_eq!(batch.extracted_pieces.len(), 1);
+        assert_eq!(batch.total_pieces(), 5);
+        let store = app.world().resource::<PieceDataStore>();
+        let extracted = store.temporary_entities[&PieceId(2)];
+        assert_eq!(
+            app.world()
+                .get::<Transform>(extracted)
+                .unwrap()
+                .translation
+                .z,
+            2.0
+        );
+        let layers: Vec<_> = batch
+            .batched_entities
+            .iter()
+            .map(|&entity| {
+                let layer = app.world().get::<Transform>(entity).unwrap().translation.z;
+                let count = app
+                    .world()
+                    .get::<BatchedMeshEntity>(entity)
+                    .unwrap()
+                    .piece_count;
+                (layer, count)
+            })
+            .collect();
+        assert_eq!(layers, vec![(0.0, 2), (3.0, 2)]);
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .selected_pieces
+            .clear();
+        app.update();
+        let batch = app.world().resource::<BatchManager>();
+        assert_eq!(batch.batched_entities.len(), 1);
+        assert_eq!(batch.total_pieces(), 5);
+        assert!(app
+            .world()
+            .resource::<PieceDataStore>()
+            .temporary_entities
+            .is_empty());
+        let entity = batch.batched_entities[0];
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        let combined = meshes
+            .get(&app.world().get::<Mesh2d>(entity).unwrap().0)
+            .unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+            combined.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("missing positions");
+        };
+        let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
+            combined.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("missing UVs");
+        };
+        let original = meshes.get(&mesh).unwrap();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(original_positions)) =
+            original.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("missing original positions");
+        };
+        let Some(bevy::mesh::VertexAttributeValues::Float32x2(original_uvs)) =
+            original.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            panic!("missing original UVs");
+        };
+        let layer = app.world().get::<Transform>(entity).unwrap().translation.z;
+        for (rank, &id) in [1, 3, 2, 4, 0].iter().enumerate() {
+            let start = rank * original_positions.len();
+            for (index, position) in original_positions.iter().enumerate() {
+                assert_eq!(positions[start + index][0], position[0] + id as f32 * 100.0);
+                assert_eq!(positions[start + index][2] + layer, rank as f32);
+            }
+            assert_eq!(
+                &uvs[start..start + original_uvs.len()],
+                original_uvs.as_slice()
+            );
+        }
+        assert_eq!(
+            app.world()
+                .resource::<Assets<ColorMaterial>>()
+                .get(&material)
+                .unwrap()
+                .alpha_mode,
+            bevy::sprite_render::AlphaMode2d::Blend
+        );
     }
 }

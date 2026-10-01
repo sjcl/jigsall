@@ -25,7 +25,7 @@ cargo run --locked --release
 | --- | --- |
 | 選択・ドラッグ | 左クリック / ドラッグ |
 | 選択の追加・解除 | Ctrl + 左クリック |
-| ボックス選択 | 空きスペースから左ドラッグ |
+| ボックス選択 | 空きスペースから左ドラッグ（Ctrl併用で追加） |
 | 複数ピース移動 | 選択済みピースを左ドラッグ |
 | カメラpan | 右ドラッグ |
 | zoom | マウスホイール |
@@ -34,6 +34,8 @@ cargo run --locked --release
 | プレイヤー表示 | Tab |
 | 性能計測レベル切替 | F12 |
 | バッチ再構築 / 統計 | F9 / F10 |
+
+未選択のピースをクリックすると選択を置き換え、選択済みのピースをドラッグするとグループの相対位置を保って移動します。重なり部分では手前のピースを選択します。Ctrl + クリックは選択の追加・解除のみを行います。UI上の操作ではピース移動を開始しません。ポーズ・フォーカス喪失でドラッグを解放し、未確定の範囲選択は取り消します。
 
 正解位置の近くでピースを離すとスナップし、全ピースを配置すると完成画面へ進みます。生成中・失敗時・ポーズ中・完成後はタイトルへ戻れます。
 
@@ -46,6 +48,8 @@ Input → ClientCommand → gameplay logic → PieceState → Transform / render
 ```
 
 - `src/gameplay.rs`: 不変のPuzzleDefinition / PuzzlePiece、安定ID、可変PieceState、純粋な命令・スナップ判定
+- `src/interaction.rs`: 単一のジェスチャー状態による選択・範囲選択・ドラッグと命令生成
+- `src/piece_geometry.rs`: 描画と同じindexed triangleによる点・矩形の当たり判定
 - `src/networking.rs`: backendに依存しないローカル命令の入口
 - `src/game.rs`: Menu / GameSetup / InGame / GameCompleteと、InGame限定のInitializing / Playing / Paused
 - `src/systems/`: 既存の生成・選択・カメラ・描画・性能システム
@@ -64,7 +68,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 ```
 
-2026-10-01、Windows / Rust 1.97で上記チェックを通過し、8件のテストが成功しました。テスト対象は所有者検証、不正座標、スナップ閾値、seed付き形状・UV生成、1000ピース配置、ランダムfallback、Ctrl / box selectionとmulti-drag、Entityに依存しない完成判定、GamePluginの生成・ポーズ・完成・終了・再開始です。
+2026-10-01、Windows / Rust 1.97で上記チェックを通過し、22件のテストが成功しました。所有者検証、seed付き形状・UV生成、1000ピース配置、完成・セッション遷移に加え、生成した三角形のクリック判定、手前側選択、矩形の辺交差、R-tree更新、Ctrl / 範囲選択 / 複数移動、解放位置でのスナップ、UI入力の抑制、フォーカス喪失・ポーズ時の解放、カメラ座標同期、バッチ抽出・返却時の描画順・UV・透明度を検証しています。
 
 `cargo build --locked`も成功しました。実行ファイルを8秒間起動し、初期化メッセージの出力とプロセスの継続、stderrにエラーがないことを確認して終了しました。画面の目視検証は行っていません。
 

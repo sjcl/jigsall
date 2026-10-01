@@ -3,9 +3,14 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 /// インゲームUI（プレイ中のUI）
-pub fn draw_game_ui(mut contexts: EguiContexts, game_state: Res<GameData>) {
+pub fn draw_game_ui(
+    mut contexts: EguiContexts,
+    game_state: Res<GameData>,
+    mut capture: ResMut<GameUiPointerCapture>,
+) {
     let _span = info_span!("draw_game_ui").entered();
 
+    capture.over_hud = false;
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -16,7 +21,7 @@ pub fn draw_game_ui(mut contexts: EguiContexts, game_state: Res<GameData>) {
             .layer_id(egui::LayerId::background())
             .max_rect(ctx.viewport_rect()),
     );
-    egui::Panel::top("game_info").show(&mut viewport_ui, |ui| {
+    let panel = egui::Panel::top("game_info").show(&mut viewport_ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(format!(
                 "Progress: {:.1}%",
@@ -31,6 +36,9 @@ pub fn draw_game_ui(mut contexts: EguiContexts, game_state: Res<GameData>) {
             ui.label("Hold Tab to view players");
         });
     });
+    capture.over_hud = ctx
+        .pointer_interact_pos()
+        .is_some_and(|point| panel.response.rect.contains(point));
 }
 
 /// プレイヤー一覧オーバーレイ（Tabキーで表示）

@@ -16,8 +16,9 @@ use std::collections::{HashMap, HashSet};
 pub struct PieceCollisionData {
     pub piece_id: PieceId,
     pub position: Vec2,
+    pub z_order: f32,
     pub bounding_box: Rect,
-    pub vertices: Vec<Vec2>, // 精密判定用のポリゴン頂点（ローカル座標）
+    pub vertices: Vec<Vec2>, // Indexed mesh vertices in local coordinates.
     pub indices: Vec<u32>,   // トライアングル頂点インデックス
 }
 
@@ -49,42 +50,51 @@ impl PieceCollisionSystem {
     }
 
     pub fn remove_piece(&mut self, piece_id: PieceId) {
-        self.pieces.remove(&piece_id);
-        self.need_rebuild = true;
+        if let Some(old) = self.pieces.remove(&piece_id) {
+            self.rtree.remove(&old);
+        }
+        self.dragging_pieces.remove(&piece_id);
     }
 
-    pub fn update_piece_position(&mut self, piece_id: PieceId, new_position: Vec2) {
-        if let Some(piece_data) = self.pieces.get_mut(&piece_id) {
-            // HashMap内の位置データは常に更新（表示用データを維持）
-            let offset = new_position - piece_data.position;
-            piece_data.position = new_position;
+    pub fn update_piece_position(
+        &mut self,
+        piece_id: PieceId,
+        new_position: Vec2,
+        local_bounds: Rect,
+    ) {
+        if let Some(piece) = self.pieces.get_mut(&piece_id) {
+            if piece.position == new_position {
+                return;
+            }
+            // Use the exact old record: reconstructing it with float subtraction
+            // can leave an unequal, stale record in the R-tree.
+            let indexed = !self.need_rebuild && !self.dragging_pieces.contains(&piece_id);
+            if indexed {
+                self.rtree.remove(piece);
+            }
+            piece.position = new_position;
+            // Reproject immutable bounds instead of accumulating rounding
+            // error after repeated moves.
+            piece.bounding_box.min = new_position + local_bounds.min;
+            piece.bounding_box.max = new_position + local_bounds.max;
+            if indexed {
+                self.rtree.insert(piece.clone());
+            }
+        }
+    }
 
-            // バウンディングボックスを更新
-            piece_data.bounding_box = Rect::new(
-                piece_data.bounding_box.min.x + offset.x,
-                piece_data.bounding_box.min.y + offset.y,
-                piece_data.bounding_box.max.x + offset.x,
-                piece_data.bounding_box.max.y + offset.y,
-            );
-
-            // ドラッグ中のピースはR-tree操作のみスキップ（当たり判定から除外）
-            if !self.dragging_pieces.contains(&piece_id) {
-                // 効率的な動的更新: 古いデータを削除 → 新しいデータを挿入（O(log n)）
-                let old_data_for_rtree = PieceCollisionData {
-                    piece_id,
-                    position: new_position - offset, // 古い位置
-                    bounding_box: Rect::new(
-                        piece_data.bounding_box.min.x - offset.x,
-                        piece_data.bounding_box.min.y - offset.y,
-                        piece_data.bounding_box.max.x - offset.x,
-                        piece_data.bounding_box.max.y - offset.y,
-                    ),
-                    vertices: piece_data.vertices.clone(),
-                    indices: piece_data.indices.clone(),
-                };
-
-                self.rtree.remove(&old_data_for_rtree);
-                self.rtree.insert(piece_data.clone());
+    pub fn update_piece_z_order(&mut self, piece_id: PieceId, z_order: f32) {
+        if let Some(piece) = self.pieces.get_mut(&piece_id) {
+            if piece.z_order == z_order {
+                return;
+            }
+            let indexed = !self.need_rebuild && !self.dragging_pieces.contains(&piece_id);
+            if indexed {
+                self.rtree.remove(piece);
+            }
+            piece.z_order = z_order;
+            if indexed {
+                self.rtree.insert(piece.clone());
             }
         }
     }
@@ -116,6 +126,9 @@ impl PieceCollisionSystem {
 
     /// ドラッグ開始: ピースをR-treeから除外
     pub fn start_dragging_piece(&mut self, piece_id: PieceId, debug_level: &PerformanceDebugLevel) {
+        if self.dragging_pieces.contains(&piece_id) {
+            return;
+        }
         if let Some(piece_data) = self.pieces.get(&piece_id) {
             // R-treeから削除
             self.rtree.remove(piece_data);
@@ -140,7 +153,9 @@ impl PieceCollisionSystem {
         if self.dragging_pieces.remove(&piece_id) {
             if let Some(piece_data) = self.pieces.get(&piece_id) {
                 // R-treeに再挿入
-                self.rtree.insert(piece_data.clone());
+                if !self.need_rebuild {
+                    self.rtree.insert(piece_data.clone());
+                }
 
                 // デバッグレベルが Medium 以上の場合のみログ出力
                 if matches!(
@@ -306,31 +321,21 @@ impl PieceCollisionSystem {
 
     /// マウス位置でのピース検索（精密な形状判定付き）
     pub fn find_piece_at_position(&mut self, position: Vec2) -> Option<PieceId> {
-        // 大幅に拡大された範囲でクエリ（座標範囲問題の対処）
-        let query_size = 100.0;
-        let query_rect = Rect::new(
-            position.x - query_size,
-            position.y - query_size,
-            position.x + query_size,
-            position.y + query_size,
-        );
-
-        let candidate_pieces = self.query_pieces_in_rect(query_rect);
-
-        // 2段階判定: バウンディングボックス → 精密ポリゴン判定
-        for piece_id in candidate_pieces {
-            if let Some(piece_data) = self.pieces.get(&piece_id) {
-                // 1段階目: バウンディングボックスでの高速フィルタリング
-                if piece_data.bounding_box.contains(position) {
-                    // 2段階目: 精密なポリゴン内判定
-                    if self.precise_point_in_piece(piece_id, position) {
-                        return Some(piece_id);
-                    }
-                }
-            }
+        if !position.is_finite() {
+            return None;
         }
-
-        None
+        self.query_pieces_in_rect(Rect {
+            min: position,
+            max: position,
+        })
+        .into_iter()
+        .filter(|&id| self.precise_point_in_piece(id, position))
+        .max_by(|a, b| {
+            self.pieces[a]
+                .z_order
+                .total_cmp(&self.pieces[b].z_order)
+                .then(a.cmp(b))
+        })
     }
 
     /// 矩形と適切に交差するピースを検索（PieceIdベース・Entity不要）
@@ -369,49 +374,22 @@ impl PieceCollisionSystem {
 
     /// 選択矩形とピースの詳細交差判定（複数の判定方法を組み合わせ）
     fn detailed_rect_piece_intersection(&self, selection_rect: Rect, piece_id: PieceId) -> bool {
-        if let Some(piece_data) = self.pieces.get(&piece_id) {
-            // 方法1: 選択矩形の角がピース内にあるかチェック
-            let corners = [
-                Vec2::new(selection_rect.min.x, selection_rect.min.y),
-                Vec2::new(selection_rect.max.x, selection_rect.min.y),
-                Vec2::new(selection_rect.min.x, selection_rect.max.y),
-                Vec2::new(selection_rect.max.x, selection_rect.max.y),
-            ];
-
-            for &corner in &corners {
-                if self.precise_point_in_piece(piece_id, corner) {
-                    return true;
-                }
-            }
-
-            // 方法2: ピースの頂点が選択矩形内にあるかチェック
-            for vertex in &piece_data.vertices {
-                let world_vertex = Vec2::new(vertex.x, vertex.y) + piece_data.position;
-                if selection_rect.contains(world_vertex) {
-                    return true;
-                }
-            }
-
-            // 方法3: ピースの中心が選択矩形内にあるかチェック
-            if selection_rect.contains(piece_data.position) {
-                return true;
-            }
-
-            // 方法4: バウンディングボックスの中心が選択矩形内にあるかチェック
-            let bbox_center = Vec2::new(
-                (piece_data.bounding_box.min.x + piece_data.bounding_box.max.x) / 2.0,
-                (piece_data.bounding_box.min.y + piece_data.bounding_box.max.y) / 2.0,
-            );
-            if selection_rect.contains(bbox_center) {
-                return true;
-            }
-        }
-
-        false
+        self.pieces.get(&piece_id).is_some_and(|piece| {
+            let local_rect = Rect {
+                min: selection_rect.min - piece.position,
+                max: selection_rect.max - piece.position,
+            };
+            crate::piece_geometry::triangles(&piece.vertices, &piece.indices).any(|triangle| {
+                crate::piece_geometry::triangle_intersects_rect(triangle, local_rect)
+            })
+        })
     }
 
     /// デバッグ用の詳細な位置検索（各段階の結果を表示）
     pub fn find_piece_at_position_debug(&mut self, position: Vec2) -> (Option<PieceId>, String) {
+        if !position.is_finite() {
+            return (None, "Invalid pointer position".into());
+        }
         let query_size = 100.0;
         let query_rect = Rect::new(
             position.x - query_size,
@@ -421,7 +399,13 @@ impl PieceCollisionSystem {
         );
 
         // R-treeデバッグクエリを実行
-        let (candidate_pieces, rtree_debug) = self.query_pieces_in_rect_debug(query_rect);
+        let (mut candidate_pieces, rtree_debug) = self.query_pieces_in_rect_debug(query_rect);
+        candidate_pieces.sort_by(|a, b| {
+            self.pieces[b]
+                .z_order
+                .total_cmp(&self.pieces[a].z_order)
+                .then(b.cmp(a))
+        });
 
         let mut debug_info = format!("🔍 Cursor at: ({:.1}, {:.1})\n", position.x, position.y);
         debug_info.push_str(&format!(
@@ -640,8 +624,9 @@ impl PieceCollisionSystem {
             // ローカル座標に変換
             let local_position = world_position - piece_data.position;
 
-            // 簡単なポリゴン内判定（レイキャスト法）
-            self.point_in_polygon(local_position, &piece_data.vertices)
+            crate::piece_geometry::triangles(&piece_data.vertices, &piece_data.indices).any(
+                |triangle| crate::piece_geometry::triangle_contains_point(triangle, local_position),
+            )
         } else {
             false
         }
@@ -741,9 +726,8 @@ impl PieceCollisionSystem {
             }
 
             // ポリゴン内判定を実行
-            let (result, polygon_debug) =
-                self.point_in_polygon_debug(local_position, &piece_data.vertices);
-            debug_info.push_str(&polygon_debug);
+            let result = self.precise_point_in_piece(piece_id, world_position);
+            debug_info.push_str(&format!("   Indexed triangle hit: {result}\n"));
 
             (result, debug_info)
         } else {
@@ -752,114 +736,6 @@ impl PieceCollisionSystem {
                 format!("❌ Piece {} not found in collision system\n", piece_id),
             )
         }
-    }
-
-    /// ポリゴン内判定（レイキャスト法）
-    fn point_in_polygon(&self, point: Vec2, vertices: &[Vec2]) -> bool {
-        if vertices.len() < 3 {
-            return false;
-        }
-
-        let mut intersections = 0;
-        let ray_y = point.y;
-
-        for i in 0..vertices.len() {
-            let j = (i + 1) % vertices.len();
-            let v1 = vertices[i];
-            let v2 = vertices[j];
-
-            // 水平レイが線分と交差するかチェック
-            if ((v1.y > ray_y) != (v2.y > ray_y))
-                && (point.x < (v2.x - v1.x) * (ray_y - v1.y) / (v2.y - v1.y) + v1.x)
-            {
-                intersections += 1;
-            }
-        }
-
-        intersections % 2 == 1
-    }
-
-    /// デバッグ付きポリゴン内判定
-    fn point_in_polygon_debug(&self, point: Vec2, vertices: &[Vec2]) -> (bool, String) {
-        let mut debug_info = String::new();
-
-        if vertices.len() < 3 {
-            debug_info.push_str(&format!(
-                "   ❌ Too few vertices: {} (need at least 3)\n",
-                vertices.len()
-            ));
-            return (false, debug_info);
-        }
-
-        let mut intersections = 0;
-        let ray_y = point.y;
-
-        debug_info.push_str(&format!(
-            "   🎯 Ray casting from ({:.1}, {:.1}) horizontally (y={:.1})\n",
-            point.x, point.y, ray_y
-        ));
-
-        let mut edge_details = Vec::new();
-
-        for i in 0..vertices.len() {
-            let j = (i + 1) % vertices.len();
-            let v1 = vertices[i];
-            let v2 = vertices[j];
-
-            // エッジの詳細情報を収集
-            let y_cross = (v1.y > ray_y) != (v2.y > ray_y);
-            let intersection_x = if (v2.y - v1.y).abs() > f32::EPSILON {
-                (v2.x - v1.x) * (ray_y - v1.y) / (v2.y - v1.y) + v1.x
-            } else {
-                f32::NAN // 水平線
-            };
-            let x_cross = point.x < intersection_x;
-
-            // 水平レイが線分と交差するかチェック
-            if y_cross && x_cross && !intersection_x.is_nan() {
-                intersections += 1;
-                edge_details.push(format!("      Edge {}->{}: ({:.1},{:.1}) to ({:.1},{:.1}) → intersection at x={:.1} ✅",
-                    i, j, v1.x, v1.y, v2.x, v2.y, intersection_x));
-            } else {
-                if i < 5 || !edge_details.is_empty() {
-                    // 最初の5個または交差がある場合のみ表示
-                    let reason = if !y_cross {
-                        "no Y crossing"
-                    } else if intersection_x.is_nan() {
-                        "horizontal edge"
-                    } else if !x_cross {
-                        "intersection behind point"
-                    } else {
-                        "unknown"
-                    };
-                    edge_details.push(format!(
-                        "      Edge {}->{}: ({:.1},{:.1}) to ({:.1},{:.1}) → {} ❌",
-                        i, j, v1.x, v1.y, v2.x, v2.y, reason
-                    ));
-                }
-            }
-        }
-
-        debug_info.push_str(&format!("   🔍 Testing {} edges:\n", vertices.len()));
-        for detail in edge_details.iter().take(10) {
-            // 最大10個まで表示
-            debug_info.push_str(&format!("{}\n", detail));
-        }
-        if edge_details.len() > 10 {
-            debug_info.push_str(&format!(
-                "      ... and {} more edges\n",
-                edge_details.len() - 10
-            ));
-        }
-
-        let result = intersections % 2 == 1;
-        debug_info.push_str(&format!(
-            "   🎯 Total intersections: {} → Point is {} polygon\n",
-            intersections,
-            if result { "INSIDE" } else { "OUTSIDE" }
-        ));
-
-        (result, debug_info)
     }
 
     /// パフォーマンス統計取得
@@ -893,9 +769,6 @@ pub struct HighlightMaterials {
 pub struct HighlightState {
     pub last_selected_pieces: HashSet<Entity>, // 前フレームの選択ピース
     pub last_preview_pieces: HashSet<Entity>,  // 前フレームのプレビューピース
-    pub selection_changed: bool,               // 選択状態が変わったか
-    pub preview_changed: bool,                 // プレビュー状態が変わったか
-    pub frame_count: u64,                      // フレーム数（デバッグ用）
 }
 
 /// Local presentation mapping, never part of a network snapshot.
@@ -992,28 +865,21 @@ pub struct PuzzleImage {
     pub size: Vec2,
 }
 
-#[derive(Default, Clone, Debug, PartialEq)]
-pub enum SelectionMode {
-    #[default]
-    Single,
-    BoxSelection,
-    MultiDrag,
-}
-
-/// Local mouse/camera state. Selected IDs live in PieceDataStore only.
+/// Sampled pointer coordinates and local camera state.
 #[derive(Resource, Default)]
 pub struct InputState {
-    pub mouse_position: Vec2,
-    pub last_mouse_position: Vec2,
-    pub is_mouse_pressed: bool,
+    pub mouse_position: Option<Vec2>,
+    pub window_focused: bool,
     pub is_camera_dragging: bool,
     pub last_cursor_position: Option<Vec2>,
     pub cursor_screen_position: Option<Vec2>,
-    pub is_dragging_piece: bool,
-    pub selection_mode: SelectionMode,
-    pub selection_start: Option<Vec2>,
-    pub selection_current: Option<Vec2>,
-    pub drag_offsets: HashMap<PieceId, Vec2>,
+}
+
+/// The HUD is built on a separate background Ui, so its rectangle must be
+/// captured explicitly as well as egui's normal window/widget capture.
+#[derive(Resource, Default)]
+pub struct GameUiPointerCapture {
+    pub over_hud: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
@@ -1296,11 +1162,46 @@ pub struct PieceShapeData {
 impl PieceDataStore {
     pub fn add_piece(&mut self, piece: StoredPieceData) {
         let id = piece.definition.id;
+        let z = id.0 as f32 * 0.001;
+        self.next_z_order = self.next_z_order.max(z);
         self.transforms.insert(
             id,
-            Transform::from_translation(piece.state.position.extend(id.0 as f32 * 0.001)),
+            Transform::from_translation(piece.state.position.extend(z)),
         );
         self.pieces.insert(id, piece);
+    }
+
+    /// Keep stacking below overlays and inside the camera's depth range even
+    /// after thousands of grabs. Returns whether existing batches need rebuilding.
+    pub fn bring_piece_to_front(&mut self, id: PieceId) -> bool {
+        let compacted = self.next_z_order >= 50.0;
+        if compacted {
+            let mut ids: Vec<_> = self
+                .pieces
+                .iter()
+                .filter_map(|(&id, piece)| (!piece.state.placed).then_some(id))
+                .collect();
+            ids.sort_by(|a, b| {
+                self.transforms[a]
+                    .translation
+                    .z
+                    .total_cmp(&self.transforms[b].translation.z)
+                    .then(a.cmp(b))
+            });
+            let step = 10.0 / (ids.len() + 1) as f32;
+            for (index, id) in ids.into_iter().enumerate() {
+                if let Some(transform) = self.transforms.get_mut(&id) {
+                    transform.translation.z = (index + 1) as f32 * step;
+                    self.dirty_pieces.insert(id);
+                }
+            }
+            self.next_z_order = 10.0;
+        }
+        self.next_z_order += 0.1;
+        if let Some(transform) = self.transforms.get_mut(&id) {
+            transform.translation.z = self.next_z_order;
+        }
+        compacted
     }
 }
 
@@ -1311,8 +1212,9 @@ impl PieceDataStore {
 /// バッチメッシュ管理システム
 #[derive(Resource)]
 pub struct BatchManager {
-    /// 現在の結合メッシュエンティティ（存在する場合）
-    pub batched_entity: Option<Entity>,
+    /// Contiguous depth ranges separated by extracted pieces. This preserves
+    /// transparent image compositing as well as the visible picking order.
+    pub batched_entities: Vec<Entity>,
 
     /// バッチに含まれているピースのIDリスト
     pub batched_pieces: std::collections::HashSet<PieceId>,
@@ -1340,7 +1242,7 @@ pub struct BatchManager {
 impl Default for BatchManager {
     fn default() -> Self {
         Self {
-            batched_entity: None,
+            batched_entities: Vec::new(),
             batched_pieces: std::collections::HashSet::new(),
             extracted_pieces: std::collections::HashSet::new(),
             placed_pieces: std::collections::HashSet::new(),

@@ -274,8 +274,7 @@ pub fn register_pieces_from_data_store_to_collision_system(
     perf_monitor: Res<PerformanceMonitor>,
 ) {
     // 既存データをクリア
-    collision_system.pieces.clear();
-    collision_system.need_rebuild = true;
+    *collision_system = PieceCollisionSystem::default();
 
     let mut registered_count = 0;
 
@@ -340,6 +339,7 @@ pub fn register_pieces_from_data_store_to_collision_system(
             let collision_data = PieceCollisionData {
                 piece_id: *piece_id,
                 position,
+                z_order: transform.translation.z,
                 bounding_box,
                 vertices,
                 indices: piece_data.render.shape.indices.clone(),

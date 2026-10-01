@@ -250,4 +250,48 @@ mod tests {
             .zip(&c.pieces)
             .any(|(a, c)| a.piece_shape.vertices != c.piece_shape.vertices));
     }
+
+    #[test]
+    fn every_generated_triangle_is_pickable_at_its_drawn_position() {
+        let def = definition(42);
+        let generated = create_all_pieces_sync(generate_shapes(&def).unwrap(), &def).unwrap();
+        for data in generated.pieces {
+            let id = data.piece_component.id;
+            let position = data.state.position;
+            let vertices: Vec<Vec2> = data
+                .piece_shape
+                .vertices
+                .into_iter()
+                .map(Vec2::from)
+                .collect();
+            let indices = data.piece_shape.indices;
+            let mut collision = PieceCollisionSystem::default();
+            collision.add_piece(PieceCollisionData {
+                piece_id: id,
+                position,
+                z_order: 0.0,
+                bounding_box: Rect {
+                    min: data.bounds.min + position,
+                    max: data.bounds.max + position,
+                },
+                vertices: vertices.clone(),
+                indices: indices.clone(),
+            });
+            let mut tested = 0;
+            for [a, b, c] in crate::piece_geometry::triangles(&vertices, &indices) {
+                // Skip triangles too thin to survive world-coordinate rounding.
+                if (b - a).perp_dot(c - a).abs() < 0.01 {
+                    continue;
+                }
+                let centroid = position + (a + b + c) / 3.0;
+                assert_eq!(
+                    collision.find_piece_at_position(centroid),
+                    Some(id),
+                    "piece {id} at {centroid}"
+                );
+                tested += 1;
+            }
+            assert!(tested > 0);
+        }
+    }
 }

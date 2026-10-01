@@ -37,7 +37,7 @@ Initializing → Playing ⇄ Paused
 | `PieceState` | 現在位置、placed、held_by | ○ |
 | `PieceRenderData` | bounds、形状、Mesh/Material handle | × |
 | `PieceDataStore.transforms` | PieceStateから導くローカル描画座標と重なり順 | × |
-| 選択・プレビュー集合 / `InputState` | ローカル選択、ドラッグoffset、マウス、カメラ | × |
+| 選択・プレビュー集合 / `PieceInteraction` / `InputState` | ローカル選択、ジェスチャーとドラッグoffset、マウス、カメラ | × |
 | `BatchManager` / `PieceIdManager` | 結合メッシュと一時Entityのローカル管理 | × |
 
 ピースIDはgridのrow-major `u32`。プレイヤーIDは `u64`。どちらもEntityと独立し、serdeに対応する。PieceIdのスコープは1パズルなので、将来の通信ではsession/puzzle identityを併せて検証する必要がある。
@@ -60,6 +60,16 @@ mouse / box selection / multi-drag
 入力はゲーム座標のTransformを書き換えない。命令処理はマウスやUIを参照しない。受理されたReleaseだけがスナップを起動し、閾値は従来同様 `distance < snap_distance`。配置済みのピースは再Grabできない。ポーズ開始とボタンの押下終了でローカル保持を解放する。
 
 スナップと完成判定に一時Entityは不要。配置済みピースも結合メッシュに残す。一時Entityから状態を逆同期する経路は削除した。
+
+## 選択・移動の再実装（2026-10-01）
+
+描画用のテッセレーション頂点を輪郭順のポリゴンとして判定していたため、見た目とクリック領域が一致していなかった。`piece_geometry.rs`で描画と同じindicesの三角形を判定する。点の境界も含め、矩形は分離軸判定で細い範囲が辺を横切る場合を扱い、形状の凹みや空白は選択しない。R-treeは候補検索に使い、ヒットのうち描画Zが最大のピースを選ぶ。更新時は正確な旧レコードを削除し、boundsを不変のローカルboundsから再投影する。
+
+`interaction.rs`の`PieceInteraction`がIdle / Dragging / BoxSelectingの一つの状態を持つ。Ctrlは選択の追加・解除、通常クリックは選択の置換、選択済みピースのドラッグはグループ移動となる。範囲選択の追加モードは押下時に固定する。ドラッグと範囲選択の終了フレームの座標も処理し、最後のMoveの後にReleaseを送る。ポーズ・フォーカス喪失で保持を解放し、範囲選択は開始前の選択へ戻す。座標が取得できない間は移動せず、押下終了の解放は継続する。
+
+入力から描画までをPostUpdateでeguiの現フレーム処理の後に順序付ける。カメラpan / zoom / edge scrollingの後で、rootのMainCameraの現Transformから座標変換し、全ピースの状態投影をTransform伝播の前に完了する。zoomはXYだけを変更し、Zの表示範囲を縮めない。HUDは独立した背景Uiなので、パネルの矩形でも入力を抑制する。ゲーム領域で始めたドラッグはUIを横切っても継続・解放できる。
+
+透明な結合メッシュはEntity単位で描画順が決まるため、一つのバッチに異なる深度の個別ピースを挟むことはできない。全ピースをZ順に並べ、抽出ピースの前後で連続するバッチへ分割する。バッチのEntity Zとローカル頂点Zを相殺し、元のワールド座標・UV・共有Blend materialを維持する。Grabしたグループは内部の重なり順を保ち、Zが50へ達すると順序を保って再割当する。枠線は子Entityのoverlay、選択矩形は単位メッシュのTransform更新として描画する。
 
 ## 再現性と描画
 
@@ -98,12 +108,14 @@ Windowsではwgpu-hal 29.0.4とgpu-allocator 0.28のWindows COM型が一致し�
 
 ## 検証結果
 
-2026-10-01、Windows / Rust 1.97で `cargo fmt --check`、`cargo check --locked`、`cargo clippy --locked --all-targets --all-features -- -D warnings`、`cargo test --locked`、`cargo build --locked`が成功。8件のテストで以下を確認した。
+2026-10-01、Windows / Rust 1.97で `cargo fmt --check`、`cargo check --locked`、`cargo clippy --locked --all-targets --all-features -- -D warnings`、`cargo test --locked`、`cargo build --locked`が成功。22件のテストで以下を確認した。
 
 - 所有者の異なるGrab / Move / Release、NaN座標を拒否し、スナップの従来閾値と配置済みロックを保持
 - 同じ定義からPieceId・形状頂点・indices・UV・初期位置が再現され、別seedで配置と形状が変わる
 - 1000ピースの配置数・有限座標・除外領域・再現性、ランダムfallbackの再現性と非重複
-- 一時EntityがなくてもCtrl / box selectionとmulti-dragが相対位置を保ち、Releaseで保持・R-tree除外を解消
+- 描画indicesで生成した全三角形をクリックでき、重なり順・矩形の辺交差・空白領域・R-treeの繰り返し更新を検証
+- 一時EntityがなくてもCtrl / box selectionとmulti-dragが相対位置を保ち、終了座標・snap・UI上の押下抑制・フォーカス喪失・pause・範囲選択取消・Z再割当を検証
+- カメラの現Transformによる座標変換と無効座標の除去、バッチ抽出・返却時の描画順・元UV・Blend material保持を検証
 - 全ピースのスナップ・進捗・完成と結合メッシュ内の配置済みピース保持
 - 実GamePluginで生成worker → Playing → Paused → Playing → GameComplete → Menu → 再生成し、定義・画像・バッチ・SubStateを清掃
 

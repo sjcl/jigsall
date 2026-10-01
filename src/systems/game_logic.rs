@@ -21,6 +21,7 @@ pub fn toggle_game_menu(
 pub fn apply_piece_commands(
     mut commands: MessageReader<ClientCommand>,
     mut store: ResMut<PieceDataStore>,
+    mut batch: ResMut<BatchManager>,
     mut moves: MessageWriter<PieceMoveCompleted>,
     mut perf: ResMut<PerformanceMonitor>,
 ) {
@@ -41,12 +42,8 @@ pub fn apply_piece_commands(
         if outcome == CommandOutcome::Released {
             store.held_pieces.remove(&id);
         }
-        if outcome == CommandOutcome::Grabbed {
-            store.next_z_order += 0.1;
-            let z = store.next_z_order + 10.0;
-            if let Some(transform) = store.transforms.get_mut(&id) {
-                transform.translation.z = z;
-            }
+        if outcome == CommandOutcome::Grabbed && store.bring_piece_to_front(id) {
+            batch.needs_rebuild = true;
         }
         if outcome == CommandOutcome::Released {
             moves.write(PieceMoveCompleted { id });
@@ -99,6 +96,7 @@ pub fn project_piece_states(
             continue;
         };
         let state = piece.state;
+        let bounds = piece.render.bounds;
         if let Some(transform) = store.transforms.get_mut(&id) {
             transform.translation.x = state.position.x;
             transform.translation.y = state.position.y;
@@ -110,10 +108,13 @@ pub fn project_piece_states(
             collision.dragging_pieces.remove(&id);
             collision.remove_piece(id);
         } else {
+            if let Some(transform) = store.transforms.get(&id) {
+                collision.update_piece_z_order(id, transform.translation.z);
+            }
             if state.held_by.is_some() {
                 collision.start_dragging_piece(id, &perf.debug_level);
             }
-            collision.update_piece_position(id, state.position);
+            collision.update_piece_position(id, state.position, bounds);
             if state.held_by.is_none() {
                 collision.stop_dragging_piece(id, &perf.debug_level);
             }
