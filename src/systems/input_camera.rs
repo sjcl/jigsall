@@ -2,50 +2,39 @@ use crate::components::*;
 use crate::resources::*;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
+use bevy_egui::EguiContexts;
 
 pub fn update_input_state(
-    mut input_state: ResMut<InputState>,
-    windows: Query<&Window>,
-    camera_q: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
-    mouse_input: Res<ButtonInput<MouseButton>>,
-    mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut input: ResMut<InputState>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<(&Camera, &Transform), With<MainCamera>>,
 ) {
-    let _span = info_span!("update_input_state").entered();
-    let start_time = perf_monitor.start_system_timing("update_input_state");
-
+    // Clear validity first, so a missing cursor/window or failed conversion
+    // never reuses a stale world coordinate.
+    input.mouse_position = None;
+    input.cursor_screen_position = None;
+    input.window_focused = false;
     let Ok(window) = windows.single() else {
-        perf_monitor.end_system_timing("update_input_state", start_time);
         return;
     };
-    let Ok((camera, camera_transform)) = camera_q.single() else {
-        perf_monitor.end_system_timing("update_input_state", start_time);
+    input.window_focused = window.focused;
+    if !window.focused {
         return;
-    };
-
-    // 前のマウス位置を保存
-    input_state.last_mouse_position = input_state.mouse_position;
-
-    if let Some(cursor_pos) = window.cursor_position() {
-        // スクリーン座標を保存
-        input_state.cursor_screen_position = Some(cursor_pos);
-
-        if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
-            input_state.mouse_position = world_pos;
-            // デバッグ: マウス座標変換を確認（頻繁すぎるので制限）
-            if mouse_input.just_pressed(MouseButton::Left) {
-                println!(
-                    "Cursor: ({:.1}, {:.1}) -> World: ({:.1}, {:.1})",
-                    cursor_pos.x, cursor_pos.y, world_pos.x, world_pos.y
-                );
-            }
-        }
-    } else {
-        input_state.cursor_screen_position = None;
     }
-
-    input_state.is_mouse_pressed = mouse_input.pressed(MouseButton::Left);
-
-    perf_monitor.end_system_timing("update_input_state", start_time);
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    input.cursor_screen_position = Some(cursor);
+    let Ok((camera, transform)) = cameras.single() else {
+        return;
+    };
+    // MainCamera is a root entity. Its current Transform includes this frame's
+    // pan/zoom/edge scrolling; GlobalTransform propagates later in PostUpdate.
+    input.mouse_position = camera
+        .viewport_to_world_2d(&GlobalTransform::from(*transform), cursor)
+        .ok()
+        .filter(|point| point.is_finite());
 }
 
 /// ゲーム開始時にカメラズームを自動調整（解像度適応型・OnEnterで1回のみ実行）
@@ -106,7 +95,7 @@ pub fn auto_adjust_camera_zoom(
                 // 最終的なズーム値を計算（解像度適応マージン適用）
                 let final_scale = (optimal_scale * adaptive_margin).clamp(0.1, 15.0);
 
-                transform.scale = Vec3::splat(final_scale);
+                transform.scale = Vec3::new(final_scale, final_scale, 1.0);
 
                 // カメラを画像の中心に配置
                 transform.translation.x = 0.0;
@@ -131,6 +120,9 @@ pub fn auto_adjust_camera_zoom(
 
 pub fn handle_camera_zoom(
     mut scroll_evr: MessageReader<MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut contexts: EguiContexts,
+    ui_capture: Res<GameUiPointerCapture>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     puzzle_image: Option<Res<PuzzleImage>>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -138,7 +130,15 @@ pub fn handle_camera_zoom(
     let _span = info_span!("handle_camera_zoom").entered();
     let start_time = perf_monitor.start_system_timing("handle_camera_zoom");
 
+    let over_ui = ui_capture.over_hud
+        || contexts
+            .ctx_mut()
+            .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
+    let focused = windows.single().is_ok_and(|window| window.focused);
     for ev in scroll_evr.read() {
+        if !focused || over_ui || ev.y == 0.0 {
+            continue;
+        }
         for mut transform in camera_query.iter_mut() {
             let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
 
@@ -168,7 +168,9 @@ pub fn handle_camera_zoom(
             let current_scale = transform.scale.x;
             let new_scale = (current_scale * zoom_factor).clamp(min_zoom, max_zoom);
 
-            transform.scale = Vec3::splat(new_scale);
+            // Zoom changes XY only; scaling Z would shrink the visible depth
+            // range and clip pieces/outlines after bringing them to the front.
+            transform.scale = Vec3::new(new_scale, new_scale, 1.0);
 
             // デバッグ出力（頻度制限）
         }
@@ -181,22 +183,33 @@ pub fn handle_camera_drag(
     mut input_state: ResMut<InputState>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut contexts: EguiContexts,
+    ui_capture: Res<GameUiPointerCapture>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
     let _span = info_span!("handle_camera_drag").entered();
     let start_time = perf_monitor.start_system_timing("handle_camera_drag");
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Right);
     let mouse_pressed = mouse_input.pressed(MouseButton::Right);
-    let mouse_just_released = mouse_input.just_released(MouseButton::Right);
 
     let Ok(window) = windows.single() else {
         perf_monitor.end_system_timing("handle_camera_drag", start_time);
         return;
     };
 
-    // 右クリックでカメラドラッグ開始
-    if mouse_just_pressed {
+    let over_ui = ui_capture.over_hud
+        || contexts
+            .ctx_mut()
+            .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
+    if !window.focused || !mouse_pressed || window.cursor_position().is_none() {
+        input_state.is_camera_dragging = false;
+        input_state.last_cursor_position = None;
+        perf_monitor.end_system_timing("handle_camera_drag", start_time);
+        return;
+    }
+    // Capture starts only with a fresh press on the game canvas.
+    if mouse_just_pressed && !over_ui {
         input_state.is_camera_dragging = true;
         input_state.last_cursor_position = window.cursor_position();
     }
@@ -227,35 +240,31 @@ pub fn handle_camera_drag(
         }
     }
 
-    // 右クリックリリースでカメラドラッグ終了
-    if mouse_just_released {
-        input_state.is_camera_dragging = false;
-        input_state.last_cursor_position = None;
-    }
-
     perf_monitor.end_system_timing("handle_camera_drag", start_time);
 }
 
 /// ピースドラッグ中の画面端カメラスクロール
 pub fn handle_edge_scrolling(
-    input_state: Res<InputState>,
+    interaction: Res<crate::interaction::PieceInteraction>,
+    mouse: Res<ButtonInput<MouseButton>>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
-    windows: Query<&Window>,
+    windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
 ) {
     let _span = info_span!("handle_edge_scrolling").entered();
 
     // ピースをドラッグ中でない場合はスキップ
-    if !input_state.is_dragging_piece {
+    if !interaction.is_dragging() || !mouse.pressed(MouseButton::Left) {
         return;
     }
 
-    // カーソルのスクリーン座標が無い場合はスキップ
-    let Some(cursor_pos) = input_state.cursor_screen_position else {
+    let Ok(window) = windows.single() else {
         return;
     };
-
-    let Ok(window) = windows.single() else {
+    if !window.focused {
+        return;
+    }
+    let Some(cursor_pos) = window.cursor_position() else {
         return;
     };
     let Ok(mut camera_transform) = camera_query.single_mut() else {
@@ -301,5 +310,73 @@ pub fn handle_edge_scrolling(
 
         camera_transform.translation.x += movement.x;
         camera_transform.translation.y += movement.y;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::camera::{ComputedCameraValues, RenderTargetInfo};
+
+    #[test]
+    fn pointer_uses_current_camera_transform_and_clears_invalid_coordinates() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<InputState>()
+            .add_systems(Update, update_input_state);
+        let mut window = Window {
+            resolution: bevy::window::WindowResolution::new(1000, 800),
+            focused: true,
+            ..default()
+        };
+        window.set_cursor_position(Some(Vec2::new(700.0, 250.0)));
+        let window = app.world_mut().spawn((window, PrimaryWindow)).id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                Camera {
+                    computed: ComputedCameraValues {
+                        clip_from_view: Mat4::orthographic_rh(
+                            -500.0, 500.0, -400.0, 400.0, 0.0, 1000.0,
+                        ),
+                        target_info: Some(RenderTargetInfo {
+                            physical_size: UVec2::new(1000, 800),
+                            scale_factor: 1.0,
+                        }),
+                        ..default()
+                    },
+                    ..default()
+                },
+                Transform::from_xyz(50.0, -20.0, 0.0).with_scale(Vec3::splat(2.0)),
+                // Deliberately stale: propagation has not run this frame.
+                GlobalTransform::IDENTITY,
+                MainCamera,
+            ))
+            .id();
+        app.update();
+        let point = app.world().resource::<InputState>().mouse_position.unwrap();
+        assert!((point - Vec2::new(450.0, 280.0)).length() < 0.001);
+        app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Camera>()
+            .unwrap()
+            .computed
+            .target_info = None;
+        app.update();
+        assert!(app
+            .world()
+            .resource::<InputState>()
+            .mouse_position
+            .is_none());
+        app.world_mut()
+            .entity_mut(window)
+            .get_mut::<Window>()
+            .unwrap()
+            .focused = false;
+        app.update();
+        let input = app.world().resource::<InputState>();
+        assert!(!input.window_focused);
+        assert!(input.cursor_screen_position.is_none());
+        assert!(input.mouse_position.is_none());
     }
 }

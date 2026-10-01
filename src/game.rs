@@ -1,6 +1,8 @@
 use crate::puzzle::update_puzzle_image_size;
 use crate::{components::*, gameplay::*, networking::ClientCommand, resources::*, systems::*};
 use bevy::prelude::*;
+use bevy::transform::TransformSystems;
+use bevy_egui::EguiPostUpdateSet;
 
 pub struct GamePlugin;
 impl Plugin for GamePlugin {
@@ -12,6 +14,8 @@ impl Plugin for GamePlugin {
             .init_resource::<GameData>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<InputState>()
+            .init_resource::<GameUiPointerCapture>()
+            .init_resource::<crate::interaction::PieceInteraction>()
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<StrokeMeshCache>()
             .init_resource::<PieceIdManager>()
@@ -63,20 +67,22 @@ impl Plugin for GamePlugin {
                 spawn_puzzle_pieces_progressive.run_if(in_state(GameSubState::Initializing)),
             )
             .add_systems(
-                Update,
+                PostUpdate,
                 (
-                    update_input_state,
-                    handle_piece_input,
                     handle_camera_zoom,
                     handle_camera_drag,
                     handle_edge_scrolling,
+                    update_input_state,
+                    handle_piece_input,
                 )
                     .chain()
+                    .after(EguiPostUpdateSet::EndPass)
+                    .after(bevy::camera::CameraUpdateSystems)
                     .before(apply_piece_commands)
                     .run_if(in_state(GameSubState::Playing)),
             )
             .add_systems(
-                Update,
+                PostUpdate,
                 (
                     apply_piece_commands,
                     check_piece_placement_event_driven,
@@ -91,6 +97,8 @@ impl Plugin for GamePlugin {
                     render_selection_box.run_if(should_render_selection_box),
                 )
                     .chain()
+                    .after(EguiPostUpdateSet::EndPass)
+                    .before(TransformSystems::Propagate)
                     .run_if(in_state(AppState::InGame)),
             )
             .add_systems(
@@ -170,6 +178,7 @@ fn cleanup_game(
     mut store: ResMut<PieceDataStore>,
     mut batch: ResMut<BatchManager>,
     mut input: ResMut<InputState>,
+    mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut collision: ResMut<PieceCollisionSystem>,
     mut ids: ResMut<PieceIdManager>,
     mut progress: ResMut<PieceGenerationProgress>,
@@ -184,6 +193,7 @@ fn cleanup_game(
     *store = default();
     *batch = default();
     *input = default();
+    *interaction = default();
     *collision = default();
     *ids = default();
     *progress = default();
