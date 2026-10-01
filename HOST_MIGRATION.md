@@ -26,9 +26,10 @@ Steamworks、socket、packet framing、実際のnetwork serializationは実装�
 | `AuthorityEpoch(u64)` | host authorityの世代 |
 | `AuthoritySequence(u64)` | その世代で適用済みのauthority変更番号 |
 | `AuthorityCursor` | epoch、sequenceの辞書順比較 |
-| `ClientCommandEnvelope` | session、epoch、player、player別command sequence、PieceCommand |
+| `ClientCommandEnvelope` | session、epoch、player、stream別ClientCommandSequence、PieceCommand |
 | `AuthorityEventEnvelope<T>` | session、host、cursor、将来のauthority event payload |
-| `CommandSequenceTracker` | player別のsequence high-water mark |
+| `ClientCommandSequence` | reliable Control sequence、またはunreliable Move tickと参照control |
+| `CommandSequenceTracker` | player別にcontrolとMoveを独立検証 |
 | `AuthoritySession` / `MigrationState` | 稼働、正常transfer、recoveryの状態遷移 |
 | `RecoverySource` | snapshot提供peerと適用済みcursor |
 
@@ -52,18 +53,50 @@ network cursorには使わず、snapshot install時は既存のローカルatomi
 
 `AuthoritySession.accept_command()` はmigration中のcommandを `Frozen` で拒否し、
 稼働中は `CommandSequenceTracker.validate_and_record()` を呼ぶ。
+playerごとに以下の2streamを独立して保持する。Moveはcontrolのcounterを進めない。
 
-- session不一致とepoch不一致（古い世代・未通知の未来世代とも）を拒否する。
-- 同playerの直前と同じsequenceをduplicate、それより小さい値をstaleとして拒否する。
-- playerごとにsequence 0から開始する。migration完了時にtrackerを作り直す。
-- forward gapは `Gap { expected }` として検出し、受理する。
-  unreliable Moveの欠落を許容するためである。
-- 拒否時はhigh-water markを変えない。
+| command | metadata | 配送と検証 |
+| --- | --- | --- |
+| Grab / Release | `Control(sequence)` | reliable、0から連続。duplicate/stale/gapを拒否 |
+| Move | `Move { after_control_sequence, tick }` | unreliable、参照control内でtickを検証。gapは許容 |
 
-trackerは認証済み入力のreplay検証であり、所有権、PieceId、有限座標、
-placedへの操作可否は引き続き `apply_piece_command()` が検証する。
-trackerを通した後にgameplayが拒否したcommandもsequenceは消費する。
-transportによる再送で同じcommandが後から別の結果になることを防ぐ。
+controlに欠番があれば `ControlGap { expected }` を返し、counterを変更しない。
+backendはreliable controlの順序を保証するか、未受理commandを保持して欠番補完後に再試行する。
+既に受理したcontrolは再適用しない。Moveの先着で後続controlがStaleCommandになることはない。
+
+Moveの `after_control_sequence` は、clientが最後に送信したcontrol番号を表す。
+hostがその番号までcontrolを消費していなければ `ControlNotProcessed { required }` で拒否する。
+現在のcontrol番号より古ければ `StaleMoveContext` で拒否する。
+参照controlが一致した場合だけMove tickのduplicate/staleを拒否し、
+forward gapは `Gap { expected }` として検出して受理する。
+Move tickは同じplayer・参照control内のcommandごとに0から増やす番号で、
+同frameに複数pieceをMoveするときも別tickを割り当てる。
+controlを1つ受理するたびMove tickをresetする。
+既に送信済みの古いMoveを新しい参照controlで再ラベルして再送してはいけない。
+
+例:
+
+~~~text
+Move(after=0, tick=100) → Grab(0)前なので拒否、counterは不変
+Grab Control(0)        → 受理
+Move(after=0, tick=100) → 受理、Move gapを許容
+Release Control(1)     → Moveのtickと無関係に受理
+Grab Control(2)        → 受理
+遅延Move(after=0, 101) → 前回dragなので拒否
+Move(after=2, tick=0)   → 新しいcontrol文脈として受理
+~~~
+
+これはplayerごとの順序境界であり、host発行leaseや所有権の証明ではない。
+他pieceのcontrolを送った場合も番号を進めるため、旧番号のin-flight Moveは捨てる。
+所有権、PieceId、有限座標、placedへの操作可否は引き続き `apply_piece_command()` が検証する。
+trackerを通した後にgameplayが拒否したcontrolも番号を消費する。
+host adapterはenvelope受理後にgameplayの適用/拒否を同期的に確定してから次を処理し、
+queued commandだけで「controlを処理済み」と判断しないこと。
+
+session不一致とepoch不一致（古い世代・未通知の未来世代とも）は両streamで拒否する。
+commandとstreamの不一致（MoveをControlに載せる等）も拒否する。
+拒否はどちらのcounterも変更しない。migration完了時は両streamをresetする。
+trackerのメモリはplayer数に比例し、per-piece stateや通常single-player frameの処理は追加しない。
 
 `validate_event()` は稼働中にsession、epoch、host、次のauthority sequenceを検証する。
 duplicate/stale event、gap、未来epochを拒否する。
@@ -71,9 +104,8 @@ gameplay適用成功後に `record_applied_event()` でcursorを進める。
 これはreliable authority変更用の順序境界であり、Move全フレームのevent sourcingではない。
 gapを見つけたbackendはretransmissionまたはsnapshot resyncを要求する。
 
-将来、reliable actionとunreliable Moveを併用する場合は、古いreliable actionが
-新しいMoveのhigh-water markに追い越されない配送・sequence設計が必要。
-現在のglobal player sequence trackerだけで混在channelの信頼性は保証しない。
+streamを分離しても、最後のMove欠落時にReleaseが最終位置を確定する要件は残る。
+下記TODOのReleasePiece { id, final_position }と実transportの配送・ACKは次フェーズで実装する。
 
 ## Snapshot
 
@@ -183,7 +215,8 @@ backendはmembership変更をreliableに伝え、このhelperで確定した解�
 
 Steamもsocketも使わないテストを追加した。
 
-- core: per-player duplicate/stale/gap、wrong session、古い/未来epoch。
+- core: per-player duplicate/stale、control gap拒否、Move gap許容、wrong session、古い/未来epoch。
+- core: channel順序逆転、Move先着後のGrab/Release受理、control参照の未来/古さ、stream不一致、両counterの上限。
 - core: graceful freeze、ACKのplayer/session/cursor検証、外部owner一致、sequence reset。
 - core: abrupt freeze、source選択、決定論的tie-break、epochの辞書順比較、local=4:806で最大4:805の候補拒否、completion時の巻き戻し防御。
 - core: eventのhost/session/epoch/sequence検証、counter上限、graceful中の突然切断。
@@ -194,6 +227,7 @@ Steamもsocketも使わないテストを追加した。
 - game: wrong session/count、NaN、±Infinity、unsupported generator/schema、
   古い/未来cursor、異なるdefinition、不正grid/Z/flagsをResultで原子的に拒否。
 - game: snapshot検証失敗時はauthorityを有効にしない。
+- game: 実際のPieceStateでMove先着後もReleaseでき、再Grab後に前回dragの遅延Moveを拒否する。
 - game: 16-byte dense snapshotの100万ピースexport/install round trip。
 
 検証コマンド（baseline worktree内）:
@@ -210,10 +244,10 @@ renderer / selection / shader / GPU state layout / generator / benchmarkは変�
 既存の入力、snap、session lifecycle、dense stateをworkspace testsで引き続き検証する。
 GPU benchmarkは再実行しない。実GPUが必要な既存3件はdefaultでignored。
 
-実行結果: 上記4コマンドは全て成功。workspace testsは54件成功、3件ignored。
-新規テストはcore 8件 + game 6件。Cargo.lockの開始時/終了時SHA256は
+実行結果: 上記4コマンドは全て成功。workspace testsは59件成功、3件ignored。
+新規テストはcore 12件 + game 7件。Cargo.lockの開始時/終了時SHA256は
 `D52C7FBFE817D6178A851C4BA09A6D66AD48EEF105F476CFA6E1B08CD23B4458` で一致した。
-検証には既存targetのビルドキャッシュを使用し、source変更は専用worktreeに限定した。
+検証のworkspace成果物は専用worktree内のtargetへ分離し、外部dependencyの既存cacheだけを再利用した。source変更は専用worktreeに限定した。
 
 ## Steam integration の接続点とTODO
 

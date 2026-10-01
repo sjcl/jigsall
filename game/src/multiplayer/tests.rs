@@ -7,8 +7,8 @@ use bevy::prelude::*;
 use puzzella_core::{
     apply_piece_command,
     session::{
-        AuthorityEpoch, AuthorityEventEnvelope, ClientCommandEnvelope, CommandSequenceStatus,
-        MigrationState, RecoverySource, SessionId,
+        AuthorityEpoch, AuthorityEventEnvelope, ClientCommandEnvelope, ClientCommandSequence,
+        CommandSequenceStatus, MigrationState, RecoverySource, SessionId,
     },
     CommandOutcome, PieceCommand, GENERATOR_VERSION,
 };
@@ -57,7 +57,7 @@ fn envelope(epoch: u64, player: PlayerId, sequence: u64) -> ClientCommandEnvelop
         session: SESSION,
         authority_epoch: AuthorityEpoch(epoch),
         player,
-        sequence,
+        sequence: ClientCommandSequence::Control(sequence),
         command: PieceCommand::Grab(PieceId(1)),
     }
 }
@@ -492,4 +492,80 @@ fn million_piece_snapshot_has_sixteen_byte_dense_states_and_round_trips() {
     assert_eq!(target.next_z_order, 1_000_000);
     assert_eq!(target.placed_count, 0);
     assert!(target.held_by.is_empty() && target.dirty_pieces.is_empty());
+}
+
+#[test]
+fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
+    let mut store = fixture();
+    release_player_holds(&mut store, A);
+    let mut session = AuthoritySession::new(SESSION, A, AuthorityCursor::new(4, 0));
+    let move_request = |control, tick, position| ClientCommandEnvelope {
+        sequence: ClientCommandSequence::Move {
+            after_control_sequence: control,
+            tick,
+        },
+        command: PieceCommand::Move {
+            id: PieceId(1),
+            position,
+        },
+        ..envelope(4, B, 0)
+    };
+    let mut piece = store.state(PieceId(1)).unwrap();
+    let early_move = move_request(0, 100, Vec2::new(10.0, 20.0));
+    assert_eq!(
+        session.accept_command(&early_move),
+        Err(ProtocolError::ControlNotProcessed { required: 0 })
+    );
+    assert_eq!(
+        session.accept_command(&envelope(4, B, 0)),
+        Ok(CommandSequenceStatus::InOrder)
+    );
+    assert_eq!(
+        apply_piece_command(&mut piece, B, &PieceCommand::Grab(PieceId(1))),
+        Some(CommandOutcome::Grabbed)
+    );
+    assert_eq!(
+        session.accept_command(&early_move),
+        Ok(CommandSequenceStatus::Gap { expected: 0 })
+    );
+    assert_eq!(
+        apply_piece_command(&mut piece, B, &early_move.command),
+        Some(CommandOutcome::Moved)
+    );
+    let release = ClientCommandEnvelope {
+        command: PieceCommand::Release(PieceId(1)),
+        ..envelope(4, B, 1)
+    };
+    assert_eq!(
+        session.accept_command(&release),
+        Ok(CommandSequenceStatus::InOrder)
+    );
+    assert_eq!(
+        apply_piece_command(&mut piece, B, &release.command),
+        Some(CommandOutcome::Released)
+    );
+    store.set_state(PieceId(1), piece);
+    assert!(store.state(PieceId(1)).unwrap().held_by.is_none());
+    assert_eq!(piece.position, Vec2::new(10.0, 20.0));
+
+    session.accept_command(&envelope(4, B, 2)).unwrap();
+    apply_piece_command(&mut piece, B, &PieceCommand::Grab(PieceId(1))).unwrap();
+    let stale_move = move_request(0, 101, Vec2::splat(999.0));
+    assert_eq!(
+        session.accept_command(&stale_move),
+        Err(ProtocolError::StaleMoveContext)
+    );
+    assert_eq!(piece.position, Vec2::new(10.0, 20.0));
+    let current_move = move_request(2, 0, Vec2::new(30.0, 40.0));
+    assert_eq!(
+        session.accept_command(&current_move),
+        Ok(CommandSequenceStatus::InOrder)
+    );
+    apply_piece_command(&mut piece, B, &current_move.command).unwrap();
+    store.set_state(PieceId(1), piece);
+    assert_eq!(
+        store.state(PieceId(1)).unwrap().position,
+        Vec2::new(30.0, 40.0)
+    );
+    assert_eq!(store.state(PieceId(1)).unwrap().held_by, Some(B));
 }

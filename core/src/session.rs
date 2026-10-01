@@ -24,14 +24,23 @@ impl AuthorityCursor {
     }
 }
 
+/// Independent reliable controls and best-effort moves within one player/epoch.
+/// Move ticks increment per command; after_control_sequence is the latest control sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClientCommandSequence {
+    Control(u64),
+    Move {
+        after_control_sequence: u64,
+        tick: u64,
+    },
+}
 /// Separate from the local Bevy ClientCommand. Authenticate player at the backend.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ClientCommandEnvelope {
     pub session: SessionId,
     pub authority_epoch: AuthorityEpoch,
     pub player: PlayerId,
-    /// Per-player command sequence; starts at zero in each authority epoch.
-    pub sequence: u64,
+    pub sequence: ClientCommandSequence,
     pub command: PieceCommand,
 }
 /// A backend must authenticate the sender as host before applying this envelope.
@@ -50,6 +59,10 @@ pub enum ProtocolError {
     WrongHost,
     DuplicateCommand,
     StaleCommand,
+    WrongCommandStream,
+    ControlGap { expected: u64 },
+    ControlNotProcessed { required: u64 },
+    StaleMoveContext,
     StaleEvent,
     EventGap { expected: AuthoritySequence },
     Frozen,
@@ -59,29 +72,34 @@ pub enum ProtocolError {
     CounterExhausted,
 }
 
-/// Gaps are visible but accepted, since unreliable Move packets may be lost.
-/// Reliable actions need ordered delivery/retransmission at the future backend.
+/// Only Move gaps are accepted. Reliable controls must be consumed contiguously.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandSequenceStatus {
     InOrder,
     Gap { expected: u64 },
 }
+#[derive(Clone, Copy, Debug, Default)]
+struct PlayerCommandSequences {
+    control: Option<u64>,
+    move_tick: Option<u64>,
+}
 #[derive(Clone, Debug)]
 pub struct CommandSequenceTracker {
     session: SessionId,
     epoch: AuthorityEpoch,
-    last: HashMap<PlayerId, u64>,
+    players: HashMap<PlayerId, PlayerCommandSequences>,
 }
 impl CommandSequenceTracker {
     pub fn new(session: SessionId, epoch: AuthorityEpoch) -> Self {
         Self {
             session,
             epoch,
-            last: HashMap::new(),
+            players: HashMap::new(),
         }
     }
 
-    /// Rejections never alter the high-water mark.
+    /// Rejections alter neither stream. Consume controls before gameplay validation,
+    /// then apply/reject gameplay synchronously before processing another envelope.
     pub fn validate_and_record(
         &mut self,
         envelope: &ClientCommandEnvelope,
@@ -92,27 +110,75 @@ impl CommandSequenceTracker {
         if envelope.authority_epoch != self.epoch {
             return Err(ProtocolError::WrongEpoch);
         }
-        let expected = if let Some(&last) = self.last.get(&envelope.player) {
-            if envelope.sequence == last {
-                return Err(ProtocolError::DuplicateCommand);
+        let mut player = self
+            .players
+            .get(&envelope.player)
+            .copied()
+            .unwrap_or_default();
+        let status = match envelope.sequence {
+            ClientCommandSequence::Control(sequence) => {
+                if matches!(envelope.command, PieceCommand::Move { .. }) {
+                    return Err(ProtocolError::WrongCommandStream);
+                }
+                let expected = next_sequence(player.control, sequence)?;
+                if sequence != expected {
+                    return Err(ProtocolError::ControlGap { expected });
+                }
+                player.control = Some(sequence);
+                // Move ticks are scoped to the latest consumed control.
+                player.move_tick = None;
+                CommandSequenceStatus::InOrder
             }
-            if envelope.sequence < last {
-                return Err(ProtocolError::StaleCommand);
+            ClientCommandSequence::Move {
+                after_control_sequence,
+                tick,
+            } => {
+                if !matches!(envelope.command, PieceCommand::Move { .. }) {
+                    return Err(ProtocolError::WrongCommandStream);
+                }
+                match player.control {
+                    None => {
+                        return Err(ProtocolError::ControlNotProcessed {
+                            required: after_control_sequence,
+                        })
+                    }
+                    Some(control) if after_control_sequence > control => {
+                        return Err(ProtocolError::ControlNotProcessed {
+                            required: after_control_sequence,
+                        })
+                    }
+                    Some(control) if after_control_sequence < control => {
+                        return Err(ProtocolError::StaleMoveContext)
+                    }
+                    Some(_) => {}
+                }
+                let expected = next_sequence(player.move_tick, tick)?;
+                player.move_tick = Some(tick);
+                if tick == expected {
+                    CommandSequenceStatus::InOrder
+                } else {
+                    CommandSequenceStatus::Gap { expected }
+                }
             }
-            // sequence > last guarantees last < u64::MAX.
-            last + 1
-        } else {
-            0
         };
-        self.last.insert(envelope.player, envelope.sequence);
-        Ok(if envelope.sequence == expected {
-            CommandSequenceStatus::InOrder
-        } else {
-            CommandSequenceStatus::Gap { expected }
-        })
+        self.players.insert(envelope.player, player);
+        Ok(status)
     }
 }
-
+/// Validate a stream without changing its state; counters never wrap.
+fn next_sequence(last: Option<u64>, sequence: u64) -> Result<u64, ProtocolError> {
+    if let Some(last) = last {
+        if sequence == last {
+            return Err(ProtocolError::DuplicateCommand);
+        }
+        if sequence < last {
+            return Err(ProtocolError::StaleCommand);
+        }
+        last.checked_add(1).ok_or(ProtocolError::CounterExhausted)
+    } else {
+        Ok(0)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoverySource {
     pub session: SessionId,
@@ -418,8 +484,26 @@ mod tests {
             session: SESSION,
             authority_epoch: AuthorityEpoch(3),
             player,
-            sequence,
+            sequence: ClientCommandSequence::Control(sequence),
             command: PieceCommand::Grab(PieceId(0)),
+        }
+    }
+
+    fn move_command(
+        player: PlayerId,
+        after_control_sequence: u64,
+        tick: u64,
+    ) -> ClientCommandEnvelope {
+        ClientCommandEnvelope {
+            sequence: ClientCommandSequence::Move {
+                after_control_sequence,
+                tick,
+            },
+            command: PieceCommand::Move {
+                id: PieceId(0),
+                position: bevy_math::Vec2::ONE,
+            },
+            ..command(player, 0)
         }
     }
 
@@ -436,14 +520,18 @@ mod tests {
         );
         assert_eq!(
             tracker.validate_and_record(&command(A, 3)),
-            Ok(CommandSequenceStatus::Gap { expected: 1 })
+            Err(ProtocolError::ControlGap { expected: 1 })
         );
         assert_eq!(
-            tracker.validate_and_record(&command(A, 2)),
+            tracker.validate_and_record(&command(A, 1)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(A, 0)),
             Err(ProtocolError::StaleCommand)
         );
         assert_eq!(
-            tracker.validate_and_record(&command(A, 4)),
+            tracker.validate_and_record(&command(A, 2)),
             Ok(CommandSequenceStatus::InOrder)
         );
         assert_eq!(
@@ -451,32 +539,186 @@ mod tests {
             Ok(CommandSequenceStatus::InOrder)
         );
         for epoch in [2, 4] {
-            let mut envelope = command(A, 5);
+            let mut envelope = command(A, 3);
             envelope.authority_epoch = AuthorityEpoch(epoch);
             assert_eq!(
                 tracker.validate_and_record(&envelope),
                 Err(ProtocolError::WrongEpoch)
             );
         }
-        let mut envelope = command(A, 5);
+        let mut envelope = command(A, 3);
         envelope.session = SessionId(8);
         assert_eq!(
             tracker.validate_and_record(&envelope),
             Err(ProtocolError::WrongSession)
         );
         assert_eq!(
-            tracker.validate_and_record(&command(A, 5)),
+            tracker.validate_and_record(&command(A, 3)),
             Ok(CommandSequenceStatus::InOrder)
         );
         assert_eq!(
             tracker.validate_and_record(&command(B, 2)),
-            Ok(CommandSequenceStatus::Gap { expected: 1 })
+            Err(ProtocolError::ControlGap { expected: 1 })
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(B, 1)),
+            Ok(CommandSequenceStatus::InOrder)
         );
     }
 
     #[test]
+    fn moves_do_not_consume_delayed_reliable_grab_or_release() {
+        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
+        let early_move = move_command(A, 0, 100);
+        assert_eq!(
+            tracker.validate_and_record(&early_move),
+            Err(ProtocolError::ControlNotProcessed { required: 0 })
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(A, 0)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&early_move),
+            Ok(CommandSequenceStatus::Gap { expected: 0 })
+        );
+        let release = ClientCommandEnvelope {
+            command: PieceCommand::Release(PieceId(0)),
+            ..command(A, 1)
+        };
+        assert_eq!(
+            tracker.validate_and_record(&release),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&release),
+            Err(ProtocolError::DuplicateCommand)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&early_move),
+            Err(ProtocolError::StaleMoveContext)
+        );
+    }
+
+    #[test]
+    fn move_replay_is_scoped_to_latest_control_and_does_not_cross_regrabs() {
+        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
+        tracker.validate_and_record(&command(A, 0)).unwrap();
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 0)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 0)),
+            Err(ProtocolError::DuplicateCommand)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 5)),
+            Ok(CommandSequenceStatus::Gap { expected: 1 })
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 4)),
+            Err(ProtocolError::StaleCommand)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 6)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        // A Move after a pending control cannot advance either stream.
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 2, 99)),
+            Err(ProtocolError::ControlNotProcessed { required: 2 })
+        );
+        tracker.validate_and_record(&command(A, 1)).unwrap();
+        tracker.validate_and_record(&command(A, 2)).unwrap();
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 7)),
+            Err(ProtocolError::StaleMoveContext)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 2, 0)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        // The other player's control and move counters are independent.
+        tracker.validate_and_record(&command(B, 0)).unwrap();
+        assert_eq!(
+            tracker.validate_and_record(&move_command(B, 0, 0)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+    }
+
+    #[test]
+    fn commands_require_matching_sequence_streams_without_poisoning_counters() {
+        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
+        let wrong_control = ClientCommandEnvelope {
+            sequence: ClientCommandSequence::Control(0),
+            ..move_command(A, 0, 0)
+        };
+        assert_eq!(
+            tracker.validate_and_record(&wrong_control),
+            Err(ProtocolError::WrongCommandStream)
+        );
+        tracker.validate_and_record(&command(A, 0)).unwrap();
+        let wrong_move = ClientCommandEnvelope {
+            sequence: ClientCommandSequence::Move {
+                after_control_sequence: 0,
+                tick: 100,
+            },
+            ..command(A, 1)
+        };
+        assert_eq!(
+            tracker.validate_and_record(&wrong_move),
+            Err(ProtocolError::WrongCommandStream)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, 0, 0)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(A, 1)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+    }
+
+    #[test]
+    fn player_control_and_move_counters_do_not_wrap() {
+        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
+        tracker.players.insert(
+            A,
+            PlayerCommandSequences {
+                control: Some(u64::MAX - 1),
+                move_tick: None,
+            },
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(A, u64::MAX)),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(A, u64::MAX)),
+            Err(ProtocolError::DuplicateCommand)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&command(A, 0)),
+            Err(ProtocolError::StaleCommand)
+        );
+        tracker
+            .validate_and_record(&move_command(A, u64::MAX, u64::MAX))
+            .unwrap();
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, u64::MAX, u64::MAX)),
+            Err(ProtocolError::DuplicateCommand)
+        );
+        assert_eq!(
+            tracker.validate_and_record(&move_command(A, u64::MAX, 0)),
+            Err(ProtocolError::StaleCommand)
+        );
+    }
+    #[test]
     fn graceful_transfer_freezes_and_requires_exact_ack_and_owner() {
         let mut state = AuthoritySession::new(SESSION, A, AuthorityCursor::new(3, 100));
+        state.accept_command(&command(A, 0)).unwrap();
+        state.accept_command(&move_command(A, 0, 100)).unwrap();
         state.begin_graceful(B).unwrap();
         assert_eq!(
             state.accept_command(&command(A, 0)),
@@ -524,10 +766,20 @@ mod tests {
             state.accept_command(&command(A, 0)),
             Err(ProtocolError::WrongEpoch)
         );
+        let mut fresh_move = move_command(A, 0, 0);
+        fresh_move.authority_epoch = AuthorityEpoch(4);
+        assert_eq!(
+            state.accept_command(&fresh_move),
+            Err(ProtocolError::ControlNotProcessed { required: 0 })
+        );
         let mut envelope = command(A, 0);
         envelope.authority_epoch = AuthorityEpoch(4);
         assert_eq!(
             state.accept_command(&envelope),
+            Ok(CommandSequenceStatus::InOrder)
+        );
+        assert_eq!(
+            state.accept_command(&fresh_move),
             Ok(CommandSequenceStatus::InOrder)
         );
         assert_eq!(state.advance_authority(), Ok(AuthorityCursor::new(4, 1)));
@@ -766,15 +1018,5 @@ mod tests {
         );
         assert!(!state.is_active());
         assert_eq!(state.host(), A);
-        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
-        tracker.validate_and_record(&command(A, u64::MAX)).unwrap();
-        assert_eq!(
-            tracker.validate_and_record(&command(A, u64::MAX)),
-            Err(ProtocolError::DuplicateCommand)
-        );
-        assert_eq!(
-            tracker.validate_and_record(&command(A, 0)),
-            Err(ProtocolError::StaleCommand)
-        );
     }
 }
