@@ -1,33 +1,28 @@
+use crate::asset_reader::ExternalFileRegistry;
+use crate::puzzle_utils::calculate_grid_from_config;
+use crate::resources::*;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use crate::resources::*;
-use crate::puzzle_utils::calculate_grid_from_config;
-use crate::asset_reader::ExternalFileRegistry;
 
-/// ホストゲーム設定UI
-pub fn draw_host_setup_ui(
+/// ローカルゲーム設定UI
+pub fn draw_game_setup_ui(
     mut contexts: EguiContexts,
-    mut game_state: ResMut<GameData>,
     mut puzzle_config: ResMut<PuzzleConfig>,
-    mut network_info: ResMut<NetworkInfo>,
     mut commands: Commands,
     puzzle_image: Option<Res<PuzzleImage>>,
-    asset_server: Res<AssetServer>,
     file_registry: Res<ExternalFileRegistry>,
     image_sender: Res<ImageLoadSender>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    if game_state.current_screen != GameScreen::HostSetup {
+    let Ok(ctx) = contexts.ctx_mut() else {
         return;
-    }
-    
-    let Ok(ctx) = contexts.ctx_mut() else { return; };
-    
+    };
+
     // 背景のグラデーション
-    egui::Area::new(egui::Id::new("host_setup_background"))
+    egui::Area::new(egui::Id::new("game_setup_background"))
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             ui.allocate_ui_with_layout(
                 screen_rect.size(),
                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
@@ -40,36 +35,36 @@ pub fn draw_host_setup_ui(
                 },
             );
         });
-    
-    // Host Setup を画面中央に表示（スクロール可能な大きなウィンドウ）
-    egui::Window::new("Host Game Setup")
+
+    // ゲーム設定を画面中央に表示（スクロール可能な大きなウィンドウ）
+    egui::Window::new("Game Setup")
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .collapsible(false)
         .resizable(false)
         .title_bar(false)
         .show(ctx, |ui| {
             ui.set_min_size(egui::vec2(600.0, 700.0));
-            
+
             egui::ScrollArea::vertical()
                 .max_height(650.0)
                 .show(ui, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.spacing_mut().item_spacing.y = 15.0;
-                        
+
                         ui.add_space(10.0);
-                        
+
                         // タイトル
                         ui.label(
-                            egui::RichText::new("🎮 Host Game Setup")
+                            egui::RichText::new("🎮 Game Setup")
                                 .size(32.0)
                                 .color(egui::Color32::WHITE)
                                 .strong()
                         );
-                        
+
                         ui.add_space(5.0);
                         ui.separator();
                         ui.add_space(10.0);
-                        
+
                         // Piece Mode Section
                         ui.group(|ui| {
                             ui.set_min_width(550.0);
@@ -81,23 +76,23 @@ pub fn draw_host_setup_ui(
                                         .strong()
                                 );
                                 ui.add_space(8.0);
-                                
+
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 20.0;
-                                    
-                                    if ui.add_sized([160.0, 30.0], 
+
+                                    if ui.add_sized([160.0, 30.0],
                                         egui::RadioButton::new(puzzle_config.piece_mode == PieceMode::SquarePieces, "Aspect Ratio")
                                     ).clicked() {
                                         puzzle_config.piece_mode = PieceMode::SquarePieces;
                                     }
-                                    
-                                    if ui.add_sized([160.0, 30.0], 
+
+                                    if ui.add_sized([160.0, 30.0],
                                         egui::RadioButton::new(puzzle_config.piece_mode == PieceMode::TargetCount, "Target Count")
                                     ).clicked() {
                                         puzzle_config.piece_mode = PieceMode::TargetCount;
                                     }
-                                    
-                                    if ui.add_sized([160.0, 30.0], 
+
+                                    if ui.add_sized([160.0, 30.0],
                                         egui::RadioButton::new(puzzle_config.piece_mode == PieceMode::ManualGrid, "Manual Grid")
                                     ).clicked() {
                                         puzzle_config.piece_mode = PieceMode::ManualGrid;
@@ -105,18 +100,16 @@ pub fn draw_host_setup_ui(
                                 });
                             });
                         });
-                        
-                        // 下位互換性のため、piece_modeの変更をuse_target_modeに反映
-                        puzzle_config.use_target_mode = puzzle_config.piece_mode == PieceMode::TargetCount;
-                        
+
+
                         ui.add_space(5.0);
-        
+
                         // 画像の読み込み状態をチェック
                         let image_loaded = puzzle_image.as_ref()
                             .map(|img| img.size.x > 10.0 && img.size.y > 10.0)
                             .unwrap_or(false);
-                        
-                        
+
+
                         // 画像読み込み状態の表示（簡略化）
                         if puzzle_image.is_none() && !puzzle_config.image_path.is_empty() {
                             ui.colored_label(
@@ -127,13 +120,13 @@ pub fn draw_host_setup_ui(
                             );
                             ui.add_space(5.0);
                         }
-                        
+
                         // Image Information Section
                         if image_loaded {
                             let puzzle_image_ref = puzzle_image.as_ref().unwrap();
                             let image_width = puzzle_image_ref.size.x;
                             let image_height = puzzle_image_ref.size.y;
-                            
+
                             ui.group(|ui| {
                                 ui.set_min_width(550.0);
                                 ui.vertical(|ui| {
@@ -144,7 +137,7 @@ pub fn draw_host_setup_ui(
                                             .strong()
                                     );
                                     ui.add_space(5.0);
-                                    
+
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             egui::RichText::new("Size:")
@@ -153,7 +146,7 @@ pub fn draw_host_setup_ui(
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                             ui.colored_label(
-                                                egui::Color32::LIGHT_GREEN, 
+                                                egui::Color32::LIGHT_GREEN,
                                                 egui::RichText::new(format!("{:.0} x {:.0} pixels", image_width, image_height))
                                                     .size(14.0)
                                                     .strong()
@@ -162,9 +155,9 @@ pub fn draw_host_setup_ui(
                                     });
                                 });
                             });
-                            
+
                             ui.add_space(5.0);
-                            
+
                             // Piece Configuration Section (With Image)
                             ui.group(|ui| {
                             ui.set_min_width(550.0);
@@ -178,7 +171,7 @@ pub fn draw_host_setup_ui(
                                                 .strong()
                                         );
                                         ui.add_space(8.0);
-                                        
+
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 egui::RichText::new("Scale:")
@@ -192,16 +185,16 @@ pub fn draw_host_setup_ui(
                                                     .max_decimals(1)
                                             );
                                         });
-                                        
+
                                         ui.label(
                                             egui::RichText::new("Scale 1x = 1 piece, 2x ≈ 4 pieces, 4x ≈ 16 pieces, etc.")
                                                 .size(12.0)
                                                 .color(egui::Color32::GRAY)
                                                 .italics()
                                         );
-                                        
+
                                         ui.add_space(5.0);
-                                        
+
                                         // 最適なグリッドサイズを計算して表示
                                         if let Some((grid_width, grid_height, info)) = calculate_grid_from_config(&puzzle_config, puzzle_image.as_deref()) {
                                             puzzle_config.grid_size = (grid_width, grid_height);
@@ -213,7 +206,7 @@ pub fn draw_host_setup_ui(
                                                 );
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     ui.colored_label(
-                                                        egui::Color32::LIGHT_GREEN, 
+                                                        egui::Color32::LIGHT_GREEN,
                                                         egui::RichText::new(info)
                                                             .size(14.0)
                                                             .strong()
@@ -222,7 +215,7 @@ pub fn draw_host_setup_ui(
                                             });
                                         }
                                     }
-                                    
+
                                     PieceMode::TargetCount => {
                                         ui.label(
                                             egui::RichText::new("🎯 Target Piece Count")
@@ -231,7 +224,7 @@ pub fn draw_host_setup_ui(
                                                 .strong()
                                         );
                                         ui.add_space(8.0);
-                                        
+
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 egui::RichText::new("Pieces:")
@@ -245,9 +238,9 @@ pub fn draw_host_setup_ui(
                                                     .max_decimals(0)
                                             );
                                         });
-                                        
+
                                         ui.add_space(5.0);
-                                        
+
                                         // 最適なグリッドサイズを計算して表示
                                         if let Some((grid_width, grid_height, info)) = calculate_grid_from_config(&puzzle_config, puzzle_image.as_deref()) {
                                             puzzle_config.grid_size = (grid_width, grid_height);
@@ -259,7 +252,7 @@ pub fn draw_host_setup_ui(
                                                 );
                                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                     ui.colored_label(
-                                                        egui::Color32::LIGHT_GREEN, 
+                                                        egui::Color32::LIGHT_GREEN,
                                                         egui::RichText::new(info)
                                                             .size(14.0)
                                                             .strong()
@@ -268,7 +261,7 @@ pub fn draw_host_setup_ui(
                                             });
                                         }
                                     }
-                                    
+
                                     PieceMode::ManualGrid => {
                                         ui.label(
                                             egui::RichText::new("📐 Manual Grid Size")
@@ -277,7 +270,7 @@ pub fn draw_host_setup_ui(
                                                 .strong()
                                         );
                                         ui.add_space(8.0);
-                                        
+
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 egui::RichText::new("Width:")
@@ -291,7 +284,7 @@ pub fn draw_host_setup_ui(
                                                     .max_decimals(0)
                                             );
                                         });
-                                        
+
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 egui::RichText::new("Height:")
@@ -305,9 +298,9 @@ pub fn draw_host_setup_ui(
                                                     .max_decimals(0)
                                             );
                                         });
-                                        
+
                                         ui.add_space(5.0);
-                                        
+
                                         let total_pieces = puzzle_config.grid_size.0 * puzzle_config.grid_size.1;
                                         ui.horizontal(|ui| {
                                             ui.label(
@@ -317,7 +310,7 @@ pub fn draw_host_setup_ui(
                                             );
                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                 ui.colored_label(
-                                                    egui::Color32::LIGHT_GREEN, 
+                                                    egui::Color32::LIGHT_GREEN,
                                                     egui::RichText::new(format!("{}", total_pieces))
                                                         .size(14.0)
                                                         .strong()
@@ -328,64 +321,61 @@ pub fn draw_host_setup_ui(
                                 }
                             });
                         });
-                        
+
                         ui.add_space(10.0);
-                        
+
                         // Action Buttons Section
                         ui.vertical_centered(|ui| {
                             ui.spacing_mut().item_spacing.y = 15.0;
-                            
+
                             // Start Game Button
                             ui.add_enabled_ui(!puzzle_config.image_path.is_empty() && image_loaded, |ui| {
-                                if ui.add_sized([280.0, 50.0], 
+                                if ui.add_sized([280.0, 50.0],
                                     egui::Button::new(
                                         egui::RichText::new("🚀 Start Game")
                                             .size(20.0)
                                             .color(egui::Color32::WHITE)
                                     )).clicked() {
                                     // ローカルゲーム開始（ネットワーキング無効のため）
-                                    game_state.current_screen = GameScreen::InGame;
                                     next_state.set(AppState::InGame);
                                     // 新しいゲーム開始時はリセットしない（画像設定を保持）
-                                    // game_state.needs_reset = true; 
                                 }
                             });
-                            
+
                             // Status Message
                             if puzzle_config.image_path.is_empty() {
                                 ui.colored_label(
-                                    egui::Color32::RED, 
+                                    egui::Color32::RED,
                                     egui::RichText::new("Please select an image before starting the game.")
                                         .size(12.0)
                                         .italics()
                                 );
                             } else if !image_loaded {
                                 ui.colored_label(
-                                    egui::Color32::YELLOW, 
+                                    egui::Color32::YELLOW,
                                     egui::RichText::new("Please wait for the image to load before starting the game.")
                                         .size(12.0)
                                         .italics()
                                 );
                             }
-                            
+
                             ui.add_space(5.0);
                             ui.separator();
                             ui.add_space(5.0);
-                            
+
                             // Back Button
-                            if ui.add_sized([280.0, 45.0], 
+                            if ui.add_sized([280.0, 45.0],
                                 egui::Button::new(
                                     egui::RichText::new("⬅️ Back to Menu")
                                         .size(16.0)
                                         .color(egui::Color32::LIGHT_GRAY)
                                 )).clicked() {
-                                game_state.current_screen = GameScreen::Menu;
                                 next_state.set(AppState::Menu);
                             }
-                            
+
                             ui.add_space(20.0);
                         });
-                        
+
                         } else {
                             // No image loaded: Show status and manual grid option only
                             ui.group(|ui| {
@@ -398,7 +388,7 @@ pub fn draw_host_setup_ui(
                                             .strong()
                                     );
                                     ui.add_space(5.0);
-                                    
+
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             egui::RichText::new("Status:")
@@ -425,9 +415,9 @@ pub fn draw_host_setup_ui(
                                     });
                                 });
                             });
-                            
+
                             ui.add_space(5.0);
-                            
+
                             // Piece Configuration Section (Limited without image)
                             if puzzle_config.piece_mode == PieceMode::ManualGrid {
                                 ui.group(|ui| {
@@ -440,7 +430,7 @@ pub fn draw_host_setup_ui(
                                                 .strong()
                                         );
                                         ui.add_space(8.0);
-                                        
+
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 egui::RichText::new("Width:")
@@ -454,7 +444,7 @@ pub fn draw_host_setup_ui(
                                                     .max_decimals(0)
                                             );
                                         });
-                                        
+
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 egui::RichText::new("Height:")
@@ -468,9 +458,9 @@ pub fn draw_host_setup_ui(
                                                     .max_decimals(0)
                                             );
                                         });
-                                        
+
                                         ui.add_space(5.0);
-                                        
+
                                         let total_pieces = puzzle_config.grid_size.0 * puzzle_config.grid_size.1;
                                         ui.horizontal(|ui| {
                                             ui.label(
@@ -480,7 +470,7 @@ pub fn draw_host_setup_ui(
                                             );
                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                 ui.colored_label(
-                                                    egui::Color32::LIGHT_GREEN, 
+                                                    egui::Color32::LIGHT_GREEN,
                                                     egui::RichText::new(format!("{}", total_pieces))
                                                         .size(14.0)
                                                         .strong()
@@ -489,11 +479,11 @@ pub fn draw_host_setup_ui(
                                         });
                                     });
                                 });
-                                
+
                                 ui.add_space(5.0);
                             } else {
                                 ui.colored_label(
-                                    egui::Color32::GRAY, 
+                                    egui::Color32::GRAY,
                                     egui::RichText::new("Please select an image to configure puzzle settings.")
                                         .size(14.0)
                                         .italics()
@@ -501,39 +491,12 @@ pub fn draw_host_setup_ui(
                                 ui.add_space(10.0);
                             }
                         }
-        
-                        // Network Settings Section
-                        ui.group(|ui| {
-                            ui.set_min_width(550.0);
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new("🌐 Network Settings")
-                                        .size(18.0)
-                                        .color(egui::Color32::LIGHT_BLUE)
-                                        .strong()
-                                );
-                                ui.add_space(8.0);
-                                
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Port:")
-                                            .size(14.0)
-                                            .color(egui::Color32::LIGHT_GRAY)
-                                    );
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let mut port_string = network_info.port.to_string();
-                                        if ui.add_sized([100.0, 25.0], egui::TextEdit::singleline(&mut port_string)).changed() {
-                                            if let Ok(port) = port_string.parse::<u16>() {
-                                                network_info.port = port;
-                                            }
-                                        }
-                                    });
-                                });
-                            });
+
+                        ui.horizontal(|ui| {
+                            ui.label("Seed:");
+                            ui.add(egui::DragValue::new(&mut puzzle_config.seed));
                         });
-                        
-                        ui.add_space(5.0);
-                        
+
                         // Image Selection Section
                         ui.group(|ui| {
                             ui.set_min_width(550.0);
@@ -545,7 +508,7 @@ pub fn draw_host_setup_ui(
                                         .strong()
                                 );
                                 ui.add_space(8.0);
-                                
+
                                 ui.horizontal(|ui| {
                                     ui.label(
                                         egui::RichText::new("Selected:")
@@ -568,7 +531,7 @@ pub fn draw_host_setup_ui(
                                             } else {
                                                 puzzle_config.image_path.clone()
                                             };
-                                            
+
                                             ui.label(
                                                 egui::RichText::new(&display_name)
                                                     .size(14.0)
@@ -578,37 +541,36 @@ pub fn draw_host_setup_ui(
                                         }
                                     });
                                 });
-                                
+
                                 ui.add_space(8.0);
-                                
+
                                 // シンプルなボタン表示
                                 let button_text = "📁 Select Puzzle Image";
-                                
+
                                 {
-                                    if ui.add_sized([200.0, 35.0], 
+                                    if ui.add_sized([200.0, 35.0],
                                         egui::Button::new(
                                             egui::RichText::new(button_text)
                                                 .size(16.0)
                                         )
                                     ).clicked() {
                                     // 同期的ファイルダイアログを開く
-                                    #[cfg(target_os = "windows")]
                                     {
                                         println!("🔍 MAIN THREAD [{:?}]: About to open file dialog...", std::thread::current().id());
                                         let result = rfd::FileDialog::new()
                                             .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif", "webp"])
                                             .pick_file();
                                         println!("🔍 MAIN THREAD [{:?}]: File dialog returned result", std::thread::current().id());
-                                        
+
                                         if let Some(file_path) = result {
                                             println!("✅ MAIN THREAD [{:?}]: File selected: {}", std::thread::current().id(), file_path.display());
-                                            
+
                                             // 外部ファイルとして登録
                                             println!("🔍 MAIN THREAD [{:?}]: About to register file...", std::thread::current().id());
                                             let virtual_path = file_registry.register_file(&file_path);
                                             println!("🔍 MAIN THREAD [{:?}]: File registered as: {}", std::thread::current().id(), virtual_path);
                                             puzzle_config.image_path = virtual_path.clone();
-                                            
+
                                             // 画像読み込みをネイティブスレッドで開始
                                             println!("🔍 MAIN THREAD [{:?}]: About to start worker thread...", std::thread::current().id());
                                             use crate::asset_reader::start_thread_image_load;
@@ -618,180 +580,20 @@ pub fn draw_host_setup_ui(
                                                 image_sender.tx_results.clone(),
                                             );
                                             println!("🔍 MAIN THREAD [{:?}]: Worker thread started", std::thread::current().id());
-                                            
+
                                             // PuzzleImageリソースを削除（読み込み完了時に再作成される）
                                             commands.remove_resource::<PuzzleImage>();
-                                            
+
                                             println!("🚀 MAIN THREAD [{:?}]: Started async image loading: {}", std::thread::current().id(), virtual_path);
                                         } else {
                                             println!("🚫 MAIN THREAD [{:?}]: File dialog was cancelled", std::thread::current().id());
                                         }
                                     }
-                                    #[cfg(not(target_os = "windows"))]
-                                    {
-                                        // テスト用の固定パス（実際のプロジェクトでは適切な画像ファイルを指定）
-                                        puzzle_config.image_path = "test_image.png".to_string();
-                                        println!("Using test image: {}", puzzle_config.image_path);
-                                        
-                                        // 通常のアセット読み込み
-                                        let image_handle = asset_server.load(&puzzle_config.image_path);
-                                        
-                                        // PuzzleImageリソースを作成または更新
-                                        commands.insert_resource(PuzzleImage {
-                                            handle: image_handle,
-                                            size: Vec2::new(1.0, 1.0), // 小さな値で初期化、読み込み中を示す
-                                        });
-                                    }
                                     }
                                 }
                             });
                         });
                     });
                 });
-        });
-}
-
-/// ゲーム参加UI
-pub fn draw_join_game_ui(
-    mut contexts: EguiContexts,
-    mut game_state: ResMut<GameData>,
-    mut network_info: ResMut<NetworkInfo>,
-    mut next_state: ResMut<NextState<AppState>>,
-) {
-    if game_state.current_screen != GameScreen::JoinGame {
-        return;
-    }
-    
-    let Ok(ctx) = contexts.ctx_mut() else { return; };
-    
-    // 背景のグラデーション
-    egui::Area::new(egui::Id::new("join_game_background"))
-        .fixed_pos(egui::pos2(0.0, 0.0))
-        .show(ctx, |ui| {
-            let screen_rect = ctx.screen_rect();
-            ui.allocate_ui_with_layout(
-                screen_rect.size(),
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                |ui| {
-                    ui.painter().rect_filled(
-                        screen_rect,
-                        egui::CornerRadius::ZERO,
-                        egui::Color32::from_rgb(30, 40, 50), // ダークブルーグリーン
-                    );
-                },
-            );
-        });
-    
-    // Join Game を画面中央に表示
-    egui::Window::new("Join Game")
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .collapsible(false)
-        .resizable(false)
-        .title_bar(false)
-        .show(ctx, |ui| {
-            ui.set_min_size(egui::vec2(500.0, 400.0));
-            
-            ui.vertical_centered(|ui| {
-                ui.spacing_mut().item_spacing.y = 20.0;
-                
-                ui.add_space(20.0);
-                
-                // タイトル
-                ui.label(
-                    egui::RichText::new("🔗 Join Game")
-                        .size(32.0)
-                        .color(egui::Color32::WHITE)
-                        .strong()
-                );
-                
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(20.0);
-                
-                // Server Connection Section
-                ui.group(|ui| {
-                    ui.set_min_width(450.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("🌐 Server Connection")
-                                .size(20.0)
-                                .color(egui::Color32::LIGHT_BLUE)
-                                .strong()
-                        );
-                        ui.add_space(10.0);
-                        
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Server Address:")
-                                    .size(14.0)
-                                    .color(egui::Color32::LIGHT_GRAY)
-                            );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.add_sized([200.0, 25.0], egui::TextEdit::singleline(&mut network_info.server_address));
-                            });
-                        });
-                        
-                        ui.add_space(8.0);
-                        
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Port:")
-                                    .size(14.0)
-                                    .color(egui::Color32::LIGHT_GRAY)
-                            );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let mut port_string = network_info.port.to_string();
-                                if ui.add_sized([100.0, 25.0], egui::TextEdit::singleline(&mut port_string)).changed() {
-                                    if let Ok(port) = port_string.parse::<u16>() {
-                                        network_info.port = port;
-                                    }
-                                }
-                            });
-                        });
-                    });
-                });
-                
-                ui.add_space(20.0);
-                
-                // Action Buttons Section
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().item_spacing.y = 15.0;
-                    
-                    // Connect Button (Disabled due to networking being disabled)
-                    ui.add_enabled_ui(false, |ui| {
-                        ui.add_sized([280.0, 50.0], 
-                            egui::Button::new(
-                                egui::RichText::new("🔌 Connect to Server")
-                                    .size(20.0)
-                                    .color(egui::Color32::GRAY)
-                            ))
-                    });
-                    
-                    // Status Message
-                    ui.colored_label(
-                        egui::Color32::YELLOW, 
-                        egui::RichText::new("Multiplayer functionality is currently disabled.")
-                            .size(12.0)
-                            .italics()
-                    );
-                    
-                    ui.add_space(5.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-                    
-                    // Back Button
-                    if ui.add_sized([280.0, 45.0], 
-                        egui::Button::new(
-                            egui::RichText::new("⬅️ Back to Menu")
-                                .size(16.0)
-                                .color(egui::Color32::LIGHT_GRAY)
-                        )).clicked() {
-                        game_state.current_screen = GameScreen::Menu;
-                        next_state.set(AppState::Menu);
-                    }
-                    
-                    ui.add_space(20.0);
-                });
-            });
         });
 }

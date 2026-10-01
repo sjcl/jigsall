@@ -1,235 +1,272 @@
+use crate::{components::*, gameplay::*, networking::ClientCommand, resources::*};
 use bevy::prelude::*;
-use crate::components::*;
-use crate::resources::*;
 
-/// ESCキーが押されたかチェックするRun Condition
-pub fn escape_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
-    keyboard_input.just_pressed(KeyCode::Escape)
+pub fn escape_just_pressed(keys: Res<ButtonInput<KeyCode>>) -> bool {
+    keys.just_pressed(KeyCode::Escape)
 }
-
-/// Tabキーが押されているかチェックするRun Condition
-pub fn tab_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
-    keyboard_input.pressed(KeyCode::Tab)
+pub fn tab_pressed(keys: Res<ButtonInput<KeyCode>>) -> bool {
+    keys.pressed(KeyCode::Tab)
 }
-
-/// InGame状態かつゲーム画面でのESCキー処理
 pub fn toggle_game_menu(
-    mut game_state: ResMut<GameData>,
-    mut next_sub_state: ResMut<NextState<GameSubState>>,
+    state: Res<State<GameSubState>>,
+    mut next: ResMut<NextState<GameSubState>>,
 ) {
-    match game_state.current_screen {
-        GameScreen::InGame => {
-            // ゲーム中にESCキーが押されたらメニューを表示
-            game_state.current_screen = GameScreen::InGameMenu;
-            next_sub_state.set(GameSubState::Paused);
-            println!("🎮 Opening in-game menu");
-        },
-        GameScreen::InGameMenu => {
-            // メニュー表示中にESCキーが押されたらゲームに戻る
-            game_state.current_screen = GameScreen::InGame;
-            next_sub_state.set(GameSubState::Playing);
-            println!("🎮 Resuming game");
-        },
-        _ => {
-            // 他の画面では何もしない
-        }
+    match *state.get() {
+        GameSubState::Playing => next.set(GameSubState::Paused),
+        GameSubState::Paused => next.set(GameSubState::Playing),
+        GameSubState::Initializing => {}
     }
 }
 
-/// ピースの配置チェック - イベントドリブン版（最適化）
+pub fn apply_piece_commands(
+    mut commands: MessageReader<ClientCommand>,
+    mut store: ResMut<PieceDataStore>,
+    mut moves: MessageWriter<PieceMoveCompleted>,
+    mut perf: ResMut<PerformanceMonitor>,
+) {
+    let start = perf.start_system_timing("apply_piece_commands");
+    for request in commands.read() {
+        let id = request.command.piece_id();
+        let Some(piece) = store.pieces.get_mut(&id) else {
+            continue;
+        };
+        let Some(outcome) = apply_piece_command(&mut piece.state, request.player, &request.command)
+        else {
+            continue;
+        };
+        store.dirty_pieces.insert(id);
+        if outcome == CommandOutcome::Grabbed {
+            store.held_pieces.insert(id);
+        }
+        if outcome == CommandOutcome::Released {
+            store.held_pieces.remove(&id);
+        }
+        if outcome == CommandOutcome::Grabbed {
+            store.next_z_order += 0.1;
+            let z = store.next_z_order + 10.0;
+            if let Some(transform) = store.transforms.get_mut(&id) {
+                transform.translation.z = z;
+            }
+        }
+        if outcome == CommandOutcome::Released {
+            moves.write(PieceMoveCompleted { id });
+        }
+    }
+    perf.end_system_timing("apply_piece_commands", start);
+}
+
 pub fn check_piece_placement_event_driven(
-    mut commands: Commands,
-    mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
-    puzzle_config: Res<PuzzleConfig>,
-    mut move_events: EventReader<PieceMoveCompleted>,
-    mut placed_events: EventWriter<PiecePlacedEvent>,
-    mut perf_monitor: ResMut<PerformanceMonitor>,
-    mut input_state: ResMut<InputState>,
-    mut piece_cache: ResMut<PieceSelectionCache>,
+    mut moves: MessageReader<PieceMoveCompleted>,
+    mut placed: MessageWriter<PiecePlacedEvent>,
+    definition: Option<Res<PuzzleDefinition>>,
+    mut store: ResMut<PieceDataStore>,
+    mut perf: ResMut<PerformanceMonitor>,
 ) {
-    let _span = info_span!("check_piece_placement_event_driven").entered();
-    let start_time = perf_monitor.start_system_timing("check_piece_placement_event_driven");
-    
-    // 移動完了したピースのみをチェック（イベントドリブン）
-    for move_event in move_events.read() {
-        if let Ok((entity, mut transform, mut piece)) = piece_query.get_mut(move_event.entity) {
-            // まだ配置されていないピースのみチェック
-            if !piece.is_placed {
-                let current_pos = transform.translation.truncate();
-                let correct_pos = piece.correct_position;
-                let distance = current_pos.distance(correct_pos);
-                
-                println!("🎯 Event-driven placement check: piece({},{}) at ({:.1},{:.1}), correct ({:.1},{:.1}), distance {:.1}, snap threshold {:.1}",
-                    piece.grid_x, piece.grid_y, 
-                    current_pos.x, current_pos.y, 
-                    correct_pos.x, correct_pos.y, 
-                    distance, puzzle_config.snap_distance);
-                
-                if distance < puzzle_config.snap_distance {
-                    transform.translation = correct_pos.extend(-20.0); // 固定ピースは最も下のZ値
-                    piece.is_placed = true;
-                    piece.current_position = correct_pos;
-                    
-                    // ピース配置完了イベントを発火
-                    placed_events.write(PiecePlacedEvent {
-                        entity,
-                        grid_x: piece.grid_x,
-                        grid_y: piece.grid_y,
-                    });
-                    
-                    // PickablePieceコンポーネントを削除して移動不可にする
-                    commands.entity(entity).remove::<PickablePiece>();
-                    
-                    // SelectedPieceコンポーネントも削除して選択状態を解除
-                    commands.entity(entity).remove::<SelectedPiece>();
-                    
-                    // InputStateからも削除
-                    input_state.selected_pieces.retain(|&e| e != entity);
-                    input_state.selected_pieces_set.remove(&entity);
-                    input_state.multi_drag_offset.remove(&entity);
-                    if input_state.selected_piece == Some(entity) {
-                        input_state.selected_piece = None;
-                    }
-                    
-                    // ピースキャッシュの更新をトリガー（配置されたピースを除外するため）
-                    piece_cache.need_refresh = true;
-                    
-                    println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
-                        piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
-                }
-            }
-        }
-    }
-    
-    perf_monitor.end_system_timing("check_piece_placement_event_driven", start_time);
-}
-
-/// レガシー版のピース配置チェック（後方互換性のため保持）
-pub fn check_piece_placement(
-    mut commands: Commands,
-    mut piece_query: Query<(Entity, &mut Transform, &mut PuzzlePiece), With<PickablePiece>>,
-    selected_pieces_query: Query<Entity, With<SelectedPiece>>,
-    puzzle_config: Res<PuzzleConfig>,
-    mut input_state: ResMut<InputState>,
-    mut piece_cache: ResMut<PieceSelectionCache>,
-) {
-    // 複数選択中または複数ドラッグ中の場合はスナップを無効化
-    let is_multi_selection_active = matches!(input_state.selection_mode, SelectionMode::BoxSelection | SelectionMode::MultiDrag);
-    let selected_count = selected_pieces_query.iter().count();
-    let has_multiple_selected = selected_count > 1;
-    
-    if is_multi_selection_active || has_multiple_selected {
-        // 複数選択関連のモードの場合はスナップを無効化
-        static mut SNAP_DISABLE_LOG_COUNT: usize = 0;
-        unsafe {
-            if SNAP_DISABLE_LOG_COUNT < 5 {
-                println!("🚫 Snap disabled: mode={:?}, selected_count={}, multi_active={}", 
-                    input_state.selection_mode, selected_count, is_multi_selection_active);
-                SNAP_DISABLE_LOG_COUNT += 1;
-            }
-        }
+    let Some(definition) = definition else {
         return;
+    };
+    let start = perf.start_system_timing("check_piece_placement_event_driven");
+    for event in moves.read() {
+        let Some(piece) = store.pieces.get_mut(&event.id) else {
+            continue;
+        };
+        if snap_piece(
+            &piece.definition,
+            &mut piece.state,
+            definition.snap_distance,
+        ) {
+            store.placed_pieces.insert(event.id);
+            store.selected_pieces.remove(&event.id);
+            store.preview_pieces.remove(&event.id);
+            store.dirty_pieces.insert(event.id);
+            placed.write(PiecePlacedEvent { id: event.id });
+        }
     }
-    
-    for (entity, mut transform, mut piece) in piece_query.iter_mut() {
-        // 現在ドラッグ中でなく、かつまだ配置されていないピースのみチェック
-        let is_currently_dragged = input_state.selected_piece == Some(entity);
-        if !is_currently_dragged && !piece.is_placed {
-            let current_pos = transform.translation.truncate();
-            let correct_pos = piece.correct_position;
-            let distance = current_pos.distance(correct_pos);
-            
-            // Only log successful placements to reduce noise
-            // println!("🎯 Checking placement: piece({},{}) at ({:.1},{:.1}), correct ({:.1},{:.1}), distance {:.1}, snap threshold {:.1}",
-            //     piece.grid_x, piece.grid_y, 
-            //     current_pos.x, current_pos.y, 
-            //     correct_pos.x, correct_pos.y, 
-            //     distance, puzzle_config.snap_distance);
-            
-            if distance < puzzle_config.snap_distance {
-                transform.translation = correct_pos.extend(-20.0); // 固定ピースは最も下のZ値
-                piece.is_placed = true;
-                piece.current_position = correct_pos;
-                
-                // PickablePieceコンポーネントを削除して移動不可にする
-                commands.entity(entity).remove::<PickablePiece>();
-                
-                // SelectedPieceコンポーネントも削除して選択状態を解除
-                commands.entity(entity).remove::<SelectedPiece>();
-                
-                // InputStateからも削除
-                input_state.selected_pieces.retain(|&e| e != entity);
-                input_state.selected_pieces_set.remove(&entity);
-                input_state.multi_drag_offset.remove(&entity);
-                if input_state.selected_piece == Some(entity) {
-                    input_state.selected_piece = None;
+    perf.end_system_timing("check_piece_placement_event_driven", start);
+}
+
+/// Only changed IDs update local render/collision caches. State is the authority.
+pub fn project_piece_states(
+    mut store: ResMut<PieceDataStore>,
+    mut collision: ResMut<PieceCollisionSystem>,
+    mut entities: Query<(&PuzzlePiece, &mut Transform)>,
+    perf: Res<PerformanceMonitor>,
+) {
+    let mut ids: Vec<_> = store.dirty_pieces.drain().collect();
+    ids.sort_unstable();
+    for id in ids {
+        let Some(piece) = store.pieces.get(&id) else {
+            continue;
+        };
+        let state = piece.state;
+        if let Some(transform) = store.transforms.get_mut(&id) {
+            transform.translation.x = state.position.x;
+            transform.translation.y = state.position.y;
+            if state.placed {
+                transform.translation.z = -20.0;
+            }
+        }
+        if state.placed {
+            collision.dragging_pieces.remove(&id);
+            collision.remove_piece(id);
+        } else {
+            if state.held_by.is_some() {
+                collision.start_dragging_piece(id, &perf.debug_level);
+            }
+            collision.update_piece_position(id, state.position);
+            if state.held_by.is_none() {
+                collision.stop_dragging_piece(id, &perf.debug_level);
+            }
+        }
+        if let Some(&entity) = store.temporary_entities.get(&id) {
+            if let Ok((_, mut transform)) = entities.get_mut(entity) {
+                if let Some(projected) = store.transforms.get(&id) {
+                    *transform = *projected;
                 }
-                
-                // ピースキャッシュの更新をトリガー（配置されたピースを除外するため）
-                piece_cache.need_refresh = true;
-                
-                println!("✅ Piece({},{}) PLACED! Distance {:.1} < threshold {:.1}", 
-                    piece.grid_x, piece.grid_y, distance, puzzle_config.snap_distance);
             }
         }
     }
 }
 
-/// ゲーム状態の更新 - イベントドリブン版（最適化）
 pub fn update_game_state_event_driven(
-    mut game_state: ResMut<GameData>,
-    piece_query: Query<&PuzzlePiece>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut placed_events: EventReader<PiecePlacedEvent>,
-    mut perf_monitor: ResMut<PerformanceMonitor>,
+    mut placed: MessageReader<PiecePlacedEvent>,
+    store: Res<PieceDataStore>,
+    mut game: ResMut<GameData>,
+    mut next: ResMut<NextState<AppState>>,
+    mut perf: ResMut<PerformanceMonitor>,
 ) {
-    let _span = info_span!("update_game_state_event_driven").entered();
-    let start_time = perf_monitor.start_system_timing("update_game_state_event_driven");
-    
-    // ピース配置イベントがある場合のみ更新
-    if placed_events.read().count() > 0 {
-        let total_pieces = piece_query.iter().count();
-        let placed_pieces = piece_query.iter().filter(|p| p.is_placed).count();
-        
-        if total_pieces > 0 {
-            game_state.puzzle_progress = placed_pieces as f32 / total_pieces as f32;
-            game_state.puzzle_completed = placed_pieces == total_pieces;
-            
-            println!("🎯 Game progress updated: {}/{} pieces placed ({:.1}%)", 
-                placed_pieces, total_pieces, game_state.puzzle_progress * 100.0);
-            
-            if game_state.puzzle_completed && game_state.current_screen == GameScreen::InGame {
-                game_state.current_screen = GameScreen::GameComplete;
-                next_state.set(AppState::GameComplete);
-                println!("🎉 Puzzle completed!");
+    let start = perf.start_system_timing("update_game_state_event_driven");
+    let placed_count = placed
+        .read()
+        .filter(|event| store.placed_pieces.contains(&event.id))
+        .count();
+    if placed_count > 0 && !store.pieces.is_empty() {
+        game.puzzle_progress = store.placed_pieces.len() as f32 / store.pieces.len() as f32;
+        game.puzzle_completed = store.placed_pieces.len() == store.pieces.len();
+        if game.puzzle_completed {
+            next.set(AppState::GameComplete);
+        }
+    }
+    perf.end_system_timing("update_game_state_event_driven", start);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::systems::batching::*;
+    use bevy::state::app::StatesPlugin;
+
+    /// Exercise the command -> snap -> state -> batch path without a GPU.
+    #[test]
+    fn snap_counts_all_pieces_and_survives_missing_temporary_entities() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, StatesPlugin))
+            .init_state::<AppState>()
+            .init_resource::<PieceDataStore>()
+            .init_resource::<PieceCollisionSystem>()
+            .init_resource::<PieceIdManager>()
+            .init_resource::<BatchManager>()
+            .init_resource::<PerformanceMonitor>()
+            .init_resource::<GameData>()
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .add_message::<ClientCommand>()
+            .add_message::<PieceMoveCompleted>()
+            .add_message::<PiecePlacedEvent>()
+            .add_message::<BatchRebuildRequest>()
+            .insert_resource(PuzzleDefinition {
+                generator_version: GENERATOR_VERSION,
+                seed: 42,
+                grid_size: UVec2::new(2, 1),
+                image_size: UVec2::new(200, 100),
+                snap_distance: 10.0,
+            })
+            .add_systems(
+                Update,
+                (
+                    apply_piece_commands,
+                    check_piece_placement_event_driven,
+                    project_piece_states,
+                    update_game_state_event_driven,
+                    reconcile_piece_rendering,
+                    cleanup_temporary_entities,
+                    create_temporary_entities,
+                    handle_batch_rebuild_requests,
+                )
+                    .chain(),
+            );
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::from(Rectangle::new(100.0, 100.0)));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<ColorMaterial>>()
+            .add(ColorMaterial::default());
+        for index in 0..2 {
+            let piece = app
+                .world()
+                .resource::<PuzzleDefinition>()
+                .piece(index, Vec2::splat(500.0));
+            app.world_mut()
+                .resource_mut::<PieceDataStore>()
+                .add_piece(StoredPieceData {
+                    definition: piece,
+                    state: PieceState::new(Vec2::splat(500.0)),
+                    render: PieceRenderData {
+                        bounds: Rect::new(-50.0, -50.0, 50.0, 50.0),
+                        shape: PieceShapeData {
+                            vertices: vec![],
+                            indices: vec![],
+                            shape_hash: String::new(),
+                        },
+                        mesh: mesh.clone(),
+                        material: material.clone(),
+                    },
+                });
+            app.world_mut()
+                .resource_mut::<BatchManager>()
+                .add_piece(PieceId(index));
+        }
+        app.update();
+        assert!(app
+            .world()
+            .resource::<PieceDataStore>()
+            .temporary_entities
+            .is_empty());
+        for index in 0..2 {
+            let id = PieceId(index);
+            let position = app.world().resource::<PieceDataStore>().pieces[&id]
+                .definition
+                .correct_position;
+            for command in [
+                PieceCommand::Grab(id),
+                PieceCommand::Move { id, position },
+                PieceCommand::Release(id),
+            ] {
+                app.world_mut().write_message(ClientCommand {
+                    player: LOCAL_PLAYER,
+                    command,
+                });
             }
+            app.update();
+            let store = app.world().resource::<PieceDataStore>();
+            assert!(store.pieces[&id].state.placed);
+            assert_eq!(store.transforms[&id].translation.truncate(), position);
+            assert_eq!(
+                app.world().resource::<GameData>().puzzle_progress,
+                (index + 1) as f32 / 2.0
+            );
+            assert_eq!(
+                app.world().resource::<BatchManager>().batched_pieces.len(),
+                2
+            );
         }
+        assert!(app.world().resource::<GameData>().puzzle_completed);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::GameComplete
+        );
     }
-    
-    perf_monitor.end_system_timing("update_game_state_event_driven", start_time);
 }
-
-/// レガシー版のゲーム状態更新（後方互換性のため保持）
-pub fn update_game_state(
-    mut game_state: ResMut<GameData>,
-    piece_query: Query<&PuzzlePiece>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut perf_monitor: ResMut<PerformanceMonitor>,
-) {
-    let start_time = perf_monitor.start_system_timing("update_game_state");
-    let total_pieces = piece_query.iter().count();
-    let placed_pieces = piece_query.iter().filter(|p| p.is_placed).count();
-    
-    if total_pieces > 0 {
-        game_state.puzzle_progress = placed_pieces as f32 / total_pieces as f32;
-        game_state.puzzle_completed = placed_pieces == total_pieces;
-        
-        if game_state.puzzle_completed && game_state.current_screen == GameScreen::InGame {
-            game_state.current_screen = GameScreen::GameComplete;
-            next_state.set(AppState::GameComplete);
-        }
-    }
-    
-    perf_monitor.end_system_timing("update_game_state", start_time);
-}
-

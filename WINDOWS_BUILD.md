@@ -1,59 +1,35 @@
 # Windows ビルド手順
 
-このプロジェクトはWindows環境でのビルドを想定しています。
+## 前提
 
-## 前提条件
+- Rust 1.95以上（MSVC toolchain）
+- Visual Studio 2022 Build Toolsの「C++によるデスクトップ開発」とWindows SDK
+- Bevyの描画backendに対応するGPU / driver
 
-1. Rust 1.70以上がインストールされていること
-2. Visual Studio 2019/2022 または Build Tools for Visual Studio がインストールされていること
+PowerShellでリポジトリへ移動し、lockfileを使用して実行します。
 
-## ビルド手順
-
-1. PowerShellまたはコマンドプロンプトを開く
-2. プロジェクトディレクトリに移動
-3. 以下のコマンドを実行：
-
-```cmd
-cargo build --release
+```powershell
+cargo run --locked
+# 最適化した実行ファイルを作る場合
+cargo build --locked --release
+.\target\release\puzzella.exe
 ```
 
-## 実行手順
+メニューの「Game Setup」から画像とパズルサイズ・seedを設定してください。通信のHost / Joinは未実装です。
 
-```cmd
-cargo run
+## 開発チェック
+
+```powershell
+cargo fmt --check
+cargo check --locked
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked
 ```
 
-## 既知の問題と対処法
+## 依存関係の注意点
 
-### bevy_renet importエラー
-もし以下のエラーが発生した場合：
-```
-error[E0432]: unresolved imports
-```
+Bevy 0.19.1 / bevy_egui 0.42を使用します。Windows向けのwgpu-halはCargo.tomlで29.0.3へ固定しています。29.0.4はgpu-allocator 0.28とWindows COM型が一致しないためです。固定を外す際は、Windowsで再ビルドして互換性を確認してください。
 
-`src/networking.rs`の3行目を以下のように修正してください：
+旧Renet試作は削除済みです。Renet importの変更や、gpu-allocatorの古いpatchを追加する必要はありません。
 
-```rust
-use renet::transport::{ServerConfig, ServerAuthentication, ClientAuthentication};
-use bevy_renet::transport::{NetcodeServerTransport, NetcodeClientTransport};
-```
-
-### gpu_allocator エラー
-もしgpu_allocatorに関するエラーが発生した場合、`Cargo.toml`に以下を追加：
-
-```toml
-[patch.crates-io]
-gpu-allocator = { version = "0.25.0" }
-```
-
-## トラブルシューティング
-
-1. **依存関係の問題**: `cargo clean` && `cargo build`を試す
-2. **ネットワークエラー**: ファイアウォール設定を確認
-3. **パフォーマンス問題**: Release modeでビルド (`cargo build --release`)
-
-## 使用方法
-
-1. アプリケーション起動
-2. 「ゲームをホストする」または「ゲームに参加する」を選択
-3. パズル画像として `assets/puzzle_image.png` を使用
+形状生成・入力・状態の設計と今後の課題は[ARCHITECTURE.md](ARCHITECTURE.md)、操作方法は[README.md](README.md)を参照してください。
