@@ -12,9 +12,8 @@ pub struct PuzzlePiece {
     pub is_placed: bool,
     pub grid_x: usize,
     pub grid_y: usize,
-    pub bounds: Rect,  // 実際のジグソー形状のバウンディングボックス
+    pub bounds: Rect, // 実際のジグソー形状のバウンディングボックス
 }
-
 
 // Picking system用の新しいコンポーネント
 #[derive(Component)]
@@ -24,14 +23,13 @@ pub struct PickablePiece {
 
 #[derive(Component)]
 pub struct PieceShape {
-    pub vertices: Vec<[f32; 2]>,  // メッシュの頂点（2D）
-    pub indices: Vec<u32>,        // 三角形インデックス
-    pub shape_hash: String,       // 形状のハッシュ（ストロークメッシュキャッシュのキー）
+    pub vertices: Vec<[f32; 2]>, // メッシュの頂点（2D）
+    pub indices: Vec<u32>,       // 三角形インデックス
+    pub shape_hash: String,      // 形状のハッシュ（ストロークメッシュキャッシュのキー）
 }
 
 #[derive(Component)]
-pub struct Player {
-}
+pub struct Player {}
 
 #[derive(Component)]
 pub struct MainCamera;
@@ -137,4 +135,3 @@ pub struct BatchRebuildCompleted {
 pub struct TemporaryPieceEntity {
     pub piece_id: Uuid,
 }
-
