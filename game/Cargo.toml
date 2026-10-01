@@ -15,7 +15,7 @@ serde.workspace = true
 image.workspace = true
 crossbeam.workspace = true
 instant.workspace = true
-rstar = { workspace = true, optional = true }
+rstar.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wgpu-hal.workspace = true
@@ -23,7 +23,7 @@ wgpu-hal.workspace = true
 [features]
 default = []
 cpu-geometry-reference = ["puzzella-puzzle/cpu-geometry-reference"]
-cpu-picking-debug = ["dep:rstar", "puzzella-puzzle/cpu-picking-debug"]
+cpu-picking-debug = ["puzzella-puzzle/cpu-picking-debug"]
 
 [dev-dependencies]
 rstar.workspace = true

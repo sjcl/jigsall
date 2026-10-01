@@ -47,9 +47,32 @@ impl PuzzleDefinition {
         }
         Ok(())
     }
+    #[inline]
     pub fn piece_count(&self) -> usize {
         self.grid_size.x as usize * self.grid_size.y as usize
     }
+    #[inline]
+    pub fn correct_position(&self, id: PieceId) -> Vec2 {
+        self.piece(id.0, Vec2::ZERO).correct_position
+    }
+
+    /// Correct image neighbors only, in stable left/right/up/down order.
+    #[inline]
+    pub fn neighbors(&self, id: PieceId) -> [Option<PieceId>; 4] {
+        let width = self.grid_size.x;
+        if width == 0 || id.0 as usize >= self.piece_count() {
+            return [None; 4];
+        }
+        let x = id.0 % width;
+        let y = id.0 / width;
+        [
+            (x > 0).then(|| PieceId(id.0 - 1)),
+            (x + 1 < width).then(|| PieceId(id.0 + 1)),
+            (y > 0).then(|| PieceId(id.0 - width)),
+            (y + 1 < self.grid_size.y).then(|| PieceId(id.0 + width)),
+        ]
+    }
+    #[inline]
     pub fn piece(&self, index: u32, initial_position: Vec2) -> PuzzlePiece {
         let grid_position = UVec2::new(index % self.grid_size.x, index / self.grid_size.x);
         let size = self.image_size.as_vec2() / self.grid_size.as_vec2();
@@ -96,7 +119,7 @@ pub enum PieceCommand {
     GrabGroup {
         members: PieceBitSet,
     },
-    /// Commit the displayed delta once, release and snap each accepted member.
+    /// Commit the displayed delta once, release and resolve each connected component.
     /// This is a reliable control, not a best-effort Move packet.
     ReleaseGroup {
         members: PieceBitSet,

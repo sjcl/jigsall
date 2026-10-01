@@ -156,23 +156,23 @@ impl PieceInteraction {
                 }
                 debug_assert_eq!(result.mode, SelectionMode::Point);
                 let hit = match result.payload {
-                    SelectionPayload::Point(id) => id.filter(|&id| store.is_selectable(id)),
+                    SelectionPayload::Point(id) => {
+                        id.filter(|&id| store.component_is_selectable(id))
+                    }
                     SelectionPayload::Rectangle(_) => return self.cancel(store, selection),
                 };
                 if let Some(id) = hit {
                     if *ctrl {
-                        if !store.selected_pieces.remove(&id) {
-                            store.selected_pieces.insert(id);
-                        }
+                        store.select_component(id, true);
                         self.gesture = Gesture::Idle;
                         selection.cancel();
                     } else {
                         if !store.selected_pieces.contains(&id) {
                             store.selected_pieces.clear();
-                            store.selected_pieces.insert(id);
+                            store.select_component(id, false);
                         }
-                        let mut members = store.selected_pieces.clone();
-                        members.retain(|id| store.is_selectable(id));
+                        let members = store.selectable_members(&store.selected_pieces);
+                        store.selected_pieces = members.clone();
                         let delta = *current - *anchor;
                         store.drag = DragTransform {
                             members: members.words().clone(),
@@ -343,6 +343,9 @@ fn finish_drag(members: PieceBitSet, store: &mut PieceDataStore, commands: &mut 
 #[path = "interaction_bench.rs"]
 mod benchmarks;
 #[cfg(test)]
+#[path = "connected_interaction_tests.rs"]
+mod connected_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{sync::Arc, time::Instant};
@@ -479,6 +482,7 @@ mod tests {
             let mut states = store.states.to_vec();
             states.push(GpuPieceState::new(Vec2::ZERO, PieceId(33)));
             store.states = states.into();
+            store.connectivity = PieceConnectivity::new(34);
             store.dirty_pieces = PieceBitSet::new(34);
             if let Gesture::Dragging { members, .. } = &mut interaction.gesture {
                 let mut resized = PieceBitSet::new(34);

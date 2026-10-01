@@ -1,33 +1,20 @@
 //! Opt-in multiplayer foundation. No systems are added to the single-player schedule.
 pub mod snapshot;
 pub use snapshot::{
-    GameSnapshot, SnapshotError, SnapshotExpectation, SnapshotPieceState, SNAPSHOT_PLACED,
-    SNAPSHOT_SCHEMA_VERSION,
+    GameSnapshot, SnapshotError, SnapshotExpectation, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
+    SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED, SNAPSHOT_SCHEMA_VERSION,
 };
 
-use crate::resources::{pieces::HELD, PieceDataStore};
+use crate::resources::PieceDataStore;
 use puzzella_core::{
     session::{AuthorityCursor, AuthoritySession, ProtocolError},
     PieceId, PlayerId, PuzzleDefinition,
 };
 
-/// Scans sparse holds and sorts released IDs. Does not snap or move.
+/// Expands this player's holds into complete components. Does not snap or move.
 /// Touches only this player's holds; an ordinary disconnect keeps other players' holds.
 pub fn release_player_holds(store: &mut PieceDataStore, player: PlayerId) -> Vec<PieceId> {
-    let mut ids: Vec<_> = store
-        .held_by
-        .iter()
-        .filter_map(|(id, &holder)| (holder == player).then_some(id))
-        .collect();
-    ids.sort_unstable();
-    for &id in &ids {
-        store.held_by.remove(&id);
-        if let Some(state) = store.states.get_mut(id.0 as usize) {
-            state.flags &= !HELD;
-            store.dirty_pieces.insert(id);
-        }
-    }
-    ids
+    store.clear_player_holds(player)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,5 +58,7 @@ pub fn install_migration_snapshot(
     Ok(cursor)
 }
 
+#[cfg(test)]
+mod connected_tests;
 #[cfg(test)]
 mod tests;

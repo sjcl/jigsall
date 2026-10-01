@@ -5,15 +5,19 @@ use crate::resources::{
 };
 use bevy::math::Vec2;
 use puzzella_core::{
+    matches_translation,
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
-    PieceId, PuzzleDefinition,
+    PieceConnectivity, PieceId, PuzzleDefinition,
 };
 use serde::{Deserialize, Serialize};
 
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 3;
 pub const SNAPSHOT_PLACED: u32 = 1;
+pub const SNAPSHOT_CONNECTED_RIGHT: u32 = 1 << 1;
+pub const SNAPSHOT_CONNECTED_DOWN: u32 = 1 << 2;
+const SNAPSHOT_FLAGS: u32 = SNAPSHOT_PLACED | SNAPSHOT_CONNECTED_RIGHT | SNAPSHOT_CONNECTED_DOWN;
 
-/// Dense row-major state, 16 bytes per piece. Only PLACED is a snapshot flag.
+/// Dense row-major state, 16 bytes per piece; undirected edges are saved right/down.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotPieceState {
@@ -53,6 +57,10 @@ pub enum SnapshotError {
     NonFinitePosition(PieceId),
     InvalidZOrder(PieceId),
     InvalidFlags(PieceId),
+    InvalidBorderConnection(PieceId),
+    InconsistentComponent(PieceId),
+    InvalidPlacedPosition(PieceId),
+    WrongConnectivitySize,
 }
 impl std::fmt::Display for SnapshotError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,6 +85,9 @@ impl GameSnapshot {
         definition
             .validate()
             .map_err(SnapshotError::InvalidDefinition)?;
+        if store.connectivity.len() != store.len() {
+            return Err(SnapshotError::WrongConnectivitySize);
+        }
         let snapshot = Self {
             schema_version: SNAPSHOT_SCHEMA_VERSION,
             session: session.id,
@@ -87,14 +98,32 @@ impl GameSnapshot {
             pieces: store
                 .states
                 .iter()
-                .map(|state| SnapshotPieceState {
-                    position: state.position,
-                    z_order: state.z_order,
-                    flags: if state.flags & PLACED != 0 {
-                        SNAPSHOT_PLACED
-                    } else {
-                        0
-                    },
+                .enumerate()
+                .map(|(index, state)| {
+                    let id = PieceId(index as u32);
+                    let neighbors = definition.neighbors(id);
+                    let connected = |neighbor: Option<PieceId>| {
+                        neighbor.is_some_and(|n| {
+                            store.contains(n) && store.connectivity.same_component(id, n)
+                        })
+                    };
+                    SnapshotPieceState {
+                        position: state.position,
+                        z_order: state.z_order,
+                        flags: if state.flags & PLACED != 0 {
+                            SNAPSHOT_PLACED
+                        } else {
+                            0
+                        } | if connected(neighbors[1]) {
+                            SNAPSHOT_CONNECTED_RIGHT
+                        } else {
+                            0
+                        } | if connected(neighbors[3]) {
+                            SNAPSHOT_CONNECTED_DOWN
+                        } else {
+                            0
+                        },
+                    }
                 })
                 .collect(),
         };
@@ -109,6 +138,13 @@ impl GameSnapshot {
 
     /// Exact cursor match prevents installing a different checkpoint than negotiated.
     pub fn validate(&self, expected: SnapshotExpectation<'_>) -> Result<(), SnapshotError> {
+        self.validated_connectivity(expected).map(|_| ())
+    }
+
+    fn validated_connectivity(
+        &self,
+        expected: SnapshotExpectation<'_>,
+    ) -> Result<PieceConnectivity, SnapshotError> {
         if self.schema_version != SNAPSHOT_SCHEMA_VERSION {
             return Err(SnapshotError::UnsupportedSchema(self.schema_version));
         }
@@ -137,6 +173,7 @@ impl GameSnapshot {
         if self.next_z_order < count as u32 || self.next_z_order > MAX_Z {
             return Err(SnapshotError::InvalidNextZOrder);
         }
+        let mut connectivity = PieceConnectivity::new(count);
         for (index, state) in self.pieces.iter().enumerate() {
             let id = PieceId(index as u32);
             if !state.position.is_finite() {
@@ -145,11 +182,41 @@ impl GameSnapshot {
             if state.z_order >= self.next_z_order || state.z_order > MAX_Z {
                 return Err(SnapshotError::InvalidZOrder(id));
             }
-            if state.flags & !SNAPSHOT_PLACED != 0 {
+            if state.flags & !SNAPSHOT_FLAGS != 0 {
                 return Err(SnapshotError::InvalidFlags(id));
             }
+            if state.flags & SNAPSHOT_PLACED != 0
+                && state.position != self.definition.correct_position(id)
+            {
+                return Err(SnapshotError::InvalidPlacedPosition(id));
+            }
+            let neighbors = self.definition.neighbors(id);
+            for (flag, neighbor) in [
+                (SNAPSHOT_CONNECTED_RIGHT, neighbors[1]),
+                (SNAPSHOT_CONNECTED_DOWN, neighbors[3]),
+            ] {
+                if state.flags & flag != 0 {
+                    let neighbor = neighbor.ok_or(SnapshotError::InvalidBorderConnection(id))?;
+                    connectivity.union(id, neighbor);
+                }
+            }
         }
-        Ok(())
+        for (index, state) in self.pieces.iter().enumerate() {
+            let id = PieceId(index as u32);
+            let root = connectivity.minimum_member(id);
+            let representative = &self.pieces[root.0 as usize];
+            let offset = representative.position - self.definition.correct_position(root);
+            if (state.flags & SNAPSHOT_PLACED) != (representative.flags & SNAPSHOT_PLACED)
+                || !matches_translation(
+                    state.position,
+                    self.definition.correct_position(id),
+                    offset,
+                )
+            {
+                return Err(SnapshotError::InconsistentComponent(id));
+            }
+        }
+        Ok(connectivity)
     }
 
     /// Validate completely before changing any local state. ENABLED is reconstructed.
@@ -159,7 +226,7 @@ impl GameSnapshot {
         store: &mut PieceDataStore,
         expected: SnapshotExpectation<'_>,
     ) -> Result<(), SnapshotError> {
-        self.validate(expected)?;
+        let connectivity = self.validated_connectivity(expected)?;
         let states = self
             .pieces
             .iter()
@@ -174,7 +241,7 @@ impl GameSnapshot {
                     },
             })
             .collect();
-        store.replace_snapshot_states(states, self.next_z_order);
+        store.replace_snapshot_states(states, self.next_z_order, connectivity);
         Ok(())
     }
 }

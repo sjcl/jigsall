@@ -41,17 +41,7 @@ pub fn check_piece_placement_event_driven(
         return;
     };
     for event in moves.read() {
-        let Some(mut state) = store.state(event.id) else {
-            continue;
-        };
-        if snap_piece(
-            &definition.piece(event.id.0, Vec2::ZERO),
-            &mut state,
-            definition.snap_distance,
-        ) {
-            store.set_state(event.id, state);
-            store.selected_pieces.remove(&event.id);
-        }
+        store.snap_unheld_component(event.id, &definition);
     }
 }
 

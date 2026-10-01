@@ -169,3 +169,158 @@ fn million_selection_cpu_benchmark() {
     std::fs::create_dir_all("../target").unwrap();
     std::fs::write("../target/million-selection-cpu.csv", csv).unwrap();
 }
+
+fn connected_definition(count: usize) -> PuzzleDefinition {
+    PuzzleDefinition {
+        generator_version: GENERATOR_VERSION,
+        seed: 42,
+        grid_size: match count {
+            1_000 => UVec2::new(40, 25),
+            10_000 => UVec2::splat(100),
+            100_000 => UVec2::new(400, 250),
+            _ => UVec2::splat(1000),
+        },
+        image_size: UVec2::splat(4096),
+        snap_distance: 5.0,
+    }
+}
+
+#[test]
+#[ignore = "release CPU benchmark; writes target/connected-snapping-cpu.csv"]
+fn connected_snapping_cpu_benchmark() {
+    if cfg!(debug_assertions) {
+        panic!("run with --release");
+    }
+    let mut csv = String::from("pieces,scenario,run,connectivity_init_us,union_chain_us,iteration_us,expansion_us,grab_us,pointer_ns,release_us,connectivity_bytes,released,component_size\n");
+    for count in [1_000, 10_000, 100_000, 1_000_000] {
+        for scenario in ["disconnected", "connected", "chain", "board"] {
+            for run in 0..5 {
+                let d = connected_definition(count);
+                let start = Instant::now();
+                let connectivity = PieceConnectivity::new(count);
+                let init = micros(start);
+                let mut s = PieceDataStore::default();
+                s.initialize(
+                    (0..count as u32)
+                        .map(|id| {
+                            if scenario == "board" {
+                                return d.correct_position(PieceId(id))
+                                    + Vec2::new(
+                                        if (id % d.grid_size.x + id / d.grid_size.x)
+                                            .is_multiple_of(2)
+                                        {
+                                            4.0
+                                        } else {
+                                            -4.0
+                                        },
+                                        0.0,
+                                    );
+                            }
+                            d.correct_position(PieceId(id))
+                                + Vec2::new(
+                                    10_000.0
+                                        + if scenario == "disconnected" {
+                                            id as f32 * 20.0
+                                        } else {
+                                            0.0
+                                        },
+                                    10_000.0,
+                                )
+                        })
+                        .collect(),
+                );
+                s.connectivity = connectivity;
+                let start = Instant::now();
+                if scenario == "connected" {
+                    for id in 1..count as u32 {
+                        s.connectivity.union(PieceId(id - 1), PieceId(id));
+                    }
+                }
+                let union = micros(start);
+                let start = Instant::now();
+                assert_eq!(
+                    black_box(s.connectivity.iter_component(PieceId(0)).count()),
+                    if scenario == "connected" { count } else { 1 }
+                );
+                let iteration = micros(start);
+                let mut requested = PieceBitSet::new(count);
+                requested.insert(PieceId(0));
+                let start = Instant::now();
+                let expanded = black_box(s.connectivity.expand(&requested));
+                let expansion = micros(start);
+                assert_eq!(
+                    expanded.count(),
+                    if scenario == "connected" { count } else { 1 }
+                );
+                if scenario != "chain" {
+                    s.selected_pieces.fill();
+                } else {
+                    s.selected_pieces = requested;
+                }
+                let mut gesture = PieceInteraction::default();
+                let mut selection = PuzzleSelection::default();
+                gesture.update(frame(Vec2::ZERO, true, true), &mut s, &mut selection);
+                let request = selection.latest.unwrap();
+                selection.completed = Some(SelectionResult {
+                    request_id: request.request_id,
+                    mode: request.mode,
+                    payload: SelectionPayload::Point(Some(PieceId(0))),
+                    error: None,
+                });
+                let commands =
+                    gesture.update(frame(Vec2::ZERO, true, false), &mut s, &mut selection);
+                assert_eq!(commands.len(), 1);
+                let start = Instant::now();
+                let grabbed = s.apply_command(LOCAL_PLAYER, &commands[0], Some(&d));
+                let grab = micros(start);
+                assert_eq!(grabbed.grabbed, if scenario == "chain" { 1 } else { count });
+                s.dirty_pieces.clear();
+                let frozen = s.drag.members.clone();
+                let states = s.states.as_ptr();
+                let start = Instant::now();
+                for step in 0..100_000 {
+                    assert!(black_box(gesture.update(
+                        frame(Vec2::splat(step as f32), true, false),
+                        &mut s,
+                        &mut selection
+                    ))
+                    .is_empty());
+                }
+                let pointer = start.elapsed().as_secs_f64() * 1e9 / 100_000.0;
+                assert!(Arc::ptr_eq(&frozen, &s.drag.members));
+                assert_eq!(s.states.as_ptr(), states);
+                assert!(s.dirty_pieces.is_empty());
+                let commands = gesture.update(
+                    frame(
+                        if scenario == "board" {
+                            Vec2::ZERO
+                        } else {
+                            Vec2::ONE
+                        },
+                        false,
+                        false,
+                    ),
+                    &mut s,
+                    &mut selection,
+                );
+                assert_eq!(commands.len(), 1);
+                let start = Instant::now();
+                let released = s.apply_command(LOCAL_PLAYER, &commands[0], Some(&d));
+                let release = micros(start);
+                assert_eq!(released.released, grabbed.grabbed);
+                assert_eq!(released.placed, if scenario == "board" { count } else { 0 });
+                assert!(s.held_by.is_empty());
+                let component_size = s.connectivity.component_size(PieceId(0));
+                assert_eq!(
+                    component_size,
+                    if scenario == "disconnected" { 1 } else { count }
+                );
+                let row = format!("{count},{scenario},{run},{init:.3},{union:.3},{iteration:.3},{expansion:.3},{grab:.3},{pointer:.3},{release:.3},{},{},{component_size}\n", s.connectivity.storage_bytes(), released.released);
+                print!("{row}");
+                csv.push_str(&row);
+            }
+        }
+    }
+    std::fs::create_dir_all("../target").unwrap();
+    std::fs::write("../target/connected-snapping-cpu.csv", csv).unwrap();
+}

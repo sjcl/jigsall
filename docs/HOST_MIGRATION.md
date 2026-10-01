@@ -120,7 +120,7 @@ streamを分離しても、最後のMove欠落時にReleaseが最終位置を確
 
 ## Snapshot
 
-`game/src/multiplayer/snapshot.rs` のschema version 2（image_hash追加によりversion 1は拒否）:
+`game/src/multiplayer/snapshot.rs` のschema version 3（永続連結を追加しversion 1 / 2は拒否）:
 
 | フィールド | 内容 |
 | --- | --- |
@@ -133,7 +133,8 @@ streamを分離しても、最後のMove欠落時にReleaseが最終位置を確
 | `pieces` | row-majorの `Vec<SnapshotPieceState>` |
 
 `SnapshotPieceState` は `Vec2 position + u32 z_order + u32 flags` の16 bytes。
-snapshot flagは独立した `SNAPSHOT_PLACED` だけを許可する。
+snapshot flagは独立した `SNAPSHOT_PLACED`、`SNAPSHOT_CONNECTED_RIGHT`、`SNAPSHOT_CONNECTED_DOWN`を許可する。
+右・下のgrid edgeからDSUを再構成し、root IDは保存しない。詳細は[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)。
 `GpuPieceState` をwire形式としてserializeしない。
 100万件のpiece payloadはメモリ上で16 MB（serializerのencoded sizeは未規定）。
 per-piece Entity、Mesh、Handle、String、HashMapは追加しない。
@@ -162,11 +163,11 @@ snapshot自身から期待値を決めてvalidationを迂回してはいけな�
 install前にschema、session、image_hash、cursorの完全一致、PuzzleDefinition.validate()、
 期待するdefinitionとの完全一致、piece count、全座標の有限性、
 next_z_order（piece_count以上、MAX_Z以下）、各z_order（next_z_order未満）、
-許可flagだけであることを検証する。
+許可flag、境界外の連結flagがないこと、placedの正解座標との完全一致、component内のoffset / placed一致を検証する。
 definitionはpiece_count計算より前に検証し、壊れたgridでもpanicを起こさない。
 invalid snapshotはResultで拒否し、storeを変更しない。
 
-installはdense statesとplaced_count / next_z_orderを復元し、
+installはdense statesとconnectivity、placed_count / next_z_orderを復元し、
 store内のhold、selection、dragのmembers/delta、以前のhighlight caches、dirty IDsを全て消す。
 GPU側のbox previewなど別resourceのcleanupは、下記TODOのbackend adapterが担当する。
 placedとpositionとz_orderはそのまま保存する。migration時にsnapは実行しない。
@@ -258,10 +259,11 @@ install前に内容のhashを再計算して照合し、検証できるcheckpoin
 ## 通常client disconnect
 
 `release_player_holds(&mut store, player) -> Vec<PieceId>` を使用する。
-sparse held_byから該当playerだけを取り除き、HELDを消し、dirty IDを追加する。
+該当playerのholdをcomponent全体へ展開して取り除き、HELDを消し、dirty IDを追加する。
 戻り値はPieceId昇順。position、placed、z_order、next_z_orderと他playerのholdは維持する。
 再度呼び出しても変更しない。snapや配置eventは発生させない。
-計算量は全ピース数ではなくhold数の走査と、返すIDのsortに依存する。
+計算量はbitsetとhold / component member数に依存し、全piece stateは走査しない。
+正常状態では他playerのcomponentを維持する。矛盾した混合ownerが既にある場合は当該componentの全holdを解放する。
 backendはmembership変更をreliableに伝え、このhelperで確定した解放をpeerへ反映する。
 
 ## Local simulation tests
