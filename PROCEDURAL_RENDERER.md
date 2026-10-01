@@ -53,7 +53,7 @@ canonical IDはHorizontal(column, row boundary) / Vertical(column boundary, row)
 
 比率はv2から継承し、寸法variation ±3.5%、center .5±.025、asymmetry ±.025をquantized sampleからdecodeします。rounded box、ellipse、smooth minimumでtabを構成し、canonical normalの正側へ制限します。正polarityはbaselineとtabのunion、負polarityは同じtabをmirrorしてsubtractします。反対側のピースは同じsigned constraintをnegateするので境界が補完します。
 
-厳密なEuclidean distanceではなく、安価なsigned-distance approximationです。符号がcoverageを決めます。outlineは内側に、元の幅min(16 px, short_side * .16)の半分を評価し、fwidthで滑らかにします。シルエット外側をdiscardし、mainとpickingのcoverageを合わせます。
+厳密なEuclidean distanceではなく、安価なsigned-distance approximationです。符号がcoverageを決めます。outlineは選択・プレビュー時だけ内側に描き、元の幅min(16 px, short_side * .16)の半分を評価してfwidthで滑らかにします。通常ピースは画像色をそのまま出力します。シルエット外側をdiscardし、mainとpickingのcoverageを合わせます。
 
 UVは((cell + .5) * piece_size + (local.x, -local.y)) / image_sizeです。tabも元画像の連続した位置をsampleし、straight外周で画像領域を保ちます。整数profile一致と形状再構成は検証済みですが、異GPUのfloat・境界画素のbit一致は未検証です。
 
@@ -63,6 +63,7 @@ UVは((cell + .5) * piece_size + (local.x, -local.y)) / image_sizeです。tab�
 
 ## 計測条件
 
+- 以下の数値とCSVはcommit 5328530時点の移行計測です。通常ピースの輪郭を除く修正後の性能再計測は行っていません。
 - Windows、Rust 1.97.0、NVIDIA GeForce RTX 5090、Vulkan。CPUモデルは今回取得していません。
 - release / locked、seed 42。grid 40×25 / 100×100 / 400×250 / 1000×1000。
 - 実4096² RGBA8 sRGB画像（色勾配・checker pattern、67,108,864 bytes）。opaque alpha 255、translucent alpha 128。画像更新は計測frame外。

@@ -301,7 +301,7 @@ fn gpu_raster_selection() {
     for _ in 0..4 {
         update_gpu(&mut app);
     }
-    let pixels = rendered_pixels(&mut app, target);
+    let pixels = rendered_pixels(&mut app, target.clone());
     let profiles = piece_profiles(def.seed, def.grid_size, UVec2::ZERO);
     let mut samples = vec![];
     for y in 15..113 {
@@ -310,6 +310,13 @@ fn gpu_raster_selection() {
             let inside = piece_signed_distance(local, Vec2::splat(64.0), profiles) <= 0.0;
             let drawn = pixels[(y * 128 + x) * 4] > 0;
             assert_eq!(drawn, inside, "render coverage {x},{y} {local}");
+            if inside {
+                assert_eq!(
+                    &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 4],
+                    &[255, 255, 255, 255],
+                    "normal piece must preserve image color at {x},{y}"
+                );
+            }
             let d = piece_signed_distance(local, Vec2::splat(64.0), profiles);
             if d.abs() < 0.8 && (x + y) % 13 == 0 {
                 samples.push((x, y, inside));
@@ -317,6 +324,31 @@ fn gpu_raster_selection() {
         }
     }
     samples.extend([(64, 64, true), (15, 15, false), (90, 64, true)]);
+    // Highlight only selected/preview silhouettes, including selected priority.
+    for (flags, expected) in [
+        (crate::resources::pieces::SELECTED, [255, 231, 0]),
+        (crate::resources::pieces::PREVIEW, [149, 203, 255]),
+        (
+            crate::resources::pieces::SELECTED | crate::resources::pieces::PREVIEW,
+            [255, 231, 0],
+        ),
+        (0, [255, 255, 255]),
+    ] {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.states[0].flags = ENABLED | flags;
+        store.dirty_pieces.insert(PieceId(0));
+        let pixels = rendered_pixels(&mut app, target.clone());
+        let edge = (64 * 128 + 32) * 4;
+        for (actual, expected) in pixels[edge..edge + 3].iter().zip(expected) {
+            assert!(
+                (i32::from(*actual) - expected).abs() <= 2,
+                "highlight {flags}: {:?}",
+                &pixels[edge..edge + 4]
+            );
+        }
+        let center = (64 * 128 + 64) * 4;
+        assert_eq!(&pixels[center..center + 4], &[255, 255, 255, 255]);
+    }
     for (x, y, inside) in samples {
         let rect = Rect::new(
             x as f32 + 0.1,

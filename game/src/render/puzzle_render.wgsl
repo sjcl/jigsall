@@ -38,11 +38,13 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
 }
 @fragment fn fragment(in:VertexOutput)->@location(0) vec4<f32> {
     let d=distance(in);let color=sample_visible(in,d);
+    // Evaluate derivatives before the per-piece highlight branch.
+    let aa=fwidth(d);
+    if (in.flags&6u)==0u {return color;}
     let width=min(16.0,min(config.size.x,config.size.y)*0.16)*0.5;
-    var line=vec3(0.15);
+    var line=vec3(0.3,0.6,1.0);
     if (in.flags&2u)!=0u {line=vec3(1.0,0.8,0.0);}
-    else if (in.flags&4u)!=0u {line=vec3(0.3,0.6,1.0);}
-    let coverage=1.0-smoothstep(width-fwidth(d),width+fwidth(d),abs(d));
+    let coverage=1.0-smoothstep(width-aa,width+aa,abs(d));
     return vec4(mix(color.rgb,line,coverage),color.a);
 }
 fn check_selectable(id:u32) {
