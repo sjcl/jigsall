@@ -29,19 +29,36 @@ impl Locale {
         Self::available().find(|locale| locale.id().eq_ignore_ascii_case(id))
     }
 
-    /// Exact match first, then the base language (e.g. ja-JP -> ja, en-GB -> en-US).
+    /// Exact match first; base-language fallback requires a single matching catalog.
+    /// Ambiguous script/region mappings belong in a platform adapter or explicit alias table.
     pub fn from_language_tag(tag: &str) -> Option<Self> {
+        Self::from_language_tag_in(tag, Self::available())
+    }
+
+    fn from_language_tag_in(tag: &str, locales: impl IntoIterator<Item = Self>) -> Option<Self> {
         let tag = tag.split(['.', '@']).next()?.replace('_', "-");
-        Self::from_id(&tag).or_else(|| {
-            let language = tag.split('-').next()?;
-            Self::available().find(|locale| {
-                locale
-                    .id()
-                    .split('-')
-                    .next()
-                    .is_some_and(|base| base.eq_ignore_ascii_case(language))
-            })
-        })
+        let language = tag.split('-').next()?;
+        let mut fallback = None;
+        let mut ambiguous = false;
+        for locale in locales {
+            if locale.id().eq_ignore_ascii_case(&tag) {
+                return Some(locale);
+            }
+            if locale
+                .id()
+                .split('-')
+                .next()
+                .is_some_and(|base| base.eq_ignore_ascii_case(language))
+            {
+                ambiguous |= fallback.is_some();
+                fallback = Some(locale);
+            }
+        }
+        if ambiguous {
+            None
+        } else {
+            fallback
+        }
     }
 }
 
@@ -129,8 +146,11 @@ fn bundle(locale: Locale, source: &str) -> FluentBundle<FluentResource> {
     if let Err(errors) = bundle.add_resource(resource) {
         warn!("Duplicate Fluent keys in {}: {errors:?}", locale.id());
     }
-    // Both shipped languages are LTR. Avoid isolation marks in numerical HUD values.
-    bundle.set_use_isolating(false);
+    // Preserve the shipped LTR UI's numeric formatting. New locales retain Fluent's
+    // default isolation; RTL also requires bidi/shaping/layout validation in egui.
+    if matches!(locale, Locale::EN_US | Locale::JA) {
+        bundle.set_use_isolating(false);
+    }
     bundle
 }
 

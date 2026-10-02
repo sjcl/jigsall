@@ -10,3 +10,7 @@ SHA-256: `2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1`
 
 egui's default Latin fonts stay first. This embedded font provides Japanese
 fallback glyphs for both proportional and monospace UI families.
+
+Register additional embedded fallback fonts in `ui/src/fonts.rs`, with their
+license and provenance here. The UI and catalog tests use those same font
+definitions; coverage is checked across all registered fonts in each family.

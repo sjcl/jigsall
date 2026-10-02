@@ -47,9 +47,14 @@ and shows the failure; the previous persisted file remains intact.
 
 Explicit preferences take priority. Auto asks the injected
 `PlatformLocaleProvider`; the default `OsLocaleProvider` uses the lightweight
-`sys-locale` crate. Locale resolution tries an exact catalog ID, then its base
-language (`ja-JP` → `ja`, `en-GB` → `en-US`). Unsupported/unavailable OS locales
-fall back to `en-US`.
+`sys-locale` crate. Locale resolution tries an exact catalog ID, then a base-language
+match only when exactly one catalog has that language (`ja-JP` → `ja`,
+`en-GB` → `en-US`). With both `zh-CN` and `zh-TW`, an unmatched `zh-HK` or
+`zh-Hant-HK` is unresolved regardless of catalog order. The same rule applies to
+regional variants of Spanish and Portuguese. Script/region aliases must be mapped
+explicitly in a platform adapter or a reviewed alias table; catalog order never
+chooses a variant. Unsupported, ambiguous or unavailable OS locales ultimately
+fall back to `en-US` if the provider finds no supported locale.
 
 A future Steam adapter can implement `PlatformLocaleProvider`, convert Steam
 language codes to `Locale` in that adapter, and insert
@@ -78,11 +83,22 @@ renderer diagnostics are technical details inserted as `$reason`; diagnostic
 
 ## Fonts and intentionally invariant text
 
-`ui/fonts/MPLUS1p-Regular.ttf` is embedded after egui's default Latin fonts in
-both proportional and monospace fallback chains. Neither the font nor catalogs
-require a runtime file or depend on the launch directory. `ui/fonts/OFL.txt`
-contains the SIL Open Font License 1.1 and copyright notice; include it in release
-distributions. Provenance and SHA-256 are in `ui/fonts/README.md`.
+`ui/src/fonts.rs` defines the ordered `EMBEDDED_FALLBACK_FONTS` registry and builds
+the font definitions shared by the theme and coverage tests. Its current entry,
+`ui/fonts/MPLUS1p-Regular.ttf`, follows egui's default Latin fonts in both
+proportional and monospace chains. Add another embedded entry when a language
+needs more glyphs, with its license and provenance in `ui/fonts`. Tests check the
+union of all fonts actually registered for each family, so no single font must
+cover every catalog. Neither fonts nor catalogs require runtime files or depend
+on the launch directory. `ui/fonts/OFL.txt` contains the current font's SIL Open
+Font License 1.1 and copyright notice; include it in release distributions.
+Provenance and SHA-256 are in `ui/fonts/README.md`.
+
+Fluent directionality isolation is disabled only for the shipped `en-US` and `ja`
+bundles to preserve their existing HUD formatting. New locales keep Fluent's
+default isolation around interpolated values. This alone does not establish RTL
+support: Arabic/Hebrew additions also require validating bidi ordering, shaping,
+mixed-direction values and layout in egui, together with fonts and this policy.
 
 There are no remaining English UI sentences in `ui/src` outside tests. Invariant
 text includes `Puzzella`, version numbers, `PNG / JPEG / WebP / BMP`, file extension
@@ -103,15 +119,16 @@ cargo test --locked -p puzzella-ui native_settings_ui_probe -- --ignored --nocap
 
 Catalog tests cover every canonical key, syntax, matching variables, formatting,
 missing translations/keys/arguments, warning deduplication, provider priority,
-preference round trips, malformed preferences, failed writes and glyph coverage.
+ambiguous regional catalogs in either order, new-locale isolation, preference
+round trips, malformed preferences, failed writes and glyph coverage across each
+family's registered fonts.
 Real egui widget tests select Japanese, check persistence and the next frame's
 labels, and check English/Japanese settings at small window sizes. The native
 probe renders screenshots without reading or writing the user's preferences.
 
 Verified on Windows on 2026-10-03: formatting, Clippy with all targets and warnings
-denied, the ordinary workspace build, and workspace tests (320 passed, zero failed;
-25 normally ignored), plus the Japanese delete-confirmation regression test. The
-native probe was run separately and passed, producing English settings plus
-Japanese title/settings/setup screenshots. Japanese display
+denied, the ordinary workspace build, and workspace tests (342 passed, zero failed;
+26 normally ignored). The native probe was run separately and passed, producing
+English settings plus Japanese title/settings/setup screenshots. Japanese display
 confirmation was visually inspected at 640 × 360. Both catalogs have 151 keys;
 Japanese settings and load actions also pass viewport checks at 320 × 360.

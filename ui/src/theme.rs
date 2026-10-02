@@ -15,21 +15,7 @@ pub fn prepare(ctx: &egui::Context) {
     if ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
         return;
     }
-    let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "puzzella_japanese".into(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../fonts/MPLUS1p-Regular.ttf"
-        ))),
-    );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("puzzella_japanese".into());
-    }
-    ctx.set_fonts(fonts);
+    ctx.set_fonts(crate::fonts::definitions());
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.visuals = egui::Visuals::dark();
     style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);

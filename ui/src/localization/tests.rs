@@ -159,6 +159,60 @@ fn automatic_uses_provider_and_explicit_preference_takes_priority() {
 }
 
 #[test]
+fn language_fallback_rejects_ambiguous_catalogs_regardless_of_order() {
+    for (ids, unknown_tags) in [
+        (["zh-CN", "zh-TW"], &["zh", "zh-HK", "zh-Hant-HK"][..]),
+        (["es-ES", "es-419"], &["es", "es-MX", "es-AR"][..]),
+        (["pt-PT", "pt-BR"], &["pt", "pt-AO", "pt-MZ"][..]),
+    ] {
+        let locales = ids.map(Locale);
+        for order in [locales, [locales[1], locales[0]]] {
+            for locale in locales {
+                assert_eq!(
+                    Locale::from_language_tag_in(locale.id(), order),
+                    Some(locale),
+                    "exact match must win for {}",
+                    locale.id()
+                );
+            }
+            for tag in unknown_tags {
+                assert_eq!(Locale::from_language_tag_in(tag, order), None, "{tag}");
+            }
+        }
+        assert_eq!(
+            Locale::from_language_tag_in(unknown_tags[1], [locales[0], Locale::JA]),
+            Some(locales[0]),
+            "a unique base-language candidate remains usable"
+        );
+    }
+    assert_eq!(
+        Locale::from_language_tag_in("ZH_tw.UTF-8", [Locale("zh-CN"), Locale("zh-TW")]),
+        Some(Locale("zh-TW"))
+    );
+}
+
+#[test]
+fn new_locales_keep_fluent_directionality_isolation() {
+    let mut args = FluentArgs::new();
+    args.set("name", "Alice");
+    for (locale, expected) in [
+        (Locale::EN_US, "Player: Alice"),
+        (Locale::JA, "Player: Alice"),
+        (Locale("ar"), "Player: \u{2068}Alice\u{2069}"),
+        (Locale("he"), "Player: \u{2068}Alice\u{2069}"),
+    ] {
+        let bundle = bundle(locale, "player = Player: { $name }\n");
+        let pattern = bundle.get_message("player").unwrap().value().unwrap();
+        let mut errors = vec![];
+        assert_eq!(
+            bundle.format_pattern(pattern, Some(&args), &mut errors),
+            expected
+        );
+        assert!(errors.is_empty());
+    }
+}
+
+#[test]
 fn preferences_round_trip_use_internal_ids_and_do_not_touch_display_settings() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ui-settings.json");
@@ -209,15 +263,31 @@ fn failed_preference_write_keeps_live_translation_and_existing_bytes() {
 }
 
 #[test]
-fn embedded_font_covers_catalog_glyphs_and_both_ui_families() {
+fn embedded_fallback_fonts_cover_catalog_glyphs_and_both_ui_families() {
     use ab_glyph::{Font, FontRef};
-    let font = FontRef::try_from_slice(include_bytes!("../../fonts/MPLUS1p-Regular.ttf")).unwrap();
-    for (_, source) in CATALOGS {
-        for ch in source
-            .chars()
-            .filter(|ch| !ch.is_control() && !ch.is_whitespace())
-        {
-            assert_ne!(font.glyph_id(ch).0, 0, "missing glyph {ch}");
+    let definitions = crate::fonts::definitions();
+    for family in [
+        bevy_egui::egui::FontFamily::Proportional,
+        bevy_egui::egui::FontFamily::Monospace,
+    ] {
+        let fonts: Vec<_> = definitions.families[&family]
+            .iter()
+            .map(|name| {
+                let data = &definitions.font_data[name];
+                FontRef::try_from_slice_and_index(data.font.as_ref(), data.index)
+                    .unwrap_or_else(|_| panic!("invalid embedded font {name}"))
+            })
+            .collect();
+        for (locale, source) in CATALOGS {
+            for ch in source
+                .chars()
+                .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+            {
+                assert!(
+                    fonts.iter().any(|font| font.glyph_id(ch).0 != 0),
+                    "missing glyph {ch} for {locale} in {family:?}"
+                );
+            }
         }
     }
     let ctx = bevy_egui::egui::Context::default();

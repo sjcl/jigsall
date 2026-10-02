@@ -1,5 +1,6 @@
 //! egui screens and their state-specific schedule registration.
 mod completion;
+mod fonts;
 mod game_play;
 mod game_setup;
 mod grid;
