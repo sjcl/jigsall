@@ -225,6 +225,7 @@ fn paint_load_dialog(
                         });
                     }
                     for entry in &state.entries {
+                        let delete_was_open = dialogs.pending_delete == Some(entry.id);
                         theme::card().show(ui, |ui| {
                             ui.set_width((ui.available_width()).max(0.0));
                             match &entry.summary {
@@ -264,22 +265,9 @@ fn paint_load_dialog(
                                                 .desired_width(ui.available_width())
                                                 .text(format!("{:.1}% complete", progress * 100.0)),
                                         );
-                                        ui.add_enabled_ui(!state.busy, |ui| {
-                                            if theme::button(
-                                                ui,
-                                                if dialogs.loading_save == Some(entry.id) {
-                                                    "Loading puzzle..."
-                                                } else {
-                                                    "Resume Puzzle"
-                                                },
-                                                180.0_f32.min(ui.available_width()),
-                                                true,
-                                            )
-                                            .clicked()
-                                            {
-                                                action = Some((entry.id, false));
-                                            }
-                                        });
+                                        if paint_load_actions(ui, dialogs, state, entry.id, true) {
+                                            action = Some((entry.id, false));
+                                        }
                                     };
                                     if wide {
                                         ui.horizontal_top(|ui| {
@@ -301,46 +289,40 @@ fn paint_load_dialog(
                                             .color(theme::DANGER),
                                     );
                                     theme::hint(ui, error.to_string());
+                                    paint_load_actions(ui, dialogs, state, entry.id, false);
                                 }
                             }
                             if dialogs.pending_delete == Some(entry.id) {
-                                ui.label(
-                                    egui::RichText::new("Permanently delete this save?")
-                                        .color(theme::DANGER),
-                                );
-                                ui.horizontal_wrapped(|ui| {
-                                    if ui
-                                        .add_enabled(
-                                            !state.busy,
-                                            egui::Button::new(
-                                                egui::RichText::new("Delete").color(theme::DANGER),
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        action = Some((entry.id, true));
-                                        dialogs.pending_delete = None;
-                                    }
-                                    if ui
-                                        .add_enabled(!state.busy, egui::Button::new("Cancel"))
-                                        .clicked()
-                                    {
-                                        dialogs.pending_delete = None;
-                                    }
+                                let confirmation = ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("Permanently delete this save?")
+                                            .color(theme::DANGER),
+                                    );
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !state.busy,
+                                                egui::Button::new(
+                                                    egui::RichText::new("Delete")
+                                                        .color(theme::DANGER),
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Some((entry.id, true));
+                                            dialogs.pending_delete = None;
+                                        }
+                                        if ui
+                                            .add_enabled(!state.busy, egui::Button::new("Cancel"))
+                                            .clicked()
+                                        {
+                                            dialogs.pending_delete = None;
+                                        }
+                                    });
                                 });
-                            } else if ui
-                                .add_enabled(
-                                    !state.busy,
-                                    egui::Button::new(
-                                        egui::RichText::new("Delete save")
-                                            .size(12.0)
-                                            .color(theme::MUTED),
-                                    )
-                                    .frame(false),
-                                )
-                                .clicked()
-                            {
-                                dialogs.pending_delete = Some(entry.id);
+                                if !delete_was_open {
+                                    confirmation.response.scroll_to_me(None);
+                                }
                             }
                         });
                         ui.add_space(2.0);
@@ -387,6 +369,74 @@ fn paint_load_dialog(
     } else {
         thumbnails.invalidate();
     }
+}
+
+fn paint_load_actions(
+    ui: &mut egui::Ui,
+    dialogs: &mut SaveDialogs,
+    state: &PersistenceState,
+    id: SaveId,
+    can_resume: bool,
+) -> bool {
+    let mut resume = false;
+    ui.add_enabled_ui(!state.busy, |ui| {
+        ui.horizontal(|ui| {
+            let available = ui.available_width();
+            let show_delete = dialogs.pending_delete != Some(id);
+            let delete_width = if show_delete {
+                90.0_f32.min(available * 0.45)
+            } else {
+                0.0
+            };
+            let gap = if show_delete {
+                ui.spacing().item_spacing.x
+            } else {
+                0.0
+            };
+            if available < 270.0 {
+                ui.spacing_mut().button_padding.x = 6.0;
+            }
+            if can_resume {
+                resume = theme::button(
+                    ui,
+                    if dialogs.loading_save == Some(id) {
+                        "Loading puzzle..."
+                    } else {
+                        "Resume Puzzle"
+                    },
+                    180.0_f32.min((available - delete_width - gap).max(0.0)),
+                    true,
+                )
+                .clicked();
+            }
+            if show_delete {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let height = if ui.ctx().content_rect().height() < 600.0 {
+                        38.0
+                    } else {
+                        44.0
+                    };
+                    if ui
+                        .add_sized(
+                            [delete_width, height],
+                            egui::Button::new(
+                                egui::RichText::new("Delete save")
+                                    .size(12.0)
+                                    .color(theme::MUTED),
+                            )
+                            .frame(false)
+                            .truncate(),
+                        )
+                        .on_hover_text("Delete save")
+                        .clicked()
+                    {
+                        dialogs.pending_delete = Some(id);
+                    }
+                });
+            }
+        });
+    });
+    resume
 }
 
 pub fn status(ui: &mut egui::Ui, state: &PersistenceState) {
