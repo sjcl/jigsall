@@ -102,11 +102,11 @@ opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけを
 
 ## Persistent save の境界
 
-ローカル進捗保存は `PieceDataStore / PuzzleDefinition → PuzzleCheckpoint → PuzzleSave → SaveCodec → SaveRepository → SaveStorage → FilesystemStorage` の流れです。画像は選択時の original encoded bytes を SHA-256 で識別し、再エンコードしない `.puzimg` を save 間で共有します。進捗 `.puzsave` は 16 bytes/piece の明示的 little-endian codec と checksum を使い、ランダム SaveId で保存します。ユーザータイトルは validation を持つ metadata で、filename / identity には使いません。
+ローカル進捗保存は `PieceDataStore / PuzzleDefinition → PuzzleCheckpoint → PuzzleSave → SaveCodec → SaveRepository → SaveStorage → FilesystemStorage` の流れです。画像は選択時の original encoded bytes を SHA-256 で識別し、再エンコードしない `.puzimg` を save 間で共有します。進捗 `.puzsave` v2 は 16 bytes/piece の明示的 little-endian codec と全体 / header checksum を使い、ランダム SaveId で保存します。最大492 bytesの header とファイル長だけで一覧を作り、非 authority の placed_count cache は完全 load 時に state と照合します。v1 は読み込み互換を保ち、一覧では進捗を未確認として表示します。ユーザータイトルは validation を持つ metadata で、filename / identity には使いません。
 
 `GameSnapshot` schema 3 の serialized representation は保持し、borrowed checkpoint view を通じて同じ capture / validation / install を使います。restore は DSU / 接続 GPU cache / placed_count を再構築し、GameData の progress / completion を同期します。load worker が準備した store を直接採用するため、random 初期配置は生成しません。既存 epoch / RenderReady による GPU 準備待ちの後だけ Playing / GameComplete へ遷移します。disk I/O、decode、codec は worker/channel に分離し、O(N) capture は明示 Save 時だけです。通常 play に新しい piece 数比例の処理や per-piece Entity / persistent Vec は追加しません。
 
-保存先は OS user application data 以下で、logical key を storage に渡します。画像を先に保存し、save は temporary file の sync と atomic replace で publish します。将来の Steam Cloud は SaveStorage implementation と構築 adapter の追加を境界とし、checkpoint / codec / container / restore の変更を不要にすることが設計目標です。Steam Cloud 自体は未実装です。形式・layout・failure / worker lifecycle の詳細は [PERSISTENCE.md](PERSISTENCE.md) を参照してください。
+保存先は OS user application data 以下で、logical key を storage に渡します。画像を先に保存し、save は temporary file の sync と atomic replace で publish します。通常 Save は共有画像の存在だけを確認し、import / load で画像全体の hash を検証します。SaveStorage は Send / Sync を要求せず、filesystem は worker で動かします。将来の Steam Cloud は handle を所有 thread に保持し、StorageRequests の operation を非同期 API に dispatch、callback から返信する executor を追加します。StorageProxy を使う repository / codec / restore 準備は worker 上で継続します。Steam Cloud 自体は未実装です。形式・layout・failure / worker lifecycle の詳細は [PERSISTENCE.md](PERSISTENCE.md) を参照してください。
 
 ## Multiplayerの境界と課題
 

@@ -1,10 +1,14 @@
 //! Backend-neutral binary formats, logical storage and repository operations.
 mod codec;
+pub mod executor;
 mod repository;
 pub mod runtime;
 mod storage;
 use crate::checkpoint::{CheckpointError, PuzzleCheckpoint};
-pub use codec::{image_hash, PuzImage, SaveCodec, PUZIMG_FORMAT_VERSION, SAVE_FORMAT_VERSION};
+pub use codec::{
+    image_hash, PuzImage, SaveCodec, SaveHeader, MAX_SAVE_HEADER_BYTES, PUZIMG_FORMAT_VERSION,
+    SAVE_FORMAT_VERSION,
+};
 use puzzella_core::session::ImageHash;
 pub use repository::{LoadedSave, SaveListEntry, SaveRepository, SaveSummary};
 pub use storage::{FilesystemStorage, SaveStorage, StorageError, StorageKey, StorageNamespace};

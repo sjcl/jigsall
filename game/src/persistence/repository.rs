@@ -1,5 +1,4 @@
 use super::*;
-use crate::checkpoint::SNAPSHOT_PLACED;
 
 pub struct SaveRepository<S: SaveStorage> {
     storage: S,
@@ -8,7 +7,7 @@ pub struct SaveRepository<S: SaveStorage> {
 pub struct SaveSummary {
     pub metadata: SaveMetadata,
     pub piece_count: usize,
-    pub placed_count: usize,
+    pub placed_count: Option<usize>,
 }
 #[derive(Clone, Debug)]
 pub struct SaveListEntry {
@@ -99,7 +98,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
     ) -> Result<SaveMetadata, SaveError> {
-        let previous = self.read_save(id)?;
+        let previous = self.read_header(id)?;
         let metadata = SaveMetadata {
             id,
             title,
@@ -128,15 +127,8 @@ impl<S: SaveStorage> SaveRepository<S> {
         let hash = save.checkpoint.image_hash;
         if let Some(bytes) = original_bytes {
             self.import_image(hash, bytes)?;
-        } else {
-            let container = self
-                .storage
-                .read(StorageKey::Image(hash))
-                .map_err(|e| match e {
-                    StorageError::NotFound(_) => SaveError::MissingImage(hash),
-                    e => SaveError::Storage(e),
-                })?;
-            PuzImage::decode(&container, hash)?;
+        } else if !self.storage.exists(StorageKey::Image(hash))? {
+            return Err(SaveError::MissingImage(hash));
         }
         // Publish image first; any failure leaves at most a harmless orphan image.
         self.storage
@@ -150,6 +142,15 @@ impl<S: SaveStorage> SaveRepository<S> {
         }
         Ok(save)
     }
+    pub fn read_header(&self, id: SaveId) -> Result<SaveHeader, SaveError> {
+        let key = StorageKey::Save(id);
+        let prefix = self.storage.read_range(key, 0, MAX_SAVE_HEADER_BYTES)?;
+        let header = SaveCodec::decode_header(&prefix, self.storage.len(key)?)?;
+        if header.metadata.id != id {
+            return Err(SaveError::CorruptSave("Save ID does not match storage key"));
+        }
+        Ok(header)
+    }
     pub fn load(&self, id: SaveId) -> Result<LoadedSave, SaveError> {
         let save = self.read_save(id)?;
         let image_bytes = self.read_image(save.checkpoint.image_hash)?;
@@ -161,21 +162,13 @@ impl<S: SaveStorage> SaveRepository<S> {
             let StorageKey::Save(id) = key else {
                 continue;
             };
-            let summary = self.read_save(id).and_then(|save| {
-                if !self
-                    .storage
-                    .exists(StorageKey::Image(save.checkpoint.image_hash))?
-                {
-                    return Err(SaveError::MissingImage(save.checkpoint.image_hash));
+            let summary = self.read_header(id).and_then(|save| {
+                if !self.storage.exists(StorageKey::Image(save.image_hash))? {
+                    return Err(SaveError::MissingImage(save.image_hash));
                 }
                 Ok(SaveSummary {
-                    piece_count: save.checkpoint.pieces.len(),
-                    placed_count: save
-                        .checkpoint
-                        .pieces
-                        .iter()
-                        .filter(|p| p.flags & SNAPSHOT_PLACED != 0)
-                        .count(),
+                    piece_count: save.piece_count,
+                    placed_count: save.placed_count,
                     metadata: save.metadata,
                 })
             });

@@ -1,4 +1,5 @@
-//! Channel adapter: workers own disk I/O, codecs, decode and restore preparation.
+//! Workers own codecs, decode and restore preparation. I/O can run on the worker
+//! or be dispatched to an external storage owner's event loop.
 use super::*;
 use crate::{checkpoint::PuzzleCheckpoint, resources::*};
 use bevy::prelude::*;
@@ -66,9 +67,16 @@ impl Default for PersistenceService {
     }
 }
 impl PersistenceService {
-    /// Inject a backend without changing the UI, formats, or gameplay restore.
-    pub fn new<S: SaveStorage>(storage: S) -> Self {
+    /// Move a Send backend to the repository worker (e.g. filesystem).
+    pub fn new<S: SaveStorage + Send + 'static>(storage: S) -> Self {
         Self::spawn(move || Ok(storage))
+    }
+    /// Keep thread-affine handles with their owner. The owner must poll this
+    /// inbox and complete each request, including on asynchronous API failure.
+    /// Only the repository worker blocks waiting for I/O replies.
+    pub fn with_storage_requests() -> (Self, executor::StorageRequests) {
+        let (proxy, requests) = executor::storage_channel();
+        (Self::new(proxy), requests)
     }
     fn spawn<S: SaveStorage>(
         storage: impl FnOnce() -> Result<S, StorageError> + Send + 'static,
@@ -294,5 +302,57 @@ pub(crate) fn poll_results(
         if let Err(error) = result {
             state.error = Some(error.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use executor::{StorageOperation, StorageValue};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn owner_executor_can_reply_asynchronously_and_report_disconnects() {
+        let (service, inbox) = PersistenceService::with_storage_requests();
+        let mut state = PersistenceState::default();
+        service.list(&mut state);
+        let receive = || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(request) = inbox.try_recv() {
+                    break request;
+                }
+                assert!(Instant::now() < deadline, "Missing storage request");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let request = receive();
+        assert!(matches!(
+            request.operation,
+            StorageOperation::List(StorageNamespace::Saves)
+        ));
+        // Dispatch returns to the owner event loop; an API callback owns reply.
+        let callback = request.reply;
+        assert!(service.rx.try_recv().is_err());
+        callback
+            .complete(Ok(StorageValue::Keys(Vec::new())))
+            .unwrap();
+        let (generation, reply) = service.rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(generation, state.generation);
+        assert!(matches!(reply, Reply::Listed(Ok(entries)) if entries.is_empty()));
+        state.busy = false;
+        service.list(&mut state);
+        drop(receive());
+        assert!(matches!(
+            service.rx.recv_timeout(Duration::from_secs(10)).unwrap().1,
+            Reply::Listed(Err(SaveError::Storage(StorageError::Unavailable(_))))
+        ));
+        state.busy = false;
+        drop(inbox);
+        service.list(&mut state);
+        assert!(matches!(
+            service.rx.recv_timeout(Duration::from_secs(10)).unwrap().1,
+            Reply::Listed(Err(SaveError::Storage(StorageError::Unavailable(_))))
+        ));
     }
 }

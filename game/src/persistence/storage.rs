@@ -4,7 +4,7 @@ use super::{
 };
 use std::{
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -50,6 +50,7 @@ pub enum StorageError {
     Unavailable(String),
     Io(String),
     TooLarge,
+    InvalidRange,
 }
 impl std::fmt::Display for StorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -57,6 +58,7 @@ impl std::fmt::Display for StorageError {
             Self::NotFound(_) => write!(f, "Saved data was not found"),
             Self::Unavailable(e) | Self::Io(e) => write!(f, "Storage error: {e}"),
             Self::TooLarge => write!(f, "Saved data exceeds the supported size"),
+            Self::InvalidRange => write!(f, "Invalid storage read range"),
         }
     }
 }
@@ -67,9 +69,19 @@ fn io(e: std::io::Error) -> StorageError {
 
 /// Paths/rename are backend internals. A successful write publishes the entire blob.
 /// Implementations must preserve the previous blob if replacement fails.
-pub trait SaveStorage: Send + Sync + 'static {
+/// Thread affinity belongs to the executor, not to the storage backend.
+pub trait SaveStorage {
     fn list(&self, namespace: StorageNamespace) -> Result<Vec<StorageKey>, StorageError>;
     fn read(&self, key: StorageKey) -> Result<Vec<u8>, StorageError>;
+    /// Read at most `length` bytes from `offset`; EOF returns a shorter buffer.
+    /// Must not fetch the entire blob to implement a bounded read.
+    fn read_range(
+        &self,
+        key: StorageKey,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, StorageError>;
+    fn len(&self, key: StorageKey) -> Result<u64, StorageError>;
     fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError>;
     fn delete(&self, key: StorageKey) -> Result<(), StorageError>;
     fn exists(&self, key: StorageKey) -> Result<bool, StorageError>;
@@ -135,6 +147,45 @@ impl SaveStorage for FilesystemStorage {
             return Err(StorageError::TooLarge);
         }
         Ok(bytes)
+    }
+    fn read_range(
+        &self,
+        key: StorageKey,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, StorageError> {
+        if length as u64 > key.max_bytes() || offset.checked_add(length as u64).is_none() {
+            return Err(StorageError::InvalidRange);
+        }
+        let mut file = fs::File::open(self.path(key)).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                StorageError::NotFound(key)
+            } else {
+                io(e)
+            }
+        })?;
+        if file.metadata().map_err(io)?.len() > key.max_bytes() {
+            return Err(StorageError::TooLarge);
+        }
+        file.seek(SeekFrom::Start(offset)).map_err(io)?;
+        let mut bytes = Vec::new();
+        file.take(length as u64)
+            .read_to_end(&mut bytes)
+            .map_err(io)?;
+        Ok(bytes)
+    }
+    fn len(&self, key: StorageKey) -> Result<u64, StorageError> {
+        let metadata = fs::metadata(self.path(key)).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                StorageError::NotFound(key)
+            } else {
+                io(e)
+            }
+        })?;
+        if metadata.len() > key.max_bytes() {
+            return Err(StorageError::TooLarge);
+        }
+        Ok(metadata.len())
     }
     fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
         if bytes.len() as u64 > key.max_bytes() {

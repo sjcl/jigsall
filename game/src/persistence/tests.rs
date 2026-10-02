@@ -55,6 +55,11 @@ fn save() -> PuzzleSave {
         checkpoint: checkpoint(&encoded_image(image::ImageFormat::Png)),
     }
 }
+fn resign_header(bytes: &mut [u8]) {
+    let len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+    let digest = image_hash(&bytes[..len - 32]);
+    bytes[len - 32..len].copy_from_slice(&digest.0);
+}
 fn resign(bytes: &mut [u8]) {
     let end = bytes.len() - 32;
     let digest = image_hash(&bytes[..end]);
@@ -158,7 +163,7 @@ fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
     let encoded = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         encoded.len(),
-        156 + save.metadata.title.as_str().len() + 16 * 4
+        204 + save.metadata.title.as_str().len() + 16 * 4
     );
     let restored = SaveCodec::decode(&encoded).unwrap();
     assert_eq!(save, restored);
@@ -209,7 +214,7 @@ fn million_piece_save_keeps_sixteen_byte_records_and_restores_directly() {
     let bytes = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         bytes.len(),
-        16_000_000 + 156 + save.metadata.title.as_str().len()
+        16_000_000 + 204 + save.metadata.title.as_str().len()
     );
     let decoded = SaveCodec::decode(&bytes).unwrap();
     assert_eq!(save, decoded);
@@ -244,19 +249,22 @@ fn binary_save_rejects_truncation_checksum_unknown_version_and_malicious_lengths
         Err(SaveError::CorruptSave("Checksum mismatch"))
     ));
     bytes = original.clone();
-    bytes[50..54].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[62..66].copy_from_slice(&u32::MAX.to_le_bytes());
+    resign_header(&mut bytes);
     resign(&mut bytes);
     assert!(SaveCodec::decode(&bytes).is_err());
     let title_len = save().metadata.title.as_str().len();
     bytes = original.clone();
-    bytes[86 + title_len..88 + title_len].copy_from_slice(&0u16.to_le_bytes());
+    bytes[98 + title_len..100 + title_len].copy_from_slice(&0u16.to_le_bytes());
+    resign_header(&mut bytes);
     resign(&mut bytes);
     assert_eq!(
         SaveCodec::decode(&bytes),
         Err(SaveError::UnsupportedGenerator(0))
     );
     bytes = original.clone();
-    bytes[120 + title_len..124 + title_len].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[132 + title_len..136 + title_len].copy_from_slice(&u32::MAX.to_le_bytes());
+    resign_header(&mut bytes);
     resign(&mut bytes);
     assert!(SaveCodec::decode(&bytes).is_err());
     bytes = original.clone();
@@ -412,6 +420,8 @@ struct MemoryStorage {
     blobs: Arc<Mutex<HashMap<StorageKey, Vec<u8>>>>,
     writes: Arc<Mutex<Vec<StorageKey>>>,
     fail: Arc<Mutex<Option<StorageKey>>>,
+    reads: Arc<Mutex<Vec<StorageKey>>>,
+    ranges: Arc<Mutex<Vec<(StorageKey, u64, usize)>>>,
 }
 impl SaveStorage for MemoryStorage {
     fn list(&self, n: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
@@ -431,11 +441,34 @@ impl SaveStorage for MemoryStorage {
             .collect())
     }
     fn read(&self, key: StorageKey) -> Result<Vec<u8>, StorageError> {
+        self.reads.lock().unwrap().push(key);
         self.blobs
             .lock()
             .unwrap()
             .get(&key)
             .cloned()
+            .ok_or(StorageError::NotFound(key))
+    }
+    fn read_range(
+        &self,
+        key: StorageKey,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, StorageError> {
+        self.ranges.lock().unwrap().push((key, offset, length));
+        let blobs = self.blobs.lock().unwrap();
+        let bytes = blobs.get(&key).ok_or(StorageError::NotFound(key))?;
+        let start = usize::try_from(offset)
+            .map_err(|_| StorageError::InvalidRange)?
+            .min(bytes.len());
+        Ok(bytes[start..start.saturating_add(length).min(bytes.len())].to_vec())
+    }
+    fn len(&self, key: StorageKey) -> Result<u64, StorageError> {
+        self.blobs
+            .lock()
+            .unwrap()
+            .get(&key)
+            .map(|bytes| bytes.len() as u64)
             .ok_or(StorageError::NotFound(key))
     }
     fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
@@ -551,10 +584,16 @@ fn save_identity_must_match_its_storage_key() {
             &SaveCodec::encode(&save()).unwrap(),
         )
         .unwrap();
+    let repo = SaveRepository::new(storage);
     assert!(matches!(
-        SaveRepository::new(storage).read_save(SaveId(7)),
+        repo.read_save(SaveId(7)),
         Err(SaveError::CorruptSave("Save ID does not match storage key"))
     ));
+    assert!(matches!(
+        repo.read_header(SaveId(7)),
+        Err(SaveError::CorruptSave("Save ID does not match storage key"))
+    ));
+    assert!(repo.list().unwrap()[0].summary.is_err());
 }
 #[test]
 fn schema3_serialized_field_order_and_semantics_are_frozen() {
@@ -589,4 +628,389 @@ fn schema3_serialized_field_order_and_semantics_are_frozen() {
     assert_eq!(serde_json::from_str::<GameSnapshot>(&json).unwrap(), wire);
     assert_eq!(wire.clone().into_checkpoint(), c);
     assert_eq!(SNAPSHOT_SCHEMA_VERSION, 3);
+}
+
+/// Frozen v1 layout, independent of the current encoder's header implementation.
+fn legacy_v1(save: &PuzzleSave) -> Vec<u8> {
+    let m = &save.metadata;
+    let c = &save.checkpoint;
+    let d = &c.definition;
+    let mut out = b"PUZSAVE\0".to_vec();
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&m.id.0.to_le_bytes());
+    for n in [m.revision, m.created_at, m.updated_at] {
+        out.extend_from_slice(&n.to_le_bytes());
+    }
+    out.extend_from_slice(&(m.title.as_str().len() as u32).to_le_bytes());
+    out.extend_from_slice(m.title.as_str().as_bytes());
+    out.extend_from_slice(&c.image_hash.0);
+    out.extend_from_slice(&d.generator_version.to_le_bytes());
+    out.extend_from_slice(&d.seed.to_le_bytes());
+    for n in [
+        d.grid_size.x,
+        d.grid_size.y,
+        d.image_size.x,
+        d.image_size.y,
+        d.snap_distance.to_bits(),
+        c.next_z_order,
+        c.pieces.len() as u32,
+    ] {
+        out.extend_from_slice(&n.to_le_bytes());
+    }
+    for p in &c.pieces {
+        for n in [
+            p.position.x.to_bits(),
+            p.position.y.to_bits(),
+            p.z_order,
+            p.flags,
+        ] {
+            out.extend_from_slice(&n.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&image_hash(&out).0);
+    out
+}
+#[test]
+fn legacy_save_loads_lists_without_state_scan_and_upgrades_on_update() {
+    let save = save();
+    let old = legacy_v1(&save);
+    assert_eq!(old.len(), 156 + save.metadata.title.as_str().len() + 16 * 4);
+    assert_eq!(SaveCodec::decode(&old).unwrap(), save);
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    repo.import_image(
+        save.checkpoint.image_hash,
+        &encoded_image(image::ImageFormat::Png),
+    )
+    .unwrap();
+    storage
+        .write(StorageKey::Save(save.metadata.id), &old)
+        .unwrap();
+    storage.reads.lock().unwrap().clear();
+    let entries = repo.list().unwrap();
+    assert_eq!(entries[0].summary.as_ref().unwrap().placed_count, None);
+    assert!(storage.reads.lock().unwrap().is_empty());
+    assert_eq!(repo.load(save.metadata.id).unwrap().save, save);
+    let metadata = repo
+        .update(
+            save.metadata.id,
+            save.metadata.title.clone(),
+            save.checkpoint.clone(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(metadata.created_at, save.metadata.created_at);
+    assert_eq!(metadata.revision, 2);
+    let updated = storage.read(StorageKey::Save(metadata.id)).unwrap();
+    assert_eq!(&updated[8..10], &2u16.to_le_bytes());
+    assert_eq!(
+        SaveCodec::decode(&updated).unwrap().checkpoint,
+        save.checkpoint
+    );
+    assert_eq!(
+        repo.list().unwrap()[0]
+            .summary
+            .as_ref()
+            .unwrap()
+            .placed_count,
+        Some(1)
+    );
+    let mut corrupt = old;
+    let end = corrupt.len() - 33;
+    corrupt[end] ^= 1;
+    assert!(SaveCodec::decode(&corrupt).is_err());
+}
+#[test]
+fn preview_validates_header_but_load_checks_body_and_placed_cache() {
+    let mut longest = save();
+    longest.metadata.title = SaveTitle::new(&"🧩".repeat(80)).unwrap();
+    let encoded = SaveCodec::encode(&longest).unwrap();
+    assert_eq!(
+        u32::from_le_bytes(encoded[10..14].try_into().unwrap()) as usize,
+        MAX_SAVE_HEADER_BYTES
+    );
+    assert_eq!(
+        SaveCodec::decode_header(&encoded[..MAX_SAVE_HEADER_BYTES], encoded.len() as u64)
+            .unwrap()
+            .metadata,
+        longest.metadata
+    );
+    let old = legacy_v1(&longest);
+    assert_eq!(
+        SaveCodec::decode_header(&old[..MAX_SAVE_HEADER_BYTES], old.len() as u64)
+            .unwrap()
+            .metadata,
+        longest.metadata
+    );
+    assert_eq!(SaveCodec::decode(&old).unwrap(), longest);
+    let original = SaveCodec::encode(&save()).unwrap();
+    let len = original.len() as u64;
+    let header = SaveCodec::decode_header(&original, len).unwrap();
+    assert_eq!(header.placed_count, Some(1));
+    assert_eq!(header.piece_count, 4);
+    let header_len = u32::from_le_bytes(original[10..14].try_into().unwrap()) as usize;
+    for n in 0..header_len {
+        assert!(SaveCodec::decode_header(&original[..n], len).is_err());
+    }
+    let mut bytes = original.clone();
+    bytes[38] ^= 1;
+    assert!(matches!(
+        SaveCodec::decode_header(&bytes, len),
+        Err(SaveError::CorruptSave("Header checksum mismatch"))
+    ));
+    let mut bytes = original.clone();
+    bytes[header_len] ^= 1;
+    assert!(SaveCodec::decode_header(&bytes[..header_len], len).is_ok());
+    assert!(SaveCodec::decode(&bytes).is_err());
+    let mut bytes = original.clone();
+    let placed_offset = 136 + save().metadata.title.as_str().len();
+    bytes[placed_offset..placed_offset + 4].copy_from_slice(&2u32.to_le_bytes());
+    resign_header(&mut bytes);
+    resign(&mut bytes);
+    assert_eq!(
+        SaveCodec::decode_header(&bytes[..header_len], len)
+            .unwrap()
+            .placed_count,
+        Some(2)
+    );
+    assert_eq!(
+        SaveCodec::decode(&bytes),
+        Err(SaveError::CorruptSave("Placed count cache mismatch"))
+    );
+    bytes[placed_offset..placed_offset + 4].copy_from_slice(&5u32.to_le_bytes());
+    resign_header(&mut bytes);
+    assert!(SaveCodec::decode_header(&bytes, len).is_err());
+    assert!(SaveCodec::decode_header(&original, len - 1).is_err());
+    assert!(SaveCodec::decode_header(&original, u64::MAX).is_err());
+}
+#[test]
+fn normal_updates_never_read_image_or_previous_piece_state() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let bytes = encoded_image(image::ImageFormat::Png);
+    let saved = repo
+        .create(
+            SaveTitle::new("save").unwrap(),
+            checkpoint(&bytes),
+            Some(&bytes),
+        )
+        .unwrap();
+    storage.reads.lock().unwrap().clear();
+    let key = StorageKey::Image(image_hash(&bytes));
+    // External corruption after import is detected on load, not each Save.
+    storage.blobs.lock().unwrap().get_mut(&key).unwrap()[50] ^= 1;
+    repo.update(saved.id, saved.title.clone(), checkpoint(&bytes), None)
+        .unwrap();
+    assert!(storage.reads.lock().unwrap().is_empty());
+    assert_eq!(
+        *storage.ranges.lock().unwrap(),
+        vec![(StorageKey::Save(saved.id), 0, MAX_SAVE_HEADER_BYTES)]
+    );
+    assert!(matches!(
+        repo.load(saved.id),
+        Err(SaveError::CorruptImage(_))
+    ));
+    assert!(matches!(
+        repo.import_image(image_hash(&bytes), &bytes),
+        Err(SaveError::CorruptImage(_))
+    ));
+    let before = storage.blobs.lock().unwrap()[&StorageKey::Save(saved.id)].clone();
+    storage.delete(key).unwrap();
+    assert!(matches!(
+        repo.update(saved.id, saved.title, checkpoint(&bytes), None),
+        Err(SaveError::MissingImage(_))
+    ));
+    assert_eq!(
+        storage.blobs.lock().unwrap()[&StorageKey::Save(saved.id)],
+        before
+    );
+}
+#[test]
+fn fifty_million_piece_previews_read_only_bounded_headers() {
+    use std::cell::Cell;
+    struct HeadersOnly {
+        headers: HashMap<StorageKey, Vec<u8>>,
+        length: u64,
+        bytes_read: std::rc::Rc<Cell<usize>>,
+    }
+    impl SaveStorage for HeadersOnly {
+        fn list(&self, _: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
+            Ok(self.headers.keys().copied().collect())
+        }
+        fn read(&self, _: StorageKey) -> Result<Vec<u8>, StorageError> {
+            panic!("Listing fetched the entire save")
+        }
+        fn read_range(
+            &self,
+            key: StorageKey,
+            offset: u64,
+            length: usize,
+        ) -> Result<Vec<u8>, StorageError> {
+            assert_eq!(offset, 0);
+            assert_eq!(length, MAX_SAVE_HEADER_BYTES);
+            let bytes = self.headers[&key].clone();
+            self.bytes_read.set(self.bytes_read.get() + bytes.len());
+            Ok(bytes)
+        }
+        fn len(&self, _: StorageKey) -> Result<u64, StorageError> {
+            Ok(self.length)
+        }
+        fn write(&self, _: StorageKey, _: &[u8]) -> Result<(), StorageError> {
+            unreachable!()
+        }
+        fn delete(&self, _: StorageKey) -> Result<(), StorageError> {
+            unreachable!()
+        }
+        fn exists(&self, _: StorageKey) -> Result<bool, StorageError> {
+            Ok(true)
+        }
+    }
+    let mut header = SaveCodec::encode(&save()).unwrap();
+    let t = save().metadata.title.as_str().len();
+    let header_len = 172 + t;
+    let length = header_len as u64 + 16_000_000 + 32;
+    header.truncate(header_len);
+    header[14..22].copy_from_slice(&length.to_le_bytes());
+    for (offset, value) in [
+        (108 + t, 1000u32),
+        (112 + t, 1000),
+        (116 + t, 4096),
+        (120 + t, 4096),
+        (128 + t, 1_000_000),
+        (132 + t, 1_000_000),
+    ] {
+        header[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut headers = HashMap::new();
+    for id in 0u128..50 {
+        let mut bytes = header.clone();
+        bytes[22..38].copy_from_slice(&id.to_le_bytes());
+        resign_header(&mut bytes);
+        headers.insert(StorageKey::Save(SaveId(id)), bytes);
+    }
+    let bytes_read = std::rc::Rc::new(Cell::new(0));
+    let storage = HeadersOnly {
+        headers,
+        length,
+        bytes_read: bytes_read.clone(),
+    };
+    let repo = SaveRepository::new(storage);
+    let list = repo.list().unwrap();
+    assert_eq!(list.len(), 50);
+    for entry in list {
+        let summary = entry.summary.unwrap();
+        assert_eq!(summary.piece_count, 1_000_000);
+        assert_eq!(summary.placed_count, Some(1));
+    }
+    assert_eq!(bytes_read.get(), 50 * header_len);
+    assert!(bytes_read.get() <= 50 * MAX_SAVE_HEADER_BYTES);
+}
+#[test]
+fn filesystem_range_reads_are_bounded_and_handle_eof() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = FilesystemStorage::new(dir.path());
+    let key = StorageKey::Save(SaveId(1));
+    storage.write(key, b"0123456789").unwrap();
+    assert_eq!(storage.len(key).unwrap(), 10);
+    assert_eq!(storage.read_range(key, 3, 4).unwrap(), b"3456");
+    assert_eq!(storage.read_range(key, 9, 4).unwrap(), b"9");
+    assert!(storage.read_range(key, 50, 4).unwrap().is_empty());
+    assert!(storage.read_range(key, 0, 0).unwrap().is_empty());
+    assert_eq!(
+        storage.read_range(key, u64::MAX, 1),
+        Err(StorageError::InvalidRange)
+    );
+    assert!(matches!(
+        storage.len(StorageKey::Save(SaveId(2))),
+        Err(StorageError::NotFound(_))
+    ));
+}
+#[test]
+fn thread_affine_backend_stays_with_owner_through_repository_operations() {
+    use std::{
+        rc::Rc,
+        time::{Duration, Instant},
+    };
+    struct LocalStorage {
+        owner: Rc<std::thread::ThreadId>,
+        memory: MemoryStorage,
+    }
+    impl LocalStorage {
+        fn check(&self) {
+            assert_eq!(*self.owner, std::thread::current().id());
+        }
+    }
+    impl SaveStorage for LocalStorage {
+        fn list(&self, ns: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
+            self.check();
+            self.memory.list(ns)
+        }
+        fn read(&self, key: StorageKey) -> Result<Vec<u8>, StorageError> {
+            self.check();
+            self.memory.read(key)
+        }
+        fn read_range(
+            &self,
+            key: StorageKey,
+            offset: u64,
+            length: usize,
+        ) -> Result<Vec<u8>, StorageError> {
+            self.check();
+            self.memory.read_range(key, offset, length)
+        }
+        fn len(&self, key: StorageKey) -> Result<u64, StorageError> {
+            self.check();
+            self.memory.len(key)
+        }
+        fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
+            self.check();
+            self.memory.write(key, bytes)
+        }
+        fn delete(&self, key: StorageKey) -> Result<(), StorageError> {
+            self.check();
+            self.memory.delete(key)
+        }
+        fn exists(&self, key: StorageKey) -> Result<bool, StorageError> {
+            self.check();
+            self.memory.exists(key)
+        }
+    }
+    let storage = LocalStorage {
+        owner: Rc::new(std::thread::current().id()),
+        memory: MemoryStorage::default(),
+    };
+    let (proxy, inbox) = executor::storage_channel();
+    let worker = std::thread::spawn(move || {
+        let repo = SaveRepository::new(proxy);
+        let bytes = encoded_image(image::ImageFormat::Png);
+        let saved = repo
+            .create(
+                SaveTitle::new("local owner").unwrap(),
+                checkpoint(&bytes),
+                Some(&bytes),
+            )
+            .unwrap();
+        assert_eq!(
+            repo.list().unwrap()[0]
+                .summary
+                .as_ref()
+                .unwrap()
+                .placed_count,
+            Some(1)
+        );
+        assert_eq!(repo.load(saved.id).unwrap().image_bytes, bytes);
+        repo.update(saved.id, saved.title, checkpoint(&bytes), None)
+            .unwrap();
+        repo.delete(saved.id).unwrap();
+        assert!(repo.list().unwrap().is_empty());
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !worker.is_finished() {
+        assert!(Instant::now() < deadline, "Storage worker did not complete");
+        while let Ok(request) = inbox.try_recv() {
+            request.execute(&storage).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    worker.join().unwrap();
 }
