@@ -54,9 +54,15 @@ struct VertexOutput {
         out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);
         out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];
     }
-    // Reverse-Z in the exact 24-bit range; placed pieces have rank zero.
-    let rank=select(state.z_order+2u,1u,(state.flags&1u)!=0u);
-    out.position.z=f32(rank)/16777216.0*out.position.w;
+    // Reverse-Z: loose ranks are >=2; exact placed pieces keep rank 1.
+    // Far placed splats overlap, so unique ranks in [1,2) make the largest ID
+    // win independently of opaque culling's unordered atomic append.
+    var rank=f32(state.z_order+2u);
+    if (state.flags&1u)!=0u {
+        rank=1.0;
+        if config.far_zoom!=0u {rank+=f32(id)/f32(config.count);}
+    }
+    out.position.z=rank/16777216.0*out.position.w;
     out.id=id;out.flags=state.flags&~6u;
     // An explicit branch keeps ordinary frames from loading component roots.
     if config.preview_active!=0u && (state.flags&9u)==0u {

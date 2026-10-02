@@ -16,11 +16,15 @@ main visibleを候補源とし、選択時だけ追加computeでpoint画素ま�
 
 far vertexはpiece中心をmain clipへ投影し、viewport offset込みのphysical pixel座標で`floor(center) + 0.5`へsnapします。各軸の大きさは`max(projected_piece_size, 1 px)`で、全visible IDを同じindirect drawで描きます。edge hash / packed profile生成、profile decode、tab / blank SDF、connected edge outlineを省略し、cell中央UVのLOD 0 sampleを使います。sample alphaが0ならmain / point / rectangleすべてdiscardし、半透明は既存のsort / blendを維持します。selectedは黄tint、previewは青tintで、黄が優先です。
 
+opaqueのplaced splatが同一pixelへ重なる場合は、far modeだけreverse-Z rankを`1 + PieceId / count`にします。対応上限100万pieceで各IDを区別できる`[1, 2)`の範囲を使い、可視IDのatomic append順に関係なく最大IDの色が残ります。通常zoomのplacedは従来のrank 1、looseは従来の`z_order + 2`のままで、placedは最小rankのlooseより常に後ろです。opaque側へsortやdrawを追加せず、半透明の既存の安定ID順 / radix sortも維持します。
+
 uniformはmain viewportのsize / origin、projected piece size、main 1 pixelのworld size、far flag、crop scale / offsetを16-byteの組にして追加します。pointではmain matrixとpixel scaleを保持し、snap済みquadへcropを最後に適用して1×1 targetへ写します。viewport sizeを1×1へ置き換えません。通常modeのpoint cropは従来のmatrix合成を維持し、rectangleはmain viewportとscissorをそのまま使います。
 
 main / pick visibilityはfar時だけ`max(normal_half, splat_half) + 0.5 * main_pixel_world_size`へboundsを広げます。最小footprintに加え、snapで最大0.5 pixel移動する分も含めます。pick ROIでview boundsを更新してもpixel scaleはmainのままです。通常modeのcullingは従来どおりです。
 
 `render/tests/far_zoom_tests.rs`は短辺・physical resolutionによる双方向threshold切替、0〜0.875 pxのX/Y位相、8段階のfractional pan、offset付き非正方viewport、point / rectangle coverage、縦横比のあるsplatと画面外中心、GPU drag、alpha 0 / 半透明、黄 / 青tintを検証します。integer pixel境界ではCPU / GPUの投影丸めにより隣のpixelへsnapする場合を許容し、各pieceが必ず1 pixelを持つことと、その実pixelでpickできることを確認します。100万pieceを`generate_placement_grid`の実初期配置に置くテストは、8 panすべてで全pixel coverage、indirect argsの100万instance、state 16 bytes / piece、camera frameのstate / root / selection / drag upload 0 bytes、全pieceのrectangle選択とpoint hitを確認します。
+
+placed競合の回帰テストはcountを100万にし、ID 0 / 1 / 999998 / 999999を正解位置で同じpixelへsnapさせます。色の異なるopaque textureとテスト専用cullingで6種類の可視順を強制し、各順を複数frame繰り返して最大IDの色を確認します。自然なGPU append順が偶然安定していても検出でき、修正前は逆順でID 0の色が残って失敗します。最小Zのlooseを重ねるケースとplacedのpoint / rectangle選択除外も確認します。
 
 2026-10-02、Windows / RTX 5090 / Vulkanで実GPU検証。far pathを一時的に無効化した対照実行では64個中3個しかcoverageを持たず、位相回帰テストが失敗しました。far pathでは全64個を維持します。main drawは1回、CPUの通常frameに全piece走査・専用far piece listを追加していません。
 

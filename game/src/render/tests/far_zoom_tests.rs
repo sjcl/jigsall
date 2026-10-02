@@ -514,6 +514,152 @@ fn gpu_far_zoom_anisotropic_splats_culling_and_drag() {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_far_zoom_placed_depth_is_independent_of_visible_order() {
+    use crate::resources::pieces::PLACED;
+    const COUNT: u32 = 1_000_000;
+    let ids = [0, 1, COUNT - 2, COUNT - 1];
+    let colors = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    let orders = [
+        [0, 1, 2, 3],
+        [3, 2, 1, 0],
+        [1, 0, 3, 2],
+        [2, 3, 0, 1],
+        [1, 3, 2, 0],
+        [3, 1, 0, 2],
+    ];
+    let (mut app, camera, target) = gpu_app(128);
+
+    // Exercise the production opaque draw with deliberate permutations of the
+    // culling output. Natural atomic append order may appear stable on one GPU.
+    #[derive(Resource, Default)]
+    struct ForcedOrder(u32);
+    fn extract_order(mut frame: ResMut<ExtractedPuzzle>, order: Extract<Res<ForcedOrder>>) {
+        frame.config.reserved = order.0;
+    }
+    let original = include_str!("../visibility.wgsl");
+    let append = "let dst=atomicAdd(&args.instance_count,1u);visible[dst]=id;";
+    assert!(original.contains(append));
+    let forced = original.replace(
+        append,
+        "
+        atomicAdd(&args.instance_count,1u);
+        let candidate=select(id,id-(config.count-4u),id>=config.count-2u);
+        let dst=(config.reserved>>(candidate*2u))&3u;
+        visible[dst]=id;",
+    );
+    let shader = app
+        .world_mut()
+        .resource_mut::<Assets<Shader>>()
+        .add(Shader::from_wgsl(forced, "placed_test_visibility.wgsl"));
+    app.insert_resource(ForcedOrder::default());
+    app.sub_app_mut(RenderApp)
+        .world_mut()
+        .resource_mut::<GpuRenderer>()
+        .compute_shader = shader;
+    app.sub_app_mut(RenderApp)
+        .add_systems(ExtractSchedule, extract_order.after(extract_puzzle));
+
+    let def = definition(UVec2::splat(1000), 1000, 42);
+    app.world_mut().insert_resource(def.clone());
+    let mut rgba = [0, 0, 0, 255].repeat(COUNT as usize);
+    for (&id, color) in ids.iter().zip(colors) {
+        rgba[id as usize * 4..id as usize * 4 + 4].copy_from_slice(&color);
+    }
+    let image = Image::new(
+        Extent3d {
+            width: 1000,
+            height: 1000,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        rgba,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::all(),
+    );
+    let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
+    app.world_mut().resource_mut::<PuzzleImage>().handle = handle;
+    assert!(app.world().resource::<PuzzleImage>().opaque);
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.initialize(vec![Vec2::ZERO; COUNT as usize]);
+        for state in store.states.iter_mut() {
+            state.flags = 0;
+        }
+        for id in ids {
+            store.states[id as usize].position = def.correct_position(PieceId(id));
+            store.states[id as usize].flags = ENABLED | PLACED;
+            store.states[id as usize].z_order = 0;
+        }
+    }
+    {
+        let mut transform = app.world_mut().get_mut::<Transform>(camera).unwrap();
+        transform.scale = Vec3::new(2000.0, 2000.0, 1.0);
+        transform.translation = Vec3::new(-1000.0, 1000.0, 0.0);
+    }
+    wait_ready(&mut app);
+    update_gpu(&mut app);
+    let config = main_config(&app);
+    assert_eq!(config.count, COUNT);
+    assert_eq!(config.far_zoom, 1);
+    let pixel = UVec2::splat(64);
+    for id in ids {
+        assert_eq!(
+            projected_pixel(&config, def.correct_position(PieceId(id)))
+                .floor()
+                .as_uvec2(),
+            pixel
+        );
+    }
+    let offset = (pixel.y * 128 + pixel.x) as usize * 4;
+    // Check repeated frames and the smallest loose rank against the largest
+    // placed IDs. Their far depths must remain strictly below loose rank 2.
+    for loose in [false, true] {
+        if loose {
+            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+            store.states[0].flags = ENABLED;
+            store.dirty_pieces.insert(PieceId(0));
+        }
+        let expected = colors[if loose { 0 } else { 3 }];
+        for _ in 0..2 {
+            for order in orders {
+                app.world_mut().resource_mut::<ForcedOrder>().0 = order
+                    .iter()
+                    .enumerate()
+                    .fold(0, |bits, (slot, &candidate)| {
+                        bits | (slot as u32) << (candidate * 2)
+                    });
+                update_gpu(&mut app);
+                let pixels = rendered_pixels(&mut app, target.clone());
+                assert_eq!(
+                    visible_ids(&app),
+                    order.map(|candidate| ids[candidate as usize]),
+                    "forced culling order"
+                );
+                assert_eq!(drawn_mask(&pixels).iter().filter(|&&p| p).count(), 1);
+                for (&actual, expected) in pixels[offset..offset + 4].iter().zip(expected) {
+                    assert!((i32::from(actual) - i32::from(expected)).abs() <= 2,
+                        "placed splat color depends on visible order {order:?}, loose {loose}: {:?}", &pixels[offset..offset + 4]);
+                }
+            }
+        }
+        assert_eq!(
+            pick(&mut app, pixel_rect(pixel), SelectionMode::Point),
+            if loose { vec![PieceId(0)] } else { vec![] }
+        );
+        assert_eq!(
+            pick(&mut app, pixel_rect(pixel), SelectionMode::Rectangle),
+            if loose { vec![PieceId(0)] } else { vec![] }
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_far_zoom_million_initial_lattice_has_no_missing_coverage() {
     use puzzella_puzzle::placement::generate_placement_grid;
     const COUNT: u32 = 1_000_000;
