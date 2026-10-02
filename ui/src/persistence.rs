@@ -14,6 +14,7 @@ pub struct SaveDialogs {
     pub load_open: bool,
     pub title: String,
     pending_delete: Option<SaveId>,
+    reveal_delete: Option<SaveId>,
     loading_save: Option<SaveId>,
     focus_title: bool,
 }
@@ -225,7 +226,6 @@ fn paint_load_dialog(
                         });
                     }
                     for entry in &state.entries {
-                        let delete_was_open = dialogs.pending_delete == Some(entry.id);
                         theme::card().show(ui, |ui| {
                             ui.set_width((ui.available_width()).max(0.0));
                             match &entry.summary {
@@ -265,8 +265,10 @@ fn paint_load_dialog(
                                                 .desired_width(ui.available_width())
                                                 .text(format!("{:.1}% complete", progress * 100.0)),
                                         );
-                                        if paint_load_actions(ui, dialogs, state, entry.id, true) {
-                                            action = Some((entry.id, false));
+                                        if let Some(delete) =
+                                            paint_load_actions(ui, dialogs, state, entry.id, true)
+                                        {
+                                            action = Some((entry.id, delete));
                                         }
                                     };
                                     if wide {
@@ -289,39 +291,11 @@ fn paint_load_dialog(
                                             .color(theme::DANGER),
                                     );
                                     theme::hint(ui, error.to_string());
-                                    paint_load_actions(ui, dialogs, state, entry.id, false);
-                                }
-                            }
-                            if dialogs.pending_delete == Some(entry.id) {
-                                let confirmation = ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("Permanently delete this save?")
-                                            .color(theme::DANGER),
-                                    );
-                                    ui.horizontal_wrapped(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                !state.busy,
-                                                egui::Button::new(
-                                                    egui::RichText::new("Delete")
-                                                        .color(theme::DANGER),
-                                                ),
-                                            )
-                                            .clicked()
-                                        {
-                                            action = Some((entry.id, true));
-                                            dialogs.pending_delete = None;
-                                        }
-                                        if ui
-                                            .add_enabled(!state.busy, egui::Button::new("Cancel"))
-                                            .clicked()
-                                        {
-                                            dialogs.pending_delete = None;
-                                        }
-                                    });
-                                });
-                                if !delete_was_open {
-                                    confirmation.response.scroll_to_me(None);
+                                    if let Some(delete) =
+                                        paint_load_actions(ui, dialogs, state, entry.id, false)
+                                    {
+                                        action = Some((entry.id, delete));
+                                    }
                                 }
                             }
                         });
@@ -352,6 +326,7 @@ fn paint_load_dialog(
                     if theme::button(ui, "Back to Title", width, false).clicked() {
                         dialogs.load_open = false;
                         dialogs.pending_delete = None;
+                        dialogs.reveal_delete = None;
                     }
                     if theme::button(ui, "Refresh", width, false).clicked() {
                         thumbnails.invalidate();
@@ -363,6 +338,7 @@ fn paint_load_dialog(
     if !state.busy && response.should_close() {
         dialogs.load_open = false;
         dialogs.pending_delete = None;
+        dialogs.reveal_delete = None;
     }
     if dialogs.load_open {
         thumbnails.request_visible(service, &visible, state.busy);
@@ -377,27 +353,24 @@ fn paint_load_actions(
     state: &PersistenceState,
     id: SaveId,
     can_resume: bool,
-) -> bool {
-    let mut resume = false;
+) -> Option<bool> {
+    let mut action = None;
+    let confirming = dialogs.pending_delete == Some(id);
     ui.add_enabled_ui(!state.busy, |ui| {
-        ui.horizontal(|ui| {
+        let draw_row = |ui: &mut egui::Ui| {
             let available = ui.available_width();
-            let show_delete = dialogs.pending_delete != Some(id);
-            let delete_width = if show_delete {
+            let delete_width = if confirming {
+                200.0_f32.min(available * 0.55)
+            } else {
                 90.0_f32.min(available * 0.45)
-            } else {
-                0.0
             };
-            let gap = if show_delete {
-                ui.spacing().item_spacing.x
-            } else {
-                0.0
-            };
+            let gap = ui.spacing().item_spacing.x;
             if available < 270.0 {
                 ui.spacing_mut().button_padding.x = 6.0;
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
             }
-            if can_resume {
-                resume = theme::button(
+            if can_resume
+                && theme::button(
                     ui,
                     if dialogs.loading_save == Some(id) {
                         "Loading puzzle..."
@@ -407,10 +380,64 @@ fn paint_load_actions(
                     180.0_f32.min((available - delete_width - gap).max(0.0)),
                     true,
                 )
-                .clicked();
+                .clicked()
+            {
+                action = Some(false);
             }
-            if show_delete {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let align = if confirming {
+                egui::Align::Min
+            } else {
+                egui::Align::Center
+            };
+            ui.with_layout(egui::Layout::right_to_left(align), |ui| {
+                if confirming {
+                    let confirmation = ui.allocate_ui_with_layout(
+                        egui::vec2(delete_width, 0.0),
+                        egui::Layout::top_down(egui::Align::RIGHT),
+                        |ui| {
+                            ui.set_width(delete_width);
+                            let compact = delete_width < 180.0;
+                            let font_size = if compact { 12.0 } else { 14.0 };
+                            if compact {
+                                ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                                ui.spacing_mut().button_padding.x = 6.0;
+                            }
+                            ui.label(
+                                egui::RichText::new("Permanently delete this save?")
+                                    .size(font_size)
+                                    .color(theme::DANGER),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .button(egui::RichText::new("Cancel").size(font_size))
+                                        .clicked()
+                                    {
+                                        dialogs.pending_delete = None;
+                                        dialogs.reveal_delete = None;
+                                    }
+                                    if ui
+                                        .button(
+                                            egui::RichText::new("Delete")
+                                                .size(font_size)
+                                                .color(theme::DANGER),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(true);
+                                        dialogs.pending_delete = None;
+                                        dialogs.reveal_delete = None;
+                                    }
+                                },
+                            );
+                        },
+                    );
+                    if dialogs.reveal_delete == Some(id) {
+                        confirmation.response.scroll_to_me(None);
+                        dialogs.reveal_delete = None;
+                    }
+                } else {
                     let height = if ui.ctx().content_rect().height() < 600.0 {
                         38.0
                     } else {
@@ -431,12 +458,18 @@ fn paint_load_actions(
                         .clicked()
                     {
                         dialogs.pending_delete = Some(id);
+                        dialogs.reveal_delete = Some(id);
                     }
-                });
-            }
-        });
+                }
+            });
+        };
+        if confirming {
+            ui.horizontal_top(draw_row);
+        } else {
+            ui.horizontal(draw_row);
+        }
     });
-    resume
+    action
 }
 
 pub fn status(ui: &mut egui::Ui, state: &PersistenceState) {

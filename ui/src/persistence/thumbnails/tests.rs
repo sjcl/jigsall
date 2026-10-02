@@ -85,7 +85,7 @@ fn text_rects(output: &egui::FullOutput, label: &str) -> Vec<(egui::Rect, egui::
         .iter()
         .filter_map(|shape| match &shape.shape {
             egui::Shape::Text(text) if text.galley.job.text == label => Some((
-                egui::Rect::from_min_size(text.pos, text.galley.size()),
+                text.galley.rect.translate(text.pos.to_vec2()),
                 shape.clip_rect,
             )),
             _ => None,
@@ -149,6 +149,60 @@ fn delete_button_shares_resume_row_at_the_right_edge() {
             delete_button.right() - delete.right() < 50.0,
             "Delete is not at the card's right edge"
         );
+        output.drop_without_applying_deltas();
+        dialogs.pending_delete = Some(SaveId(0));
+        for _ in 0..3 {
+            frame(
+                &ctx,
+                &mut thumbnails,
+                &mut dialogs,
+                &mut state,
+                &service,
+                size,
+                0.0,
+            )
+            .drop_without_applying_deltas();
+        }
+        let output = frame(
+            &ctx,
+            &mut thumbnails,
+            &mut dialogs,
+            &mut state,
+            &service,
+            size,
+            0.0,
+        );
+        let (resume, _) = text_rects(&output, "Resume Puzzle")[0];
+        let (caption, _) = text_rects(&output, "Permanently delete this save?")[0];
+        let (delete, _) = text_rects(&output, "Delete")[0];
+        let (cancel, _) = text_rects(&output, "Cancel")[0];
+        assert!(
+            caption.left() >= resume.right() && delete.left() >= resume.right(),
+            "Confirmation must be beside Resume: {resume:?}, {caption:?}, {delete:?}"
+        );
+        assert!((delete.center().y - cancel.center().y).abs() < 1.0);
+        assert!(cancel.left() > delete.right());
+        assert!(
+            caption.top() < resume.bottom(),
+            "Confirmation must start in the action row"
+        );
+        let card = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.corner_radius.nw == 10 && rect.rect.contains(resume.center()) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            card.contains_rect(caption) && card.contains_rect(cancel),
+            "Confirmation exceeds its card: {card:?}, {caption:?}, {cancel:?}"
+        );
+        assert!(card.right() - cancel.right() < 50.0);
         output.drop_without_applying_deltas();
     }
 }
@@ -352,7 +406,20 @@ fn opening_delete_confirmation_scrolls_only_when_needed() {
                 }
                 _ => None,
             })
-            .unwrap();
+            .unwrap_or_else(|| {
+                panic!(
+                    "Confirmation outside cards: {position:?}, cards: {:?}",
+                    output
+                        .shapes
+                        .iter()
+                        .filter_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect) if rect.corner_radius.nw == 10 =>
+                                Some(rect.rect),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                )
+            });
         if !last_visible {
             assert_eq!(
                 expanded_card_top, card_top,
