@@ -50,7 +50,7 @@ fn gpu_bind_group_reuse_and_invalidation() {
     state.position.x = 1.0;
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .set_state(PieceId(0), state);
+        .set_state(PieceId(0), state, puzzella_core::LOCAL_PLAYER);
     for _ in 0..4 {
         update_gpu(&mut app);
     }

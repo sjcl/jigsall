@@ -18,6 +18,22 @@ Transport (opaque Puzzella identities, byte messages, lifecycle events)
 
 ## Identity and establishment
 
+`PlayerId` is a session player identity. `game::resources::LocalPlayerId` is the
+Bevy resource identifying the player currently controlled by this process.
+`LOCAL_PLAYER` / `PlayerId(0)` is only the offline default: with local ID 42,
+player 0 is remote. Input, selection rollback, drag presentation, and authority
+Grab/Release replay receive this identity explicitly. `HostRouter` and
+`ClientRouter` carry a `local_player` field supplied by the runtime; the low-level
+adapters do not infer it from the authority host. `RemoteDragUpdate` bookkeeping
+continues to track all accepted drag contexts as before.
+
+Entering Menu resets `LocalPlayerId` to its offline default. Snapshot installation
+may replace `PieceDataStore` but leaves the independent identity resource intact.
+It is excluded from checkpoints, snapshots, save files, puzzle definitions, and
+wire messages. A future Direct-IP join will use
+`JoinAccepted -> assigned PlayerId -> LocalPlayerId update`; assignment and the
+join handshake are not implemented here. This identity is independent of SteamID.
+
 `Transport` exposes `poll`, `send` and `close`. `ConnectionId` and `ListenerId` are
 private-field u64 tokens. Their constructors are crate-private: backends inside
 `game` issue them, and external callers obtain them through transport APIs/events.

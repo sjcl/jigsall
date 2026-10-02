@@ -26,6 +26,7 @@ fn fixture() -> (PuzzleDefinition, PieceDataStore, PieceBitSet) {
             members: members.clone(),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     store.drag.delta = Vec2::new(20., 30.);
     store.dirty_pieces.clear();
@@ -46,6 +47,7 @@ fn rotate_drag(
             quarter_turns: turns,
         },
         Some(d),
+        puzzella_core::LOCAL_PLAYER,
     )
 }
 
@@ -113,6 +115,7 @@ fn repeated_drag_turns_reconstruct_fractional_l_shape_without_accumulated_drift(
             members: members.clone(),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     let before = store.states.to_vec();
     for turn in 0..400 {
@@ -177,7 +180,12 @@ fn invalid_drag_sibling_rejects_the_whole_operation_before_mutation() {
         };
         assert!(
             !store
-                .apply_command(LOCAL_PLAYER, &command, Some(&d))
+                .apply_command(
+                    LOCAL_PLAYER,
+                    &command,
+                    Some(&d),
+                    puzzella_core::LOCAL_PLAYER
+                )
                 .drag_rebased,
             "case {case}"
         );
@@ -224,6 +232,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                 members: members.clone(),
             },
             Some(&d),
+            puzzella_core::LOCAL_PLAYER,
         );
         let desired = if board {
             d.correct_position(PieceId(0))
@@ -245,6 +254,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                     delta: Vec2::ZERO,
                 },
                 Some(&d),
+                puzzella_core::LOCAL_PLAYER,
             );
             assert_eq!(store.placed_count, 0);
             store.drag.members = members.words().clone();
@@ -254,6 +264,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                     members: members.clone(),
                 },
                 Some(&d),
+                puzzella_core::LOCAL_PLAYER,
             );
             assert!(rotate_drag(&mut store, &d, &members, -1).drag_rebased);
         }
@@ -269,6 +280,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                 delta: Vec2::ZERO,
             },
             Some(&d),
+            puzzella_core::LOCAL_PLAYER,
         );
         if board {
             assert_eq!(store.placed_count, 1);
@@ -297,6 +309,7 @@ fn drag_rotation_upload_is_exact_even_for_fragmented_members_and_pointer_frames_
             members: members.clone(),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     let mut app = App::new();
     app.insert_resource(store)

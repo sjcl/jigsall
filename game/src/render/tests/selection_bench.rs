@@ -95,7 +95,7 @@ fn gpu_million_selection_benchmark() {
         let start = Instant::now();
         app.world_mut()
             .resource_mut::<PieceDataStore>()
-            .commit_selection(mask, None);
+            .commit_selection(mask, None, puzzella_core::LOCAL_PLAYER);
         let commit = start.elapsed().as_secs_f64() * 1e6;
         let start = Instant::now();
         app.world_mut()
@@ -122,7 +122,8 @@ fn gpu_million_selection_benchmark() {
                 members: members.clone(),
             };
             let start = Instant::now();
-            let outcome = store.apply_command(LOCAL_PLAYER, &grab, Some(&def));
+            let outcome =
+                store.apply_command(LOCAL_PLAYER, &grab, Some(&def), puzzella_core::LOCAL_PLAYER);
             let grab_cpu = start.elapsed().as_secs_f64() * 1e6;
             assert_eq!(outcome.grabbed, 1_000_000);
             (members, grab_cpu)
@@ -157,7 +158,12 @@ fn gpu_million_selection_benchmark() {
             };
             store.drag = default();
             let start = Instant::now();
-            let outcome = store.apply_command(LOCAL_PLAYER, &release, Some(&def));
+            let outcome = store.apply_command(
+                LOCAL_PLAYER,
+                &release,
+                Some(&def),
+                puzzella_core::LOCAL_PLAYER,
+            );
             let release_cpu = start.elapsed().as_secs_f64() * 1e6;
             assert_eq!((outcome.released, outcome.placed), (1_000_000, 0));
             assert!(store.held_by.is_empty());

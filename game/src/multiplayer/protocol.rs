@@ -81,6 +81,7 @@ impl ProtocolDragContexts {
         authenticated_player: PlayerId,
         envelope: &ProtocolCommandEnvelope,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> Result<HostCommandOutcome, ProtocolCommandError> {
         // Publication must be possible BEFORE mutation. Counters never wrap.
         if !matches!(envelope.command, ProtocolPieceCommand::DragUpdate { .. })
@@ -90,7 +91,14 @@ impl ProtocolDragContexts {
                 ProtocolError::CounterExhausted,
             ));
         }
-        let result = self.apply(session, store, authenticated_player, envelope, definition)?;
+        let result = self.apply(
+            session,
+            store,
+            authenticated_player,
+            envelope,
+            definition,
+            local_player,
+        )?;
         let event = match &result {
             ProtocolCommandResult::Grabbed { ack, .. } => {
                 Some(ProtocolAuthorityEvent::GrabAccepted(ack.clone()))
@@ -211,6 +219,7 @@ impl ProtocolDragContexts {
         authenticated_player: PlayerId,
         envelope: &ProtocolCommandEnvelope,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> Result<ProtocolCommandResult, ProtocolCommandError> {
         if envelope.player != authenticated_player {
             return Err(ProtocolCommandError::WrongPlayer);
@@ -309,8 +318,11 @@ impl ProtocolDragContexts {
                                 .iter_component(reference.member)
                                 .all(|id| store.is_selectable(id))
                         });
-                        let applied =
-                            store.grab_resolved_components(player, refs.iter().map(|r| r.member));
+                        let applied = store.grab_resolved_components(
+                            player,
+                            refs.iter().map(|r| r.member),
+                            local_player,
+                        );
                         (applied, ActiveDragTarget::Sparse(refs))
                     }
                     ResolvedPieceTarget::Dense(members) => {
@@ -318,7 +330,10 @@ impl ProtocolDragContexts {
                         let target =
                             ActiveDragTarget::from_accepted_members(&store.connectivity, &accepted)
                                 .map_err(ProtocolCommandError::Target)?;
-                        (store.grab_accepted_members(player, &accepted), target)
+                        (
+                            store.grab_accepted_members(player, &accepted, local_player),
+                            target,
+                        )
                     }
                 };
                 let ClientCommandSequence::Control(grab_sequence) = envelope.sequence else {
@@ -406,6 +421,7 @@ impl ProtocolDragContexts {
                     &drag.target,
                     *final_delta,
                     definition,
+                    local_player,
                 )
                 .map_err(ProtocolCommandError::Target)?;
                 self.players.remove(&player);

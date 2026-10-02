@@ -56,6 +56,7 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
     )
     .add_plugins(RenderDiagnosticsPlugin)
     .init_resource::<PieceDataStore>()
+    .init_resource::<crate::resources::LocalPlayerId>()
     .init_resource::<PieceUpload>()
     .add_plugins(PuzzleSelectionPlugin)
     .add_systems(Last, prepare_piece_upload)
@@ -752,7 +753,7 @@ fn gpu_raster_selection() {
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
         let mut s = store.state(PieceId(0)).unwrap();
         s.position.x += 1.0;
-        store.set_state(PieceId(0), s);
+        store.set_state(PieceId(0), s, puzzella_core::LOCAL_PLAYER);
     }
     update_gpu(&mut app);
     {
@@ -787,7 +788,7 @@ fn gpu_raster_selection() {
             let mut state = store.state(PieceId(1)).unwrap();
             state.placed = !held;
             state.held_by = held.then_some(puzzella_core::LOCAL_PLAYER);
-            store.set_state(PieceId(1), state);
+            store.set_state(PieceId(1), state, puzzella_core::LOCAL_PLAYER);
         }
         assert_eq!(pick(&mut app, rect, SelectionMode::Point), vec![PieceId(0)]);
     }
@@ -1200,6 +1201,7 @@ fn procedural_gpu_benchmark() {
         cpu_app
             .init_resource::<PieceUpload>()
             .init_resource::<PieceDataStore>()
+            .init_resource::<crate::resources::LocalPlayerId>()
             .add_systems(Update, prepare_piece_upload);
         cpu_app
             .world_mut()
@@ -1211,7 +1213,7 @@ fn procedural_gpu_benchmark() {
             let mut store = cpu_app.world_mut().resource_mut::<PieceDataStore>();
             let mut s = store.state(PieceId(0)).unwrap();
             s.position.x += 1.0;
-            store.set_state(PieceId(0), s);
+            store.set_state(PieceId(0), s, puzzella_core::LOCAL_PLAYER);
         }
         let start = Instant::now();
         cpu_app

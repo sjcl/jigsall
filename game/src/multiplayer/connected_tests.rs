@@ -39,7 +39,7 @@ fn fixture(placed: bool) -> (PuzzleDefinition, PieceDataStore) {
         for id in 0..8 {
             let mut state = store.state(PieceId(id)).unwrap();
             state.placed = true;
-            store.set_state(PieceId(id), state);
+            store.set_state(PieceId(id), state, puzzella_core::LOCAL_PLAYER);
         }
     }
     // Two already-connected components merge across their correct boundary.
@@ -63,7 +63,12 @@ fn connected_snapshot_round_trip_preserves_positions_placement_and_edges() {
         let (d, mut s) = fixture(placed);
         s.selected_pieces.fill();
         if !placed {
-            s.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(5)), Some(&d));
+            s.apply_command(
+                PlayerId(1),
+                &PieceCommand::Grab(PieceId(5)),
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER,
+            );
         }
         let snapshot = GameSnapshot::capture(&s, &d, SESSION, expected(&d).cursor).unwrap();
         assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
@@ -222,7 +227,12 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
         over_ui: false,
         focused: true,
     };
-    interaction.update(frame(Vec2::ZERO, true, true), &mut restored, &mut selection);
+    interaction.update(
+        frame(Vec2::ZERO, true, true),
+        &mut restored,
+        &mut selection,
+        puzzella_core::LOCAL_PLAYER,
+    );
     let request = selection.latest.unwrap();
     selection.completed = Some(SelectionResult {
         request_id: request.request_id,
@@ -234,11 +244,17 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
         frame(Vec2::ZERO, true, false),
         &mut restored,
         &mut selection,
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_eq!(commands.len(), 1);
     assert_eq!(
         restored
-            .apply_command(LOCAL_PLAYER, &commands[0], Some(&d))
+            .apply_command(
+                LOCAL_PLAYER,
+                &commands[0],
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER
+            )
             .grabbed,
         6
     );
@@ -246,10 +262,16 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
         frame(Vec2::splat(20.0), false, false),
         &mut restored,
         &mut selection,
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_eq!(
         restored
-            .apply_command(LOCAL_PLAYER, &commands[0], Some(&d))
+            .apply_command(
+                LOCAL_PLAYER,
+                &commands[0],
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER
+            )
             .released,
         6
     );
@@ -310,7 +332,8 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
             .apply_command(
                 LOCAL_PLAYER,
                 &PieceCommand::Grab(PieceId(777_777)),
-                Some(&d)
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER
             )
             .grabbed,
         1_000_000
@@ -320,7 +343,8 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
             .apply_command(
                 LOCAL_PLAYER,
                 &PieceCommand::Release(PieceId(777_777)),
-                Some(&d)
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER
             )
             .released,
         1_000_000
@@ -364,8 +388,18 @@ fn assert_snapshot_root_independence(image_size: UVec2, fractional: Vec2) {
     snapshot.install(&mut restored, expected(&d)).unwrap();
     assert_eq!(restored.connectivity.find_root(PieceId(0)), PieceId(0));
     for s in [&mut source, &mut restored] {
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(1)), Some(&d));
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(1)), Some(&d));
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Grab(PieceId(1)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER,
+        );
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Release(PieceId(1)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER,
+        );
         assert!(s.connectivity.same_component(PieceId(1), PieceId(0)));
         assert!(!s.connectivity.same_component(PieceId(1), PieceId(3)));
         assert_eq!(
@@ -418,9 +452,18 @@ fn fixed_offset_snap_closure_and_board_priority_survive_snapshot_restore() {
         let mut restored = PieceDataStore::default();
         snapshot.install(&mut restored, expected(&d)).unwrap();
         for store in [&mut source, &mut restored] {
-            store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d));
-            let result =
-                store.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d));
+            store.apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::Grab(PieceId(0)),
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER,
+            );
+            let result = store.apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::Release(PieceId(0)),
+                Some(&d),
+                puzzella_core::LOCAL_PLAYER,
+            );
             assert_eq!(result.placed, placed);
             assert_eq!(store.connectivity.component_size(PieceId(0)), expected_size);
             assert_eq!(
@@ -458,8 +501,18 @@ fn fractional_closure_is_identical_after_restore_and_preserves_target_positions(
     snapshot.install(&mut restored, expected(&d)).unwrap();
     for store in [&mut source, &mut restored] {
         let targets = store.states[1..].to_vec();
-        store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d));
-        store.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d));
+        store.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Grab(PieceId(0)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER,
+        );
+        store.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Release(PieceId(0)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER,
+        );
         assert_eq!(store.connectivity.component_size(PieceId(0)), 3);
         for (state, before) in store.states[1..].iter().zip(targets) {
             assert_eq!(

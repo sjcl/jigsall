@@ -7,6 +7,7 @@ use puzzella_core::*;
 /// UI adapters only sample input and publish the gesture's gameplay commands.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_piece_input(
+    local_player: Res<LocalPlayerId>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     input: Res<InputState>,
@@ -35,13 +36,13 @@ pub fn handle_piece_input(
         over_ui,
         focused: input.window_focused,
     };
-    let pointer_commands = interaction.update(frame, &mut store, &mut selection);
+    let pointer_commands = interaction.update(frame, &mut store, &mut selection, local_player.0);
     let released = pointer_commands
         .iter()
         .any(|command| matches!(command, PieceCommand::ReleaseGroup { .. }));
     for command in pointer_commands {
         commands.write(ClientCommand {
-            player: LOCAL_PLAYER,
+            player: local_player.0,
             command,
         });
     }
@@ -55,7 +56,7 @@ pub fn handle_piece_input(
         {
             if let Some(command) = interaction.rotation_command(&store, turns) {
                 commands.write(ClientCommand {
-                    player: LOCAL_PLAYER,
+                    player: local_player.0,
                     command,
                 });
             }
@@ -65,15 +66,16 @@ pub fn handle_piece_input(
 }
 
 pub fn release_local_drag(
+    local_player: Res<LocalPlayerId>,
     mut selection: ResMut<crate::selection::PuzzleSelection>,
     mut input: ResMut<InputState>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut store: ResMut<PieceDataStore>,
     mut commands: MessageWriter<ClientCommand>,
 ) {
-    for command in interaction.cancel(&mut store, &mut selection) {
+    for command in interaction.cancel(&mut store, &mut selection, local_player.0) {
         commands.write(ClientCommand {
-            player: LOCAL_PLAYER,
+            player: local_player.0,
             command,
         });
     }
@@ -107,7 +109,7 @@ mod tests {
     use crate::systems::game_logic::apply_piece_commands;
     use std::collections::HashSet;
 
-    fn pointer_frame(app: &mut App, point: Vec2, pressed: bool, ctrl: bool) {
+    pub(super) fn pointer_frame(app: &mut App, point: Vec2, pressed: bool, ctrl: bool) {
         let mut input = app.world_mut().resource_mut::<InputState>();
         input.mouse_position = Some(point);
         input.window_focused = true;
@@ -201,6 +203,7 @@ mod tests {
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<crate::interaction::PieceInteraction>()
             .init_resource::<PieceDataStore>()
+            .init_resource::<crate::resources::LocalPlayerId>()
             .init_resource::<PieceCollisionSystem>()
             .init_resource::<PerformanceMonitor>()
             .init_resource::<ButtonInput<MouseButton>>()
@@ -525,7 +528,8 @@ mod tests {
             .update(
                 frame(Vec2::new(107., 103.), true, true),
                 &mut store,
-                &mut selection
+                &mut selection,
+                puzzella_core::LOCAL_PLAYER
             )
             .is_empty());
         let request = selection.latest.unwrap();
@@ -533,14 +537,16 @@ mod tests {
             .update(
                 frame(Vec2::new(120., 130.), true, false),
                 &mut store,
-                &mut selection
+                &mut selection,
+                puzzella_core::LOCAL_PLAYER
             )
             .is_empty());
         assert!(interaction
             .update(
                 frame(Vec2::new(9., 5.), false, false),
                 &mut store,
-                &mut selection
+                &mut selection,
+                puzzella_core::LOCAL_PLAYER
             )
             .is_empty());
         selection.completed = Some(SelectionResult {
@@ -554,6 +560,7 @@ mod tests {
             frame(Vec2::splat(500.), false, false),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         assert_eq!(
             commands,
@@ -599,6 +606,7 @@ mod tests {
             frame(Vec2::splat(50.), true, true),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         let point = selection.latest.unwrap();
         selection.completed = Some(SelectionResult {
@@ -611,12 +619,14 @@ mod tests {
             frame(Vec2::new(400., 200.), true, false),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         let preview = selection.latest.unwrap();
         interaction.update(
             frame(Vec2::new(410., 210.), false, false),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         let final_request = selection.latest.unwrap();
         assert!(final_request.request_id > preview.request_id);
@@ -630,6 +640,7 @@ mod tests {
             frame(Vec2::splat(500.), false, false),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         assert!(store.selected_pieces.is_empty());
         selection.completed = Some(SelectionResult {
@@ -646,6 +657,7 @@ mod tests {
             frame(Vec2::splat(500.), false, false),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         assert_eq!(
             store.selected_pieces.iter().collect::<HashSet<_>>(),
@@ -724,6 +736,122 @@ mod rotation_input_tests {
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
             keys.release(KeyCode::KeyQ);
             keys.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+mod local_identity_tests {
+    use super::tests::{input_app, pointer_frame};
+    use super::*;
+    use bevy::ecs::system::RunSystemOnce;
+
+    #[derive(Resource, Default)]
+    struct ObservedCommands(Vec<ClientCommand>);
+
+    fn observe(mut messages: MessageReader<ClientCommand>, mut observed: ResMut<ObservedCommands>) {
+        observed.0.extend(messages.read().cloned());
+    }
+
+    fn app() -> App {
+        let mut app = input_app();
+        app.insert_resource(LocalPlayerId(PlayerId(42)))
+            .init_resource::<ObservedCommands>()
+            .add_systems(
+                Update,
+                observe
+                    .after(handle_piece_input)
+                    .before(crate::systems::game_logic::apply_piece_commands),
+            );
+        app
+    }
+
+    #[test]
+    fn click_drag_release_and_both_rotation_inputs_use_session_local_identity() {
+        let mut app = app();
+        app.insert_resource(PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::new(2, 1),
+            image_size: UVec2::new(80, 40),
+            snap_distance: 5.0,
+        });
+        pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
+        assert_eq!(
+            app.world()
+                .resource::<PieceDataStore>()
+                .held_by
+                .get(&PieceId(0)),
+            Some(&PlayerId(42))
+        );
+        pointer_frame(&mut app, Vec2::new(120.0, 130.0), true, false);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyQ);
+        app.update();
+        assert_eq!(
+            decode_rotation(app.world().resource::<PieceDataStore>().states[0].flags),
+            1
+        );
+        *app.world_mut().resource_mut::<ButtonInput<KeyCode>>() = default();
+        pointer_frame(&mut app, Vec2::new(120.0, 130.0), false, false);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyE);
+        app.update();
+        let commands = &app.world().resource::<ObservedCommands>().0;
+        assert!(!commands.is_empty());
+        assert!(commands.iter().all(|c| c.player == PlayerId(42)));
+        for kind in 0..4 {
+            assert!(commands.iter().any(|c| matches!(
+                (&c.command, kind),
+                (PieceCommand::GrabGroup { .. }, 0)
+                    | (PieceCommand::RotateDrag { .. }, 1)
+                    | (PieceCommand::ReleaseGroup { .. }, 2)
+                    | (PieceCommand::Rotate { .. }, 3)
+            )));
+        }
+        assert!(app.world().resource::<PieceDataStore>().held_by.is_empty());
+        assert_eq!(
+            decode_rotation(app.world().resource::<PieceDataStore>().states[0].flags),
+            0
+        );
+    }
+
+    #[test]
+    fn pause_and_focus_loss_release_42_and_leave_remote_zero_held() {
+        for pause in [false, true] {
+            let mut app = app();
+            app.world_mut()
+                .resource_mut::<PieceDataStore>()
+                .apply_command(
+                    PlayerId(0),
+                    &PieceCommand::Grab(PieceId(1)),
+                    None,
+                    PlayerId(42),
+                );
+            pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
+            app.world_mut()
+                .resource_mut::<ButtonInput<MouseButton>>()
+                .clear();
+            if pause {
+                app.world_mut().run_system_once(release_local_drag).unwrap();
+            } else {
+                app.world_mut().resource_mut::<InputState>().window_focused = false;
+            }
+            app.update();
+            let store = app.world().resource::<PieceDataStore>();
+            assert_eq!(store.held_by.get(&PieceId(0)), None);
+            assert_eq!(store.held_by.get(&PieceId(1)), Some(&PlayerId(0)));
+            let commands = &app.world().resource::<ObservedCommands>().0;
+            assert!(commands.iter().all(|c| c.player == PlayerId(42)));
+            assert!(commands.iter().any(
+                |c| matches!(&c.command, PieceCommand::ReleaseGroup { members, .. }
+                if members.iter().collect::<Vec<_>>() == vec![PieceId(0)])
+            ));
         }
     }
 }

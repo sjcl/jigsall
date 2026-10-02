@@ -133,9 +133,10 @@ impl PieceInteraction {
         frame: PointerFrame,
         store: &mut PieceDataStore,
         selection: &mut PuzzleSelection,
+        local_player: PlayerId,
     ) -> Vec<PieceCommand> {
         if !frame.focused {
-            return self.cancel(store, selection);
+            return self.cancel(store, selection, local_player);
         }
         let point = frame.position.filter(|p| p.is_finite());
         let screen = frame.screen_position.filter(|p| p.is_finite());
@@ -147,7 +148,7 @@ impl PieceInteraction {
                 | Gesture::BoxSelecting { released: true, .. }
         );
         if frame.just_pressed && finished {
-            self.cancel(store, selection);
+            self.cancel(store, selection, local_player);
         }
         if frame.just_pressed && matches!(self.gesture, Gesture::Idle) && !frame.over_ui {
             if let (Some(point), Some(screen)) = (point, screen) {
@@ -183,7 +184,7 @@ impl PieceInteraction {
         {
             if !*released {
                 if !frame.pressed && (point.is_none() || screen.is_none()) {
-                    return self.cancel(store, selection);
+                    return self.cancel(store, selection, local_player);
                 }
                 if let Some(point) = point {
                     *current = point;
@@ -197,14 +198,16 @@ impl PieceInteraction {
                 store.highlights_dirty = true;
                 if let Some(error) = result.error {
                     warn!(%error, "GPU point selection failed");
-                    return self.cancel(store, selection);
+                    return self.cancel(store, selection, local_player);
                 }
                 debug_assert_eq!(result.mode, SelectionMode::Point);
                 let hit = match result.payload {
                     SelectionPayload::Point(id) => {
                         id.filter(|&id| store.component_is_selectable(id))
                     }
-                    SelectionPayload::Rectangle(_) => return self.cancel(store, selection),
+                    SelectionPayload::Rectangle(_) => {
+                        return self.cancel(store, selection, local_player)
+                    }
                 };
                 if let Some(id) = hit {
                     if *ctrl {
@@ -289,7 +292,7 @@ impl PieceInteraction {
                     }
                     if !frame.pressed {
                         if point.is_none() || screen.is_none() {
-                            return self.cancel(store, selection);
+                            return self.cancel(store, selection, local_player);
                         }
                         *released = true;
                     }
@@ -314,15 +317,19 @@ impl PieceInteraction {
                 if let Some(result) = selection.take_result(request_id.unwrap()) {
                     if let Some(error) = result.error {
                         warn!(%error, "GPU rectangle selection failed");
-                        return self.cancel(store, selection);
+                        return self.cancel(store, selection, local_player);
                     }
                     debug_assert_eq!(result.mode, SelectionMode::Rectangle);
                     if *released {
                         store.highlights_dirty = true;
                         let SelectionPayload::Rectangle(members) = result.payload else {
-                            return self.cancel(store, selection);
+                            return self.cancel(store, selection, local_player);
                         };
-                        store.commit_selection(members, additive.then_some(&*original));
+                        store.commit_selection(
+                            members,
+                            additive.then_some(&*original),
+                            local_player,
+                        );
                         self.gesture = Gesture::Idle;
                         selection.cancel();
                     }
@@ -336,9 +343,10 @@ impl PieceInteraction {
         &mut self,
         store: &mut PieceDataStore,
         selection: &mut PuzzleSelection,
+        local_player: PlayerId,
     ) -> Vec<PieceCommand> {
         // Repeated unfocused idle frames must not allocate or scan an owner mask.
-        if matches!(self.gesture, Gesture::Idle) && !store.held_by.has_player(LOCAL_PLAYER) {
+        if matches!(self.gesture, Gesture::Idle) && !store.held_by.has_player(local_player) {
             selection.cancel();
             store.drag = default();
             return Vec::new();
@@ -352,7 +360,7 @@ impl PieceInteraction {
             store
                 .held_by
                 .iter()
-                .filter_map(|(id, &player)| (player == LOCAL_PLAYER).then_some(id)),
+                .filter_map(|(id, &player)| (player == local_player).then_some(id)),
         );
         match gesture {
             Gesture::Dragging { members, .. } => {
@@ -361,7 +369,7 @@ impl PieceInteraction {
                 finish_drag(members, store, &mut commands);
             }
             Gesture::BoxSelecting { original, .. } | Gesture::PendingPoint { original, .. } => {
-                store.restore_selection(original)
+                store.restore_selection(original, local_player)
             }
             Gesture::Idle => {}
         }
@@ -408,7 +416,7 @@ mod tests {
     }
     fn apply(store: &mut PieceDataStore, commands: Vec<PieceCommand>) {
         for command in commands {
-            store.apply_command(LOCAL_PLAYER, &command, None);
+            store.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER);
         }
     }
 
@@ -422,7 +430,12 @@ mod tests {
             let mut selection = PuzzleSelection::default();
             let mut down = frame(Vec2::ZERO, true, true);
             down.ctrl = true;
-            interaction.update(down, &mut store, &mut selection);
+            interaction.update(
+                down,
+                &mut store,
+                &mut selection,
+                puzzella_core::LOCAL_PLAYER,
+            );
             if box_selecting {
                 let request = selection.latest.unwrap();
                 selection.completed = Some(SelectionResult {
@@ -435,15 +448,27 @@ mod tests {
                     frame(Vec2::splat(20.0), true, false),
                     &mut store,
                     &mut selection,
+                    puzzella_core::LOCAL_PLAYER,
                 );
                 assert!(interaction.screen_selection_rect().is_some());
             }
-            store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), None);
-            store.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(1)), None);
+            store.apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::Grab(PieceId(0)),
+                None,
+                puzzella_core::LOCAL_PLAYER,
+            );
+            store.apply_command(
+                PlayerId(1),
+                &PieceCommand::Grab(PieceId(1)),
+                None,
+                puzzella_core::LOCAL_PLAYER,
+            );
             let mut placed = store.state(PieceId(2)).unwrap();
             placed.placed = true;
-            store.set_state(PieceId(2), placed);
-            let commands = interaction.cancel(&mut store, &mut selection);
+            store.set_state(PieceId(2), placed, puzzella_core::LOCAL_PLAYER);
+            let commands =
+                interaction.cancel(&mut store, &mut selection, puzzella_core::LOCAL_PLAYER);
             assert_eq!(
                 store.selected_pieces.iter().collect::<Vec<_>>(),
                 [PieceId(0)]
@@ -463,7 +488,12 @@ mod tests {
         store.selected_pieces = (0..count).map(|id| PieceId(id as u32)).collect();
         let mut selection = PuzzleSelection::default();
         let mut interaction = PieceInteraction::default();
-        interaction.update(frame(Vec2::ZERO, true, true), &mut store, &mut selection);
+        interaction.update(
+            frame(Vec2::ZERO, true, true),
+            &mut store,
+            &mut selection,
+            puzzella_core::LOCAL_PLAYER,
+        );
         let request = selection.latest.unwrap();
         selection.completed = Some(SelectionResult {
             request_id: request.request_id,
@@ -471,8 +501,12 @@ mod tests {
             payload: SelectionPayload::from_ids(request.mode, count, vec![PieceId(0)]),
             error: None,
         });
-        let commands =
-            interaction.update(frame(Vec2::ZERO, true, false), &mut store, &mut selection);
+        let commands = interaction.update(
+            frame(Vec2::ZERO, true, false),
+            &mut store,
+            &mut selection,
+            puzzella_core::LOCAL_PLAYER,
+        );
         assert_eq!(commands.len(), 1);
         assert!(commands
             .iter()
@@ -492,7 +526,8 @@ mod tests {
                 .update(
                     frame(Vec2::splat(step as f32), true, false),
                     &mut store,
-                    &mut selection
+                    &mut selection,
+                    puzzella_core::LOCAL_PLAYER
                 )
                 .is_empty());
             assert!(Arc::ptr_eq(&members, &store.drag.members));
@@ -503,6 +538,7 @@ mod tests {
             frame(Vec2::new(150.0, 200.0), false, false),
             &mut store,
             &mut selection,
+            puzzella_core::LOCAL_PLAYER,
         );
         assert_eq!(commands.len(), 1);
         assert!(store.drag.members.is_empty());
@@ -516,7 +552,8 @@ mod tests {
             .update(
                 frame(Vec2::splat(500.0), false, false),
                 &mut store,
-                &mut selection
+                &mut selection,
+                puzzella_core::LOCAL_PLAYER
             )
             .is_empty());
     }
@@ -537,30 +574,39 @@ mod tests {
             }
             let mut other = store.state(PieceId(33)).unwrap();
             other.held_by = Some(LOCAL_PLAYER);
-            store.set_state(PieceId(33), other);
+            store.set_state(PieceId(33), other, puzzella_core::LOCAL_PLAYER);
             interaction.update(
                 frame(Vec2::new(10.0, 20.0), true, false),
                 &mut store,
                 &mut selection,
+                puzzella_core::LOCAL_PLAYER,
             );
             interaction.update(
                 frame(Vec2::splat(f32::NAN), true, false),
                 &mut store,
                 &mut selection,
+                puzzella_core::LOCAL_PLAYER,
             );
             let commands = if focus_loss {
                 let mut lost = frame(Vec2::splat(500.0), false, false);
                 lost.focused = false;
-                interaction.update(lost, &mut store, &mut selection)
+                interaction.update(
+                    lost,
+                    &mut store,
+                    &mut selection,
+                    puzzella_core::LOCAL_PLAYER,
+                )
             } else {
-                interaction.cancel(&mut store, &mut selection)
+                interaction.cancel(&mut store, &mut selection, puzzella_core::LOCAL_PLAYER)
             };
             assert_eq!(commands.len(), 2);
             apply(&mut store, commands);
             assert_eq!(store.states[32].position, Vec2::new(42.0, 20.0));
             assert_eq!(store.states[33].position, Vec2::ZERO);
             assert!(store.held_by.is_empty());
-            assert!(interaction.cancel(&mut store, &mut selection).is_empty());
+            assert!(interaction
+                .cancel(&mut store, &mut selection, puzzella_core::LOCAL_PLAYER)
+                .is_empty());
         }
     }
     #[test]
@@ -578,6 +624,7 @@ mod tests {
                     frame(Vec2::splat(step as f32), true, false),
                     &mut store,
                     &mut selection,
+                    puzzella_core::LOCAL_PLAYER,
                 );
                 assert!(std::hint::black_box(commands).is_empty());
                 std::hint::black_box(&store.drag);
@@ -589,5 +636,88 @@ mod tests {
                 elapsed.as_secs_f64() * 1e9 / 100_000.0
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod local_identity_tests {
+    use super::*;
+
+    #[test]
+    fn cancel_and_focus_loss_release_only_nonzero_local_holds() {
+        let local = PlayerId(42);
+        let remote = PlayerId(0);
+        for focus_loss in [false, true] {
+            let mut store = PieceDataStore::default();
+            store.initialize(vec![Vec2::ZERO; 2]);
+            store.apply_command(local, &PieceCommand::Grab(PieceId(0)), None, local);
+            store.apply_command(remote, &PieceCommand::Grab(PieceId(1)), None, local);
+            let mut interaction = PieceInteraction::default();
+            let mut selection = PuzzleSelection::default();
+            let commands = if focus_loss {
+                interaction.update(
+                    PointerFrame {
+                        position: None,
+                        screen_position: None,
+                        pressed: false,
+                        just_pressed: false,
+                        ctrl: false,
+                        over_ui: false,
+                        focused: false,
+                    },
+                    &mut store,
+                    &mut selection,
+                    local,
+                )
+            } else {
+                interaction.cancel(&mut store, &mut selection, local)
+            };
+            assert_eq!(commands.len(), 1);
+            let PieceCommand::ReleaseGroup { members, delta } = &commands[0] else {
+                panic!()
+            };
+            assert_eq!(members.iter().collect::<Vec<_>>(), vec![PieceId(0)]);
+            assert_eq!(*delta, Vec2::ZERO);
+            store.apply_command(local, &commands[0], None, local);
+            assert_eq!(store.held_by.get(&PieceId(0)), None);
+            assert_eq!(store.held_by.get(&PieceId(1)), Some(&remote));
+            assert!(interaction
+                .cancel(&mut store, &mut selection, local)
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn pending_gesture_cancel_restores_only_current_local_selection() {
+        let local = PlayerId(42);
+        let remote = PlayerId(0);
+        let mut store = PieceDataStore::default();
+        store.initialize(vec![Vec2::ZERO; 2]);
+        let mut original = PieceBitSet::new(2);
+        original.fill();
+        store.selected_pieces = original;
+        let mut interaction = PieceInteraction::default();
+        let mut selection = PuzzleSelection::default();
+        interaction.update(
+            PointerFrame {
+                position: Some(Vec2::ZERO),
+                screen_position: Some(Vec2::ZERO),
+                pressed: true,
+                just_pressed: true,
+                ctrl: false,
+                over_ui: false,
+                focused: true,
+            },
+            &mut store,
+            &mut selection,
+            local,
+        );
+        store.apply_command(local, &PieceCommand::Grab(PieceId(0)), None, local);
+        store.apply_command(remote, &PieceCommand::Grab(PieceId(1)), None, local);
+        interaction.cancel(&mut store, &mut selection, local);
+        assert_eq!(
+            store.selected_pieces.iter().collect::<Vec<_>>(),
+            vec![PieceId(0)]
+        );
     }
 }

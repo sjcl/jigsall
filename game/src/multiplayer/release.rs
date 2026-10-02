@@ -19,6 +19,7 @@ pub(super) fn release_drag(
     target: &ActiveDragTarget,
     delta: Vec2,
     definition: Option<&PuzzleDefinition>,
+    local_player: PlayerId,
 ) -> Result<
     (
         AppliedCommand,
@@ -57,7 +58,7 @@ pub(super) fn release_drag(
         }
     }
     roots.sort_unstable();
-    let applied = store.release_roots(player, roots.clone(), delta, definition);
+    let applied = store.release_roots(player, roots.clone(), delta, definition, local_player);
     let result = result_fingerprint(store, &roots, definition, &applied);
     Ok((applied, rejected, result))
 }

@@ -137,6 +137,7 @@ impl Simulation {
                     command,
                 },
                 snap.then_some(&self.definition),
+                puzzella_core::LOCAL_PLAYER,
             )
             .unwrap()
     }
@@ -149,6 +150,7 @@ impl Simulation {
                     self.session.host(),
                     event,
                     snap.then_some(&self.definition),
+                    puzzella_core::LOCAL_PLAYER,
                 )
                 .unwrap();
         }
@@ -662,8 +664,14 @@ fn event_authentication_gap_and_duplicate_are_checked_before_gameplay() {
         ),
     ] {
         assert_eq!(
-            peer.replica
-                .apply_event(&mut peer.session, &mut peer.store, host, &invalid, None),
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                host,
+                &invalid,
+                None,
+                puzzella_core::LOCAL_PLAYER
+            ),
             Err(ReplicationError::Protocol(error))
         );
         assert_eq!(peer.session.cursor(), AuthorityCursor::new(3, 0));
@@ -678,8 +686,14 @@ fn event_authentication_gap_and_duplicate_are_checked_before_gameplay() {
         let states = peer.store.states.clone();
         for stale in [&grab, &release] {
             assert_eq!(
-                peer.replica
-                    .apply_event(&mut peer.session, &mut peer.store, HOST, stale, None),
+                peer.replica.apply_event(
+                    &mut peer.session,
+                    &mut peer.store,
+                    HOST,
+                    stale,
+                    None,
+                    puzzella_core::LOCAL_PLAYER
+                ),
                 Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
             );
             assert_eq!(peer.store.states, states);
@@ -691,8 +705,14 @@ impl Simulation {
         for peer in &mut self.peers {
             let states = peer.store.states.clone();
             assert_eq!(
-                peer.replica
-                    .apply_event(&mut peer.session, &mut peer.store, HOST, grab, None),
+                peer.replica.apply_event(
+                    &mut peer.session,
+                    &mut peer.store,
+                    HOST,
+                    grab,
+                    None,
+                    puzzella_core::LOCAL_PLAYER
+                ),
                 Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
             );
             assert_eq!(peer.store.states, states);
@@ -736,8 +756,14 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
             _ => unreachable!(),
         }
         assert_eq!(
-            peer.replica
-                .apply_event(&mut peer.session, &mut peer.store, HOST, &release, None),
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &release,
+                None,
+                puzzella_core::LOCAL_PLAYER
+            ),
             Err(ReplicationError::Diverged),
             "{corruption}"
         );
@@ -749,8 +775,14 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
             .is_none());
         let after_failure = peer.store.states.clone();
         assert_eq!(
-            peer.replica
-                .apply_event(&mut peer.session, &mut peer.store, HOST, &release, None),
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &release,
+                None,
+                puzzella_core::LOCAL_PLAYER
+            ),
             Err(ReplicationError::Diverged)
         );
         assert_eq!(peer.store.states, after_failure); // No doubled final delta.
@@ -785,8 +817,14 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
             Err(ReplicationError::MissingDragContext)
         );
         assert_eq!(
-            peer.replica
-                .apply_event(&mut peer.session, &mut peer.store, HOST, &release, None),
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &release,
+                None,
+                puzzella_core::LOCAL_PLAYER
+            ),
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
         // The second peer gets the actual host event, even in the tampered-wire case.
@@ -798,7 +836,14 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
         }
         let peer = &mut s.peers[1];
         peer.replica
-            .apply_event(&mut peer.session, &mut peer.store, HOST, &release, None)
+            .apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &release,
+                None,
+                puzzella_core::LOCAL_PLAYER,
+            )
             .unwrap();
         s.grab(A, 2, &[0]);
         s.release(A, 3, 2, Vec2::splat(10.0), false);
@@ -837,8 +882,14 @@ fn contradictory_grab_is_atomic_including_components_after_a_valid_sibling() {
         let owners = peer.store.held_by.clone();
         let next_z = peer.store.next_z_order;
         assert_eq!(
-            peer.replica
-                .apply_event(&mut peer.session, &mut peer.store, HOST, &event, None),
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &event,
+                None,
+                puzzella_core::LOCAL_PLAYER
+            ),
             Err(ReplicationError::Diverged)
         );
         assert_eq!(peer.store.states, states);
@@ -870,8 +921,14 @@ fn missing_or_wrong_release_context_does_not_mutate_or_record() {
         };
         let states = peer.store.states.clone();
         assert_eq!(
-            peer.replica
-                .apply_event(&mut peer.session, &mut peer.store, HOST, &event, None),
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &event,
+                None,
+                puzzella_core::LOCAL_PLAYER
+            ),
             Err(if with_grab {
                 ReplicationError::WrongDragContext
             } else {
@@ -1006,8 +1063,14 @@ fn dense_release_replay_and_stale_topology_preserve_target_specific_validation()
     let peer = &mut s.peers[0];
     let states = peer.store.states.clone();
     assert_eq!(
-        peer.replica
-            .apply_event(&mut peer.session, &mut peer.store, HOST, &event, None),
+        peer.replica.apply_event(
+            &mut peer.session,
+            &mut peer.store,
+            HOST,
+            &event,
+            None,
+            puzzella_core::LOCAL_PLAYER
+        ),
         Err(ReplicationError::Diverged)
     );
     assert_eq!(peer.store.states, states);
@@ -1055,7 +1118,8 @@ fn snapshot_install_invalidates_in_flight_context_and_rejects_old_updates() {
                 &mut peer.store,
                 HOST,
                 &grab,
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
@@ -1102,7 +1166,8 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                 &mut peer.store,
                 HOST,
                 &pending,
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::Frozen))
         );
@@ -1130,7 +1195,8 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                 &mut peer.store,
                 HOST,
                 &pending,
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::WrongEpoch))
         );
@@ -1144,7 +1210,8 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                     cursor: AuthorityCursor::new(4, 1),
                     ..pending.clone()
                 },
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::WrongHost))
         );
@@ -1174,8 +1241,14 @@ fn publication_counter_exhaustion_is_rejected_before_mutation() {
     };
     let states = s.store.states.clone();
     assert!(matches!(
-        s.contexts
-            .apply_replicated(&mut s.session, &mut s.store, A, &envelope, None),
+        s.contexts.apply_replicated(
+            &mut s.session,
+            &mut s.store,
+            A,
+            &envelope,
+            None,
+            puzzella_core::LOCAL_PLAYER
+        ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::CounterExhausted
         ))
@@ -1184,7 +1257,14 @@ fn publication_counter_exhaustion_is_rejected_before_mutation() {
     assert!(s.store.held_by.is_empty());
     // The preflight did not consume control 0.
     s.contexts
-        .apply(&mut s.session, &mut s.store, A, &envelope, None)
+        .apply(
+            &mut s.session,
+            &mut s.store,
+            A,
+            &envelope,
+            None,
+            puzzella_core::LOCAL_PLAYER,
+        )
         .unwrap();
 }
 
@@ -1293,7 +1373,8 @@ fn empty_acceptance_is_reliable_but_rejected_commands_publish_nothing() {
             &mut s.store,
             A,
             &envelope,
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::NoActiveDrag)
     ));
@@ -1347,7 +1428,8 @@ fn reliable_rotations_replay_identically_and_snap_rotated_neighbors_after_drag()
                 &mut peer.store,
                 HOST,
                 &event,
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
@@ -1425,7 +1507,8 @@ fn authority_rotation_excludes_remote_holds_and_rejects_active_player_drag() {
             &mut s.store,
             B,
             &envelope,
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::ActiveDragExists)
     ));
@@ -1473,7 +1556,8 @@ fn replica_rotation_preflights_whole_event_and_detects_rotation_divergence() {
                 &mut peer.store,
                 HOST,
                 &event,
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Diverged)
         );
@@ -1525,7 +1609,8 @@ fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
             &mut s.store,
             A,
             &envelope,
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Target(TargetError::StaleTopology))
     ));
@@ -1545,5 +1630,83 @@ fn rotation_replay_is_independent_of_dsu_root_and_member_list_history() {
     );
     for sequence in 0..4 {
         rotate_event(&mut s, sequence, &[1], 1);
+    }
+}
+
+#[test]
+fn peer_nonzero_identity_replays_own_and_remote_zero_authority_events() {
+    let local = PlayerId(42);
+    let remote = PlayerId(0);
+    for dense in [false, true] {
+        for player in [local, remote] {
+            let mut s = Simulation::new(&[Vec2::splat(1000.0); 96], &[(0, 1)]);
+            let count = if dense { 8 } else { 2 };
+            let mut members = PieceBitSet::new(96);
+            members.extend((0..count).map(PieceId));
+            let target = if dense {
+                PieceTarget::Dense(
+                    DenseTarget::from_selection(&s.store.connectivity, &members).unwrap(),
+                )
+            } else {
+                PieceTarget::from_selection(&s.store.connectivity, &members).unwrap()
+            };
+            let peer = &mut s.peers[0];
+            peer.store.selected_pieces = members.clone();
+            peer.store.drag.members = members.words().clone();
+            let event = s
+                .command(
+                    player,
+                    ClientCommandSequence::Control(0),
+                    ProtocolPieceCommand::Grab { target },
+                    false,
+                )
+                .authority_event
+                .unwrap();
+            let peer = &mut s.peers[0];
+            peer.replica
+                .apply_event(
+                    &mut peer.session,
+                    &mut peer.store,
+                    HOST,
+                    &event,
+                    None,
+                    local,
+                )
+                .unwrap();
+            assert_eq!(peer.store.selected_pieces.is_empty(), player != local);
+            assert_eq!(
+                peer.store.drag.members.iter().all(|&word| word == 0),
+                player != local
+            );
+            for id in members.iter() {
+                assert_eq!(peer.store.held_by.get(&id), Some(&player));
+            }
+            let event = s
+                .command(
+                    player,
+                    ClientCommandSequence::Control(1),
+                    ProtocolPieceCommand::Release {
+                        grab_sequence: 0,
+                        final_delta: Vec2::ONE,
+                    },
+                    false,
+                )
+                .authority_event
+                .unwrap();
+            let peer = &mut s.peers[0];
+            peer.replica
+                .apply_event(
+                    &mut peer.session,
+                    &mut peer.store,
+                    HOST,
+                    &event,
+                    None,
+                    local,
+                )
+                .unwrap();
+            assert!(peer.store.drag.members.iter().all(|&word| word == 0));
+            assert!(peer.store.held_by.is_empty());
+            assert_authority_equal(&s.store, &peer.store);
+        }
     }
 }

@@ -1126,7 +1126,8 @@ fn rotated_save_codec_keeps_sixteen_byte_records_and_restores_components() {
                     target: PieceTarget::Component(reference),
                     quarter_turns: 1
                 },
-                Some(&save.checkpoint.definition)
+                Some(&save.checkpoint.definition),
+                puzzella_core::LOCAL_PLAYER
             )
             .rotated,
         2

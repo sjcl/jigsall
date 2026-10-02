@@ -103,6 +103,7 @@ impl PeerReplicationState {
         authenticated_host: PlayerId,
         envelope: &ProtocolAuthorityEventEnvelope,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> Result<AppliedCommand, ReplicationError> {
         self.synchronize(session, store);
         session
@@ -114,7 +115,7 @@ impl PeerReplicationState {
         if self.diverged {
             return Err(ReplicationError::Diverged);
         }
-        match self.apply_gameplay(store, &envelope.event, definition) {
+        match self.apply_gameplay(store, &envelope.event, definition, local_player) {
             Ok(applied) => {
                 session
                     .record_applied_event(envelope)
@@ -133,6 +134,7 @@ impl PeerReplicationState {
         store: &mut PieceDataStore,
         event: &ProtocolAuthorityEvent,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
             ProtocolAuthorityEvent::DragRotationCommitted(commit) => {
@@ -222,8 +224,11 @@ impl PeerReplicationState {
                         }) {
                             return Err(ReplicationError::Diverged);
                         }
-                        let applied = store
-                            .grab_authority_components(ack.player, refs.iter().map(|r| r.member));
+                        let applied = store.grab_authority_components(
+                            ack.player,
+                            refs.iter().map(|r| r.member),
+                            local_player,
+                        );
                         (ActiveDragTarget::Sparse(refs), applied)
                     }
                     ResolvedPieceTarget::Dense(members) => {
@@ -233,7 +238,8 @@ impl PeerReplicationState {
                         let target =
                             ActiveDragTarget::from_accepted_members(&store.connectivity, &members)
                                 .map_err(|_| ReplicationError::Diverged)?;
-                        let applied = store.grab_accepted_members(ack.player, &members);
+                        let applied =
+                            store.grab_accepted_members(ack.player, &members, local_player);
                         (target, applied)
                     }
                 };
@@ -270,6 +276,7 @@ impl PeerReplicationState {
                     &drag.target,
                     commit.final_delta,
                     definition,
+                    local_player,
                 )
                 .map_err(|_| ReplicationError::Diverged)?;
                 if result != commit.result {

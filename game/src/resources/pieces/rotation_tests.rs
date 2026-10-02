@@ -38,6 +38,7 @@ fn rotate(store: &mut PieceDataStore, d: &PuzzleDefinition, ids: &[u32], turns: 
                 quarter_turns: turns,
             },
             Some(d),
+            puzzella_core::LOCAL_PLAYER,
         )
         .rotated
 }
@@ -301,7 +302,12 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
     store.connectivity.union(PieceId(0), PieceId(1));
     rotate(&mut store, &d, &[0], 1);
     let roots_dirty = store.component_root_dirty.clone();
-    store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(1)), Some(&d));
+    store.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Grab(PieceId(1)),
+        Some(&d),
+        puzzella_core::LOCAL_PLAYER,
+    );
     let position = store.states[1].position + Vec2::new(10.25, -6.5);
     store.apply_command(
         LOCAL_PLAYER,
@@ -310,6 +316,7 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
             position,
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_rigid(&store, &d, 0, 1);
     let before = store.states.to_vec();
@@ -330,6 +337,7 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
             delta: Vec2::new(0.25, 5.5),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_rigid(&store, &d, 0, 1);
     assert_eq!(store.component_root_dirty, roots_dirty);

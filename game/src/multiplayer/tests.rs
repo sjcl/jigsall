@@ -44,11 +44,11 @@ fn fixture() -> PieceDataStore {
     ]);
     let mut placed = store.state(PieceId(0)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(0), placed);
+    store.set_state(PieceId(0), placed, puzzella_core::LOCAL_PLAYER);
     for (id, player) in [(PieceId(1), A), (PieceId(2), B)] {
         let mut held = store.state(id).unwrap();
         held.held_by = Some(player);
-        store.set_state(id, held);
+        store.set_state(id, held, puzzella_core::LOCAL_PLAYER);
         store.bring_piece_to_front(id);
     }
     store.selected_pieces.insert(PieceId(1));
@@ -326,12 +326,12 @@ fn ordinary_disconnect_releases_only_b_holds_marks_dirty_without_moving_or_snapp
     for id in [PieceId(10), PieceId(11), PieceId(25), PieceId(12)] {
         let mut state = store.state(id).unwrap();
         state.held_by = Some(if id == PieceId(12) { C } else { B });
-        store.set_state(id, state);
+        store.set_state(id, state, puzzella_core::LOCAL_PLAYER);
     }
     // Even malformed placed+held data is cleaned without changing placed.
     let mut placed = store.state(PieceId(25)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(25), placed);
+    store.set_state(PieceId(25), placed, puzzella_core::LOCAL_PLAYER);
     store.dirty_pieces.clear();
     let before = store.states.clone();
     let epoch = store.epoch;
@@ -649,7 +649,7 @@ fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
         apply_piece_command(&mut piece, B, &release.command),
         Some(CommandOutcome::Released)
     );
-    store.set_state(PieceId(1), piece);
+    store.set_state(PieceId(1), piece, puzzella_core::LOCAL_PLAYER);
     assert!(store.state(PieceId(1)).unwrap().held_by.is_none());
     assert_eq!(piece.position, Vec2::new(10.0, 20.0));
 
@@ -667,7 +667,7 @@ fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
         Ok(CommandSequenceStatus::InOrder)
     );
     apply_piece_command(&mut piece, B, &current_move.command).unwrap();
-    store.set_state(PieceId(1), piece);
+    store.set_state(PieceId(1), piece, puzzella_core::LOCAL_PLAYER);
     assert_eq!(
         store.state(PieceId(1)).unwrap().position,
         Vec2::new(30.0, 40.0)

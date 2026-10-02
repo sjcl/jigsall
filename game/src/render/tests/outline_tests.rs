@@ -179,6 +179,7 @@ fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
                 members: members.clone(),
             },
             Some(&def),
+            puzzella_core::LOCAL_PLAYER,
         );
         store.drag = DragTransform {
             members: members.words().clone(),

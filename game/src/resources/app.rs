@@ -1,6 +1,17 @@
 use bevy::prelude::*;
-use puzzella_core::PlayerId;
+use puzzella_core::{PlayerId, LOCAL_PLAYER};
 use serde::{Deserialize, Serialize};
+
+/// This process's session identity, independent of puzzle/snapshot state.
+/// Snapshot installation may replace PieceDataStore without resetting this resource.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocalPlayerId(pub PlayerId);
+
+impl Default for LocalPlayerId {
+    fn default() -> Self {
+        Self(LOCAL_PLAYER)
+    }
+}
 
 #[derive(Resource, Default)]
 pub struct GameData {
