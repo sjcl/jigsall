@@ -32,16 +32,7 @@ pub fn draw_in_game_menu_ui(
             egui::ScrollArea::vertical()
                 .max_height((ctx.content_rect().height() - 112.0).max(100.0))
                 .show(ui, |ui| {
-                    theme::heading(
-                        ui,
-                        if completed {
-                            "ALL PIECES IN PLACE"
-                        } else {
-                            "TAKE YOUR TIME"
-                        },
-                        if completed { "Puzzle Menu" } else { "Paused" },
-                        "Your puzzle will be here when you're ready.",
-                    );
+                    theme::heading(ui, if completed { "Puzzle Menu" } else { "Paused" });
                     ui.add_enabled_ui(!persistence.busy, |ui| {
                         let width = ui.available_width();
                         if theme::button(

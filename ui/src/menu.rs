@@ -41,7 +41,6 @@ pub fn draw_menu_ui(
                                 .size(if compact { 34.0 } else { 54.0 })
                                 .strong(),
                         );
-                        theme::hint(ui, "Your image. Your puzzle. Your pace.");
                         ui.add_space(if compact { 12.0 } else { 24.0 });
                         ui.add_enabled_ui(!persistence.busy && !dialogs.load_open, |ui| {
                             ui.spacing_mut().item_spacing.y = 8.0;

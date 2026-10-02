@@ -68,16 +68,10 @@ pub fn draw_completion_ui(
                             ));
 
                             ui.add_space(if compact { 0.0 } else { 8.0 });
-                            ui.label(egui::RichText::new("WELL DONE").size(11.0).color(ACCENT));
                             ui.label(
                                 egui::RichText::new("Puzzle Complete")
                                     .size(if compact { 26.0 } else { 30.0 })
                                     .strong(),
-                            );
-                            ui.label(
-                                egui::RichText::new("Every piece is in its place.")
-                                    .size(14.0)
-                                    .color(MUTED),
                             );
                             ui.add_space(if compact { 8.0 } else { 12.0 });
 

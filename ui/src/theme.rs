@@ -129,8 +129,7 @@ pub fn section(ui: &mut egui::Ui, number: &str, title: &str) {
     ui.add_space(4.0);
 }
 
-pub fn heading(ui: &mut egui::Ui, eyebrow: &str, title: &str, subtitle: &str) {
-    ui.label(egui::RichText::new(eyebrow).size(11.0).color(ACCENT));
+pub fn heading(ui: &mut egui::Ui, title: &str) {
     ui.label(
         egui::RichText::new(title)
             .size(if ui.ctx().content_rect().height() < 600.0 {
@@ -140,7 +139,6 @@ pub fn heading(ui: &mut egui::Ui, eyebrow: &str, title: &str, subtitle: &str) {
             })
             .strong(),
     );
-    hint(ui, subtitle);
     ui.add_space(8.0);
 }
 

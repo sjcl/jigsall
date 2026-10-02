@@ -33,12 +33,7 @@ pub fn draw_game_setup_ui(
             theme::frame().show(ui, |ui| {
                 ui.set_width(width);
                 ui.set_max_height((screen.height() - 96.0).max(120.0));
-                theme::heading(
-                    ui,
-                    "A NEW PUZZLE",
-                    "New Game",
-                    "Choose an image and make it your own.",
-                );
+                theme::heading(ui, "New Game");
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height((screen.height() - 312.0).max(80.0))

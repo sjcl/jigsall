@@ -62,12 +62,7 @@ pub fn draw_save_dialogs(
             .show(ctx, |ui| {
                 ui.set_width((screen.width() - 96.0).clamp(160.0, 640.0));
                 ui.set_max_height((screen.height() - 96.0).max(120.0));
-                theme::heading(
-                    ui,
-                    "YOUR PUZZLE COLLECTION",
-                    "Load Game",
-                    "Pick up where you left off.",
-                );
+                theme::heading(ui, "Load Game");
                 ui.separator();
                 let mut action = None;
                 egui::ScrollArea::vertical()
@@ -250,12 +245,7 @@ pub fn draw_save_dialogs(
                         .max(80.0),
                     )
                     .show(ui, |ui| {
-                        theme::heading(
-                            ui,
-                            "KEEP YOUR PROGRESS",
-                            "Save Game",
-                            "A little pause. Everything stays in place.",
-                        );
+                        theme::heading(ui, "Save Game");
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
