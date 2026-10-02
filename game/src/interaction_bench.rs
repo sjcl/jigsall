@@ -424,3 +424,68 @@ fn small_component_release_cpu_benchmark() {
     std::fs::create_dir_all("../target").unwrap();
     std::fs::write("../target/small-release-cpu.csv", csv).unwrap();
 }
+
+#[test]
+#[ignore = "release small-Grab benchmark; writes target/small-grab-cpu.csv"]
+fn small_component_grab_cpu_benchmark() {
+    assert!(!black_box(cfg!(debug_assertions)), "run with --release");
+    let mut csv =
+        String::from("pieces,members,command,owner_storage,run,grab_us,grabbed,dirty_members\n");
+    for count in [1_000, 10_000, 100_000, 1_000_000] {
+        for members in [1, 8, 32] {
+            for command in ["scalar", "partial_group", "full_group"] {
+                for owner_storage in ["reused", "first"] {
+                    for run in 0..10 {
+                        let d = connected_definition(count);
+                        let mut store = PieceDataStore::default();
+                        store.initialize(vec![Vec2::splat(10_000.0); count]);
+                        let base = count as u32 / 2;
+                        for member in 1..members {
+                            store
+                                .connectivity
+                                .union(PieceId(base), PieceId(base + member));
+                        }
+                        // First-hold dense owner allocation is a separate condition.
+                        if owner_storage == "reused" {
+                            let seed = PieceId(count as u32 - 1);
+                            store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(seed), None);
+                            store.apply_command(LOCAL_PLAYER, &PieceCommand::Release(seed), None);
+                        }
+                        let id = PieceId(base + members / 2);
+                        let grab = if command == "scalar" {
+                            PieceCommand::Grab(id)
+                        } else {
+                            let mut mask = PieceBitSet::new(count);
+                            if command == "partial_group" {
+                                mask.insert(id);
+                            } else {
+                                mask.extend((base..base + members).map(PieceId));
+                            }
+                            PieceCommand::GrabGroup { members: mask }
+                        };
+                        store.dirty_pieces.clear();
+                        let start = Instant::now();
+                        let outcome = black_box(store.apply_command(LOCAL_PLAYER, &grab, Some(&d)));
+                        let elapsed = micros(start);
+                        assert_eq!(outcome.grabbed, members as usize);
+                        assert_eq!(store.held_by.len(), members as usize);
+                        assert_eq!(store.dirty_pieces.count(), members as usize);
+                        assert!(store.drag.members.is_empty());
+                        for member in base..base + members {
+                            assert_eq!(store.held_by.get(&PieceId(member)), Some(&LOCAL_PLAYER));
+                            assert!(store.dirty_pieces.contains(&PieceId(member)));
+                        }
+                        let row = format!(
+                            "{count},{members},{command},{owner_storage},{run},{elapsed:.3},{},{}\n",
+                            outcome.grabbed, store.dirty_pieces.count()
+                        );
+                        print!("{row}");
+                        csv.push_str(&row);
+                    }
+                }
+            }
+        }
+    }
+    std::fs::create_dir_all("../target").unwrap();
+    std::fs::write("../target/small-grab-cpu.csv", csv).unwrap();
+}

@@ -197,3 +197,152 @@ point / Ctrl add-remove、additive / empty rectangle、stale responses、preview
 rendererのprocedural SDF、visibility compute、indirect draw、radix sort、preview passは維持しています。中級GPUは現在用意できないため未測定です。RTX 5090の数字を中級GPU性能へ外挿しません。将来の別GPUでは上記同じrelease commandsを実行し、adapter / backend / driver、CSV、window / resolutionとtexture条件を保存して比較してください。GPU testsはtimestamp対応adapterが必要です。
 
 remaining costはexplicit final selectionのauthority再検証、Z sort、dense owner allocation、release時のsnapとstate copy / uploadです。fragmented uploadはallocation budgetと引き換えにunchanged gapsの転送を許容します。全normal window操作、異OS / GPU、RSS peakは未検証です。chunk spatial index、LOD、custom allocator、unsafe SIMD、vendor固有renderer変更は導入していません。
+
+
+## Small-component Grabのauthority最適化（2026-10-02）
+
+作業開始時に`origin/master`をfetchし、最新の`9a7ac9f5ab0c0b97435b46ceb58f16ddd5fc2605`をbaselineにしました。指定された`0f07acc`以降の実装を含みます。専用branchは`codex/small-component-grab`、worktreeは`C:\Users\bebe\.codex\worktrees\small-component-grab\puzzella`です。元checkoutと他worktreeの未コミット変更は取り込んでいません。
+
+### Authority flow / component atomicity
+
+```text
+Grab(id) → minimum_member(id) → grab_roots([minimum], no mask)
+  → complete component validation → accepted ID Vec → apply_grab
+
+small GrabGroup(mask) → lazy stable-minimum root extraction
+  → complete component validation → accepted IDs / optional shared mask → apply_grab
+
+dense GrabGroup(mask) → existing canonical component expansion / validation
+  → accepted shared mask → ID-ordered Vec → apply_grab
+```
+
+scalarは入力mask、accepted mask、root dedup用maskを生成しません。大componentでもscalarはID単位のoccupancy / dirty更新を使い、一時N-bit maskを作りません。Z用Vecは受理したmember数Kに比例します。requested数R <= ceil(N/32)のGroupはroot fast pathを使い、singletonは直接処理します。連結componentはmask内にminimumがあればそのIDだけをemitします。minimumがmaskにない部分componentだけ`PieceScratchSet`で重複排除します。少数rootは128 IDsまでstackへ置き、129個目でdenseへ昇格します。root Vecは作らずiteratorで処理します。dense Groupは既存の`canonical_members` / `selectable_members`を維持し、DSU rootをscratchで重複排除してexpand / component検証を行います。この分岐でもcomponent atomicityは同じです。
+
+`is_selectable`を全memberに適用してからacceptします。PLACED、disabled、HELD mirror、owner occupancyのいずれかがgrab不可ならcomponent全体をrejectし、別componentは独立してacceptします。現在player自身の既存holdも再Grabではrejectするため、duplicate commandでowner countを増やしません。dense owner IDs + occupancyとplayerごとのcountを維持し、per-component owner mapは追加していません。
+
+受理した全componentのIDを一緒に`(z_order, PieceId)`でsortし、連続したfront Zを割り当てます。HashMap iterationには依存しません。MAX_Zのrare compactionは従来どおりsort後に実行します。dense Groupでは既存のaccepted maskからID順にVecを作り、従来のbulk pathの検証量・sort入力順・mask sharingを維持します。
+
+### Local drag / selection / dirty同期
+
+通常のlocal Groupは`Arc::ptr_eq(drag.members, requested.words())`で対応gestureを判定します。対応する場合だけrequested maskをcloneし、component expansion / rejectionを反映してaccepted ownershipに一致させます。全memberが有効なfull maskはArcを共有したままです。変更が必要な場合だけ最大125 KB / 1MのCOW copyを行い、全rejectではdragをresetします。scalar authority / compatibility pathはlocal pointer gestureを開始しないためdrag maskを生成しません。
+
+remote Grabでは受理したcomponentの全memberをlocal selected maskとdrag表示maskから除外します。local Grabではselectionを維持します。small更新はoccupancy / dirty bitsをID単位で変更し、dense Groupは既に必要なaccepted maskをword単位でunionします。切替目安はK > ceil(N/32)です。const genericでID / word更新のloopをcompile時に分け、dense loopの各memberがsmall操作向けの分岐を払わないようにしています。通常のsingleton Grabは正確な16-byte uploadを維持し、dense / fragmented upload strategyは変更していません。MAX_Z compactionでは従来どおり全未配置stateをdirtyにする例外があります。
+
+Release resolver、fixed translation、board priority、rounded fixed-offset closure、`rounded_offsets`、snapshot schema 3、renderer、command wire representationは変更していません。
+
+### Complexity / memory
+
+| 経路 | 計算量・allocation |
+| --- | --- |
+| scalar、owner領域再利用、ordinary Z | component lookup O(log k)、validation / hold O(k)、Z sort worst-case O(k log k)。temporary membership mask 0 bytes |
+| Group | 入力mask走査 O(ceil(N/32) + R)、root lookup最大O(R log k_max)、touched component検証 O(K)、Z sort O(K log K)。dense出力を使う場合は追加bitmap走査 |
+| small partial-root dedup | 最大128 IDsのinline set、heap 0。少数setの線形検索はbounded。129個目の昇格はO(N/32)のzero initializationを伴う |
+| local drag同期 | all-valid full membershipはArc clone。expansion / rejectionはO(K)、最初のCOWはO(N/32) |
+| pointer | O(1)。command、state / selection / membership uploadは0 |
+| first hold / MAX_Z | owner初回確保O(N)、Z compaction O(N log N)の既存slow paths |
+
+Rはrequested set bits数、Kはtouched componentのmember数、kはscalar component sizeです。owner再利用・共有state解放後のsmall scalar authorityから不要なN依存を除去しています。初期uploadがdense stateを共有している間の例外的な早期変更では、既存の16 MB / 1M COWが残ります。
+
+恒久メモリの追加は0 bytesです。16-byte state、8-byte / piece connectivity、owner IDs + occupancy 8,125,000 bytes / 1Mを維持します。1M上の1 / 8 / 32 memberのscalar planにはmaskがなく、各Z Vec capacityが128 bytes以下であることをassertします。partial Groupの同条件ではroot scratch heap 0 bytesをassertします。既存owners / occupancy / dirty / dense stateのallocation identityも通常scalar apply前後で保持します。baselineのscalar入力maskは125,000-byte payload / 1Mで、連結expansion時は追加COWもありました。OS RSS / peak allocationは測定していません。
+
+### 同じharnessによるbefore / after
+
+Windows 11 / Ryzen 9 9950X / Rust 1.97.0 / release。全harness sourceのSHA-256を一致させ、baseline archived sourceと改善worktreeを別target directoryでbuildしました。最終CPU測定はvalidation buildとGPU testsの終了後に順番に実行しています。一時的な負荷の揺れがあったため、baseline→改善版、改善版→baseline、baseline→改善版の3組を集計しました。CSVのrun_passで各組を識別できます。詳しい環境・hash・test結果は[environment JSON](../benchmarks/small-grab-environment.json)にあります。
+
+small Grabは各条件10 samples × 3組 = 30 samples、4 puzzle sizes × 3 component sizes × 3 commands × 2 owner-storage条件で各実装2160 samples。componentをN/2付近に作り、partial maskは中央の1member、full maskは全memberを指定します。timed regionは`apply_command`だけです。puzzle初期化、union、selection、mask作成、fixture生成、owner再利用のwarmupは測定外です。毎sampleで全component ownership、正確なdirty count、drag mask不要をassertしています。以下はowner領域再利用時の中央値（µs）。
+
+| N | k | scalar before | scalar after | partial Group before | partial Group after | full Group before | full Group after |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000 | 1 | 0.30 | 0.10 | 0.20 | 0.10 | 0.20 | 0.10 |
+| 1000 | 8 | 0.50 | 0.30 | 0.40 | 0.30 | 0.30 | 0.30 |
+| 1000 | 32 | 0.95 | 1.00 | 0.80 | 1.05 | 0.70 | 1.10 |
+| 10000 | 1 | 1.15 | 0.10 | 1.00 | 0.30 | 1.00 | 0.30 |
+| 10000 | 8 | 1.60 | 0.40 | 1.40 | 0.70 | 1.30 | 0.60 |
+| 10000 | 32 | 2.10 | 1.40 | 2.00 | 1.60 | 1.90 | 1.50 |
+| 100000 | 1 | 8.40 | 0.30 | 8.05 | 2.20 | 8.00 | 1.80 |
+| 100000 | 8 | 9.60 | 0.70 | 8.85 | 2.80 | 8.40 | 2.25 |
+| 100000 | 32 | 9.95 | 4.10 | 10.80 | 4.80 | 9.20 | 3.90 |
+| 1000000 | 1 | 123.55 | 1.00 | 78.65 | 16.05 | 77.65 | 16.20 |
+| 1000000 | 8 | 143.65 | 2.70 | 99.40 | 18.50 | 79.90 | 17.75 |
+| 1000000 | 32 | 147.85 | 7.75 | 101.40 | 24.30 | 82.20 | 22.90 |
+
+[small Grab baseline CSV](../benchmarks/small-grab-baseline-small-grab-cpu.csv)、[改善後CSV](../benchmarks/small-grab-optimized-small-grab-cpu.csv)に全samplesを保存しています。Groupのpartial / full差が小さいのは、少数componentの処理よりdense input maskの走査が支配するためです。scalarとGroupの残るN依存は区別が必要です。
+
+owner初回確保を含む1Mの中央値（µs）。これはtemporary scratchではなく、既存8.125 MBの恒久owner storageの確保・初期化コストです。
+
+| k | scalar before | scalar after | partial Group before | partial Group after | full Group before | full Group after |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 963.30 | 813.75 | 917.55 | 852.25 | 917.65 | 812.85 |
+| 8 | 1017.75 | 1199.20 | 996.50 | 930.95 | 938.05 | 852.65 |
+| 32 | 1077.15 | 853.50 | 969.10 | 883.90 | 942.45 | 847.95 |
+
+既存million-selection harnessの1M全選択Grabは6.3767 → 6.0805 ms（約4.6%減、5 samples × 3組の中央値、初回owner確保込み）です。[baseline](../benchmarks/small-grab-baseline-million-selection-cpu.csv)、[改善後](../benchmarks/small-grab-optimized-million-selection-cpu.csv)を参照してください。
+
+既存connected-snapping harnessの1M中央値（ms）。Grabではselection / dragが準備済み、Releaseは同じresolverとassertを使用します。
+
+| scenario | Grab before | Grab after | Release before | Release after |
+| --- | ---: | ---: | ---: | ---: |
+| disconnected | 6.1309 | 6.0516 | 48.5882 | 48.1370 |
+| single_snap | 0.9374 | 0.8597 | 0.0436 | 0.0518 |
+| closure | 0.9349 | 0.8797 | 86.0325 | 86.0825 |
+| board | 6.2430 | 5.8582 | 136.3770 | 134.7949 |
+| connected | 9.9368 | 9.6138 | 24.4555 | 24.6337 |
+
+[connected baseline](../benchmarks/small-grab-baseline-connected-snapping-cpu.csv)、[改善後](../benchmarks/small-grab-optimized-connected-snapping-cpu.csv)。Release / snappingのproduction codeに変更はありません。small Releaseも各条件10 samples × 3組で同じfixtureを再実行しました。1M中央値（µs）は以下です。
+
+| k | scalar before | scalar after | partial Group before | partial Group after |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 7.15 | 6.80 | 12.55 | 13.20 |
+| 8 | 9.45 | 9.30 | 15.75 | 15.95 |
+| 32 | 13.50 | 11.85 | 18.35 | 18.85 |
+
+[small Release baseline](../benchmarks/small-grab-baseline-small-release-cpu.csv)、[改善後](../benchmarks/small-grab-optimized-small-release-cpu.csv)。短時間測定はcache状態や実行順によって変動します。performance数値はframe latencyではありません。
+
+既存multi-drag benchmark、各100,000 pointer updatesの1回あたり平均を3組で測った中央値（ns）。
+
+| selected | before | after |
+| ---: | ---: | ---: |
+| 1000 | 11.684 | 11.978 |
+| 10000 | 11.751 | 12.086 |
+| 100000 | 11.688 | 12.041 |
+| 1000000 | 11.721 | 12.154 |
+
+[pointer baseline](../benchmarks/small-grab-baseline-multi-drag.csv)、[改善後](../benchmarks/small-grab-optimized-multi-drag.csv)。million-selectionとconnected-snapping harnessでもpointer中のmembership Arc不変、state allocation不変、dirtyなしをassertします。GPU testsはpointer frameのstate / selection / membership upload 0も検証します。
+
+### Correctness / validation
+
+追加testsは1M scalar singleton / 8 / 32 memberのmask不要、scalar connected、partial / duplicate references、stable minimumとDSU rootの相違、mixed / stale ownership、placed、disabled、remote selection全component除外、local selection維持、複数componentのcross-component Z / PieceId tie / MAX_Z、duplicate owner count、partial dragのaccept/reject同期、full drag Arc sharing、root extraction helperのfull mask scratch heap不要、129以上partial rootsのdense昇格、大component scalar、singleton 16-byte uploadを検証します。既存のmillion component round tripとRelease / snapping / snapshotのtestsも通っています。
+
+必須6チェックはすべてexit 0。通常testは161 passed / 0 failed / 13 ignored、all-featuresは161 passed / 0 failed / 13 ignored。release gameは110 passed / 0 failed / 13 ignored。CPU benchmark5件はbaseline / 改善版とも成功。RTX 5090 / Vulkan / NVIDIA 610.88で既存GPU filterの7件と画像upload 1件も成功しました。
+
+```sh
+cargo fmt --check
+cargo check --locked
+cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo test --locked --all-features
+cargo build --locked
+cargo test -p puzzella-game --release --locked small_component_grab_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --release --locked small_component_release_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --release --locked connected_snapping_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --release --locked render_only_image_upload_keeps_metadata_and_pixel_values -- --ignored --nocapture --test-threads=1
+```
+
+今回の実行は`CARGO_TARGET_DIR` / `--target-dir`で比較用targetを分離しています。GPU coverage、Z、alpha、visibility、picking、drag、connected outline、preview/readback、画像pixelとuploadの既存assertを維持しました。通常windowでの全手動操作や異OS / GPUの確認は含みません。
+
+### 主な変更ファイル / 残存N依存 / future work
+
+| file | 変更 |
+| --- | --- |
+| `game/src/resources/pieces.rs` | small root extraction / validation、dense canonical path維持、optional maskのGrabPlan、small ID / dense word更新、drag同期 |
+| `game/src/resources/pieces/connected_tests.rs` | Grab correctness / memory / upload tests |
+| `game/src/interaction_bench.rs` | scalar / partial / full × reused / firstのsmall Grab benchmark |
+| `benchmarks/small-grab-*.csv`, `small-grab-environment.json` | 同一harnessの全samples、環境・validation |
+| `docs/MILLION_SELECTION.md` | 本追記、complexity、before / after、制限 |
+
+残るN依存はGroup commandのdense input bitmap iteration、129以上partial rootsのscratch昇格、dense Groupのaccepted mask走査 / COW、selection canonical output mask、local drag membership / remote selection COW、dense owner初回確保、initial state共有中のCOW、dirty upload準備時のword走査 / clear、MAX_Z compactionです。Z sortはaccepted member数Kに依存し、全選択時はK=Nになります。普通のsmall scalar Grabのauthority pathとbulk / presentationの経路は分けて評価してください。
+
+`GrabGroup` / `ReleaseGroup`のwire `PieceBitSet`は1M puzzleで125,000-byte payloadのままです。将来の候補は`Component(PieceId)`、Sparse IDs、Dense BitSetのadaptive encodingです。transport、packet format、snapshot schemaは今回変更していません。

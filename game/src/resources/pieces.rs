@@ -214,6 +214,13 @@ pub struct AppliedCommand {
     pub released: usize,
     pub placed: usize,
 }
+/// Operation-local accepted IDs and an optional shared presentation/bulk mask.
+/// Small authority-only grabs never construct membership words.
+struct GrabPlan {
+    ids: Vec<PieceId>,
+    members: Option<PieceBitSet>,
+}
+
 /// Dense CPU authority: no per-piece definition, transform, handle or entity.
 #[derive(Resource, Default)]
 pub struct PieceDataStore {
@@ -457,9 +464,8 @@ impl PieceDataStore {
                 self.release_components(player, members, *delta, definition)
             }
             PieceCommand::Grab(id) if self.contains(*id) => {
-                let mut members = PieceBitSet::new(self.len());
-                members.insert(*id);
-                self.grab_components(player, &members)
+                let plan = self.grab_roots([self.connectivity.minimum_member(*id)], None);
+                self.apply_grab(player, plan, false)
             }
             PieceCommand::Release(id) if self.contains(*id) => self.release_roots(
                 player,
@@ -475,15 +481,106 @@ impl PieceDataStore {
         }
     }
 
+    /// Full masks emit the minimum member once; partial masks deduplicate only
+    /// roots whose minimum is absent. Small partial sets stay on the stack.
+    fn grab_component_roots<'a>(
+        &'a self,
+        requested: &'a PieceBitSet,
+        partial_roots: &'a mut PieceScratchSet,
+    ) -> impl Iterator<Item = PieceId> + 'a {
+        requested.iter().filter_map(|id| {
+            if self.connectivity.component_size(id) == 1 {
+                return Some(id);
+            }
+            let root = self.connectivity.minimum_member(id);
+            (id == root || (!requested.contains(&root) && partial_roots.insert(root)))
+                .then_some(root)
+        })
+    }
+
     fn grab_components(&mut self, player: PlayerId, requested: &PieceBitSet) -> AppliedCommand {
-        let accepted = self.selectable_members(requested);
-        // Only this transition allocates sorted IDs; preserve relative Z across components too.
-        let mut ids: Vec<_> = accepted.iter().collect();
+        let sync_drag = player == puzzella_core::LOCAL_PLAYER
+            && Arc::ptr_eq(&self.drag.members, requested.words());
+        if requested.count() > self.len().div_ceil(32) {
+            // Preserve the established dense path: canonical component validation,
+            // shared all-valid mask, and ID-ordered input to the relative-Z sort.
+            let accepted = self.selectable_members(requested);
+            let plan = GrabPlan {
+                ids: accepted.iter().collect(),
+                members: Some(accepted),
+            };
+            return self.apply_grab(player, plan, sync_drag);
+        }
+        let mut partial_roots = PieceScratchSet::new(self.len());
+        let roots = self.grab_component_roots(requested, &mut partial_roots);
+        let plan = self.grab_roots(roots, sync_drag.then_some(requested));
+        self.apply_grab(player, plan, sync_drag)
+    }
+
+    /// Validate every member before accepting any part of a component. Owner
+    /// occupancy and the HELD mirror must both say unheld, even for this player.
+    fn grab_roots(
+        &self,
+        roots: impl IntoIterator<Item = PieceId>,
+        mask: Option<&PieceBitSet>,
+    ) -> GrabPlan {
+        let mut plan = GrabPlan {
+            ids: Vec::new(),
+            members: mask.cloned(),
+        };
+        for root in roots {
+            if self.connectivity.component_size(root) == 1 {
+                if self.is_selectable(root) {
+                    plan.ids.push(root);
+                } else if let Some(members) = &mut plan.members {
+                    members.remove(&root);
+                }
+                continue;
+            }
+            if self
+                .connectivity
+                .iter_component(root)
+                .all(|id| self.is_selectable(id))
+            {
+                for id in self.connectivity.iter_component(root) {
+                    plan.ids.push(id);
+                    if let Some(members) = &mut plan.members {
+                        // Avoid COW when full membership already shares the mask.
+                        if !members.contains(&id) {
+                            members.insert(id);
+                        }
+                    }
+                }
+            } else if let Some(members) = &mut plan.members {
+                for id in self.connectivity.iter_component(root) {
+                    members.remove(&id);
+                }
+            }
+        }
+        plan
+    }
+
+    fn apply_grab(&mut self, player: PlayerId, plan: GrabPlan, sync_drag: bool) -> AppliedCommand {
+        // Compile separate ID/word update loops: dense grabs should not pay
+        // small-operation branches once per member. Scalar never needs a mask.
+        if plan.ids.len() > self.len().div_ceil(32) && plan.members.is_some() {
+            self.apply_grab_inner::<true>(player, plan, sync_drag)
+        } else {
+            self.apply_grab_inner::<false>(player, plan, sync_drag)
+        }
+    }
+
+    fn apply_grab_inner<const BULK: bool>(
+        &mut self,
+        player: PlayerId,
+        mut plan: GrabPlan,
+        sync_drag: bool,
+    ) -> AppliedCommand {
+        let ids = &mut plan.ids;
+        // One deterministic ordering across ALL accepted components, before compaction.
         ids.sort_unstable_by_key(|id| (self.states[id.0 as usize].z_order, *id));
         if ids.is_empty() {
-            if player == puzzella_core::LOCAL_PLAYER
-                && Arc::ptr_eq(&self.drag.members, requested.words())
-            {
+            if sync_drag {
                 self.drag = DragTransform::default();
             }
             return AppliedCommand::default();
@@ -498,20 +595,31 @@ impl PieceDataStore {
             state.flags |= HELD;
             state.z_order = self.next_z_order + rank as u32;
             self.held_by.owners[id.0 as usize] = player;
-            if player != puzzella_core::LOCAL_PLAYER && self.selected_pieces.remove(&id) {
-                self.highlights_dirty = true;
+            if !BULK {
+                self.held_by.occupied.insert(id);
+                self.dirty_pieces.insert(id);
+            }
+            if player != puzzella_core::LOCAL_PLAYER {
+                if self.selected_pieces.remove(&id) {
+                    self.highlights_dirty = true;
+                }
+                if !BULK {
+                    self.drag.remove(id);
+                }
             }
         }
-        self.held_by.occupied.union(&accepted);
+        if BULK {
+            let members = plan.members.as_ref().unwrap();
+            self.held_by.occupied.union(members);
+            self.dirty_pieces.union(members);
+            if player != puzzella_core::LOCAL_PLAYER {
+                self.drag.exclude(members);
+            }
+        }
         *self.held_by.counts.entry(player).or_default() += ids.len();
-        self.dirty_pieces.union(&accepted);
         self.next_z_order += ids.len() as u32;
-        if player == puzzella_core::LOCAL_PLAYER
-            && Arc::ptr_eq(&self.drag.members, requested.words())
-        {
-            self.drag.members = accepted.words().clone();
-        } else if player != puzzella_core::LOCAL_PLAYER {
-            self.drag.exclude(&accepted);
+        if sync_drag {
+            self.drag.members = plan.members.as_ref().unwrap().words().clone();
         }
         AppliedCommand {
             grabbed: ids.len(),

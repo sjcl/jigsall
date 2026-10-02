@@ -940,3 +940,335 @@ fn growing_fractional_cluster_keeps_one_logical_offset_and_scans_boundaries_once
         )
     }));
 }
+
+#[test]
+fn small_grab_plans_in_a_million_piece_puzzle_have_no_membership_heap() {
+    for members in [1, 8, 32] {
+        let mut s = PieceDataStore::default();
+        s.initialize(vec![Vec2::ZERO; 1_000_000]);
+        let base = 700_000;
+        for member in 1..members {
+            s.connectivity.union(PieceId(base), PieceId(base + member));
+        }
+        s.held_by.ensure_len(s.len()); // Persistent first-hold allocation is separate.
+        let id = PieceId(base + members / 2);
+        let plan = s.grab_roots([s.connectivity.minimum_member(id)], None);
+        assert!(plan.members.is_none());
+        assert_eq!(plan.ids.len(), members as usize);
+        assert!(plan.ids.capacity() <= 32);
+        let requested = mask(s.len(), &[id.0, base + members - 1]);
+        let mut scratch = PieceScratchSet::new(s.len());
+        let group_plan = s.grab_roots(s.grab_component_roots(&requested, &mut scratch), None);
+        assert_eq!(scratch.heap_bytes(), 0);
+        assert!(group_plan.members.is_none());
+        assert_eq!(group_plan.ids.len(), members as usize);
+        assert!(group_plan.ids.capacity() <= 32);
+        let states = s.states.as_ptr();
+        let owners = s.held_by.owners.as_ptr();
+        let occupancy = s.held_by.occupied.words().as_ptr();
+        let dirty = s.dirty_pieces.words().as_ptr();
+        assert_eq!(
+            s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(id), None)
+                .grabbed,
+            members as usize
+        );
+        assert_eq!(s.dirty_pieces.count(), members as usize);
+        assert_eq!(s.held_by.len(), members as usize);
+        assert_eq!(s.states.as_ptr(), states);
+        assert_eq!(s.held_by.owners.as_ptr(), owners);
+        assert_eq!(s.held_by.occupied.words().as_ptr(), occupancy);
+        assert_eq!(s.dirty_pieces.words().as_ptr(), dirty);
+        assert!(s.drag.members.is_empty());
+    }
+}
+
+#[test]
+fn scalar_and_partial_group_grab_preserve_local_selection_and_duplicate_counts() {
+    for scalar in [false, true] {
+        let (_, mut s) = fixture(UVec2::new(4, 1), [Vec2::splat(100.0); 4]);
+        // The stable minimum differs from the DSU root.
+        s.connectivity.union(PieceId(1), PieceId(2));
+        s.connectivity.union(PieceId(0), PieceId(2));
+        assert_ne!(s.connectivity.find_root(PieceId(0)), PieceId(0));
+        s.selected_pieces.fill();
+        let selected = s.selected_pieces.words().clone();
+        let command = if scalar {
+            PieceCommand::Grab(PieceId(2))
+        } else {
+            PieceCommand::GrabGroup {
+                members: mask(4, &[1, 2]),
+            }
+        };
+        assert_eq!(s.apply_command(LOCAL_PLAYER, &command, None).grabbed, 3);
+        assert!(Arc::ptr_eq(&selected, s.selected_pieces.words()));
+        for id in 0..3 {
+            assert_eq!(s.held_by.get(&PieceId(id)), Some(&LOCAL_PLAYER));
+            assert_ne!(s.states[id as usize].flags & HELD, 0);
+        }
+        s.dirty_pieces.clear();
+        let states = s.states.to_vec();
+        let next_z = s.next_z_order;
+        for player in [LOCAL_PLAYER, PlayerId(1)] {
+            assert_eq!(s.apply_command(player, &command, None).grabbed, 0);
+            assert_eq!(s.held_by.len(), 3);
+            assert_eq!(s.held_by.counts.get(&LOCAL_PLAYER), Some(&3));
+            assert_eq!(&*s.states, states.as_slice());
+            assert_eq!(s.next_z_order, next_z);
+            assert!(s.dirty_pieces.is_empty());
+        }
+    }
+}
+
+#[test]
+fn group_grab_rejects_invalid_components_atomically_and_accepts_siblings() {
+    for invalid in [
+        "remote_owner",
+        "local_owner",
+        "remote_held",
+        "placed",
+        "disabled",
+        "stale_held",
+    ] {
+        for scalar in [false, true] {
+            let (_, mut s) = fixture(UVec2::new(4, 1), [Vec2::splat(100.0); 4]);
+            s.connectivity.union(PieceId(0), PieceId(1));
+            s.connectivity.union(PieceId(2), PieceId(3));
+            match invalid {
+                "remote_owner" => s.held_by.insert(PieceId(1), PlayerId(1)),
+                "local_owner" => s.held_by.insert(PieceId(1), LOCAL_PLAYER),
+                "remote_held" => {
+                    s.held_by.insert(PieceId(1), PlayerId(1));
+                    s.states[1].flags |= HELD;
+                }
+                "placed" => s.states[1].flags |= PLACED,
+                "disabled" => s.states[1].flags &= !ENABLED,
+                _ => s.states[1].flags |= HELD,
+            }
+            let before = s.states[..2].to_vec();
+            let command = if scalar {
+                PieceCommand::Grab(PieceId(0))
+            } else {
+                PieceCommand::GrabGroup {
+                    members: mask(4, &[0, 3]),
+                }
+            };
+            assert_eq!(
+                s.apply_command(LOCAL_PLAYER, &command, None).grabbed,
+                if scalar { 0 } else { 2 },
+                "{invalid}"
+            );
+            assert_eq!(&s.states[..2], before.as_slice());
+            assert!(s.held_by.get(&PieceId(0)).is_none());
+            assert_eq!(s.dirty_pieces.count(), if scalar { 0 } else { 2 });
+            if !scalar {
+                assert_eq!(s.held_by.get(&PieceId(2)), Some(&LOCAL_PLAYER));
+                assert_eq!(s.held_by.get(&PieceId(3)), Some(&LOCAL_PLAYER));
+            }
+        }
+    }
+}
+
+#[test]
+fn group_grab_preserves_cross_component_z_ties_and_max_z_compaction() {
+    for compact in [false, true] {
+        for full in [false, true] {
+            let (_, mut s) = fixture(UVec2::new(7, 1), [Vec2::splat(100.0); 7]);
+            s.connectivity.union(PieceId(1), PieceId(2));
+            s.connectivity.union(PieceId(0), PieceId(2));
+            s.connectivity.union(PieceId(3), PieceId(4));
+            for (state, z) in s.states.iter_mut().zip([10, 30, 30, 20, 30, 15, 50]) {
+                state.z_order = z;
+            }
+            s.next_z_order = if compact { MAX_Z - 1 } else { 100 };
+            let command = PieceCommand::GrabGroup {
+                members: mask(
+                    7,
+                    if full {
+                        &[0, 1, 2, 3, 4, 5]
+                    } else {
+                        &[1, 2, 4, 5]
+                    },
+                ),
+            };
+            assert_eq!(s.apply_command(LOCAL_PLAYER, &command, None).grabbed, 6);
+            let mut order: Vec<_> = (0..6).collect();
+            order.sort_unstable_by_key(|&id| (s.states[id].z_order, id));
+            assert_eq!(order, [0, 5, 3, 1, 2, 4]);
+            assert!(s.states[6].z_order < s.states[0].z_order);
+            assert!(s.next_z_order <= MAX_Z);
+            assert_eq!(s.dirty_pieces.count(), if compact { 7 } else { 6 });
+        }
+    }
+}
+
+#[test]
+fn local_group_grab_syncs_partial_drag_to_complete_accepted_components() {
+    for full in [false, true] {
+        let (_, mut s) = fixture(UVec2::new(5, 1), [Vec2::splat(100.0); 5]);
+        s.connectivity.union(PieceId(0), PieceId(1));
+        s.connectivity.union(PieceId(2), PieceId(3));
+        s.held_by.insert(PieceId(1), PlayerId(1));
+        let requested = mask(5, if full { &[0, 1, 2, 3, 4] } else { &[0, 3, 4] });
+        let frozen = requested.words().clone();
+        s.drag = DragTransform {
+            members: requested.words().clone(),
+            delta: Vec2::ONE,
+        };
+        assert_eq!(
+            s.apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::GrabGroup {
+                    members: requested.clone()
+                },
+                None
+            )
+            .grabbed,
+            3
+        );
+        assert_eq!(
+            s.drag.members.as_ref(),
+            mask(5, &[2, 3, 4]).words().as_ref()
+        );
+        assert_eq!(s.drag.delta, Vec2::ONE);
+        assert!(!Arc::ptr_eq(&frozen, &s.drag.members));
+        assert!(Arc::ptr_eq(&frozen, requested.words()));
+        assert_eq!(s.held_by.get(&PieceId(1)), Some(&PlayerId(1)));
+        assert_eq!(s.held_by.counts.get(&LOCAL_PLAYER), Some(&3));
+    }
+}
+
+#[test]
+fn all_valid_group_grab_keeps_drag_membership_arc_shared() {
+    let (_, mut s) = fixture(UVec2::new(64, 1), [Vec2::splat(100.0); 64]);
+    for id in 1..64 {
+        s.connectivity.union(PieceId(0), PieceId(id));
+    }
+    let mut requested = PieceBitSet::new(64);
+    requested.fill();
+    s.drag.members = requested.words().clone();
+    assert_eq!(
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::GrabGroup {
+                members: requested.clone()
+            },
+            None
+        )
+        .grabbed,
+        64
+    );
+    assert!(Arc::ptr_eq(&s.drag.members, requested.words()));
+    assert_eq!(s.held_by.len(), 64);
+}
+
+#[test]
+fn remote_scalar_and_group_grab_remove_complete_local_selection_and_drag() {
+    for scalar in [false, true] {
+        let (_, mut s) = fixture(UVec2::new(128, 1), [Vec2::splat(100.0); 128]);
+        s.connectivity.union(PieceId(0), PieceId(1));
+        s.connectivity.union(PieceId(1), PieceId(2));
+        s.selected_pieces.fill();
+        let before = s.selected_pieces.clone();
+        s.drag = DragTransform {
+            members: before.words().clone(),
+            delta: Vec2::ONE,
+        };
+        let command = if scalar {
+            PieceCommand::Grab(PieceId(1))
+        } else {
+            PieceCommand::GrabGroup {
+                members: mask(128, &[1, 2]),
+            }
+        };
+        assert_eq!(s.apply_command(PlayerId(1), &command, None).grabbed, 3);
+        for id in 0..3 {
+            assert!(!s.selected_pieces.contains(&PieceId(id)));
+            assert_eq!(s.drag.members[0] & (1 << id), 0);
+        }
+        assert_eq!(before.count(), 128);
+        assert_eq!(s.selected_pieces.count(), 125);
+        assert_eq!(s.dirty_pieces.count(), 3);
+        assert_eq!(s.drag.delta, Vec2::ONE);
+        assert!(s.highlights_dirty);
+    }
+}
+
+#[test]
+fn scalar_grab_of_large_component_updates_every_member() {
+    let (_, mut s) = fixture(UVec2::new(128, 1), [Vec2::splat(100.0); 128]);
+    for id in 1..100 {
+        s.connectivity.union(PieceId(0), PieceId(id));
+    }
+    assert_eq!(
+        s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(75)), None)
+            .grabbed,
+        100
+    );
+    assert_eq!(s.held_by.len(), 100);
+    assert_eq!(s.dirty_pieces.count(), 100);
+    assert!(s.drag.members.is_empty());
+    assert_eq!(
+        s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(15)), None)
+            .released,
+        100
+    );
+    assert!(s.held_by.is_empty());
+}
+
+#[test]
+fn million_piece_singleton_grab_uploads_exactly_sixteen_bytes() {
+    let mut store = PieceDataStore::default();
+    store.initialize(vec![Vec2::ZERO; 1_000_000]);
+    let mut app = App::new();
+    app.insert_resource(store)
+        .init_resource::<PieceUpload>()
+        .add_systems(Update, prepare_piece_upload);
+    app.update();
+    app.update();
+    let id = PieceId(777_777);
+    assert_eq!(
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .apply_command(LOCAL_PLAYER, &PieceCommand::Grab(id), None)
+            .grabbed,
+        1
+    );
+    app.update();
+    let upload = app.world().resource::<PieceUpload>();
+    assert_eq!(upload.ranges.len(), 1);
+    assert_eq!(upload.ranges[0].start, id.0);
+    assert_eq!(
+        upload.ranges[0].states.len() * std::mem::size_of::<GpuPieceState>(),
+        16
+    );
+}
+
+#[test]
+fn group_grab_deduplicates_many_partial_roots_and_full_masks_need_no_scratch_heap() {
+    let (_, mut s) = fixture(UVec2::new(600, 1), [Vec2::splat(100.0); 600]);
+    for id in (0..600).step_by(2) {
+        s.connectivity.union(PieceId(id), PieceId(id + 1));
+    }
+    let mut full = PieceBitSet::new(600);
+    full.fill();
+    let mut scratch = PieceScratchSet::new(600);
+    assert_eq!(s.grab_component_roots(&full, &mut scratch).count(), 300);
+    assert_eq!(scratch.heap_bytes(), 0);
+    let mut partial = PieceBitSet::new(600);
+    partial.extend((1..600).step_by(2).map(PieceId));
+    let mut scratch = PieceScratchSet::new(600);
+    let roots: Vec<_> = s.grab_component_roots(&partial, &mut scratch).collect();
+    assert_eq!(roots, (0..600).step_by(2).map(PieceId).collect::<Vec<_>>());
+    assert!(scratch.heap_bytes() > 0);
+    assert_eq!(
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::GrabGroup { members: partial },
+            None
+        )
+        .grabbed,
+        600
+    );
+    assert_eq!(s.held_by.len(), 600);
+    assert_eq!(s.dirty_pieces.count(), 600);
+}
