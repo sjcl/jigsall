@@ -7,10 +7,14 @@ pub fn draw_in_game_menu_ui(
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
+    completion_state: Option<Res<State<GameCompleteSubState>>>,
+    mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+
+    let viewing_completed_puzzle = completion_state.is_some();
 
     // 半透明の背景を表示してゲーム画面を暗くする
     egui::Area::new(egui::Id::new("in_game_menu_background"))
@@ -43,17 +47,31 @@ pub fn draw_in_game_menu_ui(
             ui.vertical_centered(|ui| {
                 ui.spacing_mut().item_spacing.y = 20.0;
 
-                ui.heading("🎮 Game Menu");
+                ui.heading(if viewing_completed_puzzle {
+                    "Puzzle Menu"
+                } else {
+                    "Game Menu"
+                });
 
                 ui.separator();
 
                 // Resume Game ボタン
                 if ui
-                    .add_sized([200.0, 40.0], egui::Button::new("Resume Game"))
+                    .add_sized(
+                        [200.0, 40.0],
+                        egui::Button::new(if viewing_completed_puzzle {
+                            "Back to Puzzle"
+                        } else {
+                            "Resume Game"
+                        }),
+                    )
                     .clicked()
                 {
-                    next_sub_state.set(GameSubState::Playing);
-                    println!("🎮 Resuming game from menu");
+                    if viewing_completed_puzzle {
+                        next_completion_state.set(GameCompleteSubState::Viewing);
+                    } else {
+                        next_sub_state.set(GameSubState::Playing);
+                    }
                 }
 
                 // Return to Title ボタン
@@ -78,7 +96,11 @@ pub fn draw_in_game_menu_ui(
 
                 ui.separator();
 
-                ui.label("Press ESC to resume");
+                ui.label(if viewing_completed_puzzle {
+                    "Press ESC to return to your puzzle"
+                } else {
+                    "Press ESC to resume"
+                });
             });
         });
 }

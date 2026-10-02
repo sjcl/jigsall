@@ -17,6 +17,17 @@ pub fn toggle_game_menu(
     }
 }
 
+pub fn toggle_completed_puzzle_menu(
+    state: Res<State<GameCompleteSubState>>,
+    mut next: ResMut<NextState<GameCompleteSubState>>,
+) {
+    match *state.get() {
+        GameCompleteSubState::Viewing => next.set(GameCompleteSubState::Paused),
+        GameCompleteSubState::Paused => next.set(GameCompleteSubState::Viewing),
+        GameCompleteSubState::Summary => {}
+    }
+}
+
 pub fn apply_piece_commands(
     mut commands: MessageReader<ClientCommand>,
     mut store: ResMut<PieceDataStore>,

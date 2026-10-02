@@ -74,6 +74,7 @@ Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変�
 AppState: Menu → GameSetup → InGame → GameComplete
                                   └──────────→ Menu
 GameSubState: Initializing → Playing ⇄ Paused
+GameCompleteSubState: Summary → Viewing ⇄ Paused
 Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Failed
 ```
 
@@ -85,7 +86,7 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 永続連結の追加後もdense stateの受け取り・初回uploadはcopy不要ですが、`initialize_dense`は新しい8-byte / pieceのDSU領域をO(N)で初期化します。上記0.0024 msはDSU導入前の受け取り測定で、現在の初期化コストは[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)のmetadata計測を参照してください。通常idle / pointerにこの処理はありません。
 
-完成画面ではパズルを残します。Menuへ戻る際、定義・state・画像・背景・選択・gesture・overlay・worker受信器・命令を清掃します。epochでGPU stateを作り直し、request IDをセッション間で再使用せず、前セッションの遅延readbackを無効にします。
+完成画面ではパズルを残します。GameCompleteのsubstateで結果カード・完成盤面の閲覧・ESCメニューを切り替え、InGameへ再入場せず定義・画像・配置を保持します。完成時に一度だけカメラを中央へ合わせ、閲覧中はpan / zoomを有効にします。Menuへ戻る際、定義・state・画像・背景・選択・gesture・overlay・worker受信器・命令を清掃します。epochでGPU stateを作り直し、request IDをセッション間で再使用せず、前セッションの遅延readbackを無効にします。
 
 ## GPU presentation
 

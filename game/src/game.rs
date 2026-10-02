@@ -25,6 +25,7 @@ impl Plugin for GamePlugin {
             .init_resource::<crate::render::SelectionOverlay>()
             .init_state::<AppState>()
             .add_sub_state::<GameSubState>()
+            .add_sub_state::<GameCompleteSubState>()
             .add_systems(Startup, (setup_game, setup_image_load_system))
             .add_systems(
                 OnEnter(AppState::Menu),
@@ -42,6 +43,11 @@ impl Plugin for GamePlugin {
             )
             .add_systems(OnEnter(GameSubState::Paused), release_local_drag)
             .add_systems(
+                OnEnter(AppState::GameComplete),
+                (release_local_drag, auto_adjust_camera_zoom).chain(),
+            )
+            .add_systems(OnEnter(GameCompleteSubState::Paused), release_local_drag)
+            .add_systems(
                 Update,
                 (handle_image_load_results, update_puzzle_image_size)
                     .chain()
@@ -53,9 +59,20 @@ impl Plugin for GamePlugin {
             )
             .add_systems(
                 PostUpdate,
+                (handle_camera_zoom, handle_camera_drag)
+                    .chain()
+                    .after(EguiPostUpdateSet::EndPass)
+                    .after(bevy::camera::CameraUpdateSystems)
+                    .before(handle_edge_scrolling)
+                    .before(TransformSystems::Propagate)
+                    .run_if(
+                        in_state(GameSubState::Playing)
+                            .or_else(in_state(GameCompleteSubState::Viewing)),
+                    ),
+            )
+            .add_systems(
+                PostUpdate,
                 (
-                    handle_camera_zoom,
-                    handle_camera_drag,
                     handle_edge_scrolling,
                     update_input_state,
                     handle_piece_input,
@@ -78,6 +95,11 @@ impl Plugin for GamePlugin {
                     .after(EguiPostUpdateSet::EndPass)
                     .before(TransformSystems::Propagate)
                     .run_if(in_state(AppState::InGame)),
+            )
+            .add_systems(
+                Update,
+                toggle_completed_puzzle_menu
+                    .run_if(in_state(AppState::GameComplete).and_then(escape_just_pressed)),
             )
             .add_systems(
                 Update,
@@ -129,7 +151,7 @@ fn initialize_game(
     commands.insert_resource(definition);
 }
 
-/// Runs when leaving a session for Menu, including completion -> new game.
+/// Runs when leaving a session for Menu, including the completed puzzle viewer.
 // ECS dependencies and query filters are explicit to keep Bevy access visible.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn cleanup_game(
@@ -279,6 +301,61 @@ mod tests {
                 AppState::GameComplete
             );
             assert_eq!(app.world().resource::<PieceDataStore>().placed_count, 4);
+            assert_eq!(
+                *app.world().resource::<State<GameCompleteSubState>>().get(),
+                GameCompleteSubState::Summary
+            );
+            assert!(app.world().get_resource::<State<GameSubState>>().is_none());
+
+            // ESC on the result card must not open the viewer's pause menu.
+            press_escape(&mut app);
+            assert_eq!(
+                *app.world().resource::<State<GameCompleteSubState>>().get(),
+                GameCompleteSubState::Summary
+            );
+            if seed == 43 {
+                let epoch = app.world().resource::<PieceDataStore>().epoch;
+                let states = app.world().resource::<PieceDataStore>().states.to_vec();
+                let image = app.world().resource::<PuzzleImage>().handle.clone();
+                app.world_mut()
+                    .resource_mut::<NextState<GameCompleteSubState>>()
+                    .set(GameCompleteSubState::Viewing);
+                app.update();
+
+                let camera = app
+                    .world_mut()
+                    .query_filtered::<Entity, With<MainCamera>>()
+                    .single(app.world())
+                    .unwrap();
+                let transform =
+                    Transform::from_xyz(45.0, -20.0, 0.0).with_scale(Vec3::new(2.0, 2.0, 1.0));
+                *app.world_mut().get_mut::<Transform>(camera).unwrap() = transform;
+                app.world_mut()
+                    .resource_mut::<InputState>()
+                    .is_camera_dragging = true;
+                press_escape(&mut app);
+                assert_eq!(
+                    *app.world().resource::<State<GameCompleteSubState>>().get(),
+                    GameCompleteSubState::Paused
+                );
+                assert!(!app.world().resource::<InputState>().is_camera_dragging);
+                press_escape(&mut app);
+                assert_eq!(
+                    *app.world().resource::<State<GameCompleteSubState>>().get(),
+                    GameCompleteSubState::Viewing
+                );
+                // Viewing and resuming preserve the session, locked pieces and camera.
+                let store = app.world().resource::<PieceDataStore>();
+                assert_eq!(store.epoch, epoch);
+                assert_eq!(&*store.states, states.as_slice());
+                assert_eq!(store.placed_count, 4);
+                assert_eq!(app.world().resource::<PuzzleImage>().handle, image);
+                assert_eq!(app.world().resource::<PuzzleDefinition>().seed, seed);
+                assert!(app.world().resource::<GameData>().puzzle_completed);
+                assert_eq!(app.world().resource::<GameData>().puzzle_progress, 1.0);
+                assert_eq!(app.world().get::<Transform>(camera).unwrap(), &transform);
+                press_escape(&mut app);
+            }
             app.world_mut()
                 .resource_mut::<NextState<AppState>>()
                 .set(AppState::Menu);
@@ -287,6 +364,10 @@ mod tests {
             assert!(app.world().get_resource::<PuzzleImage>().is_none());
             assert!(app.world().get_resource::<PuzzleDefinition>().is_none());
             assert!(app.world().get_resource::<State<GameSubState>>().is_none());
+            assert!(app
+                .world()
+                .get_resource::<State<GameCompleteSubState>>()
+                .is_none());
             assert_eq!(
                 app.world_mut()
                     .query::<&Transform>()
@@ -295,5 +376,17 @@ mod tests {
                 1
             );
         }
+    }
+
+    fn press_escape(app: &mut App) {
+        // Inject after InputPlugin's PreUpdate reset, then apply the queued transition.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.world_mut().run_schedule(Update);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset(KeyCode::Escape);
+        app.update();
     }
 }

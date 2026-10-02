@@ -20,7 +20,7 @@ Use release mode for performance measurements. Tracy and Chrome tracing remain a
 ## Current architecture
 
 - Bevy 0.19.1 and bevy_egui 0.42. Windows pins wgpu-hal 29.0.3 for dependency compatibility.
-- AppState is Menu / GameSetup / InGame / GameComplete. GameSubState is Initializing / Playing / Paused and exists only inside InGame. There is no GameScreen or legacy compatibility state.
+- AppState is Menu / GameSetup / InGame / GameComplete. GameSubState is Initializing / Playing / Paused and exists only inside InGame. GameCompleteSubState is Summary / Viewing / Paused and preserves the completed session. There is no GameScreen or legacy compatibility state.
 - The Cargo workspace contains the thin `puzzella` binary and `puzzella-core`, `puzzella-puzzle`, `puzzella-game`, `puzzella-ui` libraries. Dependency versions and package metadata are inherited from the root manifest; all packages share one lockfile. See docs/ARCHITECTURE.md for ownership and dependency direction.
 - `core/src/gameplay.rs` owns serializable PuzzleDefinition, stable PieceId / PlayerId, immutable PuzzlePiece, mutable PieceState, and pure command / snap decisions. It depends only on ECS markers, math and serde, without rendering or UI.
 - `core/src/commands.rs` provides the local ClientCommand boundary. There is no active transport, Renet integration, host / join implementation, or port UI.

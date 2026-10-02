@@ -29,6 +29,16 @@ pub enum GameSubState {
     Paused,  // ポーズ中（ESCメニュー）
 }
 
+/// Completion keeps the existing session alive while showing its result or canvas.
+#[derive(SubStates, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[source(AppState = AppState::GameComplete)]
+pub enum GameCompleteSubState {
+    #[default]
+    Summary,
+    Viewing,
+    Paused,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlayerInfo {
     pub id: PlayerId,
