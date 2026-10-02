@@ -3,6 +3,10 @@ struct PuzzleUniform {
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
     selection_min:vec2<f32>,selection_max:vec2<f32>,selection_enabled:vec4<u32>,
     drag_delta:vec2<f32>,drag_active:u32,preview_active:u32,
+    viewport_size:vec2<f32>,viewport_origin:vec2<f32>,
+    piece_size_px:vec2<f32>,pixel_world_size:vec2<f32>,
+    render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
+    far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,first_instance:u32};
@@ -21,7 +25,12 @@ fn is_visible(id:u32)->bool {
             if (flags&9u)==0u && (flags&16u)!=0u {word|=1u<<bit;}
         }selectable[id/32u]=word;
     }
-    let state=states[id];let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
+    let state=states[id];var half=config.size*0.5+0.22*min(config.size.x,config.size.y);
+    if config.far_zoom!=0u {
+        let splat_half=max(config.piece_size_px,vec2(config.splat_min_px))*config.pixel_world_size*0.5;
+        // Pixel-center snapping can move the splat by another half main pixel.
+        half=max(half,splat_half)+config.pixel_world_size*0.5;
+    }
     var position=state.position;
     if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
         position+=config.drag_delta;

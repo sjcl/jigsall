@@ -1,14 +1,33 @@
 # Procedural GPU picking
 
-通常描画とpoint / rectangle pickingは、同じdense state、visible ID、画像texture、vertex関数、共通puzzle_shape.wgslのSDF / UVを使います。RenderMesh、Mesh attribute、ピースEntity、ATTRIBUTE_PIECE_IDは不要です。ゲーム状態の正本はCPUです。
+通常描画とpoint / rectangle pickingは、同じdense state、visible ID、画像texture、vertex関数を使います。通常zoomでは共通puzzle_shape.wgslのSDF / UV、far zoomではpixel中心へsnapしたsplatと代表色sampleを共有します。RenderMesh、Mesh attribute、ピースEntity、ATTRIBUTE_PIECE_IDは不要です。ゲーム状態の正本はCPUです。
 
 ## Coverageと候補
 
-vertexがIDからquadと4辺のpacked profileを生成し、main / point / rectangleは共通sample_visibleでSDF外側とalphaゼロをdiscardします。outlineは内側に描くため、選択領域外へ広がりません。MainCameraはMsaa::Offです。
+通常zoomではvertexがIDからquadと4辺のpacked profileを生成し、main / point / rectangleは共通sample_visibleでSDF外側とalphaゼロをdiscardします。outlineは内側に描くため、選択領域外へ広がりません。MainCameraはMsaa::Offです。
 
 selectable bitsetはvisibility computeでflagsから生成し、placed・held・disabledを両選択から除きます。CPUで毎frame全件のbitsetを作りません。pointは最大Zの選択可能なピース、rectangleは範囲にfragmentを持つ全選択可能ピースを返します。後者は奥に隠れたピースも含む仕様です。
 
 main visibleを候補源とし、選択時だけ追加computeでpoint画素または矩形のworld AABBへ絞り込みます。両方ともtabを含む保守的なquad boundsです。全100万ピースがvisibleでもクリック描画へ直接100万instanceを送りません。組み立てた100万ピースで候補16以下をassertしています。全件を同じ位置へ重ねる場合、この上限は成り立ちません。computeはGPUでO(N)、CPUは全件候補検索をしません。
+
+## Far zoomのcoverage
+
+隙間のある初期格子配置を全体表示すると、subpixel quadがpixel sampleを通らず0 fragmentになる場合があります。規則的な配置とsample位置の干渉による欠落を防ぐため、`extract_puzzle`が共通piece size、現在のworld view size、physical viewport sizeからO(1)でprojected sizeを計算します。短辺が`FAR_ZOOM_THRESHOLD_PX = 1.5`未満ならfar mode、以上なら従来のSDFです。最小footprintは`FAR_SPLAT_MIN_PX = 1.0`です。両定数は`game/src/render/mod.rs`で管理します。
+
+far vertexはpiece中心をmain clipへ投影し、viewport offset込みのphysical pixel座標で`floor(center) + 0.5`へsnapします。各軸の大きさは`max(projected_piece_size, 1 px)`で、全visible IDを同じindirect drawで描きます。edge hash / packed profile生成、profile decode、tab / blank SDF、connected edge outlineを省略し、cell中央UVのLOD 0 sampleを使います。sample alphaが0ならmain / point / rectangleすべてdiscardし、半透明は既存のsort / blendを維持します。selectedは黄tint、previewは青tintで、黄が優先です。
+
+uniformはmain viewportのsize / origin、projected piece size、main 1 pixelのworld size、far flag、crop scale / offsetを16-byteの組にして追加します。pointではmain matrixとpixel scaleを保持し、snap済みquadへcropを最後に適用して1×1 targetへ写します。viewport sizeを1×1へ置き換えません。通常modeのpoint cropは従来のmatrix合成を維持し、rectangleはmain viewportとscissorをそのまま使います。
+
+main / pick visibilityはfar時だけ`max(normal_half, splat_half) + 0.5 * main_pixel_world_size`へboundsを広げます。最小footprintに加え、snapで最大0.5 pixel移動する分も含めます。pick ROIでview boundsを更新してもpixel scaleはmainのままです。通常modeのcullingは従来どおりです。
+
+`render/tests/far_zoom_tests.rs`は短辺・physical resolutionによる双方向threshold切替、0〜0.875 pxのX/Y位相、8段階のfractional pan、offset付き非正方viewport、point / rectangle coverage、縦横比のあるsplatと画面外中心、GPU drag、alpha 0 / 半透明、黄 / 青tintを検証します。integer pixel境界ではCPU / GPUの投影丸めにより隣のpixelへsnapする場合を許容し、各pieceが必ず1 pixelを持つことと、その実pixelでpickできることを確認します。100万pieceを`generate_placement_grid`の実初期配置に置くテストは、8 panすべてで全pixel coverage、indirect argsの100万instance、state 16 bytes / piece、camera frameのstate / root / selection / drag upload 0 bytes、全pieceのrectangle選択とpoint hitを確認します。
+
+2026-10-02、Windows / RTX 5090 / Vulkanで実GPU検証。far pathを一時的に無効化した対照実行では64個中3個しかcoverageを持たず、位相回帰テストが失敗しました。far pathでは全64個を維持します。main drawは1回、CPUの通常frameに全piece走査・専用far piece listを追加していません。
+
+```sh
+cargo test -p puzzella-game --release --locked far_zoom_threshold
+cargo test -p puzzella-game --release --locked gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
+```
 
 ## Point / rectangle
 

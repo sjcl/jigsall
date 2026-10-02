@@ -135,6 +135,10 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
         .add_systems(Render, map_results.in_set(RenderSystems::Cleanup));
 }
 
+// Physical pixels in the main camera viewport, also retained for cropped picks.
+const FAR_ZOOM_THRESHOLD_PX: f32 = 1.5;
+const FAR_SPLAT_MIN_PX: f32 = 1.0;
+
 #[derive(Clone, ShaderType, Default)]
 pub struct PuzzleUniform {
     pub clip_from_world: Mat4,
@@ -154,6 +158,29 @@ pub struct PuzzleUniform {
     pub drag_delta: Vec2,
     pub drag_active: u32,
     pub preview_active: u32,
+    pub viewport_size: Vec2,
+    pub viewport_origin: Vec2,
+    pub piece_size_px: Vec2,
+    pub pixel_world_size: Vec2,
+    // Applied after geometry generation in the main viewport's pixel grid.
+    // Identity for main/rectangle rendering; the crop for far-zoom point picks.
+    pub render_clip_scale: Vec2,
+    pub render_clip_offset: Vec2,
+    pub far_zoom: u32,
+    pub splat_min_px: f32,
+    pub splat_padding: UVec2,
+}
+impl PuzzleUniform {
+    fn configure_screen_space(&mut self, viewport: URect) {
+        self.viewport_size = viewport.size().as_vec2();
+        self.viewport_origin = viewport.min.as_vec2();
+        self.pixel_world_size = (self.view_max - self.view_min) / self.viewport_size;
+        self.piece_size_px = self.size / self.pixel_world_size;
+        self.far_zoom = u32::from(self.piece_size_px.min_element() < FAR_ZOOM_THRESHOLD_PX);
+        self.splat_min_px = FAR_SPLAT_MIN_PX;
+        self.render_clip_scale = Vec2::ONE;
+        self.render_clip_offset = Vec2::ZERO;
+    }
 }
 #[derive(Clone, ShaderType)]
 struct SortUniform {
@@ -213,6 +240,9 @@ fn extract_puzzle(
     ) else {
         return;
     };
+    if viewport.size().min_element() == 0 {
+        return;
+    }
     let clip = camera.clip_from_view() * transform.to_matrix().inverse();
     let inverse = clip.inverse();
     let a = inverse
@@ -236,6 +266,7 @@ fn extract_puzzle(
         preview_active: u32::from(selection.preview_active),
         ..default()
     };
+    out.config.configure_screen_space(viewport);
     if let Some(rect) = overlay.as_ref().and_then(|o| o.0) {
         out.config.selection_min = rect.min;
         out.config.selection_max = rect.max;
@@ -1316,8 +1347,13 @@ fn draw_selection(
     // Picking writes direct PieceId hits; only the main draw needs preview roots.
     config.preview_active = 0;
     if point {
-        config.clip_from_world =
-            point_crop_projection(frame.viewport, region.min) * config.clip_from_world;
+        let crop = point_crop_projection(frame.viewport, region.min);
+        if config.far_zoom != 0 {
+            config.render_clip_scale = Vec2::new(crop.x_axis.x, crop.y_axis.y);
+            config.render_clip_offset = crop.w_axis.truncate().truncate();
+        } else {
+            config.clip_from_world = crop * config.clip_from_world;
+        }
     }
     let inverse = frame.config.clip_from_world.inverse();
     let screen_to_world = |p: UVec2| {
