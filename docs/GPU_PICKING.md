@@ -16,7 +16,7 @@ pointはcrop projectionで対象画素を1×1のR32Uint / Depth32Float targetへ
 
 rectangleはscissor内の同じgeometryからatomicOrでbitsetを設定します。depth testをしないので奥も返ります。readbackは4 * ceil(N / 32) bytes。1万は1,252 bytes、100万は125,000 bytesです。確保はpower-of-twoに丸めます。
 
-矩形rasterはPieceId単位のdirect hit maskへ出力します。preview中だけ、そのwordのset bitを1回のGPU computeでcomponent rootのbitへcollapseします。main vertexがpieceごとにrootを読み、flat varyingでfragmentへ渡してcomponent preview maskを参照します。root loadは最大4 vertices / pieceで、pixel数に比例しません。fragmentでcomponent rootへのatomicを集中させません。computeも同じmask wordへ向かうroot bitsをまとめてatomic ORします。CPU readback・CPU component展開・expanded mask uploadはpreviewに追加しません。
+矩形rasterはPieceId単位のdirect hit maskへ出力します。preview中だけ、そのwordのset bitを1回のGPU computeでcomponent rootのbitへcollapseします。main vertexがpieceごとにrootとcomponent preview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root専用varyingはありません。root / preview mask loadは最大4 vertices / pieceで、pixel数に比例しません。point / rectangle picking用uniformはpreview_activeを0にし、selection rasterのvertexはroot / preview maskを読みません。fragmentでcomponent rootへのatomicを集中させません。computeも同じmask wordへ向かうroot bitsをまとめてatomic ORします。CPU readback・CPU component展開・expanded mask uploadはpreviewに追加しません。
 
 root mappingは4 bytes / pieceの専用GPU bufferです。CPU側の恒久root mirrorはなく、absorbed memberのdirty bitsetだけを持ちます。union-by-sizeのwinner / absorbedをlist splice前のcallbackで取得し、absorbed memberだけdirtyにします。upload時に最終DSU rootを求め、連続rangeへまとめます。同じRelease内の複数unionを重複なく反映し、128 spansを超える場合は既存state uploadと同じenclosing rangeへまとめます。epoch初回だけ現在のDSUから全rootを構築し、新規singletonとsnapshot restoreの両方に対応します。
 
