@@ -6,7 +6,7 @@ use puzzella_game::{
         SaveError, SaveTitleError, StorageError, MAX_SAVE_TITLE_CHARS,
     },
     resources::GenerationError,
-    settings::{DisplaySettingsError, DisplaySettingsNotice, DisplayValidationError},
+    settings::{DisplaySettingsError, DisplayValidationError},
 };
 
 impl Localization {
@@ -40,13 +40,6 @@ impl Localization {
                 self.text("settings-fullscreen-unavailable")
             }
         }
-    }
-
-    pub(crate) fn display_notice(&self, notice: &DisplaySettingsNotice) -> String {
-        self.text(match notice {
-            DisplaySettingsNotice::Restored => "settings-restored",
-            DisplaySettingsNotice::Saved => "settings-applied",
-        })
     }
 
     pub(crate) fn save_error(&self, error: &SaveError) -> String {
@@ -144,20 +137,12 @@ mod tests {
             "Could not save settings: disk detail"
         );
         assert_eq!(i18n.persistence_notice(&notice), "Game saved");
-        assert_eq!(
-            i18n.display_notice(&DisplaySettingsNotice::Saved),
-            "Settings applied."
-        );
         i18n.set_preference(LanguagePreference::Locale(Locale::JA));
         assert_eq!(
             i18n.display_error(&error),
             "設定を保存できませんでした：disk detail"
         );
         assert_eq!(i18n.persistence_notice(&notice), "ゲームを保存しました");
-        assert_eq!(
-            i18n.display_notice(&DisplaySettingsNotice::Saved),
-            "設定を適用しました。"
-        );
         assert_eq!(
             i18n.save_error(&SaveError::InvalidTitle(SaveTitleError::Empty)),
             "タイトルを入力してください。"

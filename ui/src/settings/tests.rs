@@ -397,7 +397,6 @@ fn language_widgets_persist_selection_and_update_next_frame_without_restart() {
     let output = localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![]);
     text_position(&output, "設定");
     text_position(&output, "適用");
-    text_position(&output, "言語は選択するとすぐに適用・保存されます。");
     assert!(!DisplaySettingsState::load(None).can_apply(&dialog.draft, &capabilities()));
     assert!(dialog.open);
     output.drop_without_applying_deltas();

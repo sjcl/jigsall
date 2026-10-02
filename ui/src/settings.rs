@@ -148,7 +148,6 @@ fn paint_settings(
                             preferences.set_language(language, i18n);
                             ctx.request_repaint();
                         }
-                        theme::hint(ui, i18n.text("settings-language-hint"));
                         if let Some(error) = &preferences.error {
                             let (key, reason) = match error {
                                 PreferenceError::Read(reason) => {
@@ -249,14 +248,9 @@ fn paint_settings(
                                             );
                                         }
                                     });
-                                theme::hint(
-                                    ui,
-                                    if dialog.draft.mode == ScreenMode::Fullscreen {
-                                        i18n.text("settings-fullscreen-hint")
-                                    } else {
-                                        i18n.text("settings-window-size-hint")
-                                    },
-                                );
+                                if dialog.draft.mode == ScreenMode::Fullscreen {
+                                    theme::hint(ui, i18n.text("settings-fullscreen-hint"));
+                                }
                             }
                         });
                         ui.add_space(2.0);
@@ -299,8 +293,8 @@ fn paint_settings(
                     if let Some(error) = &state.error {
                         ui.colored_label(theme::DANGER, i18n.display_error(error));
                     }
-                    if let Some(notice) = &state.notice {
-                        ui.colored_label(theme::ACCENT, i18n.display_notice(notice));
+                    if state.notice == Some(DisplaySettingsNotice::Restored) {
+                        ui.colored_label(theme::ACCENT, i18n.text("settings-restored"));
                     }
                     ui.add_space(2.0);
                 });
