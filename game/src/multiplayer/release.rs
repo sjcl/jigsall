@@ -6,7 +6,7 @@ use crate::resources::{
 use bevy::math::Vec2;
 use puzzella_core::{
     protocol::{ActiveDragTarget, RejectedComponentRef, ReleaseResultFingerprint, TargetError},
-    PieceId, PlayerId, PuzzleDefinition,
+    PieceBitSet, PieceId, PlayerId, PuzzleDefinition,
 };
 use sha2::{Digest, Sha256};
 
@@ -59,44 +59,128 @@ pub(super) fn release_drag(
     Ok((applied, rejected, result))
 }
 
+/// Ascending, deduplicated IDs with bounded sparse sort/storage. Dense ordering
+/// scans bitset words instead of sorting a puzzle-sized vector. Storage is reused
+/// across components, and is never retained by a drag/replication context.
+struct FingerprintOrder {
+    sparse: Vec<PieceId>,
+    dense: Option<PieceBitSet>,
+    use_dense: bool,
+    bit_len: usize,
+    sort_limit: usize,
+}
+
+impl FingerprintOrder {
+    fn new(bit_len: usize) -> Self {
+        Self {
+            sparse: Vec::new(),
+            dense: None,
+            use_dense: false,
+            bit_len,
+            // Above this size a sorted ID vector costs at least as much storage
+            // as mask words. The floor keeps small operations on the sparse path.
+            sort_limit: bit_len.div_ceil(32).max(128),
+        }
+    }
+
+    fn set(&mut self, ids: impl Iterator<Item = PieceId>, upper_bound: usize) {
+        self.sparse.clear();
+        self.use_dense = upper_bound > self.sort_limit;
+        if self.use_dense {
+            let mask = self
+                .dense
+                .get_or_insert_with(|| PieceBitSet::new(self.bit_len));
+            mask.clear();
+            mask.extend(ids);
+        } else {
+            self.sparse.reserve(upper_bound);
+            self.sparse.extend(ids);
+            self.sparse.sort_unstable();
+            self.sparse.dedup();
+        }
+    }
+
+    fn len(&self) -> usize {
+        if self.use_dense {
+            self.dense.as_ref().unwrap().count()
+        } else {
+            self.sparse.len()
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = PieceId> + '_ {
+        self.sparse.iter().copied().chain(
+            self.dense
+                .as_ref()
+                .filter(|_| self.use_dense)
+                .into_iter()
+                .flat_map(|mask| mask.iter()),
+        )
+    }
+}
+
+struct FingerprintScratch {
+    minima: FingerprintOrder,
+    members: FingerprintOrder,
+}
+
+impl FingerprintScratch {
+    fn new(bit_len: usize) -> Self {
+        Self {
+            minima: FingerprintOrder::new(bit_len),
+            members: FingerprintOrder::new(bit_len),
+        }
+    }
+}
+
 /// Hash ONLY the final components reached by released roots (including absorbed
-/// neighbors). Sort stable minima and members, never DSU roots or linked-list order.
+/// neighbors). Stable ascending IDs preserve the exact v1 byte stream regardless
+/// of sparse/dense ordering, DSU roots or linked-list order.
 pub(super) fn result_fingerprint(
     store: &PieceDataStore,
     released_roots: &[PieceId],
     definition: Option<&PuzzleDefinition>,
     applied: &AppliedCommand,
 ) -> ReleaseResultFingerprint {
-    let mut minima: Vec<_> = released_roots
-        .iter()
-        .map(|&id| store.connectivity.minimum_member(id))
-        .collect();
-    minima.sort_unstable();
-    minima.dedup();
+    let mut scratch = FingerprintScratch::new(store.len());
+    fingerprint_with_scratch(store, released_roots, definition, applied, &mut scratch)
+}
+
+fn fingerprint_with_scratch(
+    store: &PieceDataStore,
+    released_roots: &[PieceId],
+    definition: Option<&PuzzleDefinition>,
+    applied: &AppliedCommand,
+    scratch: &mut FingerprintScratch,
+) -> ReleaseResultFingerprint {
+    let FingerprintScratch { minima, members } = scratch;
+    minima.set(
+        released_roots
+            .iter()
+            .map(|&id| store.connectivity.minimum_member(id)),
+        released_roots.len(),
+    );
     let mut hash = Sha256::new();
     hash.update(b"puzzella/release-result/v1\0");
     hash.update((minima.len() as u32).to_le_bytes());
-    for minimum in minima {
+    for minimum in minima.iter() {
+        let size = store.connectivity.component_size(minimum);
         let state = &store.states[minimum.0 as usize];
         let offset =
             state.position - definition.map_or(Vec2::ZERO, |d| d.correct_position(minimum));
         hash.update(minimum.0.to_le_bytes());
-        hash.update((store.connectivity.component_size(minimum) as u32).to_le_bytes());
+        hash.update((size as u32).to_le_bytes());
         hash.update(offset.x.to_bits().to_le_bytes());
         hash.update(offset.y.to_bits().to_le_bytes());
         hash.update([u8::from(state.flags & PLACED != 0)]);
-        let mut members: Vec<_> = store.connectivity.iter_component(minimum).collect();
-        members.sort_unstable();
-        for id in members {
-            let state = &store.states[id.0 as usize];
-            hash.update(id.0.to_le_bytes());
-            hash.update(state.position.x.to_bits().to_le_bytes());
-            hash.update(state.position.y.to_bits().to_le_bytes());
-            hash.update(state.z_order.to_le_bytes());
-            hash.update((state.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES)).to_le_bytes());
-            let owner = store.held_by.get(&id);
-            hash.update([u8::from(owner.is_some())]);
-            hash.update(owner.map_or(0, |p| p.0).to_le_bytes());
+        if size == 1 {
+            // A million singleton results allocate no member vectors or masks.
+            hash_member(&mut hash, store, minimum);
+        } else {
+            members.set(store.connectivity.iter_component(minimum), size);
+            for id in members.iter() {
+                hash_member(&mut hash, store, id);
+            }
         }
     }
     for count in [applied.released, applied.placed, store.placed_count] {
@@ -106,3 +190,19 @@ pub(super) fn result_fingerprint(
     let bytes = hash.finalize();
     ReleaseResultFingerprint(u128::from_le_bytes(bytes[..16].try_into().unwrap()))
 }
+
+fn hash_member(hash: &mut Sha256, store: &PieceDataStore, id: PieceId) {
+    let state = &store.states[id.0 as usize];
+    hash.update(id.0.to_le_bytes());
+    hash.update(state.position.x.to_bits().to_le_bytes());
+    hash.update(state.position.y.to_bits().to_le_bytes());
+    hash.update(state.z_order.to_le_bytes());
+    hash.update((state.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES)).to_le_bytes());
+    let owner = store.held_by.get(&id);
+    hash.update([u8::from(owner.is_some())]);
+    hash.update(owner.map_or(0, |p| p.0).to_le_bytes());
+}
+
+#[cfg(test)]
+#[path = "release_tests.rs"]
+mod tests;

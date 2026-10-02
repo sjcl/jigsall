@@ -289,8 +289,17 @@ authority adapter's behavior for an invalid/mismatched definition remains `None`
 little-endian u128. It reuses the existing SHA-256 dependency with domain separation.
 It is a divergence checksum, not a security MAC. Only final components containing
 actually released roots are visited, including neighbors absorbed during snap.
-Unaffected piece arrays are never scanned or hashed. Temporary sorted root/member
-lists exist only during Release; the replica retains no such lists.
+Unaffected piece arrays are never scanned or hashed. Singleton members are hashed
+directly, without member-list or member-mask allocation. Other components reuse
+one member-order scratch buffer. Both final minima and component members use
+sorted/deduplicated Vec storage up to `max(128, ceil(piece_count / 32))` input IDs;
+larger inputs use temporary bitsets with ascending iteration instead of ID sorts.
+The minima input bound is the released-root count; the member bound is the exact
+component size. Each dense mask has at most 125,000 bytes of words for 1M pieces.
+Sparse Vec capacity and dense masks are reused across components, then dropped at
+the end of Release; no scratch is retained by the replica. Dense iteration scans
+mask words, but hashes only affected IDs. This changes neither the v1 byte sequence
+nor its digest/domain: ordering is still ascending stable minima and member IDs.
 
 The v1 serializer-independent SHA-256 input is fixed in this exact order:
 
