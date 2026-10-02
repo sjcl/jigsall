@@ -407,13 +407,23 @@ fn paint_load_actions(
 ) -> Option<bool> {
     let mut action = None;
     let confirming = dialogs.pending_delete == Some(id);
+    let delete_label = i18n.text("save-delete-action");
     ui.add_enabled_ui(!state.busy, |ui| {
         let draw_row = |ui: &mut egui::Ui| {
             let available = ui.available_width();
             let delete_width = if confirming {
                 200.0_f32.min(available * 0.55)
             } else {
-                90.0_f32.min(available * 0.45)
+                let text_width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        delete_label.clone(),
+                        egui::FontId::proportional(12.0),
+                        theme::MUTED,
+                    )
+                    .size()
+                    .x;
+                (text_width + 24.0).max(112.0).min(available * 0.6)
             };
             let gap = ui.spacing().item_spacing.x;
             if available < 270.0 {
@@ -501,14 +511,14 @@ fn paint_load_actions(
                         .add_sized(
                             [delete_width, height],
                             egui::Button::new(
-                                egui::RichText::new(i18n.text("save-delete-action"))
+                                egui::RichText::new(delete_label.as_str())
                                     .size(12.0)
                                     .color(theme::MUTED),
                             )
                             .frame(false)
-                            .truncate(),
+                            .wrap(),
                         )
-                        .on_hover_text(i18n.text("save-delete-action"))
+                        .on_hover_text(delete_label.as_str())
                         .clicked()
                     {
                         dialogs.pending_delete = Some(id);

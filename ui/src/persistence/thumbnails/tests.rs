@@ -847,17 +847,14 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
 }
 
 #[test]
-fn japanese_delete_confirmation_fits_beside_resume() {
+fn japanese_delete_actions_fit_beside_resume() {
     let mut i18n = english();
     i18n.set_preference(crate::localization::LanguagePreference::Locale(
         crate::localization::Locale::JA,
     ));
     for width in [220.0, 320.0, 600.0] {
         let ctx = egui::Context::default();
-        let mut dialogs = SaveDialogs {
-            pending_delete: Some(SaveId(0)),
-            ..Default::default()
-        };
+        let mut dialogs = SaveDialogs::default();
         let state = state();
         let render = |input, dialogs: &mut SaveDialogs| {
             ctx.run_ui(input, |ui| {
@@ -872,6 +869,25 @@ fn japanese_delete_confirmation_fits_beside_resume() {
             )),
             ..Default::default()
         };
+        for _ in 0..3 {
+            render(input(), &mut dialogs).drop_without_applying_deltas();
+        }
+        let output = render(input(), &mut dialogs);
+        let delete_label = i18n.text("save-delete-action");
+        let (delete, clip) = text_rects(&output, &delete_label)[0];
+        let (resume, _) = text_rects(&output, &i18n.text("save-resume"))[0];
+        assert!(clip.contains_rect(delete), "Delete label is clipped");
+        assert!(delete.left() > resume.right());
+        assert!((delete.center().y - resume.center().y).abs() < 1.0);
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                if text.galley.job.text == delete_label {
+                    assert!(!text.galley.elided, "Delete label must be shown in full");
+                }
+            }
+        }
+        output.drop_without_applying_deltas();
+        dialogs.pending_delete = Some(SaveId(0));
         for _ in 0..3 {
             render(input(), &mut dialogs).drop_without_applying_deltas();
         }
