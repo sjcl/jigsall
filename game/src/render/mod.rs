@@ -1313,6 +1313,8 @@ fn draw_selection(
         gpu.rectangle = Some(screen_target(device, frame.target, TextureFormat::R8Unorm));
     }
     let mut config = frame.config.clone();
+    // Picking writes direct PieceId hits; only the main draw needs preview roots.
+    config.preview_active = 0;
     if point {
         config.clip_from_world =
             point_crop_projection(frame.viewport, region.min) * config.clip_from_world;

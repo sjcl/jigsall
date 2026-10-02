@@ -69,6 +69,20 @@ fn preview(app: &mut App, rect: Rect) {
         .is_none());
     assert_eq!(gpu.root_upload_bytes, 0);
     assert_eq!(gpu.selection_upload_bytes, 0, "preview request {rect:?}");
+    if app
+        .sub_app(RenderApp)
+        .world()
+        .resource::<ExtractedPuzzle>()
+        .region
+        .is_some()
+    {
+        assert_eq!(gpu.uniform.get().preview_active, 1);
+        assert_eq!(
+            gpu.pick_uniform.get().preview_active,
+            0,
+            "picking must not load preview roots while the main draw previews"
+        );
+    }
     assert_eq!(
         gpu.preview_dispatches,
         usize::from(
