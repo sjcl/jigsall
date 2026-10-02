@@ -5,6 +5,7 @@ mod components;
 mod game;
 mod interaction;
 pub mod multiplayer;
+pub mod network;
 pub mod persistence;
 #[cfg(any(test, feature = "cpu-picking-debug"))]
 #[allow(dead_code)]

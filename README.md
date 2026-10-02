@@ -1,10 +1,12 @@
 # Puzzella
 
-任意の画像で遊ぶ、Rust + Bevy製のジグソーパズルゲームです。generator v5の解析形状をGPUで描画し、最大1000×1000ピースを扱います。ゲーム状態と命令検証はCPU側にあり、実ネットワーク通信は未実装です。
+任意の画像で遊ぶ、Rust + Bevy製のジグソーパズルゲームです。generator v5の解析形状をGPUで描画し、最大1000×1000ピースを扱います。ゲーム状態と命令検証はCPU側にあり、opt-inのGNS Direct-IP transportとhost/peer routingを提供します。Host / Joinの画面接続は未実装です。
 
 ## 起動
 
 Rust 1.95以上とOSに対応するC/C++リンカーが必要です。Windowsの詳細は[WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md)を参照してください。
+
+通信backendは `gns` featureで有効化します。native build依存、wire仕様、localhost Host + 2 clientsテスト、将来のSteamworks接続点は[NETWORK_TRANSPORT.md](docs/NETWORK_TRANSPORT.md)を参照してください。
 
 ```sh
 cargo run --locked
