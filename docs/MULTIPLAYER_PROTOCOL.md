@@ -4,6 +4,15 @@ This is an opt-in, transport-independent CPU protocol boundary. It adds no syste
 to local play and implements no packet send/receive, sockets, Steamworks, lobby,
 host election, encryption, image transfer, or join-in-progress.
 
+`PlayerId` identifies a player within the session. The independent
+`LocalPlayerId` Bevy resource identifies the player controlled by this process;
+`LOCAL_PLAYER` / `PlayerId(0)` is only its offline default. Authority adapters
+(`ProtocolDragContexts`) and peer replay (`PeerReplicationState::apply_event`)
+receive the current local ID explicitly for selection/drag presentation. It is
+not puzzle state and is never serialized. Menu teardown resets it; snapshot
+installation does not. Future joins will update it from the assigned PlayerId in
+`JoinAccepted`, independently of SteamID (see [network identity](NETWORK_TRANSPORT.md#identity-and-establishment)).
+
 ## Layers
 
 ```text

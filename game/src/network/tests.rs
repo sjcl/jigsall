@@ -180,6 +180,7 @@ impl Scenario {
     }
     fn host_router(&mut self) -> HostRouter<'_> {
         HostRouter {
+            local_player: HOST,
             connections: &self.host.connections,
             contexts: &mut self.contexts,
             session: &mut self.host.session,
@@ -190,6 +191,7 @@ impl Scenario {
     fn client_router(&mut self, index: usize, host_connection: ConnectionId) -> ClientRouter<'_> {
         let peer = &mut self.peers[index];
         ClientRouter {
+            local_player: [A, B][index],
             host_connection,
             connections: &peer.connections,
             replica: &mut peer.replica,
@@ -696,3 +698,6 @@ fn rotation_commands_and_semantic_events_use_reliable_control_wire() {
         );
     }
 }
+
+#[path = "tests/local_identity.rs"]
+mod local_identity;

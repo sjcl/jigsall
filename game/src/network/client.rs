@@ -10,7 +10,7 @@ use crate::{
 use puzzella_core::{
     protocol::ProtocolCommandEnvelope,
     session::{AuthoritySession, CommandSequenceStatus},
-    PuzzleDefinition,
+    PlayerId, PuzzleDefinition,
 };
 
 #[derive(Debug, PartialEq)]
@@ -40,6 +40,7 @@ pub enum ClientSendError {
 /// A star-topology peer has one designated host connection. The trusted session
 /// mapping, not a wire host claim, provides the authenticated_host argument.
 pub struct ClientRouter<'a> {
+    pub local_player: PlayerId,
     pub host_connection: ConnectionId,
     pub connections: &'a SessionConnections,
     pub replica: &'a mut PeerReplicationState,
@@ -72,7 +73,14 @@ impl ClientRouter<'_> {
         match wire::decode_for_class(payload, *class).map_err(ClientRouteError::Wire)? {
             WireMessage::AuthorityEvent(envelope) => self
                 .replica
-                .apply_event(self.session, self.store, host, &envelope, self.definition)
+                .apply_event(
+                    self.session,
+                    self.store,
+                    host,
+                    &envelope,
+                    self.definition,
+                    self.local_player,
+                )
                 .map(ClientRouteOutcome::Authority)
                 .map_err(ClientRouteError::Replication),
             WireMessage::DragUpdate(update) => self

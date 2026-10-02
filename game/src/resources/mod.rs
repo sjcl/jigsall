@@ -9,7 +9,7 @@ pub mod input;
 pub mod performance;
 pub mod pieces;
 
-pub use app::{AppState, GameCompleteSubState, GameData, GameSubState, PlayerInfo};
+pub use app::{AppState, GameCompleteSubState, GameData, GameSubState, LocalPlayerId, PlayerInfo};
 #[cfg(any(test, feature = "cpu-picking-debug"))]
 pub use collision::{PieceCollisionData, PieceCollisionSystem};
 pub use config::{PieceMode, PuzzleConfig};

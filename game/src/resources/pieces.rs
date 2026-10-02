@@ -303,7 +303,7 @@ impl PieceDataStore {
             held_by: self.held_by.get(&id).copied(),
         })
     }
-    pub fn set_state(&mut self, id: PieceId, state: PieceState) {
+    pub fn set_state(&mut self, id: PieceId, state: PieceState, local_player: PlayerId) {
         assert_eq!(
             self.connectivity.component_size(id),
             1,
@@ -332,11 +332,11 @@ impl PieceDataStore {
         }
         // Explicit authority changes can end ownership before a gesture finishes.
         // Never present another player's subsequent grab with our local delta.
-        if state.held_by != Some(puzzella_core::LOCAL_PLAYER) {
+        if state.held_by != Some(local_player) {
             self.drag.remove(id);
         }
         // This setter is singleton-only; connected authority changes use bulk commands.
-        if !self.is_valid_local_selection(id) && self.selected_pieces.remove(&id) {
+        if !self.is_valid_local_selection(id, local_player) && self.selected_pieces.remove(&id) {
             self.highlights_dirty = true;
         }
         self.dirty_pieces.insert(id);
@@ -348,14 +348,14 @@ impl PieceDataStore {
             && self.held_by.get(&id).is_none()
     }
     /// Existing selections may include our own drag, but never another player's hold.
-    pub(crate) fn is_valid_local_selection(&self, id: PieceId) -> bool {
+    pub(crate) fn is_valid_local_selection(&self, id: PieceId, local_player: PlayerId) -> bool {
         self.states
             .get(id.0 as usize)
             .is_some_and(|s| s.flags & PLACED == 0 && s.flags & ENABLED != 0)
             && self
                 .held_by
                 .get(&id)
-                .is_none_or(|owner| *owner == puzzella_core::LOCAL_PLAYER)
+                .is_none_or(|owner| *owner == local_player)
     }
     fn compact_z(&mut self) {
         // Extremely rare slow path after ~16M front operations.
@@ -440,10 +440,17 @@ impl PieceDataStore {
     }
 
     /// GPU rectangle readback stays a bitset; expansion happens only on final commit.
-    pub fn commit_selection(&mut self, members: PieceBitSet, original: Option<&PieceBitSet>) {
+    pub fn commit_selection(
+        &mut self,
+        members: PieceBitSet,
+        original: Option<&PieceBitSet>,
+        local_player: PlayerId,
+    ) {
         let mut selected = self.selectable_members(&members);
         if let Some(original) = original {
-            let original = self.canonical_members(original, |id| self.is_valid_local_selection(id));
+            let original = self.canonical_members(original, |id| {
+                self.is_valid_local_selection(id, local_player)
+            });
             selected.union(&original);
         }
         self.selected_pieces = selected;
@@ -451,9 +458,10 @@ impl PieceDataStore {
     }
 
     /// Revalidate rollback against current ownership, allowing complete local holds.
-    pub(crate) fn restore_selection(&mut self, original: PieceBitSet) {
-        self.selected_pieces =
-            self.canonical_members(&original, |id| self.is_valid_local_selection(id));
+    pub(crate) fn restore_selection(&mut self, original: PieceBitSet, local_player: PlayerId) {
+        self.selected_pieces = self.canonical_members(&original, |id| {
+            self.is_valid_local_selection(id, local_player)
+        });
         self.highlights_dirty = true;
     }
 
@@ -463,6 +471,7 @@ impl PieceDataStore {
         player: PlayerId,
         command: &PieceCommand,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         let definition =
             definition.filter(|d| d.piece_count() == self.len() && d.validate().is_ok());
@@ -472,7 +481,9 @@ impl PieceDataStore {
                 delta,
                 quarter_turns,
             } => definition
-                .and_then(|d| self.rotate_local_drag(player, members, *delta, *quarter_turns, d))
+                .and_then(|d| {
+                    self.rotate_local_drag(player, members, *delta, *quarter_turns, d, local_player)
+                })
                 .unwrap_or_default(),
             PieceCommand::Rotate {
                 target,
@@ -481,22 +492,23 @@ impl PieceDataStore {
                 .and_then(|d| self.rotate_target(target, *quarter_turns, d).ok())
                 .map_or_else(AppliedCommand::default, |result| result.applied),
             PieceCommand::GrabGroup { members } if members.bit_len() == self.len() => {
-                self.grab_components(player, members)
+                self.grab_components(player, members, local_player)
             }
             PieceCommand::ReleaseGroup { members, delta }
                 if members.bit_len() == self.len() && delta.is_finite() =>
             {
-                self.release_components(player, members, *delta, definition)
+                self.release_components(player, members, *delta, definition, local_player)
             }
             PieceCommand::Grab(id) if self.contains(*id) => {
                 let plan = self.grab_roots([self.connectivity.minimum_member(*id)], None);
-                self.apply_grab(player, plan, false)
+                self.apply_grab(player, plan, false, local_player)
             }
             PieceCommand::Release(id) if self.contains(*id) => self.release_roots(
                 player,
                 vec![self.connectivity.minimum_member(*id)],
                 Vec2::ZERO,
                 definition,
+                local_player,
             ),
             PieceCommand::Move { id, position } if self.contains(*id) && position.is_finite() => {
                 self.move_component(player, *id, *position, definition);
@@ -512,9 +524,10 @@ impl PieceDataStore {
         &mut self,
         player: PlayerId,
         minima: impl IntoIterator<Item = PieceId>,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         let plan = self.grab_roots(minima, None);
-        self.apply_grab(player, plan, false)
+        self.apply_grab(player, plan, false, local_player)
     }
 
     /// Protocol-only bulk adapter. The caller has validated canonical membership
@@ -523,12 +536,13 @@ impl PieceDataStore {
         &mut self,
         player: PlayerId,
         members: &PieceBitSet,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         let plan = GrabPlan {
             ids: members.iter().collect(),
             members: Some(members.clone()),
         };
-        self.apply_grab(player, plan, false)
+        self.apply_grab(player, plan, false, local_player)
     }
 
     /// Replica-only semantic apply after full consistency validation. Do not run
@@ -537,12 +551,13 @@ impl PieceDataStore {
         &mut self,
         player: PlayerId,
         minima: impl IntoIterator<Item = PieceId>,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         let ids = minima
             .into_iter()
             .flat_map(|minimum| self.connectivity.iter_component(minimum))
             .collect();
-        self.apply_grab(player, GrabPlan { ids, members: None }, false)
+        self.apply_grab(player, GrabPlan { ids, members: None }, false, local_player)
     }
 
     /// Full masks emit the minimum member once; partial masks deduplicate only
@@ -562,9 +577,14 @@ impl PieceDataStore {
         })
     }
 
-    fn grab_components(&mut self, player: PlayerId, requested: &PieceBitSet) -> AppliedCommand {
-        let sync_drag = player == puzzella_core::LOCAL_PLAYER
-            && Arc::ptr_eq(&self.drag.members, requested.words());
+    fn grab_components(
+        &mut self,
+        player: PlayerId,
+        requested: &PieceBitSet,
+        local_player: PlayerId,
+    ) -> AppliedCommand {
+        let sync_drag =
+            player == local_player && Arc::ptr_eq(&self.drag.members, requested.words());
         if requested.count() > self.len().div_ceil(32) {
             // Preserve the established dense path: canonical component validation,
             // shared all-valid mask, and ID-ordered input to the relative-Z sort.
@@ -573,12 +593,12 @@ impl PieceDataStore {
                 ids: accepted.iter().collect(),
                 members: Some(accepted),
             };
-            return self.apply_grab(player, plan, sync_drag);
+            return self.apply_grab(player, plan, sync_drag, local_player);
         }
         let mut partial_roots = PieceScratchSet::new(self.len());
         let roots = self.grab_component_roots(requested, &mut partial_roots);
         let plan = self.grab_roots(roots, sync_drag.then_some(requested));
-        self.apply_grab(player, plan, sync_drag)
+        self.apply_grab(player, plan, sync_drag, local_player)
     }
 
     /// Validate every member before accepting any part of a component. Owner
@@ -624,13 +644,19 @@ impl PieceDataStore {
         plan
     }
 
-    fn apply_grab(&mut self, player: PlayerId, plan: GrabPlan, sync_drag: bool) -> AppliedCommand {
+    fn apply_grab(
+        &mut self,
+        player: PlayerId,
+        plan: GrabPlan,
+        sync_drag: bool,
+        local_player: PlayerId,
+    ) -> AppliedCommand {
         // Compile separate ID/word update loops: dense grabs should not pay
         // small-operation branches once per member. Scalar never needs a mask.
         if plan.ids.len() > self.len().div_ceil(32) && plan.members.is_some() {
-            self.apply_grab_inner::<true>(player, plan, sync_drag)
+            self.apply_grab_inner::<true>(player, plan, sync_drag, local_player)
         } else {
-            self.apply_grab_inner::<false>(player, plan, sync_drag)
+            self.apply_grab_inner::<false>(player, plan, sync_drag, local_player)
         }
     }
 
@@ -639,6 +665,7 @@ impl PieceDataStore {
         player: PlayerId,
         mut plan: GrabPlan,
         sync_drag: bool,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         let ids = &mut plan.ids;
         // One deterministic ordering across ALL accepted components, before compaction.
@@ -653,6 +680,7 @@ impl PieceDataStore {
             self.compact_z();
         }
         self.held_by.ensure_len(self.len());
+        let remote = player != local_player;
         let states = &mut *self.states;
         for (rank, &id) in ids.iter().enumerate() {
             let state = &mut states[id.0 as usize];
@@ -663,7 +691,7 @@ impl PieceDataStore {
                 self.held_by.occupied.insert(id);
                 self.dirty_pieces.insert(id);
             }
-            if player != puzzella_core::LOCAL_PLAYER {
+            if remote {
                 if self.selected_pieces.remove(&id) {
                     self.highlights_dirty = true;
                 }
@@ -676,7 +704,7 @@ impl PieceDataStore {
             let members = plan.members.as_ref().unwrap();
             self.held_by.occupied.union(members);
             self.dirty_pieces.union(members);
-            if player != puzzella_core::LOCAL_PLAYER {
+            if remote {
                 self.drag.exclude(members);
             }
         }
@@ -748,6 +776,7 @@ impl PieceDataStore {
         requested: &PieceBitSet,
         delta: Vec2,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         let mut roots = Vec::new();
         let mut partial_roots = PieceScratchSet::new(self.len());
@@ -760,7 +789,7 @@ impl PieceDataStore {
             }
         }
         roots.sort_unstable();
-        self.release_roots(player, roots, delta, definition)
+        self.release_roots(player, roots, delta, definition, local_player)
     }
 
     pub(crate) fn release_roots(
@@ -769,6 +798,7 @@ impl PieceDataStore {
         mut roots: Vec<PieceId>,
         delta: Vec2,
         definition: Option<&PuzzleDefinition>,
+        local_player: PlayerId,
     ) -> AppliedCommand {
         roots.retain(|&root| {
             self.connectivity.iter_component(root).all(|id| {
@@ -780,7 +810,7 @@ impl PieceDataStore {
             return AppliedCommand::default();
         }
         let mut released = 0;
-        let clear_drag = player == puzzella_core::LOCAL_PLAYER && !self.drag.members.is_empty();
+        let clear_drag = player == local_player && !self.drag.members.is_empty();
         // Commit ALL released translations before resolving any snap. A sibling
         // component in this same gesture is a target at its final release position.
         let geometry = definition.map(PuzzleDefinition::geometry);
@@ -885,6 +915,9 @@ impl PieceDataStore {
 #[cfg(test)]
 #[path = "pieces/connected_tests.rs"]
 mod connected_tests;
+#[cfg(test)]
+#[path = "pieces/local_identity_tests.rs"]
+mod local_identity_tests;
 #[derive(Clone, Default)]
 pub struct UploadRange {
     pub start: u32,
@@ -1129,7 +1162,7 @@ mod tests {
         let id = PieceId(777777);
         let mut s = store.state(id).unwrap();
         s.position = Vec2::ONE;
-        store.set_state(id, s);
+        store.set_state(id, s, puzzella_core::LOCAL_PLAYER);
         store.bring_piece_to_front(id);
         assert_eq!(store.states[id.0 as usize].position, Vec2::ONE);
         assert!(store.states[id.0 as usize].z_order >= 1_000_000);
@@ -1160,7 +1193,11 @@ mod tests {
         )));
         let extracted: Arc<[GpuPieceState]> = store.states.clone().into();
         let before = extracted[0];
-        store.set_state(PieceId(0), PieceState::new(Vec2::ONE));
+        store.set_state(
+            PieceId(0),
+            PieceState::new(Vec2::ONE),
+            puzzella_core::LOCAL_PLAYER,
+        );
         assert_eq!(extracted[0], before);
         assert_eq!(store.states[0].position, Vec2::ONE);
         assert_ne!(store.states.as_ptr(), extracted.as_ptr());

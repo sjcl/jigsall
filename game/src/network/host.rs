@@ -7,7 +7,7 @@ use crate::{
     multiplayer::protocol::{HostCommandOutcome, ProtocolCommandError, ProtocolDragContexts},
     resources::PieceDataStore,
 };
-use puzzella_core::{session::AuthoritySession, PuzzleDefinition};
+use puzzella_core::{session::AuthoritySession, PlayerId, PuzzleDefinition};
 
 #[derive(Debug, PartialEq)]
 pub enum HostRouteError {
@@ -27,6 +27,7 @@ pub enum HostRouteOutcome {
 
 /// Borrow existing authority state for a frame; does not create a second authority.
 pub struct HostRouter<'a> {
+    pub local_player: PlayerId,
     pub connections: &'a SessionConnections,
     pub contexts: &'a mut ProtocolDragContexts,
     pub session: &'a mut AuthoritySession,
@@ -56,7 +57,14 @@ impl HostRouter<'_> {
         match wire::decode_for_class(payload, *class).map_err(HostRouteError::Wire)? {
             WireMessage::ClientCommand(command) => self
                 .contexts
-                .apply_replicated(self.session, self.store, player, &command, self.definition)
+                .apply_replicated(
+                    self.session,
+                    self.store,
+                    player,
+                    &command,
+                    self.definition,
+                    self.local_player,
+                )
                 .map(|outcome| HostRouteOutcome::Applied(Box::new(outcome)))
                 .map_err(HostRouteError::Command),
             WireMessage::BulkChunk(bytes) => Ok(HostRouteOutcome::BulkChunk(bytes)),

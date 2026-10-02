@@ -37,6 +37,7 @@ pub fn toggle_completed_puzzle_menu(
 }
 
 pub fn apply_piece_commands(
+    local_player: Res<LocalPlayerId>,
     mut commands: MessageReader<ClientCommand>,
     mut store: ResMut<PieceDataStore>,
     definition: Option<Res<PuzzleDefinition>>,
@@ -46,7 +47,12 @@ pub fn apply_piece_commands(
 ) {
     let start = perf.start_system_timing("apply_piece_commands");
     for request in commands.read() {
-        let applied = store.apply_command(request.player, &request.command, definition.as_deref());
+        let applied = store.apply_command(
+            request.player,
+            &request.command,
+            definition.as_deref(),
+            local_player.0,
+        );
         if applied.drag_rebased {
             if let (Some(interaction), Some(pointer)) = (
                 interaction.as_deref_mut(),

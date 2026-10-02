@@ -164,8 +164,9 @@ impl PieceDataStore {
         delta: Vec2,
         quarter_turns: i8,
         definition: &PuzzleDefinition,
+        local_player: PlayerId,
     ) -> Option<AppliedCommand> {
-        if player != puzzella_core::LOCAL_PLAYER
+        if player != local_player
             || members.bit_len() != self.len()
             || (!Arc::ptr_eq(members.words(), &self.drag.members)
                 && **members.words() != *self.drag.members)

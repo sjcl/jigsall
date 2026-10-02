@@ -71,7 +71,7 @@ fn million_selection_cpu_benchmark() {
             };
             let receive = micros(start);
             let start = Instant::now();
-            store.commit_selection(mask, None);
+            store.commit_selection(mask, None, puzzella_core::LOCAL_PLAYER);
             let commit = micros(start);
             let (mut store, highlight, highlight_bytes, _) = upload(&mut app, store);
             assert_eq!(highlight_bytes, 0);
@@ -95,7 +95,12 @@ fn million_selection_cpu_benchmark() {
             let mut selection = PuzzleSelection::default();
             let start = Instant::now();
             assert!(gesture
-                .update(frame(Vec2::ZERO, true, true), &mut store, &mut selection)
+                .update(
+                    frame(Vec2::ZERO, true, true),
+                    &mut store,
+                    &mut selection,
+                    puzzella_core::LOCAL_PLAYER
+                )
                 .is_empty());
             let down = micros(start);
             let request = selection.latest.unwrap();
@@ -106,12 +111,21 @@ fn million_selection_cpu_benchmark() {
                 error: None,
             });
             let start = Instant::now();
-            let commands =
-                gesture.update(frame(Vec2::ZERO, true, false), &mut store, &mut selection);
+            let commands = gesture.update(
+                frame(Vec2::ZERO, true, false),
+                &mut store,
+                &mut selection,
+                puzzella_core::LOCAL_PLAYER,
+            );
             let members = micros(start);
             assert_eq!(commands.len(), 1);
             let start = Instant::now();
-            let result = store.apply_command(LOCAL_PLAYER, &commands[0], None);
+            let result = store.apply_command(
+                LOCAL_PLAYER,
+                &commands[0],
+                None,
+                puzzella_core::LOCAL_PLAYER,
+            );
             let grab = micros(start);
             assert_eq!(result.grabbed, count);
             drop(commands);
@@ -122,7 +136,8 @@ fn million_selection_cpu_benchmark() {
                 assert!(black_box(gesture.update(
                     frame(Vec2::splat(step as f32), true, false),
                     &mut store,
-                    &mut selection
+                    &mut selection,
+                    puzzella_core::LOCAL_PLAYER
                 ))
                 .is_empty());
             }
@@ -134,6 +149,7 @@ fn million_selection_cpu_benchmark() {
                 frame(Vec2::new(10.0, 20.0), false, false),
                 &mut store,
                 &mut selection,
+                puzzella_core::LOCAL_PLAYER,
             );
             let release_command = micros(start);
             assert_eq!(commands.len(), 1);
@@ -150,7 +166,12 @@ fn million_selection_cpu_benchmark() {
                 snap_distance: 5.0,
             };
             let start = Instant::now();
-            let result = store.apply_command(LOCAL_PLAYER, &commands[0], Some(&definition));
+            let result = store.apply_command(
+                LOCAL_PLAYER,
+                &commands[0],
+                Some(&definition),
+                puzzella_core::LOCAL_PLAYER,
+            );
             let release = micros(start);
             assert_eq!(result.released, count);
             assert_eq!(result.placed, 0);
@@ -272,7 +293,12 @@ fn connected_snapping_cpu_benchmark() {
                 }
                 let mut gesture = PieceInteraction::default();
                 let mut selection = PuzzleSelection::default();
-                gesture.update(frame(Vec2::ZERO, true, true), &mut s, &mut selection);
+                gesture.update(
+                    frame(Vec2::ZERO, true, true),
+                    &mut s,
+                    &mut selection,
+                    puzzella_core::LOCAL_PLAYER,
+                );
                 let request = selection.latest.unwrap();
                 selection.completed = Some(SelectionResult {
                     request_id: request.request_id,
@@ -280,11 +306,20 @@ fn connected_snapping_cpu_benchmark() {
                     payload: SelectionPayload::Point(Some(PieceId(0))),
                     error: None,
                 });
-                let commands =
-                    gesture.update(frame(Vec2::ZERO, true, false), &mut s, &mut selection);
+                let commands = gesture.update(
+                    frame(Vec2::ZERO, true, false),
+                    &mut s,
+                    &mut selection,
+                    puzzella_core::LOCAL_PLAYER,
+                );
                 assert_eq!(commands.len(), 1);
                 let start = Instant::now();
-                let grabbed = s.apply_command(LOCAL_PLAYER, &commands[0], Some(&d));
+                let grabbed = s.apply_command(
+                    LOCAL_PLAYER,
+                    &commands[0],
+                    Some(&d),
+                    puzzella_core::LOCAL_PLAYER,
+                );
                 let grab = micros(start);
                 assert_eq!(
                     grabbed.grabbed,
@@ -302,7 +337,8 @@ fn connected_snapping_cpu_benchmark() {
                     assert!(black_box(gesture.update(
                         frame(Vec2::splat(step as f32), true, false),
                         &mut s,
-                        &mut selection
+                        &mut selection,
+                        puzzella_core::LOCAL_PLAYER
                     ))
                     .is_empty());
                 }
@@ -322,10 +358,16 @@ fn connected_snapping_cpu_benchmark() {
                     ),
                     &mut s,
                     &mut selection,
+                    puzzella_core::LOCAL_PLAYER,
                 );
                 assert_eq!(commands.len(), 1);
                 let start = Instant::now();
-                let released = s.apply_command(LOCAL_PLAYER, &commands[0], Some(&d));
+                let released = s.apply_command(
+                    LOCAL_PLAYER,
+                    &commands[0],
+                    Some(&d),
+                    puzzella_core::LOCAL_PLAYER,
+                );
                 let release = micros(start);
                 assert_eq!(released.released, grabbed.grabbed);
                 assert_eq!(released.placed, if scenario == "board" { count } else { 0 });
@@ -378,7 +420,12 @@ fn small_component_release_cpu_benchmark() {
                     let id = PieceId(members / 2);
                     assert_eq!(
                         store
-                            .apply_command(LOCAL_PLAYER, &PieceCommand::Grab(id), Some(&d))
+                            .apply_command(
+                                LOCAL_PLAYER,
+                                &PieceCommand::Grab(id),
+                                Some(&d),
+                                puzzella_core::LOCAL_PLAYER
+                            )
                             .grabbed,
                         members as usize
                     );
@@ -397,13 +444,19 @@ fn small_component_release_cpu_benchmark() {
                                 position: store.states[id.0 as usize].position + Vec2::ONE,
                             },
                             Some(&d),
+                            puzzella_core::LOCAL_PLAYER,
                         );
                         PieceCommand::Release(id)
                     };
                     let target = store.states[members as usize].position;
                     store.dirty_pieces.clear();
                     let start = Instant::now();
-                    let outcome = black_box(store.apply_command(LOCAL_PLAYER, &release, Some(&d)));
+                    let outcome = black_box(store.apply_command(
+                        LOCAL_PLAYER,
+                        &release,
+                        Some(&d),
+                        puzzella_core::LOCAL_PLAYER,
+                    ));
                     let elapsed = micros(start);
                     assert_eq!(outcome.released, members as usize);
                     assert_eq!(outcome.placed, 0);
@@ -448,8 +501,18 @@ fn small_component_grab_cpu_benchmark() {
                         // First-hold dense owner allocation is a separate condition.
                         if owner_storage == "reused" {
                             let seed = PieceId(count as u32 - 1);
-                            store.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(seed), None);
-                            store.apply_command(LOCAL_PLAYER, &PieceCommand::Release(seed), None);
+                            store.apply_command(
+                                LOCAL_PLAYER,
+                                &PieceCommand::Grab(seed),
+                                None,
+                                puzzella_core::LOCAL_PLAYER,
+                            );
+                            store.apply_command(
+                                LOCAL_PLAYER,
+                                &PieceCommand::Release(seed),
+                                None,
+                                puzzella_core::LOCAL_PLAYER,
+                            );
                         }
                         let id = PieceId(base + members / 2);
                         let grab = if command == "scalar" {
@@ -465,7 +528,12 @@ fn small_component_grab_cpu_benchmark() {
                         };
                         store.dirty_pieces.clear();
                         let start = Instant::now();
-                        let outcome = black_box(store.apply_command(LOCAL_PLAYER, &grab, Some(&d)));
+                        let outcome = black_box(store.apply_command(
+                            LOCAL_PLAYER,
+                            &grab,
+                            Some(&d),
+                            puzzella_core::LOCAL_PLAYER,
+                        ));
                         let elapsed = micros(start);
                         assert_eq!(outcome.grabbed, members as usize);
                         assert_eq!(store.held_by.len(), members as usize);

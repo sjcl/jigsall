@@ -27,11 +27,13 @@ fn app() -> App {
             members: members.clone(),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
         .insert_resource(d)
         .insert_resource(store)
+        .init_resource::<LocalPlayerId>()
         .insert_resource(PieceInteraction {
             gesture: Gesture::Dragging {
                 members,
@@ -191,7 +193,12 @@ fn pending_point_and_box_selection_ignore_rotation() {
         over_ui: false,
         focused: true,
     };
-    interaction.update(frame(), &mut store, &mut selection);
+    interaction.update(
+        frame(),
+        &mut store,
+        &mut selection,
+        puzzella_core::LOCAL_PLAYER,
+    );
     assert!(interaction.rotation_command(&store, 1).is_none());
     let request = selection.latest.unwrap();
     selection.completed = Some(SelectionResult {
@@ -200,7 +207,12 @@ fn pending_point_and_box_selection_ignore_rotation() {
         payload: SelectionPayload::Point(None),
         error: None,
     });
-    interaction.update(frame(), &mut store, &mut selection);
+    interaction.update(
+        frame(),
+        &mut store,
+        &mut selection,
+        puzzella_core::LOCAL_PLAYER,
+    );
     assert!(matches!(interaction.gesture, Gesture::BoxSelecting { .. }));
     assert!(interaction.rotation_command(&store, -1).is_none());
 }

@@ -62,6 +62,7 @@ impl Fixture {
             envelope.player,
             envelope,
             None,
+            puzzella_core::LOCAL_PLAYER,
         )
     }
     fn grab(&mut self, sequence: u64, target: PieceTarget) -> ProtocolCommandResult {
@@ -116,8 +117,12 @@ fn sparse_grab_is_component_atomic_and_rejects_only_bad_entries() {
         .collect();
     let mut stale = refs[1];
     stale.expected_size = 99;
-    f.store
-        .apply_command(B, &PieceCommand::Grab(PieceId(4)), None);
+    f.store.apply_command(
+        B,
+        &PieceCommand::Grab(PieceId(4)),
+        None,
+        puzzella_core::LOCAL_PLAYER,
+    );
     let mut input = refs.clone();
     input[1] = stale;
     input.extend([refs[0], refs[0]]);
@@ -154,8 +159,12 @@ fn dense_grab_expands_partial_components_and_rechecks_all_member_flags() {
     for id in (0..8).step_by(2) {
         f.store.connectivity.union(PieceId(id), PieceId(id + 1));
     }
-    f.store
-        .apply_command(B, &PieceCommand::Grab(PieceId(2)), None);
+    f.store.apply_command(
+        B,
+        &PieceCommand::Grab(PieceId(2)),
+        None,
+        puzzella_core::LOCAL_PLAYER,
+    );
     f.store.states[5].flags |= PLACED;
     f.store.states[7].flags &= !ENABLED;
     let mut mask = PieceBitSet::new(4096);
@@ -282,8 +291,14 @@ fn identity_epoch_session_and_wrong_stream_rejections_do_not_consume_valid_ticks
     f.grab(0, f.target(&[0]));
     let update = Fixture::update(0, 0, Vec2::ONE);
     assert_eq!(
-        f.contexts
-            .apply(&mut f.session, &mut f.store, B, &update, None),
+        f.contexts.apply(
+            &mut f.session,
+            &mut f.store,
+            B,
+            &update,
+            None,
+            puzzella_core::LOCAL_PLAYER
+        ),
         Err(ProtocolCommandError::WrongPlayer)
     );
     let mut bad = update.clone();
@@ -669,7 +684,14 @@ fn protocol_dispatch_preserves_relative_z_compaction_and_final_board_snap() {
     let release = Fixture::release(1, 0, Vec2::splat(-100.0));
     let result = f
         .contexts
-        .apply(&mut f.session, &mut f.store, A, &release, Some(&d))
+        .apply(
+            &mut f.session,
+            &mut f.store,
+            A,
+            &release,
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER,
+        )
         .unwrap();
     let ProtocolCommandResult::Released { applied, .. } = result else {
         panic!()
@@ -800,8 +822,12 @@ fn accepted_dense_membership_is_canonical_shared_with_ack_and_compacts_small_res
     let mut f = Fixture::new(128);
     f.store.connectivity.union(PieceId(0), PieceId(1));
     let input = f.target(&(1..96).collect::<Vec<_>>());
-    f.store
-        .apply_command(B, &PieceCommand::Grab(PieceId(5)), None);
+    f.store.apply_command(
+        B,
+        &PieceCommand::Grab(PieceId(5)),
+        None,
+        puzzella_core::LOCAL_PLAYER,
+    );
     let ProtocolCommandResult::Grabbed { applied, ack } = f.grab(0, input) else {
         panic!()
     };
@@ -935,8 +961,12 @@ fn grab_ack_identifies_exact_partial_acceptance_and_round_trips_with_authority_c
     for (a, b) in [(0, 1), (1, 2), (3, 4), (5, 6), (6, 7), (7, 8)] {
         f.store.connectivity.union(PieceId(a), PieceId(b));
     }
-    f.store
-        .apply_command(B, &PieceCommand::Grab(PieceId(3)), None);
+    f.store.apply_command(
+        B,
+        &PieceCommand::Grab(PieceId(3)),
+        None,
+        puzzella_core::LOCAL_PLAYER,
+    );
     let ProtocolCommandResult::Grabbed { applied, ack } = f.grab(0, f.target(&[2, 4, 8])) else {
         panic!()
     };

@@ -41,11 +41,13 @@ fn release(
             members: members.clone(),
         },
         Some(d),
+        puzzella_core::LOCAL_PLAYER,
     );
     store.apply_command(
         LOCAL_PLAYER,
         &PieceCommand::ReleaseGroup { members, delta },
         Some(d),
+        puzzella_core::LOCAL_PLAYER,
     )
 }
 fn assert_offset(store: &PieceDataStore, d: &PuzzleDefinition, id: u32, expected: Vec2) {
@@ -269,6 +271,7 @@ fn connected_outline_uploads_only_changed_states_and_stays_idle_during_drag() {
                 members: members.clone(),
             },
             Some(&d),
+            puzzella_core::LOCAL_PLAYER,
         );
         store.drag.members = members.words().clone();
     }
@@ -422,14 +425,20 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             &PieceCommand::GrabGroup {
                 members: members.clone()
             },
-            Some(&d)
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
         )
         .grabbed,
         4
     );
     assert_eq!(
-        s.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(1)), Some(&d))
-            .grabbed,
+        s.apply_command(
+            PlayerId(1),
+            &PieceCommand::Grab(PieceId(1)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
+        )
+        .grabbed,
         0
     );
     s.apply_command(
@@ -439,6 +448,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             position: Vec2::ZERO,
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_offset(&s, &d, 0, Vec2::splat(100.0));
     s.dirty_pieces.clear();
@@ -449,6 +459,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             position: d.correct_position(PieceId(2)) + Vec2::splat(200.0),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_offset(&s, &d, 0, Vec2::splat(200.0));
     assert_eq!(s.dirty_pieces.count(), 4);
@@ -461,6 +472,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             position: d.correct_position(PieceId(2)) + Vec2::splat(200.0),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     assert!(s.dirty_pieces.is_empty());
     assert_eq!(
@@ -470,7 +482,8 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
                 members,
                 delta: Vec2::ONE
             },
-            Some(&d)
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
         )
         .released,
         4
@@ -478,13 +491,23 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
     assert_offset(&s, &d, 0, Vec2::splat(201.0));
     assert!(s.held_by.is_empty());
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(1)), Some(&d))
-            .grabbed,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Grab(PieceId(1)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
+        )
+        .grabbed,
         4
     );
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(3)), Some(&d))
-            .released,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Release(PieceId(3)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
+        )
+        .released,
         4
     );
     assert!(s.held_by.is_empty());
@@ -496,14 +519,24 @@ fn contradictory_partial_ownership_rejects_whole_component() {
     s.connectivity.union(PieceId(0), PieceId(1));
     s.held_by.insert(PieceId(1), PlayerId(1)); // Deliberately stale HELD mirror.
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d))
-            .grabbed,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Grab(PieceId(0)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
+        )
+        .grabbed,
         0
     );
     s.held_by.insert(PieceId(0), LOCAL_PLAYER);
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d))
-            .released,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Release(PieceId(0)),
+            Some(&d),
+            puzzella_core::LOCAL_PLAYER
+        )
+        .released,
         0
     );
     assert_eq!(s.held_by.len(), 2);
@@ -519,7 +552,12 @@ fn contradictory_partial_ownership_rejects_whole_component() {
 fn held_neighbor_components_are_never_absorbed() {
     let (d, mut s) = fixture(UVec2::new(3, 1), [Vec2::splat(100.0); 3]);
     s.connectivity.union(PieceId(1), PieceId(2));
-    s.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(2)), Some(&d));
+    s.apply_command(
+        PlayerId(1),
+        &PieceCommand::Grab(PieceId(2)),
+        Some(&d),
+        puzzella_core::LOCAL_PLAYER,
+    );
     release(&mut s, &d, &[0], Vec2::ZERO);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 1);
     assert_eq!(s.held_by.len(), 2);
@@ -550,7 +588,7 @@ fn snapping_to_placed_target_places_all_absorbed_members() {
     );
     let mut state = s.state(PieceId(2)).unwrap();
     state.placed = true;
-    s.set_state(PieceId(2), state);
+    s.set_state(PieceId(2), state, puzzella_core::LOCAL_PLAYER);
     s.connectivity.union(PieceId(0), PieceId(1));
     let result = release(&mut s, &d, &[0], Vec2::ZERO);
     assert_eq!(result.placed, 2);
@@ -586,9 +624,19 @@ fn nearest_candidate_and_minimum_member_ties_are_deterministic() {
 fn union_expands_selection_and_only_changed_dense_members_become_dirty() {
     let (d, mut s) = fixture(UVec2::new(2, 1), [Vec2::splat(100.0); 2]);
     s.selected_pieces.insert(PieceId(0));
-    s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d));
+    s.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Grab(PieceId(0)),
+        Some(&d),
+        puzzella_core::LOCAL_PLAYER,
+    );
     s.dirty_pieces.clear();
-    s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), Some(&d));
+    s.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Release(PieceId(0)),
+        Some(&d),
+        puzzella_core::LOCAL_PLAYER,
+    );
     assert_eq!(s.selected_pieces.count(), 2);
     assert_eq!(
         s.dirty_pieces.iter().collect::<Vec<_>>(),
@@ -639,7 +687,12 @@ fn connected_board_threshold_is_strict_and_disconnect_does_not_snap() {
     s.connectivity.union(PieceId(0), PieceId(1));
     release(&mut s, &d, &[1], Vec2::ZERO);
     assert_eq!(s.placed_count, 0);
-    s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), Some(&d));
+    s.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Grab(PieceId(0)),
+        Some(&d),
+        puzzella_core::LOCAL_PLAYER,
+    );
     let before = s.states.clone();
     assert_eq!(
         crate::multiplayer::release_player_holds(&mut s, LOCAL_PLAYER),
@@ -699,7 +752,12 @@ fn fully_selected_component_merge_preserves_shared_mask_when_membership_is_uncha
 fn finite_scalar_singleton_move_still_accepts_an_overflowing_difference() {
     let mut s = PieceDataStore::default();
     s.initialize(vec![Vec2::splat(f32::MAX)]);
-    s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(0)), None);
+    s.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Grab(PieceId(0)),
+        None,
+        puzzella_core::LOCAL_PLAYER,
+    );
     s.apply_command(
         LOCAL_PLAYER,
         &PieceCommand::Move {
@@ -707,11 +765,17 @@ fn finite_scalar_singleton_move_still_accepts_an_overflowing_difference() {
             position: Vec2::splat(-f32::MAX),
         },
         None,
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_eq!(s.states[0].position, Vec2::splat(-f32::MAX));
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(0)), None)
-            .released,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Release(PieceId(0)),
+            None,
+            puzzella_core::LOCAL_PLAYER
+        )
+        .released,
         1
     );
 }
@@ -740,6 +804,7 @@ fn alternating_board_releases_union_without_rescanning_the_growing_cluster() {
             members: all.clone(),
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     let result = s.apply_command(
         LOCAL_PLAYER,
@@ -748,6 +813,7 @@ fn alternating_board_releases_union_without_rescanning_the_growing_cluster() {
             delta: Vec2::ZERO,
         },
         Some(&d),
+        puzzella_core::LOCAL_PLAYER,
     );
     assert_eq!((result.released, result.placed), (10_000, 10_000));
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
@@ -1072,8 +1138,13 @@ fn small_grab_plans_in_a_million_piece_puzzle_have_no_membership_heap() {
         let occupancy = s.held_by.occupied.words().as_ptr();
         let dirty = s.dirty_pieces.words().as_ptr();
         assert_eq!(
-            s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(id), None)
-                .grabbed,
+            s.apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::Grab(id),
+                None,
+                puzzella_core::LOCAL_PLAYER
+            )
+            .grabbed,
             members as usize
         );
         assert_eq!(s.dirty_pieces.count(), members as usize);
@@ -1103,7 +1174,11 @@ fn scalar_and_partial_group_grab_preserve_local_selection_and_duplicate_counts()
                 members: mask(4, &[1, 2]),
             }
         };
-        assert_eq!(s.apply_command(LOCAL_PLAYER, &command, None).grabbed, 3);
+        assert_eq!(
+            s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+                .grabbed,
+            3
+        );
         assert!(Arc::ptr_eq(&selected, s.selected_pieces.words()));
         for id in 0..3 {
             assert_eq!(s.held_by.get(&PieceId(id)), Some(&LOCAL_PLAYER));
@@ -1113,7 +1188,11 @@ fn scalar_and_partial_group_grab_preserve_local_selection_and_duplicate_counts()
         let states = s.states.to_vec();
         let next_z = s.next_z_order;
         for player in [LOCAL_PLAYER, PlayerId(1)] {
-            assert_eq!(s.apply_command(player, &command, None).grabbed, 0);
+            assert_eq!(
+                s.apply_command(player, &command, None, puzzella_core::LOCAL_PLAYER)
+                    .grabbed,
+                0
+            );
             assert_eq!(s.held_by.len(), 3);
             assert_eq!(s.held_by.counts.get(&LOCAL_PLAYER), Some(&3));
             assert_eq!(&*s.states, states.as_slice());
@@ -1157,7 +1236,8 @@ fn group_grab_rejects_invalid_components_atomically_and_accepts_siblings() {
                 }
             };
             assert_eq!(
-                s.apply_command(LOCAL_PLAYER, &command, None).grabbed,
+                s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+                    .grabbed,
                 if scalar { 0 } else { 2 },
                 "{invalid}"
             );
@@ -1194,7 +1274,11 @@ fn group_grab_preserves_cross_component_z_ties_and_max_z_compaction() {
                     },
                 ),
             };
-            assert_eq!(s.apply_command(LOCAL_PLAYER, &command, None).grabbed, 6);
+            assert_eq!(
+                s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+                    .grabbed,
+                6
+            );
             let mut order: Vec<_> = (0..6).collect();
             order.sort_unstable_by_key(|&id| (s.states[id].z_order, id));
             assert_eq!(order, [0, 5, 3, 1, 2, 4]);
@@ -1224,7 +1308,8 @@ fn local_group_grab_syncs_partial_drag_to_complete_accepted_components() {
                 &PieceCommand::GrabGroup {
                     members: requested.clone()
                 },
-                None
+                None,
+                puzzella_core::LOCAL_PLAYER
             )
             .grabbed,
             3
@@ -1256,7 +1341,8 @@ fn all_valid_group_grab_keeps_drag_membership_arc_shared() {
             &PieceCommand::GrabGroup {
                 members: requested.clone()
             },
-            None
+            None,
+            puzzella_core::LOCAL_PLAYER
         )
         .grabbed,
         64
@@ -1284,7 +1370,11 @@ fn remote_scalar_and_group_grab_remove_complete_local_selection_and_drag() {
                 members: mask(128, &[1, 2]),
             }
         };
-        assert_eq!(s.apply_command(PlayerId(1), &command, None).grabbed, 3);
+        assert_eq!(
+            s.apply_command(PlayerId(1), &command, None, puzzella_core::LOCAL_PLAYER)
+                .grabbed,
+            3
+        );
         for id in 0..3 {
             assert!(!s.selected_pieces.contains(&PieceId(id)));
             assert_eq!(s.drag.members[0] & (1 << id), 0);
@@ -1304,16 +1394,26 @@ fn scalar_grab_of_large_component_updates_every_member() {
         s.connectivity.union(PieceId(0), PieceId(id));
     }
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Grab(PieceId(75)), None)
-            .grabbed,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Grab(PieceId(75)),
+            None,
+            puzzella_core::LOCAL_PLAYER
+        )
+        .grabbed,
         100
     );
     assert_eq!(s.held_by.len(), 100);
     assert_eq!(s.dirty_pieces.count(), 100);
     assert!(s.drag.members.is_empty());
     assert_eq!(
-        s.apply_command(LOCAL_PLAYER, &PieceCommand::Release(PieceId(15)), None)
-            .released,
+        s.apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::Release(PieceId(15)),
+            None,
+            puzzella_core::LOCAL_PLAYER
+        )
+        .released,
         100
     );
     assert!(s.held_by.is_empty());
@@ -1333,7 +1433,12 @@ fn million_piece_singleton_grab_uploads_exactly_sixteen_bytes() {
     assert_eq!(
         app.world_mut()
             .resource_mut::<PieceDataStore>()
-            .apply_command(LOCAL_PLAYER, &PieceCommand::Grab(id), None)
+            .apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::Grab(id),
+                None,
+                puzzella_core::LOCAL_PLAYER
+            )
             .grabbed,
         1
     );
@@ -1368,7 +1473,8 @@ fn group_grab_deduplicates_many_partial_roots_and_full_masks_need_no_scratch_hea
         s.apply_command(
             LOCAL_PLAYER,
             &PieceCommand::GrabGroup { members: partial },
-            None
+            None,
+            puzzella_core::LOCAL_PLAYER
         )
         .grabbed,
         600

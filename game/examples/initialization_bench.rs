@@ -2,7 +2,7 @@
 use bevy::prelude::*;
 use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
 use puzzella_game::resources::{
-    pieces::prepare_piece_upload, DensePieceStates, PieceDataStore, PieceUpload,
+    pieces::prepare_piece_upload, DensePieceStates, LocalPlayerId, PieceDataStore, PieceUpload,
 };
 use std::{hint::black_box, time::Instant};
 
@@ -23,7 +23,8 @@ fn main() {
         };
         for run in 0..5 {
             let mut app = App::new();
-            app.init_resource::<PieceDataStore>()
+            app.init_resource::<LocalPlayerId>()
+                .init_resource::<PieceDataStore>()
                 .init_resource::<PieceUpload>()
                 .insert_resource(definition.clone())
                 .add_systems(Update, prepare_piece_upload);
@@ -55,10 +56,11 @@ fn main() {
                 allocation
             );
             app.update();
+            let local_player = app.world().resource::<LocalPlayerId>().0;
             let mut store = app.world_mut().resource_mut::<PieceDataStore>();
             let mut state = store.state(PieceId(0)).unwrap();
             state.position += Vec2::ONE;
-            store.set_state(PieceId(0), state);
+            store.set_state(PieceId(0), state, local_player);
             assert_eq!(store.states.as_ptr(), allocation);
             println!(
                 "{},{run},{worker_ms:.4},{handoff_ms:.4},{prep_ms:.4},{}",

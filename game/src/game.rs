@@ -21,6 +21,7 @@ impl Plugin for GamePlugin {
             .init_resource::<PersistenceService>()
             .init_resource::<PersistenceState>()
             .init_resource::<GameData>()
+            .init_resource::<LocalPlayerId>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<InputState>()
             .init_resource::<GameUiPointerCapture>()
@@ -36,7 +37,7 @@ impl Plugin for GamePlugin {
             .add_systems(Startup, (setup_game, setup_image_load_system))
             .add_systems(
                 OnEnter(AppState::Menu),
-                (cleanup_game, clear_session_messages),
+                (cleanup_game, clear_session_messages, reset_local_player),
             )
             .add_systems(
                 OnEnter(AppState::InGame),
@@ -137,7 +138,9 @@ fn setup_game(mut commands: Commands) {
     // Single-sample normal rendering and picking share pixel coverage at edges.
     commands.spawn((Camera2d, MainCamera, Msaa::Off));
 }
+#[allow(clippy::too_many_arguments)] // Explicit ECS resources include process identity.
 fn initialize_game(
+    local_player: Res<LocalPlayerId>,
     mut commands: Commands,
     config: Res<PuzzleConfig>,
     image: Res<PuzzleImage>,
@@ -148,7 +151,7 @@ fn initialize_game(
 ) {
     *game = GameData {
         players: vec![PlayerInfo {
-            id: LOCAL_PLAYER,
+            id: local_player.0,
             name: None,
             score: 0,
         }],
@@ -226,6 +229,10 @@ fn cleanup_game(
     commands.remove_resource::<PendingRestore>();
     commands.remove_resource::<PuzzleImage>();
     commands.remove_resource::<PuzzleDefinition>();
+}
+
+fn reset_local_player(mut local_player: ResMut<LocalPlayerId>) {
+    *local_player = LocalPlayerId::default();
 }
 
 fn clear_session_messages(
@@ -453,6 +460,7 @@ mod tests {
                         LOCAL_PLAYER,
                         &PieceCommand::Grab(PieceId(1)),
                         Some(&definition),
+                        puzzella_core::LOCAL_PLAYER,
                     );
                     // The interaction adapter clears presentation drag when it queues release.
                     store.drag = default();
@@ -744,5 +752,115 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .reset(KeyCode::Escape);
         app.update();
+    }
+}
+
+#[cfg(test)]
+mod local_identity_tests {
+    use super::*;
+    use crate::multiplayer::{GameSnapshot, SnapshotExpectation};
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy::{
+        asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
+        transform::TransformPlugin,
+    };
+    use puzzella_core::session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId};
+
+    #[test]
+    fn initialization_and_snapshot_restore_use_independent_process_identity() {
+        for local in [LocalPlayerId::default(), LocalPlayerId(PlayerId(42))] {
+            let mut app = App::new();
+            app.insert_resource(local)
+                .init_resource::<PuzzleConfig>()
+                .init_resource::<GameData>()
+                .init_resource::<PieceGenerationProgress>()
+                .init_resource::<PieceDataStore>()
+                .insert_resource(PuzzleImage {
+                    handle: default(),
+                    size: Vec2::new(40.0, 20.0),
+                    opaque: true,
+                });
+            app.world_mut().run_system_once(initialize_game).unwrap();
+            assert_eq!(app.world().resource::<GameData>().players[0].id, local.0);
+            let definition = PuzzleDefinition {
+                generator_version: GENERATOR_VERSION,
+                seed: 42,
+                grid_size: UVec2::new(2, 1),
+                image_size: UVec2::new(40, 20),
+                snap_distance: 5.0,
+            };
+            let mut source = PieceDataStore::default();
+            source.initialize(vec![Vec2::splat(100.0); 2]);
+            let session = SessionDefinition {
+                id: SessionId(123),
+                image_hash: ImageHash([7; 32]),
+            };
+            let cursor = AuthorityCursor::new(3, 0);
+            let snapshot = GameSnapshot::capture(&source, &definition, session, cursor).unwrap();
+            snapshot
+                .install(
+                    &mut app.world_mut().resource_mut::<PieceDataStore>(),
+                    SnapshotExpectation {
+                        session: session.id,
+                        image_hash: session.image_hash,
+                        cursor,
+                        definition: &definition,
+                    },
+                )
+                .unwrap();
+            assert_eq!(*app.world().resource::<LocalPlayerId>(), local);
+            assert_eq!(app.world().resource::<PieceDataStore>().len(), 2);
+            app.world_mut().run_system_once(initialize_game).unwrap();
+            assert_eq!(app.world().resource::<GameData>().players[0].id, local.0);
+        }
+        assert_eq!(LocalPlayerId::default().0, PlayerId(0));
+    }
+
+    #[test]
+    fn returning_to_menu_resets_identity_before_next_offline_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new();
+        app.insert_resource(PersistenceService::for_test(dir.path().join("data")))
+            .add_plugins((
+                MinimalPlugins,
+                StatesPlugin,
+                InputPlugin,
+                TransformPlugin,
+                AssetPlugin::default(),
+                crate::asset_reader::DirectFileAssetPlugin,
+                GamePlugin,
+            ))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<bevy_egui::EguiUserTextures>();
+        app.update();
+        assert_eq!(
+            *app.world().resource::<LocalPlayerId>(),
+            LocalPlayerId::default()
+        );
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::GameSetup);
+        app.update();
+        app.insert_resource(LocalPlayerId(PlayerId(42)));
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::Menu);
+        app.update();
+        assert_eq!(
+            *app.world().resource::<LocalPlayerId>(),
+            LocalPlayerId::default()
+        );
+        app.insert_resource(PuzzleImage {
+            handle: default(),
+            size: Vec2::new(40.0, 20.0),
+            opaque: true,
+        });
+        app.world_mut().run_system_once(initialize_game).unwrap();
+        assert_eq!(
+            app.world().resource::<GameData>().players[0].id,
+            PlayerId(0)
+        );
     }
 }

@@ -16,7 +16,8 @@ fn rotate_body(app: &mut App, def: &PuzzleDefinition, id: PieceId) {
                     target: PieceTarget::Component(reference),
                     quarter_turns: 1
                 },
-                Some(def)
+                Some(def),
+                puzzella_core::LOCAL_PLAYER
             )
             .rotated
             > 0
@@ -53,7 +54,8 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
                     &PieceCommand::GrabGroup {
                         members: members.clone()
                     },
-                    Some(&def)
+                    Some(&def),
+                    puzzella_core::LOCAL_PLAYER
                 )
                 .grabbed,
             1
@@ -79,7 +81,8 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
                         delta: Vec2::new(15., -10.),
                         quarter_turns: 1,
                     },
-                    Some(&def)
+                    Some(&def),
+                    puzzella_core::LOCAL_PLAYER
                 )
                 .drag_rebased
         );
@@ -114,6 +117,7 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
                 delta: Vec2::new(10., 0.),
             },
             Some(&def),
+            puzzella_core::LOCAL_PLAYER,
         );
     assert_eq!(
         pick(

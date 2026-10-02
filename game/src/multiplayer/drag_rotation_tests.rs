@@ -34,7 +34,8 @@ fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_
             &mut s.store,
             A,
             &future_request,
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::ControlNotProcessed { required: 1 }
@@ -119,7 +120,8 @@ fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_
             &mut s.store,
             A,
             &request(0, 11),
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::StaleMoveContext
@@ -131,7 +133,8 @@ fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_
             &mut s.store,
             A,
             &request(1, 11),
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::DuplicateCommand
@@ -214,7 +217,8 @@ fn dense_drag_rebase_shares_membership_and_rejects_stale_topology_atomically() {
             &mut s.store,
             A,
             &request,
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::InconsistentDragTarget)
     );
@@ -343,7 +347,8 @@ fn invalid_drag_rotation_is_atomic_and_rejected_control_keeps_previous_move_basi
                     &mut s.store,
                     A,
                     &envelope,
-                    Some(&s.definition)
+                    Some(&s.definition),
+                    puzzella_core::LOCAL_PLAYER
                 )
                 .is_err(),
             "case {case}"
@@ -427,7 +432,8 @@ fn replica_preflight_rejects_inconsistent_sibling_and_bad_context_without_partia
                 &mut peer.store,
                 HOST,
                 &event,
-                Some(&s.definition)
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER
             )
             .is_err());
         assert_eq!(peer.store.states.to_vec(), before);
@@ -451,7 +457,8 @@ fn drag_rotation_fingerprint_mismatch_diverges_and_freezes_presentation() {
             &mut peer.store,
             HOST,
             &event,
-            Some(&s.definition)
+            Some(&s.definition),
+            puzzella_core::LOCAL_PLAYER
         ),
         Err(ReplicationError::Diverged)
     );
