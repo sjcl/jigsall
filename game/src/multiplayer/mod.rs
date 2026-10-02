@@ -1,4 +1,5 @@
 //! Opt-in multiplayer foundation. No systems are added to the single-player schedule.
+pub mod protocol;
 pub mod snapshot;
 pub use snapshot::{
     GameSnapshot, SnapshotError, SnapshotExpectation, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,

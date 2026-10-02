@@ -1,4 +1,4 @@
-//! Transport-independent command boundary. No sockets or backend yet.
+//! Local Bevy command boundary; compact transport-facing commands live in protocol.
 use crate::{PieceCommand, PlayerId};
 use bevy_ecs::prelude::Message;
 

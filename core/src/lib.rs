@@ -2,6 +2,7 @@
 mod bitset;
 mod commands;
 mod connectivity;
+pub mod protocol;
 mod scratch;
 pub use bitset::{PieceBitSet, MAX_PIECES};
 pub use connectivity::PieceConnectivity;

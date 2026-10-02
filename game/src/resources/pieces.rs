@@ -485,6 +485,17 @@ impl PieceDataStore {
         }
     }
 
+    /// Protocol-only adapter for already resolved, unique component minima.
+    /// Shares the relative-Z/compaction implementation without constructing a mask.
+    pub(crate) fn grab_resolved_components(
+        &mut self,
+        player: PlayerId,
+        minima: impl IntoIterator<Item = PieceId>,
+    ) -> AppliedCommand {
+        let plan = self.grab_roots(minima, None);
+        self.apply_grab(player, plan, false)
+    }
+
     /// Full masks emit the minimum member once; partial masks deduplicate only
     /// roots whose minimum is absent. Small partial sets stay on the stack.
     fn grab_component_roots<'a>(
@@ -701,7 +712,7 @@ impl PieceDataStore {
         self.release_roots(player, roots, delta, definition)
     }
 
-    fn release_roots(
+    pub(crate) fn release_roots(
         &mut self,
         player: PlayerId,
         mut roots: Vec<PieceId>,

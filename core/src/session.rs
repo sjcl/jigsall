@@ -1,5 +1,5 @@
 //! Pure session protocol and authority handoff. Backend identity is deliberately absent.
-use crate::{PieceCommand, PlayerId};
+use crate::{protocol::ProtocolPieceCommand, PieceCommand, PlayerId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -34,8 +34,8 @@ impl AuthorityCursor {
     }
 }
 
-/// Independent reliable controls and best-effort moves within one player/epoch.
-/// Move ticks increment per command; after_control_sequence is the latest control sent.
+/// Reliable controls and best-effort transient drag updates within one player/epoch.
+/// Move ticks are scoped to after_control_sequence (the Grab context for protocol commands).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientCommandSequence {
     Control(u64),
@@ -44,14 +44,30 @@ pub enum ClientCommandSequence {
         tick: u64,
     },
 }
-/// Separate from the local Bevy ClientCommand. Authenticate player at the backend.
+/// Session envelope shared by adapters. The PieceCommand default preserves local
+/// callers; transports should use protocol::ProtocolCommandEnvelope. Authenticate
+/// player at the backend before sequence validation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ClientCommandEnvelope {
+pub struct ClientCommandEnvelope<C = PieceCommand> {
     pub session: SessionId,
     pub authority_epoch: AuthorityEpoch,
     pub player: PlayerId,
     pub sequence: ClientCommandSequence,
-    pub command: PieceCommand,
+    pub command: C,
+}
+/// Both the established local adapter and the compact protocol use one tracker.
+pub trait SequencedPieceCommand {
+    fn is_transient(&self) -> bool;
+}
+impl SequencedPieceCommand for PieceCommand {
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::Move { .. })
+    }
+}
+impl SequencedPieceCommand for ProtocolPieceCommand {
+    fn is_transient(&self) -> bool {
+        matches!(self, Self::DragUpdate { .. })
+    }
 }
 /// A backend must authenticate the sender as host before applying this envelope.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -110,9 +126,9 @@ impl CommandSequenceTracker {
 
     /// Rejections alter neither stream. Consume controls before gameplay validation,
     /// then apply/reject gameplay synchronously before processing another envelope.
-    pub fn validate_and_record(
+    pub fn validate_and_record<C: SequencedPieceCommand>(
         &mut self,
-        envelope: &ClientCommandEnvelope,
+        envelope: &ClientCommandEnvelope<C>,
     ) -> Result<CommandSequenceStatus, ProtocolError> {
         if envelope.session != self.session {
             return Err(ProtocolError::WrongSession);
@@ -127,7 +143,7 @@ impl CommandSequenceTracker {
             .unwrap_or_default();
         let status = match envelope.sequence {
             ClientCommandSequence::Control(sequence) => {
-                if matches!(envelope.command, PieceCommand::Move { .. }) {
+                if envelope.command.is_transient() {
                     return Err(ProtocolError::WrongCommandStream);
                 }
                 let expected = next_sequence(player.control, sequence)?;
@@ -143,7 +159,7 @@ impl CommandSequenceTracker {
                 after_control_sequence,
                 tick,
             } => {
-                if !matches!(envelope.command, PieceCommand::Move { .. }) {
+                if !envelope.command.is_transient() {
                     return Err(ProtocolError::WrongCommandStream);
                 }
                 match player.control {
@@ -275,9 +291,9 @@ impl AuthoritySession {
             Err(ProtocolError::Frozen)
         }
     }
-    pub fn accept_command(
+    pub fn accept_command<C: SequencedPieceCommand>(
         &mut self,
-        envelope: &ClientCommandEnvelope,
+        envelope: &ClientCommandEnvelope<C>,
     ) -> Result<CommandSequenceStatus, ProtocolError> {
         self.require_active()?;
         self.commands.validate_and_record(envelope)
@@ -501,6 +517,62 @@ mod tests {
     };
     const A: PlayerId = PlayerId(1);
     const B: PlayerId = PlayerId(2);
+    #[test]
+    fn protocol_drag_updates_share_control_context_and_latest_wins_tracker() {
+        use crate::protocol::{ComponentRef, PieceTarget, ProtocolCommandEnvelope};
+        let mut tracker = CommandSequenceTracker::new(SESSION, AuthorityEpoch(3));
+        let mut envelope = ProtocolCommandEnvelope {
+            session: SESSION,
+            authority_epoch: AuthorityEpoch(3),
+            player: A,
+            sequence: ClientCommandSequence::Control(0),
+            command: ProtocolPieceCommand::Grab {
+                target: PieceTarget::Component(ComponentRef {
+                    member: PieceId(0),
+                    expected_size: 1,
+                }),
+            },
+        };
+        tracker.validate_and_record(&envelope).unwrap();
+        envelope.command = ProtocolPieceCommand::DragUpdate {
+            delta: bevy_math::Vec2::ONE,
+        };
+        for (tick, status) in [
+            (10, CommandSequenceStatus::Gap { expected: 0 }),
+            (12, CommandSequenceStatus::Gap { expected: 11 }),
+        ] {
+            envelope.sequence = ClientCommandSequence::Move {
+                after_control_sequence: 0,
+                tick,
+            };
+            assert_eq!(tracker.validate_and_record(&envelope), Ok(status));
+        }
+        envelope.sequence = ClientCommandSequence::Move {
+            after_control_sequence: 0,
+            tick: 11,
+        };
+        assert_eq!(
+            tracker.validate_and_record(&envelope),
+            Err(ProtocolError::StaleCommand)
+        );
+        envelope.command = ProtocolPieceCommand::Release {
+            grab_sequence: 0,
+            final_delta: bevy_math::Vec2::ONE,
+        };
+        envelope.sequence = ClientCommandSequence::Control(1);
+        tracker.validate_and_record(&envelope).unwrap();
+        envelope.command = ProtocolPieceCommand::DragUpdate {
+            delta: bevy_math::Vec2::ZERO,
+        };
+        envelope.sequence = ClientCommandSequence::Move {
+            after_control_sequence: 0,
+            tick: 13,
+        };
+        assert_eq!(
+            tracker.validate_and_record(&envelope),
+            Err(ProtocolError::StaleMoveContext)
+        );
+    }
     #[test]
     fn bulk_grab_and_final_release_use_reliable_controls() {
         let mut members = crate::PieceBitSet::new(1_000_000);
