@@ -39,6 +39,7 @@ fn app() -> App {
                 members,
                 anchor: Vec2::splat(1000.),
             },
+            ..default()
         })
         .init_resource::<PuzzleSelection>()
         .init_resource::<GameUiPointerCapture>()

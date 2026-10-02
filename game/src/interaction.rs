@@ -2,10 +2,13 @@
 use crate::resources::pieces::DragTransform;
 use crate::{resources::*, selection::*};
 use bevy::prelude::*;
+use puzzella_core::protocol::{ComponentRef, PieceTarget};
 use puzzella_core::*;
 
 #[cfg(test)]
 mod drag_rotation_tests;
+#[cfg(test)]
+mod hover_rotation_tests;
 
 #[derive(Default)]
 enum Gesture {
@@ -41,6 +44,14 @@ enum Gesture {
 #[derive(Resource, Default)]
 pub struct PieceInteraction {
     gesture: Gesture,
+    pending_rotation: Option<PendingRotation>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingRotation {
+    request_id: u64,
+    screen_position: Vec2,
+    quarter_turns: i8,
 }
 
 pub struct PointerFrame {
@@ -53,6 +64,99 @@ pub struct PointerFrame {
     pub focused: bool,
 }
 impl PieceInteraction {
+    /// Only an explicit idle Q/E press requests a GPU point pick. Pointer frames
+    /// never search pieces, build a membership mask, or refresh a hover cache.
+    pub fn update_rotation(
+        &mut self,
+        store: &PieceDataStore,
+        selection: &mut PuzzleSelection,
+        screen_position: Option<Vec2>,
+        quarter_turns: i8,
+    ) -> Option<PieceCommand> {
+        if quarter_turns == 0 && self.pending_rotation.is_none() {
+            return None;
+        }
+        if !matches!(self.gesture, Gesture::Idle)
+            || !store.drag.members.is_empty()
+            || !store.selected_pieces.is_empty()
+        {
+            self.cancel_rotation_pick(selection);
+            return (quarter_turns != 0)
+                .then(|| self.rotation_command(store, quarter_turns))
+                .flatten();
+        }
+        let Some(screen_position) = screen_position.filter(|p| p.is_finite()) else {
+            self.cancel_rotation_pick(selection);
+            return None;
+        };
+        if quarter_turns != 0 {
+            if let Some(pending) = self.pending_rotation.as_mut().filter(|pending| {
+                pending.screen_position == screen_position
+                    && selection
+                        .latest
+                        .is_some_and(|r| r.request_id == pending.request_id)
+            }) {
+                // Repeated keys at the same point share one in-flight readback.
+                pending.quarter_turns =
+                    ((pending.quarter_turns as i16 + quarter_turns as i16).rem_euclid(4)) as i8;
+                if pending.quarter_turns == 0 {
+                    self.cancel_rotation_pick(selection);
+                    return None;
+                }
+            } else {
+                self.cancel_rotation_pick(selection);
+                let request_id = selection.request(
+                    Rect::from_corners(screen_position, screen_position),
+                    SelectionMode::Point,
+                );
+                self.pending_rotation = Some(PendingRotation {
+                    request_id,
+                    screen_position,
+                    quarter_turns,
+                });
+            }
+        }
+        let pending = self.pending_rotation?;
+        if !selection
+            .latest
+            .is_some_and(|r| r.request_id == pending.request_id)
+        {
+            self.pending_rotation = None;
+            return None;
+        }
+        let result = selection.take_result(pending.request_id)?;
+        self.cancel_rotation_pick(selection);
+        if let Some(error) = result.error {
+            warn!(%error, "GPU rotation point selection failed");
+            return None;
+        }
+        let SelectionPayload::Point(Some(id)) = result.payload else {
+            return None;
+        };
+        if result.mode != SelectionMode::Point || !store.is_selectable(id) {
+            return None;
+        }
+        // Address the whole component directly, without expanding a selection
+        // bitset. The existing Rotate authority validates all members on commit.
+        let target =
+            PieceTarget::Component(ComponentRef::from_member(&store.connectivity, id).ok()?);
+        Some(PieceCommand::Rotate {
+            target,
+            quarter_turns: pending.quarter_turns,
+        })
+    }
+
+    pub(crate) fn cancel_rotation_pick(&mut self, selection: &mut PuzzleSelection) {
+        if let Some(pending) = self.pending_rotation.take() {
+            if selection
+                .latest
+                .is_some_and(|r| r.request_id == pending.request_id)
+            {
+                selection.cancel();
+            }
+        }
+    }
+
     /// Discrete rotation commands never change the pointer basis before acceptance.
     pub fn rotation_command(
         &self,
@@ -137,6 +241,10 @@ impl PieceInteraction {
     ) -> Vec<PieceCommand> {
         if !frame.focused {
             return self.cancel(store, selection, local_player);
+        }
+        if frame.just_pressed {
+            // A mouse gesture owns the same request channel from this point on.
+            self.cancel_rotation_pick(selection);
         }
         let point = frame.position.filter(|p| p.is_finite());
         let screen = frame.screen_position.filter(|p| p.is_finite());
@@ -345,6 +453,7 @@ impl PieceInteraction {
         selection: &mut PuzzleSelection,
         local_player: PlayerId,
     ) -> Vec<PieceCommand> {
+        self.cancel_rotation_pick(selection);
         // Repeated unfocused idle frames must not allocate or scan an owner mask.
         if matches!(self.gesture, Gesture::Idle) && !store.held_by.has_player(local_player) {
             selection.cancel();

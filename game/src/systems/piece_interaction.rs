@@ -50,17 +50,22 @@ pub fn handle_piece_input(
         // Q is counterclockwise, E is clockwise in world coordinates.
         let turns =
             i8::from(keys.just_pressed(KeyCode::KeyQ)) - i8::from(keys.just_pressed(KeyCode::KeyE));
-        if turns != 0
-            && (!interaction.is_dragging()
-                || input.mouse_position.is_some_and(|point| point.is_finite()))
+        if !interaction.is_dragging() || input.mouse_position.is_some_and(|point| point.is_finite())
         {
-            if let Some(command) = interaction.rotation_command(&store, turns) {
+            if let Some(command) = interaction.update_rotation(
+                &store,
+                &mut selection,
+                input.cursor_screen_position,
+                turns,
+            ) {
                 commands.write(ClientCommand {
                     player: local_player.0,
                     command,
                 });
             }
         }
+    } else {
+        interaction.cancel_rotation_pick(&mut selection);
     }
     perf.end_system_timing("handle_piece_input", start);
 }

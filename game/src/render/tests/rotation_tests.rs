@@ -31,6 +31,120 @@ fn screen_point(world: Vec2, resolution: f32) -> Rect {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_component() {
+    use crate::{
+        interaction::PieceInteraction,
+        resources::{GameUiPointerCapture, InputState, LocalPlayerId, PerformanceMonitor},
+        systems::{game_logic::apply_piece_commands, piece_interaction::handle_piece_input},
+    };
+
+    #[derive(Resource, Default)]
+    struct TestKey(Option<KeyCode>);
+    fn press_key(mut key: ResMut<TestKey>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+        if let Some(key) = key.0.take() {
+            keys.press(key);
+        }
+    }
+    fn rotate_at(app: &mut App, position: Vec2, key: KeyCode) {
+        let mut input = app.world_mut().resource_mut::<InputState>();
+        input.window_focused = true;
+        input.mouse_position = Some(position);
+        input.cursor_screen_position = Some(Vec2::new(128. + position.x, 128. - position.y));
+        app.world_mut().resource_mut::<TestKey>().0 = Some(key);
+        update_gpu(app);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while app.world().resource::<PuzzleSelection>().latest.is_some() {
+            update_gpu(app);
+            assert!(Instant::now() < deadline, "hover rotation timed out");
+        }
+    }
+
+    let (mut app, _, _) = gpu_app(256);
+    let mut def = definition(UVec2::new(3, 1), 120, 42);
+    def.image_size.y = 30;
+    let translation = Vec2::new(-15., 20.);
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.initialize(
+            (0..3)
+                .map(|id| def.correct_position(PieceId(id)) + translation)
+                .collect(),
+        );
+        store.connectivity.union(PieceId(0), PieceId(1));
+        // Piece 2 overlaps member 1, so GPU depth must choose the singleton.
+        store.states[2].position = translation;
+        store.states[2].z_order = 100;
+    }
+    app.insert_resource(def)
+        .insert_resource(LocalPlayerId(puzzella_core::PlayerId(42)))
+        .init_resource::<PieceInteraction>()
+        .init_resource::<InputState>()
+        .init_resource::<GameUiPointerCapture>()
+        .init_resource::<PerformanceMonitor>()
+        .init_resource::<bevy_egui::EguiUserTextures>()
+        .init_resource::<TestKey>()
+        .add_message::<puzzella_core::ClientCommand>()
+        .add_systems(
+            Update,
+            (press_key, handle_piece_input, apply_piece_commands).chain(),
+        );
+    wait_ready(&mut app);
+    update_gpu(&mut app);
+    let selected = app
+        .world()
+        .resource::<PieceDataStore>()
+        .selected_pieces
+        .words()
+        .clone();
+    let original = app.world().resource::<PieceDataStore>().states.to_vec();
+    rotate_at(&mut app, translation, KeyCode::KeyQ);
+    let store = app.world().resource::<PieceDataStore>();
+    assert_eq!(&store.states[..2], &original[..2]);
+    assert_eq!(puzzella_core::decode_rotation(store.states[2].flags), 1);
+    assert_eq!(store.states[2].position, translation);
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+    assert_eq!(gpu.upload_bytes, 16);
+    assert_eq!(gpu.drag_upload_bytes, 0);
+    assert_eq!(gpu.root_upload_bytes, 0);
+
+    // After removing the covering piece, the same pixel addresses member 1,
+    // whose component includes member 0 away from the cursor.
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.states[2].flags &= !ENABLED;
+        store.dirty_pieces.insert(PieceId(2));
+    }
+    update_gpu(&mut app);
+    rotate_at(&mut app, translation, KeyCode::KeyE);
+    let store = app.world().resource::<PieceDataStore>();
+    let pivot = (original[0].position + original[1].position) * 0.5;
+    for (id, original) in original.iter().enumerate().take(2) {
+        assert_eq!(puzzella_core::decode_rotation(store.states[id].flags), 3);
+        assert_eq!(
+            store.states[id].position,
+            pivot + rotate_quarter(original.position - pivot, 3)
+        );
+    }
+    assert!(store.selected_pieces.is_empty());
+    assert!(Arc::ptr_eq(&selected, store.selected_pieces.words()));
+    assert!(store.held_by.is_empty());
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+    assert_eq!(gpu.upload_bytes, 32);
+    assert_eq!(gpu.drag_upload_bytes, 0);
+    assert_eq!(gpu.root_upload_bytes, 0);
+    update_gpu(&mut app);
+    assert!(app.world().resource::<PuzzleSelection>().latest.is_none());
+    assert_eq!(
+        app.sub_app(RenderApp)
+            .world()
+            .resource::<GpuRenderer>()
+            .upload_bytes,
+        0
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_frames() {
     let (mut app, _, target) = gpu_app(256);
     let mut def = definition(UVec2::new(3, 2), 192, 42);

@@ -1,12 +1,29 @@
 # 90°単位のcomponent回転
 
 Q / Eで選択中のcomponentを反時計回り / 時計回りに90°回転します。
+選択がない場合はカーソル下のピース、またはその結合済みcomponent全体を回転します。
 複数componentはそれぞれ自身の現在position AABB中心をpivotにします。
 ドラッグ中も同じGrabを維持して回転できます。PendingPoint / BoxSelecting中は無視し、
 mouse releaseとQ/Eが同frameならReleaseを優先します。通常のRotateはunheld component用です。
 ドラッグ中のRotateDragは受理した対象全体を検証し、1componentでも不正なら
 stateとdrag basisを変更しません。placed、disabled、HELD / owner不一致、stale topology、
 混在rotation、不整合なrigid transformを拒否します。自動snapは行いません。
+
+## Cursor target without selection
+
+Idleかつ選択が空のとき、Q / Eの押下時だけ既存のGPU Point requestを発行します。
+クリックと同じ1画素のdepth / SDF / alpha / selectable判定で手前のピースを選び、
+4-byte readbackを非同期で受け取ります。CPUの全piece検索、常時hover判定、
+新しいGPU buffer / passは追加しません。通常pointer frameは早期returnします。
+
+結果のPieceIdから`ComponentRef::from_member`で直接`PieceTarget::Component`を作るため、
+component membershipや選択bitsetを展開しません。選択・hold・Zを変更せず、
+既存Rotateのauthorityでcomponent全体の適格性を再検証して確定します。
+
+同じ座標で結果待ち中にQ / Eを再入力した場合はturnsを合算し、同じrequestを再利用します。
+異なる座標での新しい入力は最新requestを優先します。クリックでgestureが始まった場合、
+選択が生まれた場合、focus喪失・UI capture・cursor無効の場合はpending回転を取り消します。
+request IDが異なる遅延結果、empty hit、readback errorは回転を起こしません。
 
 ## Authoritative invariant
 
@@ -117,6 +134,16 @@ anchor成功時更新と拒否時維持、同frame Release優先、fragmented me
 snap遅延、同rotation neighbor / 0°board、同Grab内の複数rebase、欠落Transientの補完、
 古い / future basisとfloor以前の更新拒否、Sparse / Denseの事前検証、DSU root historyの
 相違、fingerprint mismatchとDivergedを含みます。wire v2のgolden fixtureは10件です。
+
+カーソル下回転のCPU回帰は単体 / component、選択優先、key合算、stale結果、
+クリック・focus / UI / cursorによる取消、遅延中の適格性変更、pointer-only frameの
+request / upload 0を検証します。実GPUでは重なりの手前のsingletonとその下の
+結合済みcomponentをそれぞれQ / Eで回転し、state uploadが16 / 32 bytes、
+membership / root uploadが0、選択・holdが変わらないことを確認します。
+session local playerを42にして両経路を検証しました。2026-10-03、最新版masterとの
+統合後にworkspace通常テスト370件とdoctest 1件、追加の実GPU1件が通過しました。
+workspace全targetのClippy（CPU reference / picking features、`-D warnings`）と
+`cargo fmt --all --check`も通過しました。
 
 通常回転の初版では2026-10-03、Windows / NVIDIA GeForce RTX 5090（Vulkan）でworkspace通常テスト
 295件とdoctest 1件、既存を含む実GPU回帰15件が通過しました。
