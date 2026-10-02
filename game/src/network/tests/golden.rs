@@ -81,6 +81,31 @@ fn wire_v1_client_drag_golden() {
 }
 
 #[test]
+fn wire_v1_client_rotate_golden() {
+    assert_v1_frame(
+        client(
+            ClientCommandSequence::Control(129),
+            ProtocolPieceCommand::Rotate {
+                target: PieceTarget::Components(vec![
+                    ComponentRef {
+                        member: PieceId(300),
+                        expected_size: 4,
+                    },
+                    ComponentRef {
+                        member: PieceId(10),
+                        expected_size: 2,
+                    },
+                ]),
+                quarter_turns: -1,
+            },
+        ),
+        // Rotate is command variant 3; Postcard encodes i8 -1 as ff.
+        "50 5a 4c 41 01 00 01 00 10 00 00 00
+         b4 24 05 07 00 81 01 03 01 02 ac 02 04 0a 02 ff",
+    );
+}
+
+#[test]
 fn wire_v1_grab_accepted_golden() {
     assert_v1_frame(
         authority(
@@ -120,6 +145,28 @@ fn wire_v1_release_committed_golden() {
         ),
         "50 5a 4c 41 01 00 02 00 24 00 00 00
          b4 24 09 05 83 01 01 07 81 01 00 00 70 40 00 00 90 c0
+         90 e4 d0 b2 87 d3 ae ee fe df b7 de 9a f1 d9 a2 a3 02",
+    );
+}
+
+#[test]
+fn wire_v1_rotation_committed_golden() {
+    assert_v1_frame(
+        authority(
+            132,
+            ProtocolAuthorityEvent::RotationCommitted(RotationCommitted {
+                player: PlayerId(7),
+                accepted: PieceTarget::Component(ComponentRef {
+                    member: PieceId(300),
+                    expected_size: 4,
+                }),
+                quarter_turns: 3,
+                result: ReleaseResultFingerprint(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210),
+            }),
+        ),
+        // RotationCommitted is event variant 2; normalized turns precede the fingerprint.
+        "50 5a 4c 41 01 00 02 00 1f 00 00 00
+         b4 24 09 05 84 01 02 07 00 ac 02 04 03
          90 e4 d0 b2 87 d3 ae ee fe df b7 de 9a f1 d9 a2 a3 02",
     );
 }
