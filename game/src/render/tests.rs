@@ -2,6 +2,7 @@ use super::*;
 mod component_preview_tests;
 mod far_zoom_tests;
 mod outline_tests;
+mod rotation_tests;
 mod selection_bench;
 use crate::{
     resources::{

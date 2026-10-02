@@ -5,8 +5,9 @@ use crate::resources::{
 };
 use bevy::math::Vec2;
 use puzzella_core::{
+    decode_rotation,
     protocol::{ActiveDragTarget, RejectedComponentRef, ReleaseResultFingerprint, TargetError},
-    PieceBitSet, PieceId, PlayerId, PuzzleDefinition,
+    rotate_quarter, PieceBitSet, PieceId, PlayerId, PuzzleDefinition, ROTATION_MASK,
 };
 use sha2::{Digest, Sha256};
 
@@ -166,8 +167,10 @@ fn fingerprint_with_scratch(
     for minimum in minima.iter() {
         let size = store.connectivity.component_size(minimum);
         let state = &store.states[minimum.0 as usize];
-        let offset =
-            state.position - definition.map_or(Vec2::ZERO, |d| d.correct_position(minimum));
+        let offset = state.position
+            - definition.map_or(Vec2::ZERO, |d| {
+                rotate_quarter(d.correct_position(minimum), decode_rotation(state.flags))
+            });
         hash.update(minimum.0.to_le_bytes());
         hash.update((size as u32).to_le_bytes());
         hash.update(offset.x.to_bits().to_le_bytes());
@@ -197,7 +200,9 @@ fn hash_member(hash: &mut Sha256, store: &PieceDataStore, id: PieceId) {
     hash.update(state.position.x.to_bits().to_le_bytes());
     hash.update(state.position.y.to_bits().to_le_bytes());
     hash.update(state.z_order.to_le_bytes());
-    hash.update((state.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES)).to_le_bytes());
+    hash.update(
+        (state.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES | ROTATION_MASK)).to_le_bytes(),
+    );
     let owner = store.held_by.get(&id);
     hash.update([u8::from(owner.is_some())]);
     hash.update(owner.map_or(0, |p| p.0).to_le_bytes());

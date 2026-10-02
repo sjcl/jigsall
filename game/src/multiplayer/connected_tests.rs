@@ -66,7 +66,7 @@ fn connected_snapshot_round_trip_preserves_positions_placement_and_edges() {
             s.apply_command(PlayerId(1), &PieceCommand::Grab(PieceId(5)), Some(&d));
         }
         let snapshot = GameSnapshot::capture(&s, &d, SESSION, expected(&d).cursor).unwrap();
-        assert_eq!(snapshot.schema_version, 3);
+        assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(std::mem::size_of::<SnapshotPieceState>(), 16);
         assert_ne!(snapshot.pieces[1].flags & SNAPSHOT_CONNECTED_RIGHT, 0);
         assert_ne!(snapshot.pieces[1].flags & SNAPSHOT_CONNECTED_DOWN, 0);
@@ -125,7 +125,7 @@ fn snapshot_render_edges_are_derived_from_authority_including_sparse_cycles() {
         .map(|state| state.flags & CONNECTED_EDGES)
         .collect();
     let snapshot = GameSnapshot::capture(&source, &d, SESSION, expected(&d).cursor).unwrap();
-    assert_eq!(snapshot.schema_version, 3);
+    assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
     assert_eq!(snapshot.definition.generator_version, GENERATOR_VERSION);
     assert!(snapshot
         .pieces
@@ -180,7 +180,7 @@ fn invalid_edges_offsets_partial_placement_and_old_schema_are_atomic() {
     let mut invalid = GameSnapshot::capture(&placed, &d, SESSION, expected(&d).cursor).unwrap();
     invalid.pieces[1].flags &= !SNAPSHOT_PLACED;
     cases.push((invalid, SnapshotError::InconsistentComponent(PieceId(1))));
-    for version in [1, 2, 4] {
+    for version in [1, 2, 3, 5] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = version;
         cases.push((invalid, SnapshotError::UnsupportedSchema(version)));

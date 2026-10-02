@@ -5,7 +5,7 @@ use puzzella_core::{
         ActiveDrag, ActiveDragTarget, GrabAccepted, ProtocolAuthorityEvent,
         ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand,
         RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint, RemoteDragUpdate,
-        ResolvedPieceTarget, TargetError,
+        ResolvedPieceTarget, RotationCommitted, TargetError,
     },
     session::{
         AuthorityEpoch, AuthoritySession, ClientCommandSequence, CommandSequenceStatus,
@@ -24,6 +24,7 @@ pub enum ProtocolCommandError {
     ActiveDragExists,
     NoActiveDrag,
     WrongDragContext,
+    InvalidDefinition,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -39,6 +40,11 @@ pub enum ProtocolCommandResult {
         applied: AppliedCommand,
         rejected: Vec<RejectedComponentRef>,
         result: ReleaseResultFingerprint,
+    },
+    Rotated {
+        applied: AppliedCommand,
+        rejected: Vec<RejectedComponentRef>,
+        commit: RotationCommitted,
     },
 }
 
@@ -99,6 +105,9 @@ impl ProtocolDragContexts {
                 }))
             }
             ProtocolCommandResult::DragUpdated { .. } => None,
+            ProtocolCommandResult::Rotated { commit, .. } => {
+                Some(ProtocolAuthorityEvent::RotationCommitted(commit.clone()))
+            }
         };
         let authority_event = event.map(|event| ProtocolAuthorityEventEnvelope {
             session: session.session_id(),
@@ -184,6 +193,37 @@ impl ProtocolDragContexts {
             .map_err(ProtocolCommandError::Sequence)?;
         let player = authenticated_player;
         match &envelope.command {
+            ProtocolPieceCommand::Rotate {
+                target,
+                quarter_turns,
+            } => {
+                if self.players.contains_key(&player) {
+                    return Err(ProtocolCommandError::ActiveDragExists);
+                }
+                let definition = definition
+                    .filter(|d| d.validate().is_ok() && d.piece_count() == store.len())
+                    .ok_or(ProtocolCommandError::InvalidDefinition)?;
+                let turns = puzzella_core::add_quarter_turns(0, *quarter_turns) as i8;
+                let rotation = store
+                    .rotate_target(target, turns, definition)
+                    .map_err(ProtocolCommandError::Target)?;
+                let result = super::release::result_fingerprint(
+                    store,
+                    &rotation.roots,
+                    Some(definition),
+                    &rotation.applied,
+                );
+                Ok(ProtocolCommandResult::Rotated {
+                    applied: rotation.applied,
+                    rejected: rotation.rejected,
+                    commit: RotationCommitted {
+                        player,
+                        accepted: rotation.accepted,
+                        quarter_turns: turns,
+                        result,
+                    },
+                })
+            }
             ProtocolPieceCommand::Grab { target } => {
                 if self.players.contains_key(&player) {
                     return Err(ProtocolCommandError::ActiveDragExists);

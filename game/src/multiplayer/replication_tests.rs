@@ -15,7 +15,7 @@ use puzzella_core::{
     session::{
         AuthorityCursor, AuthoritySequence, ClientCommandSequence, ImageHash, SessionDefinition,
     },
-    PieceBitSet, PieceId, GENERATOR_VERSION,
+    PieceBitSet, PieceId, GENERATOR_VERSION, ROTATION_MASK,
 };
 
 const HOST: PlayerId = PlayerId(9);
@@ -215,8 +215,8 @@ fn assert_authority_equal(host: &PieceDataStore, peer: &PieceDataStore) {
         );
         assert_eq!(a.z_order, b.z_order, "Z {id}");
         assert_eq!(
-            a.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES),
-            b.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES),
+            a.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES | ROTATION_MASK),
+            b.flags & (PLACED | HELD | ENABLED | CONNECTED_EDGES | ROTATION_MASK),
             "flags {id}"
         );
         let id = PieceId(id as u32);
@@ -1036,7 +1036,7 @@ fn snapshot_install_invalidates_in_flight_context_and_rejects_old_updates() {
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
     }
-    s.contexts.cancel_player(&mut s.store, A); // Snapshot schema 3 omits holds.
+    s.contexts.cancel_player(&mut s.store, A); // Snapshots omit holds.
     s.grab(A, 1, &[0]);
     s.release(A, 2, 1, Vec2::ONE, false);
     s.assert_equal();
@@ -1276,4 +1276,250 @@ fn empty_acceptance_is_reliable_but_rejected_commands_publish_nothing() {
     assert_eq!(s.session.cursor(), cursor);
     s.release(B, 1, 0, Vec2::ZERO, false);
     s.assert_equal();
+}
+
+fn rotate_event(
+    s: &mut Simulation,
+    sequence: u64,
+    ids: &[u32],
+    turns: i8,
+) -> ProtocolAuthorityEventEnvelope {
+    let mut mask = PieceBitSet::new(s.store.len());
+    mask.extend(ids.iter().copied().map(PieceId));
+    let target = PieceTarget::from_selection(&s.store.connectivity, &mask).unwrap();
+    let outcome = s.command(
+        A,
+        ClientCommandSequence::Control(sequence),
+        ProtocolPieceCommand::Rotate {
+            target,
+            quarter_turns: turns,
+        },
+        true,
+    );
+    assert!(outcome.drag_update.is_none());
+    let event = outcome.authority_event.unwrap();
+    s.deliver(&event, true);
+    s.assert_equal();
+    event
+}
+
+#[test]
+fn reliable_rotations_replay_identically_and_snap_rotated_neighbors_after_drag() {
+    let mut s = Simulation::new(&[Vec2::splat(100.0); 3], &[(0, 1)]);
+    let initial = s.store.states.to_vec();
+    for (sequence, turns) in [1, -1, 127, -127].into_iter().enumerate() {
+        let event = rotate_event(&mut s, sequence as u64, &[0, 1, 2], turns);
+        let ProtocolAuthorityEvent::RotationCommitted(commit) = &event.event else {
+            panic!()
+        };
+        assert_eq!(
+            commit.quarter_turns,
+            puzzella_core::add_quarter_turns(0, turns) as i8
+        );
+        let peer = &mut s.peers[0];
+        assert_eq!(
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &event,
+                Some(&s.definition)
+            ),
+            Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
+        );
+    }
+    assert_eq!(&*s.store.states, &initial);
+    // Rotating each body independently means the singleton needs a translation
+    // to align with the pair. Release and its fingerprint include rotation bits.
+    rotate_event(&mut s, 4, &[0, 2], 1);
+    let moving = s.store.states[2];
+    let translation = s.store.states[0].position
+        - puzzella_core::rotate_quarter(s.definition.correct_position(PieceId(0)), 1);
+    let final_delta = puzzella_core::rotate_quarter(s.definition.correct_position(PieceId(2)), 1)
+        + translation
+        - moving.position;
+    s.grab(A, 5, &[2]);
+    s.update(A, 5, 0, final_delta * 0.5);
+    s.release(A, 6, 5, final_delta, true);
+    s.assert_equal();
+    assert_eq!(s.store.connectivity.component_size(PieceId(0)), 3);
+    rotate_event(&mut s, 7, &[2], 1);
+    assert!(s
+        .store
+        .states
+        .iter()
+        .all(|state| puzzella_core::decode_rotation(state.flags) == 2));
+    let snapshot =
+        GameSnapshot::capture(&s.store, &s.definition, SESSION, s.session.cursor()).unwrap();
+    let serialized = postcard::to_allocvec(&snapshot).unwrap();
+    let decoded: GameSnapshot = postcard::from_bytes(&serialized).unwrap();
+    assert_eq!(decoded, snapshot);
+    let mut restored = PieceDataStore::default();
+    decoded
+        .install(
+            &mut restored,
+            SnapshotExpectation {
+                session: SESSION.id,
+                image_hash: SESSION.image_hash,
+                cursor: s.session.cursor(),
+                definition: &s.definition,
+            },
+        )
+        .unwrap();
+    assert_eq!(&*s.store.states, &*restored.states);
+    assert_eq!(restored.connectivity.component_size(PieceId(0)), 3);
+    assert!(restored.held_by.is_empty());
+}
+
+#[test]
+fn authority_rotation_excludes_remote_holds_and_rejects_active_player_drag() {
+    let mut s = Simulation::new(&[Vec2::splat(100.0); 3], &[(0, 1)]);
+    s.grab(B, 0, &[0]);
+    let before = s.store.states.to_vec();
+    rotate_event(&mut s, 0, &[0, 2], 1);
+    assert_eq!(s.store.states[0], before[0]);
+    assert_eq!(s.store.states[1], before[1]);
+    assert_eq!(puzzella_core::decode_rotation(s.store.states[2].flags), 1);
+    let target = PieceTarget::Component(
+        puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
+            .unwrap(),
+    );
+    let envelope = ProtocolCommandEnvelope {
+        session: SESSION.id,
+        authority_epoch: s.session.cursor().epoch,
+        player: B,
+        sequence: ClientCommandSequence::Control(1),
+        command: ProtocolPieceCommand::Rotate {
+            target,
+            quarter_turns: 1,
+        },
+    };
+    let cursor = s.session.cursor();
+    assert!(matches!(
+        s.contexts.apply_replicated(
+            &mut s.session,
+            &mut s.store,
+            B,
+            &envelope,
+            Some(&s.definition)
+        ),
+        Err(ProtocolCommandError::ActiveDragExists)
+    ));
+    assert_eq!(s.session.cursor(), cursor);
+    s.assert_equal();
+}
+
+#[test]
+fn replica_rotation_preflights_whole_event_and_detects_rotation_divergence() {
+    for corrupt in 0..3 {
+        let mut s = Simulation::new(&[Vec2::splat(100.0); 3], &[(0, 1)]);
+        let target = PieceTarget::Components(vec![
+            puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
+                .unwrap(),
+            puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(2))
+                .unwrap(),
+        ]);
+        let mut event = s
+            .command(
+                A,
+                ClientCommandSequence::Control(0),
+                ProtocolPieceCommand::Rotate {
+                    target,
+                    quarter_turns: 1,
+                },
+                true,
+            )
+            .authority_event
+            .unwrap();
+        let peer = &mut s.peers[0];
+        let ProtocolAuthorityEvent::RotationCommitted(commit) = &mut event.event else {
+            panic!()
+        };
+        match corrupt {
+            0 => peer.store.states[2].flags &= !ENABLED,
+            1 => commit.quarter_turns = 4,
+            2 => commit.result.0 ^= 1,
+            _ => unreachable!(),
+        }
+        let before = peer.store.states.to_vec();
+        let cursor = peer.session.cursor();
+        assert_eq!(
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &event,
+                Some(&s.definition)
+            ),
+            Err(ReplicationError::Diverged)
+        );
+        assert_eq!(peer.session.cursor(), cursor);
+        assert!(peer.replica.needs_resync(&peer.session, &peer.store));
+        if corrupt < 2 {
+            assert_eq!(&*peer.store.states, &before);
+        }
+    }
+}
+
+#[test]
+fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
+    use puzzella_core::protocol::TargetError;
+    let mut s = Simulation::new(&[Vec2::splat(100.0); 40], &[]);
+    let mut members = PieceBitSet::new(40);
+    members.fill();
+    let target = PieceTarget::from_selection(&s.store.connectivity, &members).unwrap();
+    assert!(matches!(target, PieceTarget::Dense(_)));
+    let event = s
+        .command(
+            A,
+            ClientCommandSequence::Control(0),
+            ProtocolPieceCommand::Rotate {
+                target: target.clone(),
+                quarter_turns: -1,
+            },
+            true,
+        )
+        .authority_event
+        .unwrap();
+    s.deliver(&event, true);
+    s.assert_equal();
+    let before = s.store.states.to_vec();
+    s.store.connectivity.union(PieceId(0), PieceId(1));
+    let envelope = ProtocolCommandEnvelope {
+        session: SESSION.id,
+        authority_epoch: s.session.cursor().epoch,
+        player: A,
+        sequence: ClientCommandSequence::Control(1),
+        command: ProtocolPieceCommand::Rotate {
+            target,
+            quarter_turns: 1,
+        },
+    };
+    assert!(matches!(
+        s.contexts.apply_replicated(
+            &mut s.session,
+            &mut s.store,
+            A,
+            &envelope,
+            Some(&s.definition)
+        ),
+        Err(ProtocolCommandError::Target(TargetError::StaleTopology))
+    ));
+    assert_eq!(&*s.store.states, &before);
+}
+
+#[test]
+fn rotation_replay_is_independent_of_dsu_root_and_member_list_history() {
+    let mut s = Simulation::new(&[Vec2::splat(100.37); 3], &[(0, 1), (1, 2)]);
+    let peer = &mut s.peers[1];
+    peer.store.connectivity = puzzella_core::PieceConnectivity::new(3);
+    peer.store.connectivity.union(PieceId(2), PieceId(1));
+    peer.store.connectivity.union(PieceId(2), PieceId(0));
+    assert_ne!(
+        s.store.connectivity.find_root(PieceId(0)),
+        peer.store.connectivity.find_root(PieceId(0))
+    );
+    for sequence in 0..4 {
+        rotate_event(&mut s, sequence, &[1], 1);
+    }
 }

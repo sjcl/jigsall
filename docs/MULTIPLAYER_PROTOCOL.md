@@ -161,7 +161,7 @@ all members' ownership, HELD, ENABLED and PLACED flags component by component.
 Valid sibling components can still release when another component fails gameplay
 validation. The existing release implementation commits final positions.
 All accepted translations commit before snapping, retaining board priority,
-fixed-offset snap, rounded closure and no chained translation. Existing whole-
+fixed rigid-transform snap, same-rotation rounded closure and no chained translation. Existing whole-
 component overflow handling also applies: nonfinite translated positions keep
 the base positions while releasing holds.
 
@@ -274,8 +274,8 @@ The final event resends no target. The peer uses the matching saved accepted Gra
 target and the event's final delta, independent of received presentation updates.
 Both host and peer call `game/src/multiplayer/release.rs::release_drag`, which
 preserves the existing target/ownership checks and calls `PieceDataStore::release_roots`.
-All translations commit before connected snap; board priority, fixed translation,
-same-offset/rounded closure, strict thresholds and no chained translation use the
+All translations commit before connected snap; zero-rotation board priority, fixed rigid transform,
+same-rotation/same-offset rounded closure, strict thresholds and no chained translation use the
 existing resolver. There is no peer-specific snap implementation. A matching
 successful Release removes the context.
 
@@ -315,13 +315,13 @@ The v1 serializer-independent SHA-256 input is fixed in this exact order:
 | Member ID | u32 little endian |
 | Member position X, Y | Two f32 `to_bits()` values as u32 little endian |
 | Member Z | u32 little endian |
-| Member authoritative flags | u32 little endian, masked to PLACED(1), HELD(8), ENABLED(16), connected edges(32+64+128+256) |
+| Member authoritative flags | u32 little endian, masked to PLACED(1), HELD(8), ENABLED(16), canonical connected edges(32+64+128+256), rotation bits 9–10 |
 | Member owner present | One byte: 0 or 1 |
 | Member owner | u64 little endian; zero when absent (presence distinguishes PlayerId(0)) |
 | Released count, newly placed count, total placed_count | Three u32 little endian fields |
 | next_z_order | u32 little endian |
 
-Representative offset is `position - definition.correct_position(minimum)` when
+Representative offset is `position - rotate_quarter(definition.correct_position(minimum), rotation)` when
 a valid definition is supplied, otherwise `position - Vec2::ZERO`. Float bytes
 preserve signed zero and the exact IEEE-754 bit representation; they are not
 rounded, normalized, formatted as text, or serialized through serde. Counts fit
@@ -353,7 +353,7 @@ and new epoch Grab/Release events restart replication.
 at/after the current applied cursor before replacing store/session state and
 clearing resync/context. Failed snapshot validation leaves them intact. Existing
 direct snapshot installation also invalidates contexts through store generation.
-Snapshot schema **3** and its 16-byte piece representation remain unchanged.
+Snapshot schema **4** adds rotation bits 9–10 while retaining the 16-byte piece representation.
 It intentionally omits ownership and transient drag contexts: a backend must
 coordinate host/peer hold cancellation at a resync baseline, or use the existing
 new-epoch migration flow, before continuing an in-flight drag. A pending Release
@@ -410,7 +410,7 @@ dirty upload, completion UI and existing migration/snapshot behavior are retaine
 Protocol encoding and canonicalization run only when explicitly called, never on
 idle or local pointer frames.
 
-Snapshot schema **3** is unchanged: 16 bytes per piece, including
+Snapshot schema **4** uses 16 bytes per piece, including rotation bits 9–10 and
 `SNAPSHOT_CONNECTED_RIGHT` and `SNAPSHOT_CONNECTED_DOWN`. Snapshot restoration
 rebuilds connectivity, so minimum-member references remain meaningful even when
 the restored DSU chooses another root. Command protocol and snapshot are separate.
@@ -432,7 +432,7 @@ into the new target type. Snapshot format is unaffected by this command change.
 ## Host/peer simulation coverage
 
 Normal `cargo test` runs socket-free simulations with one host and two peers
-restored from the same initial schema-3 snapshot. They compare exact position
+restored from the same initial schema-4 snapshot. They compare exact position
 bits, placed/held/enabled flags, Z, stable component membership/size, connected
 edge cache, owners, placed_count and next_z_order. Coverage includes simple
 Grab/Release, lost and reordered presentation, connected and board snap, board
@@ -458,7 +458,7 @@ transport is selected or implemented. Future work includes:
   already replays merge/placed outcomes without transmitting full puzzle state.
 - Join-in-progress: latest snapshot, then authority events after its cursor to catch
   up to current state; event log retention and recovery policy are not implemented.
-- Snapshot compression / chunking, separate from schema 3 and command targets.
+- Snapshot compression / chunking, separate from schema 4 and command targets.
 - Image transfer using `SessionDefinition.image_hash`: look up local cache, fetch
   retained encoded original bytes on a miss, and verify SHA-256 before use.
 - Remote interpolation and client prediction.
@@ -466,3 +466,24 @@ transport is selected or implemented. Future work includes:
 
 No image transfer, snapshot/event-log backend, network encryption, dedicated
 server, NAT traversal, matchmaking, or host election is added by this change.
+
+
+## Reliable quarter-turn rotation
+
+`ProtocolPieceCommand::Rotate { target: PieceTarget, quarter_turns: i8 }` is a
+reliable control. Signed turns normalize modulo four. The authority resolves the
+existing sparse/dense topology, rejects complete placed, disabled, held or
+inconsistent bodies, and rotates each accepted component about its own current
+world-space position AABB center. Active player drags reject rotation. Sparse stale
+entries are rejected individually; a stale dense fingerprint rejects the command.
+
+`RotationCommitted` contains the exact accepted `PieceTarget`, normalized turns,
+player, and affected-state result fingerprint. Replicas preflight the whole event
+before mutation, then use the same canonical reconstruction and compare the
+fingerprint. Cursor/authentication checks and the divergence latch are shared with
+Grab/Release. Rotation adds no `DragUpdate` packets or retained drag state.
+
+The result fingerprint also hashes rotation bits and reconstructs representative
+translations using the component rotation. Zero-rotation v1 byte vectors retain
+their existing values. For rotation events the released/placed counts are zero;
+member flags and positions encode the rotated result. See [ROTATION.md](ROTATION.md).

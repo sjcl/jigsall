@@ -141,6 +141,27 @@ impl PeerReplicationState {
         definition: Option<&PuzzleDefinition>,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
+            ProtocolAuthorityEvent::RotationCommitted(commit) => {
+                let definition = definition.ok_or(ReplicationError::Diverged)?;
+                if !(0..4).contains(&commit.quarter_turns)
+                    || !store.can_rotate_target(&commit.accepted, commit.quarter_turns, definition)
+                {
+                    return Err(ReplicationError::Diverged);
+                }
+                let rotation = store
+                    .rotate_target(&commit.accepted, commit.quarter_turns, definition)
+                    .map_err(|_| ReplicationError::Diverged)?;
+                let result = super::release::result_fingerprint(
+                    store,
+                    &rotation.roots,
+                    Some(definition),
+                    &rotation.applied,
+                );
+                if result != commit.result {
+                    return Err(ReplicationError::Diverged);
+                }
+                Ok(rotation.applied)
+            }
             ProtocolAuthorityEvent::GrabAccepted(ack) => {
                 if self.remote_drags.contains_key(&ack.player) {
                     return Err(ReplicationError::Diverged);
@@ -279,7 +300,7 @@ impl PeerReplicationState {
         })
     }
 
-    /// Trusted resync baseline. Snapshot schema 3 omits holds/drag contexts; the
+    /// Trusted resync baseline. Snapshots omit holds/drag contexts; the
     /// backend must coordinate cancellation or a new epoch before continuing an
     /// in-flight drag. Snapshot validation completes before changing session/context.
     pub fn install_snapshot(

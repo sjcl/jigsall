@@ -26,8 +26,12 @@ fn is_visible(id:u32)->bool {
         }selectable[id/32u]=word;
     }
     let state=states[id];var half=config.size*0.5+0.22*min(config.size.x,config.size.y);
+    let odd_rotation=((state.flags>>9u)&1u)!=0u;
+    if odd_rotation {half=half.yx;}
     if config.far_zoom!=0u {
-        let splat_half=max(config.piece_size_px,vec2(config.splat_min_px))*config.pixel_world_size*0.5;
+        var piece_size_px=config.piece_size_px;
+        if odd_rotation {piece_size_px=config.size.yx/config.pixel_world_size;}
+        let splat_half=max(piece_size_px,vec2(config.splat_min_px))*config.pixel_world_size*0.5;
         // Pixel-center snapping can move the splat by another half main pixel.
         half=max(half,splat_half)+config.pixel_world_size*0.5;
     }

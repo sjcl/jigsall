@@ -50,6 +50,28 @@ pub struct PointerFrame {
     pub focused: bool,
 }
 impl PieceInteraction {
+    /// Rotation is a committed-state operation; gestures keep translation only.
+    pub fn rotation_command(
+        &self,
+        store: &PieceDataStore,
+        quarter_turns: i8,
+    ) -> Option<PieceCommand> {
+        if !matches!(self.gesture, Gesture::Idle)
+            || !store.drag.members.is_empty()
+            || store.selected_pieces.is_empty()
+        {
+            return None;
+        }
+        let target = puzzella_core::protocol::PieceTarget::from_selection(
+            &store.connectivity,
+            &store.selected_pieces,
+        )
+        .ok()?;
+        Some(PieceCommand::Rotate {
+            target,
+            quarter_turns,
+        })
+    }
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })
     }

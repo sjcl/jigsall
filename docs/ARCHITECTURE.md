@@ -16,7 +16,7 @@ puzzella
 | ファイル | 責務 |
 | --- | --- |
 | `core/src/gameplay.rs` / `commands.rs` | row-major PieceId、PuzzleDefinition、CPU命令検証、snap |
-| `core/src/connectivity.rs` / `snapping.rs` | DSUと循環member list、正しいgrid隣接、translation candidateの決定 |
+| `core/src/connectivity.rs` / `snapping.rs` | DSUと循環member list、正しいgrid隣接、同rotationのtranslation candidateの決定 |
 | `puzzle/src/procedural.rs` | u32 hash、packed EdgeProfile、解析形状・UVのCPU参照 |
 | `puzzle/src/fingerprint.rs` | feature / test限定のmacro fingerprint、輪郭descriptor、凍結v4測定参照 |
 | `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
@@ -58,7 +58,7 @@ GPU pick / selection mask
 
 Moveの最終座標を適用してからReleaseとsnapを処理します。bulk grabとreleaseはそれぞれ1つのClientCommandで、pieceごとの完了・配置Messageも生成しません。連結componentは選択・ownership・移動・配置の単位です。scalar Grab / Move / Releaseもcomponent全体に適用し、同じresolverを使います。snap閾値はstrict `distance < snap_distance`。配置済みcomponentは再Grabできません。保持者の異なる命令と非有限座標を拒否します。
 
-永続連結は`PieceConnectivity`の`Vec<i32> parent_or_size`と`Vec<u32> next_member`で表現します。union-by-sizeとpath compressionを使い、循環listのsuccessor交換でmember listをO(1)結合します。余剰bitsに最小member IDを保存し、offsetの代表とRelease処理順をsnapshot復元前後で揃えます。100万ピースで追加8,000,000 bytes、componentごとのEntity / 恒久member Vecはありません。隣接はrow-major IDから上下左右だけを導出します。Release直後のoffsetがstrict threshold内ならboardを優先しZEROへ配置します。範囲外の場合だけ、正しい隣接componentから最小offset距離、tieなら最小member PieceIdの順にtargetを1つ選びます。moving componentを一度だけ正規化し、以後のoffsetは固定します。固定final offsetへの再構成をmatches_translationで検証し、f32の算術丸めだけを許容した同一translationのvalid・unheldな隣接componentをclosureへ加えます。targetの座標は動かしません。Release共通scratchは少数IDをstackへ保存し、容量を超えたsetだけdenseへ昇格します。target検証と解決済みrootのlogical offsetをcacheし、成長するcomponentの再走査を抑えます。scalar Releaseはrootを直接処理し、Group Releaseも全componentのauthority検証後にaccepted maskを再構築せずmemberを処理します。詳細・計算量・計測・制限は[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。
+永続連結は`PieceConnectivity`の`Vec<i32> parent_or_size`と`Vec<u32> next_member`で表現します。union-by-sizeとpath compressionを使い、循環listのsuccessor交換でmember listをO(1)結合します。余剰bitsに最小member IDを保存し、offsetの代表とRelease処理順をsnapshot復元前後で揃えます。100万ピースで追加8,000,000 bytes、componentごとのEntity / 恒久member Vecはありません。隣接はrow-major IDから上下左右だけを導出します。rotation == 0でRelease直後のoffsetがstrict threshold内ならboardを優先しZEROへ配置します。範囲外の場合だけ、同rotationの正しい隣接componentから最小offset距離、tieなら最小member PieceIdの順にtargetを1つ選びます。moving componentを一度だけ正規化し、以後のoffsetは固定します。固定final offsetへの再構成をmatches_transformで検証し、f32の算術丸めだけを許容した同rotation・同一translationのvalid・unheldな隣接componentをclosureへ加えます。targetの座標は動かしません。Release共通scratchは少数IDをstackへ保存し、容量を超えたsetだけdenseへ昇格します。target検証と解決済みrootのlogical offsetをcacheし、成長するcomponentの再走査を抑えます。scalar Releaseはrootを直接処理し、Group Releaseも全componentのauthority検証後にaccepted maskを再構築せずmemberを処理します。詳細・計算量・計測・制限は[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。
 
 入力はPostUpdateのegui処理、camera pan / zoom / edge scrollingの後です。現Transformで座標変換し、UI上の押下を抑制します。開始済みdragはUIを横切っても継続・解放できます。pauseとfocus lossで保持を解放し、未確定の矩形選択を元に戻します。
 
@@ -92,7 +92,7 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 ## GPU presentation
 
-接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 3のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
+接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 4のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 
 rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root bufferは4 bytes / piece、CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootをrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、preview_active == 0ならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
@@ -104,7 +104,7 @@ opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけを
 
 ローカル進捗保存は `PieceDataStore / PuzzleDefinition → PuzzleCheckpoint → PuzzleSave → SaveCodec → SaveRepository → SaveStorage → FilesystemStorage` の流れです。画像は選択時の original encoded bytes を SHA-256 で識別し、再エンコードしない `.puzimg` を save 間で共有します。進捗 `.puzsave` v1 は 16 bytes/piece の明示的 little-endian codec と全体 / header checksum を使い、ランダム SaveId で保存します。最大492 bytesの header とファイル長だけで一覧を作り、非 authority の placed_count cache は完全 load 時に state と照合します。未 release の試作 format の互換コードは持たず、対応 version は1だけです。更新 request は読み込んだ revision を保持し、現在の header と不一致なら Conflict として publish 前に拒否します。ユーザータイトルは validation を持つ metadata で、filename / identity には使いません。
 
-`GameSnapshot` schema 3 の serialized representation は保持し、borrowed checkpoint view を通じて同じ capture / validation / install を使います。restore は DSU / 接続 GPU cache / placed_count を再構築し、GameData の progress / completion を同期します。load worker が準備した store を直接採用するため、random 初期配置は生成しません。既存 epoch / RenderReady による GPU 準備待ちの後だけ Playing / GameComplete へ遷移します。disk I/O、decode、codec は worker/channel に分離し、O(N) capture は明示 Save 時だけです。通常 play に新しい piece 数比例の処理や per-piece Entity / persistent Vec は追加しません。
+`GameSnapshot` schema 4は16-byte piece layoutを保持し、borrowed checkpoint view を通じて同じ capture / validation / install を使います。restore は DSU / 接続 GPU cache / placed_count を再構築し、GameData の progress / completion を同期します。load worker が準備した store を直接採用するため、random 初期配置は生成しません。既存 epoch / RenderReady による GPU 準備待ちの後だけ Playing / GameComplete へ遷移します。disk I/O、decode、codec は worker/channel に分離し、O(N) capture は明示 Save 時だけです。通常 play に新しい piece 数比例の処理や per-piece Entity / persistent Vec は追加しません。
 
 保存先は OS user application data 以下で、logical key を storage に渡します。画像を先に保存し、save は temporary file の sync と atomic replace で publish します。通常 Save は共有画像の存在だけを確認し、import / load で画像全体の hash を検証します。SaveStorage は Send / Sync を要求せず、filesystem は worker で動かします。将来の Steam Cloud は handle を所有 thread に保持し、StorageRequests の operation を非同期 API に dispatch、callback から返信する executor を追加します。StorageProxy を使う repository / codec / restore 準備は worker 上で継続します。write は encoded Vec の所有権を移譲し、proxy による全 blob コピーを避けます。Steam Cloud 自体は未実装です。形式・layout・failure / worker lifecycle の詳細は [PERSISTENCE.md](PERSISTENCE.md) を参照してください。
 
@@ -114,6 +114,6 @@ PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed
 
 transport向けにはcore/protocolのComponentRef / PieceTarget / ProtocolPieceCommandを使用します。minimum memberとexpected sizeでcomponentを参照し、32 componentまでcompact、より多いselectionは対象componentのcount / topology digest付きDenseへ切り替えます。game/multiplayer/protocolのopt-in authority adapterがcurrent connectivity・所有権・placed・enabledを再検証し、Grabで受理した結果だけをSparse / Denseのplayer別contextへ保持します。Denseはcomponent listへ展開せずcanonical bitsetを保持し、受理したmembershipをGrabAccepted ACK / authority event型で返します。既存Move sequenceはmembership不要のbest-effort DragUpdateにも共用し、ReleaseはGrab sequenceとfinal deltaだけで確定します。local PieceCommand / PieceBitSetとGPU経路は維持します。詳細は[MULTIPLAYER_PROTOCOL.md](MULTIPLAYER_PROTOCOL.md)を参照してください。
 
-snapshot schema 3は16-byte stateのflagsへPLACED / CONNECTED_RIGHT / CONNECTED_DOWNを保存します。root IDはprotocolへ保存せず、install時に隣接edgeからDSUを再構成します。schema 1 / 2、境界外edge、placedの誤座標、component内のoffset / placed不一致は変更前に拒否します。restoreはpositions / Z / connectivity / placedを保ち、holds / selection / dragをresetします。disconnectはcomponent全体のholdだけを解放し、位置とsnapを変更しません。
+snapshot schema 4は16-byte stateのflagsへPLACED / CONNECTED_RIGHT / CONNECTED_DOWN / rotation（bit 9–10）を保存します。root IDはprotocolへ保存せず、install時に隣接edgeからDSUを再構成します。schema 1 / 2 / 3、境界外edge、placedの誤座標、component内のrotation / rigid transform / placed不一致は変更前に拒否します。restoreはpositions / Z / connectivity / placedを保ち、holds / selection / dragをresetします。disconnectはcomponent全体のholdだけを解放し、位置とsnapを変更しません。
 
 GPUは描画と選択の補助で、placed・所有権・snapを決めません。cullingはO(N)、半透明sortは可視数に比例します。選択保持・drag pointer・rectangle previewのCPU処理はO(1)ですが、final selectionの再検証、grab時のZ順保持、release時のsnapとstate commitには明示的な大量処理が残ります。極端な重なりではrasterとpickingの負荷が増えます。異OS/GPU、通常windowの全手動操作は今後の確認対象です。

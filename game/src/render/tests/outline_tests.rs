@@ -3,7 +3,7 @@ use crate::resources::pieces::{DragTransform, CONNECTED_EDGES};
 use puzzella_core::{PieceBitSet, PieceCommand, LOCAL_PLAYER};
 
 // Independent CPU reference using the unchanged procedural edge functions.
-fn edge_distances(local: Vec2, size: Vec2, profiles: [[u32; 2]; 4]) -> [f32; 4] {
+pub(super) fn edge_distances(local: Vec2, size: Vec2, profiles: [[u32; 2]; 4]) -> [f32; 4] {
     let h = size * 0.5;
     let short = size.min_element();
     [

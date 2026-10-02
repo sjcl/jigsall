@@ -627,3 +627,43 @@ mod golden;
 
 #[cfg(feature = "gns")]
 mod localhost;
+
+#[test]
+fn rotation_commands_and_semantic_events_use_reliable_control_wire() {
+    let target = PieceTarget::Component(ComponentRef {
+        member: PieceId(5),
+        expected_size: 3,
+    });
+    let messages = [
+        WireMessage::ClientCommand(command(
+            ClientCommandSequence::Control(7),
+            ProtocolPieceCommand::Rotate {
+                target: target.clone(),
+                quarter_turns: -1,
+            },
+        )),
+        WireMessage::AuthorityEvent(ProtocolAuthorityEventEnvelope {
+            session: SESSION.id,
+            host: HOST,
+            cursor: AuthorityCursor::new(3, 8),
+            event: ProtocolAuthorityEvent::RotationCommitted(RotationCommitted {
+                player: A,
+                accepted: target,
+                quarter_turns: 3,
+                result: ReleaseResultFingerprint(123),
+            }),
+        }),
+    ];
+    for message in messages {
+        assert_eq!(message.class(), MessageClass::Control);
+        let bytes = wire::encode(&message).unwrap();
+        assert_eq!(
+            wire::decode_for_class(&bytes, MessageClass::Control).unwrap(),
+            message
+        );
+        assert_eq!(
+            wire::decode_for_class(&bytes, MessageClass::Transient),
+            Err(WireError::WrongClass)
+        );
+    }
+}

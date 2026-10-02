@@ -1,6 +1,6 @@
-//! One translation decision, followed by unions at that fixed offset only.
+//! One rigid transform decision, followed by unions at that fixed transform only.
 use super::*;
-use puzzella_core::{matches_translation, PuzzleGeometry, SnapCandidate};
+use puzzella_core::{matches_transform, PuzzleGeometry, SnapCandidate};
 
 #[derive(Clone, Copy)]
 struct CorrectBounds {
@@ -81,12 +81,18 @@ impl PieceDataStore {
         }
         let geometry = &scratch.geometry;
         let representative = self.connectivity.minimum_member(target);
-        self.states[representative.0 as usize].position - geometry.correct_position(representative)
+        let state = self.states[representative.0 as usize];
+        state.position
+            - rotate_quarter(
+                geometry.correct_position(representative),
+                decode_rotation(state.flags),
+            )
     }
 
     fn snap_target_is_eligible(
         &self,
         target: PieceId,
+        rotation: u32,
         translation: Vec2,
         scratch: &mut SnapScratch,
     ) -> bool {
@@ -99,8 +105,9 @@ impl PieceDataStore {
                     self.held_by.get(&id).is_none()
                         && state.flags & (HELD | ENABLED) == ENABLED
                         && (state.flags & PLACED != 0) == placed
-                        && matches_translation(state.position, correct, translation)
-                        && (!placed || state.position == correct)
+                        && decode_rotation(state.flags) == rotation
+                        && matches_transform(state.position, correct, rotation, translation)
+                        && (!placed || (rotation == 0 && state.position == correct))
                 })
             {
                 scratch.eligible.insert(target);
@@ -112,6 +119,7 @@ impl PieceDataStore {
     fn best_neighbor(
         &self,
         moving: PieceId,
+        rotation: u32,
         translation: Vec2,
         scratch: &mut SnapScratch,
     ) -> Option<SnapCandidate> {
@@ -140,6 +148,9 @@ impl PieceDataStore {
                 } else if !scratch.first_visit(target) {
                     continue;
                 }
+                if decode_rotation(self.states[target.0 as usize].flags) != rotation {
+                    continue;
+                }
                 let offset = self.target_offset(target, scratch);
                 // Minimum member is stable across union histories and snapshot restore.
                 let representative = self.connectivity.minimum_member(target);
@@ -155,19 +166,21 @@ impl PieceDataStore {
                     continue;
                 }
                 let bounds = bounds.get_or_insert_with(|| {
-                    let correct = geometry.correct_position(moving);
+                    let correct = rotate_quarter(geometry.correct_position(moving), rotation);
                     let mut bounds = CorrectBounds {
                         min: correct,
                         max: correct,
                     };
                     for member in self.connectivity.iter_component(moving) {
-                        let correct = geometry.correct_position(member);
+                        let correct = rotate_quarter(geometry.correct_position(member), rotation);
                         bounds.min = bounds.min.min(correct);
                         bounds.max = bounds.max.max(correct);
                     }
                     bounds
                 });
-                if bounds.fits(offset) && self.snap_target_is_eligible(target, offset, scratch) {
+                if bounds.fits(offset)
+                    && self.snap_target_is_eligible(target, rotation, offset, scratch)
+                {
                     best = Some(candidate);
                 }
             }
@@ -178,16 +191,22 @@ impl PieceDataStore {
     fn normalize_component(
         &mut self,
         moving: PieceId,
+        rotation: u32,
         offset: Vec2,
         placed: bool,
         geometry: &PuzzleGeometry,
     ) -> usize {
+        let rotation = if placed { 0 } else { rotation };
+        let offset = if placed { Vec2::ZERO } else { offset };
         let mut newly_placed = 0;
         for member in self.connectivity.iter_component(moving) {
             let state = &mut self.states[member.0 as usize];
-            let position = geometry.correct_position(member) + offset;
+            let position = rotate_quarter(geometry.correct_position(member), rotation) + offset;
             debug_assert!(position.is_finite());
-            let flags = (state.flags & !HELD) | if placed { PLACED } else { 0 };
+            let flags = with_rotation(
+                (state.flags & !HELD) | if placed { PLACED } else { 0 },
+                rotation,
+            );
             let z_order = if placed { 0 } else { state.z_order };
             if state.position != position || state.flags != flags || state.z_order != z_order {
                 self.dirty_pieces.insert(member);
@@ -211,23 +230,30 @@ impl PieceDataStore {
         scratch.reset_targets();
         scratch.members.clear();
         let mut moving = self.connectivity.find_root(moving);
+        let rotation = decode_rotation(self.states[moving.0 as usize].flags);
         let translation = self.target_offset(moving, scratch);
         if !translation.is_finite() {
             scratch.resolved.insert(moving);
             return 0;
         }
-        // Board priority is unconditional inside the strict threshold. No neighbor
-        // search or distance comparison runs until the board has been ruled out.
-        let board = SnapCandidate::new(translation, Vec2::ZERO, None, scratch.snap_distance);
-        let candidate = board.or_else(|| self.best_neighbor(moving, translation, scratch));
+        // At zero rotation, board priority is unconditional inside the strict
+        // threshold. Neighbor search runs only after the board is ruled out.
+        let board = if rotation == 0 {
+            SnapCandidate::new(translation, Vec2::ZERO, None, scratch.snap_distance)
+        } else {
+            None
+        };
+        let candidate =
+            board.or_else(|| self.best_neighbor(moving, rotation, translation, scratch));
         let Some(candidate) = candidate else {
             scratch.resolved.insert(moving);
             return 0;
         };
         let final_offset = candidate.offset;
-        let placed = final_offset == Vec2::ZERO;
+        let placed = rotation == 0 && final_offset == Vec2::ZERO;
         let geometry = scratch.geometry;
-        let mut newly_placed = self.normalize_component(moving, final_offset, placed, &geometry);
+        let mut newly_placed =
+            self.normalize_component(moving, rotation, final_offset, placed, &geometry);
         scratch
             .members
             .extend(self.connectivity.iter_component(moving));
@@ -250,17 +276,21 @@ impl PieceDataStore {
                 if !scratch.first_visit(target) {
                     continue;
                 }
+                if decode_rotation(self.states[target.0 as usize].flags) != rotation {
+                    continue;
+                }
                 let offset = self.target_offset(target, scratch);
                 let representative = self.connectivity.minimum_member(target);
                 // Recognize the same logical translation despite f32 add/sub
                 // rounding. This is not another distance-based snap decision.
                 if (offset != final_offset
-                    && !matches_translation(
+                    && !matches_transform(
                         self.states[representative.0 as usize].position,
                         geometry.correct_position(representative),
+                        rotation,
                         final_offset,
                     ))
-                    || !self.snap_target_is_eligible(target, offset, scratch)
+                    || !self.snap_target_is_eligible(target, rotation, offset, scratch)
                 {
                     continue;
                 }
@@ -268,9 +298,10 @@ impl PieceDataStore {
                 // Cached resolved offsets avoid rescanning growing aligned clusters.
                 if offset != final_offset
                     && !self.connectivity.iter_component(target).all(|id| {
-                        matches_translation(
+                        matches_transform(
                             self.states[id.0 as usize].position,
                             geometry.correct_position(id),
+                            rotation,
                             final_offset,
                         )
                     })
@@ -285,8 +316,13 @@ impl PieceDataStore {
                 }
                 if placed {
                     if self.states[target.0 as usize].flags & PLACED == 0 {
-                        newly_placed +=
-                            self.normalize_component(target, final_offset, true, &geometry);
+                        newly_placed += self.normalize_component(
+                            target,
+                            rotation,
+                            final_offset,
+                            true,
+                            &geometry,
+                        );
                     }
                 } else {
                     let moving_selected = self
@@ -317,7 +353,7 @@ impl PieceDataStore {
         }
         let representative = self.connectivity.minimum_member(moving);
         let recovered = self.states[representative.0 as usize].position
-            - geometry.correct_position(representative);
+            - rotate_quarter(geometry.correct_position(representative), rotation);
         if recovered != final_offset {
             scratch.rounded_offsets.insert(moving, final_offset);
         }

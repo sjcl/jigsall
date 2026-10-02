@@ -3,7 +3,7 @@
 Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu, authentication negotiation,
 snapshot/image transfer, interpolation, prediction, or migration orchestration.
-The existing authority, replication, cursor, topology and schema 3 semantics are
+The existing authority, replication, cursor, topology and schema 4 semantics are
 unchanged. `core` has no transport/native dependency.
 
 ```text

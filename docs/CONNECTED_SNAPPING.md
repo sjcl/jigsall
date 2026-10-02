@@ -1,46 +1,46 @@
 # 永続的なconnected-piece snapping
 
-2026-10-02。`4b1f01de5db1247fdc627c156d6840e74673f8e7`で単一translationのresolverをmasterへ統合しました。続いて、そのmasterを基準にbranch `codex/rounded-closure-scratch`でf32丸めを含むclosure判定と少数Releaseのscratchを改善しました。以下の仕様はこの改善後の実装です。
+2026-10-02。`4b1f01de5db1247fdc627c156d6840e74673f8e7`で単一translationのresolverをmasterへ統合しました。続いて、そのmasterを基準にbranch `codex/rounded-closure-scratch`でf32丸めを含むclosure判定と少数Releaseのscratchを改善しました。2026-10-03に90°単位の剛体回転へ拡張しました。以下は現行仕様です。
 
 ## Releaseの仕様
 
-`offset = position - correct_position`。1回のReleaseで各moving componentのsnap translationを変更できるのは最大1回です。全選択componentのRelease deltaを先にcommitし、最小member PieceId順に独立して判定します。
+`rotation = decode_rotation(flags)`、`offset = position - rotate_quarter(correct_position, rotation)`。1回のReleaseで各moving componentのsnap translationを変更できるのは最大1回です。全選択componentのRelease deltaを先にcommitし、最小member PieceId順に独立して判定します。
 
 ```text
 Release deltaを全componentにcommit
   ↓
 release直後のoffsetを確定
   ↓
-boardのstrict threshold内ならboardを優先 → final offset = ZERO
-  または、正しいgrid neighborの最良targetへ1回だけsnap
+rotation == 0でboardのstrict threshold内ならboardを優先 → final offset = ZERO
+  または、同rotationの正しいgrid neighborの最良targetへ1回だけsnap
   候補なしならrelease直後のoffsetを維持
   ↓
-moving componentをcorrect_position + final offsetへ正規化
+moving componentをrotate_quarter(correct_position, rotation) + final offsetへ正規化
   ↓
 final offsetを固定
   ↓
-同final-offset neighborとのunion closure
+同rotation・同final-offset neighborとのunion closure
   ↓
 終了
 ```
 
-board判定は `distance < snap_distance`。等号ではsnapしません。boardまで3、neighborまで1でもboardへ配置し、neighborとの候補比較は実行しません。board snapは全memberのpositionを正解座標、placedをtrue、holdを解除、Zを0にします。ZERO offsetですでに整列しているvalidな隣接componentも結合し、未配置memberがあれば同時に配置します。配置済みtargetはZEROから動きません。
+board判定は `rotation == 0 && distance < snap_distance`。等号ではsnapしません。boardまで3、neighborまで1でもboardへ配置し、neighborとの候補比較は実行しません。board snapは全memberのpositionを正解座標、placedをtrue、holdを解除、Zを0にします。ZERO offsetですでに整列しているvalidな隣接componentも結合し、未配置memberがあれば同時に配置します。配置済みtargetはZEROから動きません。
 
-board範囲外ではmoving componentの各memberの上下左右、最大4 neighborだけを調べます。別component、全memberがenabled・unheld、placementとtranslationがcomponent内で整合しているtargetのみ受け入れます。offset距離はf64の二乗で計算し、strict threshold内の最小距離、tieならtarget componentの最小member PieceIdで決めます。DSU root IDやHashMapのiteration順はtieに使いません。同じtarget rootは一度だけ評価し、遠いtargetの全member検証は行いません。
+board範囲外ではmoving componentの各memberの上下左右、最大4 neighborだけを調べます。別component、全memberがenabled・unheld、movingと同rotationで、placementとrigid transformがcomponent内で整合しているtargetのみ受け入れます。offset距離はf64の二乗で計算し、strict threshold内の最小距離、tieならtarget componentの最小member PieceIdで決めます。DSU root IDやHashMapのiteration順はtieに使いません。同じtarget rootは一度だけ評価し、遠いtargetの全member検証は行いません。
 
-snap後のfinal offsetはimmutableです。追加unionはtargetの最小memberのpositionを `matches_translation(position, correct_position, final_offset)` で検証します。f32の加減算による丸めを許容するだけで、snap_distanceによる再snapは行いません。代表offsetのbitsがfinal offsetと異なる場合は、targetの全memberも同じ固定final offsetに対して検証し、edgeごとに誤差を蓄積しません。例えばfinal offset `(100, 50)` に対して `(101, 50)` や `(104, 50)` は結合しません。board配置を除きtargetのposition / Z / flagsは書き換えません。
+snap後のfinal offsetはimmutableです。追加unionはtargetの最小memberのpositionを `matches_transform(position, correct_position, rotation, final_offset)` で検証します。f32の加減算による丸めを許容するだけで、snap_distanceによる再snapは行いません。代表offsetのbitsがfinal offsetと異なる場合は、targetの全memberも同じ固定final offsetに対して検証し、edgeごとに誤差を蓄積しません。例えばfinal offset `(100, 50)` に対して `(101, 50)` や `(104, 50)` は結合しません。board配置を除きtargetのposition / Z / flagsは書き換えません。
 
 `A/B/C`のx offsetが`0/4/8`、thresholdが5の場合、boardを範囲外にする共通y offset 100を与えたauthority testで、AはBへ1回だけsnapし、ABのx offsetは4、Cは未接続のままであることを検証します。文字どおりのZERO offsetならboard優先によりAはboardへ配置されます。同じfinal offsetのcomponentを結合するclosureは許可され、新たに露出する正しいgrid boundaryも探索します。
 
 ## Resolverとscratch
 
-`game/src/resources/pieces/snapping.rs`には単一candidateの選択、moving componentの正規化、固定offset closureだけを残しました。旧`CandidateIndex`、Release-local R-tree、`BTreeMap`、`BTreeSet`、candidate Vec、nearest再探索、translation更新loop、`CorrectBounds::merge`、`completed_placed`を削除しました。closure用member queueは移動先を再決定する用途には使いません。
+`game/src/resources/pieces/snapping.rs`には単一candidateの選択、moving componentの正規化、固定offset closureだけを残しました。旧`CandidateIndex`、Release-local R-tree、`BTreeMap`、`BTreeSet`、candidate Vec、nearest再探索、translation更新loop、`CorrectBounds::merge`、`completed_placed`を削除しました。closure用member queueは移動先を再決定する用途には使いません。rotationもRelease中は固定し、board配置ではrotation bitsを0へ正規化します。
 
 incoming componentのmember listをunionの前にqueueへ追加し、成長するcomponentの全memberを毎回探索しません。Release内で解決済みのrootは`resolved` scratch setへ保存し、後続componentがそのtargetへsnapしてもtargetの境界は再走査せず、positionも再書込しません。異なる丸めbitsのlogical offsetを比較する際は、固定final offsetに対する全member検証が必要です。absorbed released componentも再解決しません。追加unionによって先に解決したcomponentのtranslationは変わりません。
 
 scratchの4 membership sets（seen targets、validated、eligible、resolved）は `PieceScratchSet` を使います。128 IDsまでは固定長のstack配列（512 bytes / set）へ保存し、容量を超えたsetだけN-bitのdense wordsへ遅延昇格します。denseへ昇格した後も、clearは非zeroだったwordだけをresetしcapacityを再利用します。canonical expansion / validationの重複除去も同じ構造です。closure member Vecはcapacityを再利用し、disconnected singletonの候補重複除去はstack上の4 root配列で行います。1M上の1 / 32 member snapでは4 setsのheap allocationが0 bytesであることをtestしています。大量処理だけdense storageを確保し、1Mで各昇格setのwordsは125,000 bytes、touched-word indicesは最大31,250個です。closure queueとRelease root Vecは実際に列挙したmember / component数に比例します。恒久connectivityは8,000,000 bytesのままで、全piece向けの世代番号配列は追加しません。process RSSとallocator overheadは計測していません。
 
-代表のpositionからoffsetを復元するとbitsが変わる解決済みrootについてだけ、Release-local HashMapへ固定logical offsetを保存します。これにより検証済みcomponentのoffsetが丸めで変わった扱いになることを避けます。mapはkey lookupだけに使い、tieやroot処理順は引き続き最小member PieceIdで決めます。mapが空のままならheap確保せず、ZEROのboard配置ではlogical offsetの記録は不要です。Release終了時に破棄し、snapshot形式は変えません。
+代表のpositionからoffsetを復元するとbitsが変わる解決済みrootについてだけ、Release-local HashMapへ固定logical offsetを保存します。これにより検証済みcomponentのoffsetが丸めで変わった扱いになることを避けます。mapはkey lookupだけに使い、tieやroot処理順は引き続き最小member PieceIdで決めます。mapが空のままならheap確保せず、ZEROのboard配置ではlogical offsetの記録は不要です。Release終了時に破棄します。snapshot schema 4は同じ16-byte layoutのflags bit 9–10にrotationを保存します。
 
 `rstar`はCPU collision / picking debugのため維持しますが、通常runtimeの必須依存からoptional dependencyへ変更し、`cpu-picking-debug` featureとdev-dependenciesだけで有効化します。Releaseにはspatial indexもordered treeもありません。Cargo.lockの変更は不要でした。
 
@@ -56,7 +56,7 @@ Releaseはrequested maskから最小member順のcomponent rootsを取り出し�
 
 point / Ctrl / final rectangleはcomponent全体へ展開し、union時は必要な未選択componentへだけselectionを伝播します。remote hold除外、rollbackとdelayed readbackのauthority再検証を維持します。rectangle previewはGPU direct hit maskをcomponent rootのmaskへcollapseし、hitしたcomponent全体を表示します。final readbackはdirect hitのままCPU authorityで展開します。root bufferはunion-by-sizeでabsorbed memberだけdirtyにし、upload時に最終rootを取得します。pointerはfrozen drag maskを共有しdeltaだけを更新します。dense dirty uploadとrelative Zの既存境界も維持します。
 
-snapshot schema 3、`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`、16 bytes / pieceは変更しません。root IDを保存せず、右・下edgeから復元します。invalid border edge、inconsistent component、placed exact position、old schema reject、transactional install、migration round tripを維持します。integer / fractional offsetでDSU rootが変わる復元と、新resolverの単一snap・closure・board優先の復元前後一致をテストします。
+snapshot schema 4は`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`とrotation bitsを保存し、16 bytes / pieceを維持します。root IDを保存せず、右・下edgeから復元します。invalid border edge、inconsistent component、placed exact position、old schema reject、transactional install、migration round tripを維持します。integer / fractional offsetでDSU rootが変わる復元と、新resolverの単一snap・closure・board優先の復元前後一致をテストします。
 
 ## 接続componentの選択outline
 
@@ -64,7 +64,7 @@ snapshot schema 3、`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`、16 
 
 main fragmentは4辺のdistanceを一度計算し、全辺のmaxを従来どおりcoverage / discardへ使います。黄色selectionと青いcomponent previewは同じboundary関数で接続済み辺を候補から除外します。全4辺が接続したpieceにはoutlineがありません。point / rectangle pickingは従来の全辺SDFを使います。形状定数・fingerprint・generator versionは変更しません。
 
-cacheは結合処理とsnapshot installだけで更新し、selection変更・idle・camera・pointer dragに再計算も追加state uploadもありません。新しい2piece接続は両側の16-byte state、計32 bytesをdirty uploadします。既存のposition / hold変更は同じdirty bitへ合流します。大量closureの瞬間には多数の新しい接続辺がdirtyになりますが、uploadのrange結合と128 spans超での既存fallbackを維持します。snapshot schema 3は変更せず、captureはrender flagsを保存せずDSUからright/downを導出します。installは既存state生成のmap内で復元DSUの隣接関係から全4方向を再構成し、保存edgeに明示されない共有閉路辺も復元します。追加DSU lookupはこの明示的なO(N)復元時だけです。
+cacheは結合処理とsnapshot installだけで更新し、selection変更・idle・camera・pointer dragに再計算も追加state uploadもありません。新しい2piece接続は両側の16-byte state、計32 bytesをdirty uploadします。既存のposition / hold変更は同じdirty bitへ合流します。大量closureの瞬間には多数の新しい接続辺がdirtyになりますが、uploadのrange結合と128 spans超での既存fallbackを維持します。snapshot schema 4のcaptureはrotationを保存し、connected render flagsは保存せずDSUからright/downを導出します。installは既存state生成のmap内で復元DSUの隣接関係から全4方向を再構成し、保存edgeに明示されない共有閉路辺も復元します。追加DSU lookupはこの明示的なO(N)復元時だけです。
 
 CPU testsは横 / 縦pair、未接続neighborとgrid外周、2×2の閉路・L字・穴あり・全4辺接続、10k closureの既存境界走査数、解決済みboard clusterへの接続、snapshotのcache非保存と疎な閉路辺からの復元、1M restore、2stateだけの32-byte upload、idle / frozen dragでstate allocationとupload revisionが変わらないことを検証します。実GPUの`gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads`はsingleton / 横 / 縦 / 2×2 / L字 / 穴あり / 内部pieceについて、境界から離れたpixelの画像色、外周outline、coverageとpoint / rectangle pickingの不変、camera / drag中のstate / membership / selection upload 0 bytesを検証します。既存`gpu_raster_selection`はsingletonの色とprocedural shape parity、`gpu_drag_transform_and_preview_without_readback`は青previewの既存表示も確認します。
 

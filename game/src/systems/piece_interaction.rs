@@ -23,6 +23,9 @@ pub fn handle_piece_input(
         || contexts
             .ctx_mut()
             .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
+    let keyboard_captured = contexts
+        .ctx_mut()
+        .is_ok_and(|ctx| ctx.egui_wants_keyboard_input());
     let frame = crate::interaction::PointerFrame {
         position: input.mouse_position,
         screen_position: input.cursor_screen_position,
@@ -37,6 +40,19 @@ pub fn handle_piece_input(
             player: LOCAL_PLAYER,
             command,
         });
+    }
+    if input.window_focused && !over_ui && !keyboard_captured {
+        // Q is counterclockwise, E is clockwise in world coordinates.
+        let turns =
+            i8::from(keys.just_pressed(KeyCode::KeyQ)) - i8::from(keys.just_pressed(KeyCode::KeyE));
+        if turns != 0 {
+            if let Some(command) = interaction.rotation_command(&store, turns) {
+                commands.write(ClientCommand {
+                    player: LOCAL_PLAYER,
+                    command,
+                });
+            }
+        }
     }
     perf.end_system_timing("handle_piece_input", start);
 }
@@ -170,7 +186,7 @@ mod tests {
             }
         }
     }
-    fn input_app() -> App {
+    pub(super) fn input_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<crate::selection::PuzzleSelection>()
@@ -629,5 +645,78 @@ mod tests {
             HashSet::from([PieceId(0), PieceId(1)])
         );
         assert!(interaction.selection_rect().is_none());
+    }
+}
+
+#[cfg(test)]
+mod rotation_input_tests {
+    use super::*;
+
+    #[test]
+    fn q_e_rotate_selection_and_focus_ui_and_gestures_gate_commands() {
+        let mut app = super::tests::input_app();
+        app.world_mut().insert_resource(PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::new(2, 1),
+            image_size: UVec2::new(80, 40),
+            snap_distance: 5.0,
+        });
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .selected_pieces
+            .fill();
+        app.world_mut().resource_mut::<InputState>().window_focused = true;
+        let original = app.world().resource::<PieceDataStore>().states.to_vec();
+        for (key, rotation) in [(KeyCode::KeyQ, 1), (KeyCode::KeyE, 0)] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(key);
+            app.update();
+            for (state, before) in app
+                .world()
+                .resource::<PieceDataStore>()
+                .states
+                .iter()
+                .zip(&original)
+            {
+                assert_eq!(decode_rotation(state.flags), rotation);
+                assert_eq!(state.position, before.position);
+            }
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(key);
+            keys.clear();
+        }
+        for gate in 0..3 {
+            app.world_mut().resource_mut::<InputState>().window_focused = gate != 0;
+            app.world_mut()
+                .resource_mut::<GameUiPointerCapture>()
+                .over_hud = gate == 1;
+            if gate == 2 {
+                let members = app
+                    .world()
+                    .resource::<PieceDataStore>()
+                    .selected_pieces
+                    .words()
+                    .clone();
+                app.world_mut()
+                    .resource_mut::<PieceDataStore>()
+                    .drag
+                    .members = members;
+            }
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyQ);
+            app.update();
+            assert!(app
+                .world()
+                .resource::<PieceDataStore>()
+                .states
+                .iter()
+                .all(|s| decode_rotation(s.flags) == 0));
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.release(KeyCode::KeyQ);
+            keys.clear();
+        }
     }
 }

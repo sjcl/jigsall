@@ -572,7 +572,10 @@ fn snapshot_restore_preserves_stable_refs_and_invalidates_active_contexts() {
             },
         )
         .unwrap();
-    assert_eq!(snapshot.schema_version, 3);
+    assert_eq!(
+        snapshot.schema_version,
+        crate::multiplayer::SNAPSHOT_SCHEMA_VERSION
+    );
     assert_eq!(
         std::mem::size_of::<crate::multiplayer::SnapshotPieceState>(),
         16

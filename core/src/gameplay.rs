@@ -161,12 +161,17 @@ pub enum PieceCommand {
         members: PieceBitSet,
         delta: Vec2,
     },
+    /// Reliable discrete operation on complete, unheld components.
+    Rotate {
+        target: crate::protocol::PieceTarget,
+        quarter_turns: i8,
+    },
 }
 impl PieceCommand {
     pub fn piece_id(&self) -> Option<PieceId> {
         match *self {
             Self::Grab(id) | Self::Move { id, .. } | Self::Release(id) => Some(id),
-            Self::GrabGroup { .. } | Self::ReleaseGroup { .. } => None,
+            Self::GrabGroup { .. } | Self::ReleaseGroup { .. } | Self::Rotate { .. } => None,
         }
     }
 }

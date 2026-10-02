@@ -597,12 +597,12 @@ fn save_identity_must_match_its_storage_key() {
     assert!(repo.list().unwrap()[0].summary.is_err());
 }
 #[test]
-fn schema3_serialized_field_order_and_semantics_are_frozen() {
+fn snapshot_serialized_field_order_preserves_dense_records() {
     use crate::multiplayer::*;
     use puzzella_core::session::{AuthorityCursor, SessionId};
     let c = save().checkpoint;
     let wire = GameSnapshot {
-        schema_version: 3,
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
         session: SessionId(9),
         image_hash: c.image_hash,
         cursor: AuthorityCursor::new(1, 2),
@@ -628,7 +628,7 @@ fn schema3_serialized_field_order_and_semantics_are_frozen() {
     assert!(!json.contains("checkpoint"));
     assert_eq!(serde_json::from_str::<GameSnapshot>(&json).unwrap(), wire);
     assert_eq!(wire.clone().into_checkpoint(), c);
-    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 3);
+    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 4);
 }
 
 #[test]
@@ -1106,4 +1106,44 @@ fn proxy_transfers_the_same_blob_allocation_to_owner_backend() {
     assert_eq!(bytes.as_ptr() as usize, storage.pointer);
     request.execute(&storage).unwrap();
     worker.join().unwrap().unwrap();
+}
+
+#[test]
+fn rotated_save_codec_keeps_sixteen_byte_records_and_restores_components() {
+    use puzzella_core::{
+        protocol::{ComponentRef, PieceTarget},
+        PieceCommand, LOCAL_PLAYER,
+    };
+    let mut save = save();
+    let mut store = PieceDataStore::default();
+    save.checkpoint.install(&mut store).unwrap();
+    let reference = ComponentRef::from_member(&store.connectivity, PieceId(1)).unwrap();
+    assert_eq!(
+        store
+            .apply_command(
+                LOCAL_PLAYER,
+                &PieceCommand::Rotate {
+                    target: PieceTarget::Component(reference),
+                    quarter_turns: 1
+                },
+                Some(&save.checkpoint.definition)
+            )
+            .rotated,
+        2
+    );
+    save.checkpoint = PuzzleCheckpoint::capture(
+        &store,
+        &save.checkpoint.definition,
+        save.checkpoint.image_hash,
+    )
+    .unwrap();
+    let bytes = SaveCodec::encode(&save).unwrap();
+    let header = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+    assert_eq!(bytes.len() - header - 32, 16 * 4);
+    let loaded = SaveCodec::decode(&bytes).unwrap();
+    assert_eq!(loaded, save);
+    let mut restored = PieceDataStore::default();
+    loaded.checkpoint.install(&mut restored).unwrap();
+    assert_eq!(&*restored.states, &*store.states);
+    assert!(restored.connectivity.same_component(PieceId(1), PieceId(3)));
 }

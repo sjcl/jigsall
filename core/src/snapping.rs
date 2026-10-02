@@ -1,5 +1,5 @@
-//! Pure translation candidates; the authority decides ownership and unions.
-use crate::PieceId;
+//! Translation candidates for equal discrete rotations; authority decides unions.
+use crate::{rotate_quarter, PieceId};
 use bevy_math::Vec2;
 
 #[inline]
@@ -50,6 +50,12 @@ impl SnapCandidate {
 /// f32 addition/subtraction cannot preserve an arbitrary offset bit-for-bit.
 /// Check against ONE representative, allowing only arithmetic rounding, not edge drift.
 pub fn matches_translation(position: Vec2, correct: Vec2, offset: Vec2) -> bool {
+    matches_transform(position, correct, 0, offset)
+}
+
+/// Compare one rigid transform with the same f32 arithmetic rounding tolerance.
+pub fn matches_transform(position: Vec2, correct: Vec2, rotation: u32, offset: Vec2) -> bool {
+    let correct = rotate_quarter(correct, rotation);
     let reconstructed = correct + offset;
     position.is_finite()
         && reconstructed.is_finite()

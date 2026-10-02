@@ -10,6 +10,16 @@ struct PuzzleUniform {
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
+// Same counterclockwise quarter turns and bits 9..10 as puzzella_core::rotation.
+fn decode_rotation(flags:u32)->u32 {return (flags>>9u)&3u;}
+fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
+    switch rotation&3u {
+        case 1u: {return vec2(-v.y,v.x);}
+        case 2u: {return -v;}
+        case 3u: {return vec2(v.y,-v.x);}
+        default: {return v;}
+    }
+}
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
 @group(0) @binding(1) var<storage,read> states:array<PieceState>;
 @group(0) @binding(2) var<storage,read> visible:array<u32>;
@@ -35,11 +45,14 @@ struct VertexOutput {
         position+=config.drag_delta;
     }
     var out:VertexOutput;
+    let rotation=decode_rotation(state.flags);
     if config.far_zoom!=0u {
         let center=config.clip_from_world*vec4(position,0.0,1.0);
         let center_px=config.viewport_origin+(center.xy/center.w*vec2(0.5,-0.5)+0.5)*config.viewport_size;
         let snapped_px=floor(center_px)+0.5;
-        let splat_size=max(config.piece_size_px,vec2(config.splat_min_px));
+        var piece_size_px=config.piece_size_px;
+        if (rotation&1u)!=0u {piece_size_px=config.size.yx/config.pixel_world_size;}
+        let splat_size=max(piece_size_px,vec2(config.splat_min_px));
         let pixel=snapped_px+corners[vi]*vec2(1.0,-1.0)*splat_size*0.5;
         let ndc=(pixel-config.viewport_origin)/config.viewport_size*vec2(2.0,-2.0)+vec2(-1.0,1.0);
         out.position=vec4(ndc*center.w,center.z,center.w);
@@ -50,7 +63,7 @@ struct VertexOutput {
     } else {
         let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
         let local=corners[vi]*half;let edges=piece_profiles(config.seed,config.grid,cell);
-        out.position=config.clip_from_world*vec4(position+local,0.0,1.0);
+        out.position=config.clip_from_world*vec4(position+rotate_quarter(local,rotation),0.0,1.0);
         out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);
         out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];
     }
@@ -73,7 +86,7 @@ struct VertexOutput {
 }
 fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
 fn selection_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
-    // Bits 5..8: top/right/bottom/left (resources/pieces.rs). An enclosed
+    // Bits 5..8: canonical top/right/bottom/left (resources/pieces.rs). An enclosed
     // piece has no outline candidates. Coverage/picking still use every edge.
     let connected=(vec4(flags)&vec4(32u,64u,128u,256u))!=vec4(0u);
     return max_edge_distance(select(edges,vec4(-1e20),connected));

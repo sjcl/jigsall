@@ -5,14 +5,16 @@ use crate::resources::{
 };
 use bevy::math::Vec2;
 use puzzella_core::{
-    matches_translation, session::ImageHash, PieceConnectivity, PieceId, PuzzleDefinition,
+    decode_rotation, matches_transform, rotate_quarter, session::ImageHash, with_rotation,
+    PieceConnectivity, PieceId, PuzzleDefinition, ROTATION_MASK,
 };
 use serde::{Deserialize, Serialize};
 
 pub const SNAPSHOT_PLACED: u32 = 1;
 pub const SNAPSHOT_CONNECTED_RIGHT: u32 = 1 << 1;
 pub const SNAPSHOT_CONNECTED_DOWN: u32 = 1 << 2;
-const SNAPSHOT_FLAGS: u32 = SNAPSHOT_PLACED | SNAPSHOT_CONNECTED_RIGHT | SNAPSHOT_CONNECTED_DOWN;
+const SNAPSHOT_FLAGS: u32 =
+    SNAPSHOT_PLACED | SNAPSHOT_CONNECTED_RIGHT | SNAPSHOT_CONNECTED_DOWN | ROTATION_MASK;
 
 /// Dense row-major state, 16 bytes per piece; undirected edges are saved right/down.
 #[repr(C)]
@@ -22,6 +24,7 @@ pub struct SnapshotPieceState {
     pub z_order: u32,
     pub flags: u32,
 }
+const _: () = assert!(std::mem::size_of::<SnapshotPieceState>() == 16);
 #[derive(Clone, Debug, PartialEq)]
 pub struct PuzzleCheckpoint {
     pub image_hash: ImageHash,
@@ -30,7 +33,7 @@ pub struct PuzzleCheckpoint {
     pub pieces: Vec<SnapshotPieceState>,
 }
 
-/// A borrowed view lets schema 3 reuse the same algorithms without cloning states.
+/// A borrowed view lets snapshots reuse the same algorithms without cloning states.
 pub(crate) struct CheckpointView<'a> {
     pub definition: &'a PuzzleDefinition,
     pub next_z_order: u32,
@@ -73,19 +76,22 @@ impl PuzzleCheckpoint {
                     SnapshotPieceState {
                         position: state.position,
                         z_order: state.z_order,
-                        flags: if state.flags & PLACED != 0 {
-                            SNAPSHOT_PLACED
-                        } else {
-                            0
-                        } | if connected(neighbors[1]) {
-                            SNAPSHOT_CONNECTED_RIGHT
-                        } else {
-                            0
-                        } | if connected(neighbors[3]) {
-                            SNAPSHOT_CONNECTED_DOWN
-                        } else {
-                            0
-                        },
+                        flags: with_rotation(
+                            if state.flags & PLACED != 0 {
+                                SNAPSHOT_PLACED
+                            } else {
+                                0
+                            } | if connected(neighbors[1]) {
+                                SNAPSHOT_CONNECTED_RIGHT
+                            } else {
+                                0
+                            } | if connected(neighbors[3]) {
+                                SNAPSHOT_CONNECTED_DOWN
+                            } else {
+                                0
+                            },
+                            decode_rotation(state.flags),
+                        ),
                     }
                 })
                 .collect(),
@@ -136,7 +142,8 @@ impl CheckpointView<'_> {
                 return Err(CheckpointError::InvalidFlags(id));
             }
             if state.flags & SNAPSHOT_PLACED != 0
-                && state.position != self.definition.correct_position(id)
+                && (decode_rotation(state.flags) != 0
+                    || state.position != self.definition.correct_position(id))
             {
                 return Err(CheckpointError::InvalidPlacedPosition(id));
             }
@@ -155,11 +162,15 @@ impl CheckpointView<'_> {
             let id = PieceId(index as u32);
             let root = connectivity.minimum_member(id);
             let representative = &self.pieces[root.0 as usize];
-            let offset = representative.position - self.definition.correct_position(root);
+            let rotation = decode_rotation(representative.flags);
+            let offset = representative.position
+                - rotate_quarter(self.definition.correct_position(root), rotation);
             if (state.flags & SNAPSHOT_PLACED) != (representative.flags & SNAPSHOT_PLACED)
-                || !matches_translation(
+                || decode_rotation(state.flags) != rotation
+                || !matches_transform(
                     state.position,
                     self.definition.correct_position(id),
+                    rotation,
                     offset,
                 )
             {
@@ -195,13 +206,16 @@ impl CheckpointView<'_> {
                 GpuPieceState {
                     position: state.position,
                     z_order: state.z_order,
-                    flags: ENABLED
-                        | edges
-                        | if state.flags & SNAPSHOT_PLACED != 0 {
-                            PLACED
-                        } else {
-                            0
-                        },
+                    flags: with_rotation(
+                        ENABLED
+                            | edges
+                            | if state.flags & SNAPSHOT_PLACED != 0 {
+                                PLACED
+                            } else {
+                                0
+                            },
+                        decode_rotation(state.flags),
+                    ),
                 }
             })
             .collect();

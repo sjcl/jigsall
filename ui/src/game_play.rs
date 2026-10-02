@@ -31,7 +31,7 @@ pub fn draw_game_ui(
             ui.label(format!("Players: {}", game_state.players.len()));
 
             ui.separator();
-            ui.label("Click and drag puzzle pieces to move them");
+            ui.label("Drag to move · Q / E to rotate");
             ui.separator();
             ui.label("Hold Tab to view players");
         });

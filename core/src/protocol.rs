@@ -239,6 +239,11 @@ pub enum ProtocolPieceCommand {
         grab_sequence: u64,
         final_delta: Vec2,
     },
+    /// Reliable semantic control. Rotation never changes transient drag packets.
+    Rotate {
+        target: PieceTarget,
+        quarter_turns: i8,
+    },
 }
 
 pub type ProtocolCommandEnvelope = crate::session::ClientCommandEnvelope<ProtocolPieceCommand>;
@@ -297,6 +302,15 @@ pub struct ReleaseCommitted {
     pub result: ReleaseResultFingerprint,
 }
 
+/// Exact authority-accepted components; peers replay the deterministic pivot math.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RotationCommitted {
+    pub player: PlayerId,
+    pub accepted: PieceTarget,
+    pub quarter_turns: i8,
+    pub result: ReleaseResultFingerprint,
+}
+
 /// Host-forwarded transient presentation. Never consumes an authority cursor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RemoteDragUpdate {
@@ -312,6 +326,7 @@ pub struct RemoteDragUpdate {
 pub enum ProtocolAuthorityEvent {
     GrabAccepted(GrabAccepted),
     ReleaseCommitted(ReleaseCommitted),
+    RotationCommitted(RotationCommitted),
 }
 
 pub type ProtocolAuthorityEventEnvelope =

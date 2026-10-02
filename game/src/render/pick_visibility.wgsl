@@ -23,9 +23,13 @@ struct PickArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
     let id=main_ids[index];let state=states[id];
     if (state.flags&9u)!=0u || (state.flags&16u)==0u {return;}
     var half=config.size*0.5+min(config.size.x,config.size.y)*0.22;
+    let odd_rotation=((state.flags>>9u)&1u)!=0u;
+    if odd_rotation {half=half.yx;}
     if config.far_zoom!=0u {
         // Retained main-viewport scale, even when view_min/max describe a pick ROI.
-        let splat_half=max(config.piece_size_px,vec2(config.splat_min_px))*config.pixel_world_size*0.5;
+        var piece_size_px=config.piece_size_px;
+        if odd_rotation {piece_size_px=config.size.yx/config.pixel_world_size;}
+        let splat_half=max(piece_size_px,vec2(config.splat_min_px))*config.pixel_world_size*0.5;
         half=max(half,splat_half)+config.pixel_world_size*0.5;
     }
     var position=state.position;

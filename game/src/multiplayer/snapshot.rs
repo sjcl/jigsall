@@ -1,4 +1,4 @@
-//! Schema 3 keeps its serialized field order and representation unchanged.
+//! Schema 4 stores quarter turns in flags while retaining 16-byte piece records.
 pub use crate::checkpoint::{
     CheckpointError as SnapshotError, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
     SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED,
@@ -12,7 +12,7 @@ use puzzella_core::{
     PuzzleDefinition,
 };
 use serde::{Deserialize, Serialize};
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 3;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 4;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameSnapshot {
     pub schema_version: u16,

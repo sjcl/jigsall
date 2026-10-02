@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bytemuck::{Pod, Zeroable};
 use puzzella_core::{
-    PieceBitSet, PieceCommand, PieceConnectivity, PieceId, PieceScratchSet, PieceState, PlayerId,
-    PuzzleDefinition,
+    decode_rotation, rotate_quarter, with_rotation, PieceBitSet, PieceCommand, PieceConnectivity,
+    PieceId, PieceScratchSet, PieceState, PlayerId, PuzzleDefinition,
 };
 use std::{
     collections::HashMap,
@@ -22,6 +22,7 @@ pub const PREVIEW: u32 = 4;
 pub const HELD: u32 = 8;
 pub const ENABLED: u32 = 16;
 // Presentation cache only; PieceConnectivity remains the connectivity authority.
+// Directions refer to canonical piece edges and never change when rotating.
 // Keep in sync with the highlight boundary mask in puzzle_render.wgsl.
 pub const CONNECTED_TOP: u32 = 1 << 5;
 pub const CONNECTED_RIGHT: u32 = 1 << 6;
@@ -37,6 +38,7 @@ pub(crate) const CONNECTED_EDGE_PAIRS: [(u32, u32); 4] = [
     (CONNECTED_BOTTOM, CONNECTED_TOP),
 ];
 pub const MAX_Z: u32 = (1 << 24) - 2;
+mod rotation;
 mod snapping;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
@@ -45,6 +47,7 @@ pub struct GpuPieceState {
     pub z_order: u32,
     pub flags: u32,
 }
+const _: () = assert!(std::mem::size_of::<GpuPieceState>() == 16);
 impl GpuPieceState {
     pub fn new(position: Vec2, id: PieceId) -> Self {
         Self {
@@ -213,6 +216,7 @@ pub struct AppliedCommand {
     pub grabbed: usize,
     pub released: usize,
     pub placed: usize,
+    pub rotated: usize,
 }
 /// Operation-local accepted IDs and an optional shared presentation/bulk mask.
 /// Small authority-only grabs never construct membership words.
@@ -314,6 +318,7 @@ impl PieceDataStore {
             | if state.placed { PLACED } else { 0 }
             | if state.held_by.is_some() { HELD } else { 0 };
         if state.placed {
+            s.flags = with_rotation(s.flags, 0);
             s.z_order = 0;
         }
         if let Some(player) = state.held_by {
@@ -459,6 +464,12 @@ impl PieceDataStore {
         let definition =
             definition.filter(|d| d.piece_count() == self.len() && d.validate().is_ok());
         match command {
+            PieceCommand::Rotate {
+                target,
+                quarter_turns,
+            } => definition
+                .and_then(|d| self.rotate_target(target, *quarter_turns, d).ok())
+                .map_or_else(AppliedCommand::default, |result| result.applied),
             PieceCommand::GrabGroup { members } if members.bit_len() == self.len() => {
                 self.grab_components(player, members)
             }
@@ -684,13 +695,15 @@ impl PieceDataStore {
             return;
         }
         let delta = position - self.states[id.0 as usize].position;
-        let offset = definition.map(|d| position - d.correct_position(id));
+        let rotation = decode_rotation(self.states[id.0 as usize].flags);
+        let offset =
+            definition.map(|d| position - rotate_quarter(d.correct_position(id), rotation));
         let translated = |member: PieceId| {
             if member == id {
                 return position;
             }
             if let (Some(d), Some(offset)) = (definition, offset) {
-                d.correct_position(member) + offset
+                rotate_quarter(d.correct_position(member), rotation) + offset
             } else {
                 self.states[member.0 as usize].position + delta
             }
@@ -708,7 +721,7 @@ impl PieceDataStore {
             let position = if member == id {
                 position
             } else if let (Some(d), Some(offset)) = (definition, offset) {
-                d.correct_position(member) + offset
+                rotate_quarter(d.correct_position(member), rotation) + offset
             } else {
                 states[member.0 as usize].position + delta
             };
@@ -764,14 +777,16 @@ impl PieceDataStore {
         let states = &mut *self.states;
         for &root in &roots {
             let connected = self.connectivity.component_size(root) > 1;
-            let offset = geometry
-                .as_ref()
-                .filter(|_| connected)
-                .map(|d| states[root.0 as usize].position - d.correct_position(root) + delta);
+            let rotation = decode_rotation(states[root.0 as usize].flags);
+            let offset = geometry.as_ref().filter(|_| connected).map(|d| {
+                states[root.0 as usize].position
+                    - rotate_quarter(d.correct_position(root), rotation)
+                    + delta
+            });
             let translated = |id: PieceId, position: Vec2| {
                 if connected {
                     if let (Some(d), Some(offset)) = (geometry.as_ref(), offset) {
-                        return d.correct_position(id) + offset;
+                        return rotate_quarter(d.correct_position(id), rotation) + offset;
                     }
                 }
                 position + delta
