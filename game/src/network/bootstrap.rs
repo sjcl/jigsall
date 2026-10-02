@@ -1,7 +1,8 @@
-//! Opt-in, frame-driven session bootstrap over any Transport. Process every event
+//! Opt-in, frame-driven session bootstrap over SecureTransport. Process every event
 //! here BEFORE gameplay routing; only `Gameplay` may be forwarded to a router.
 use super::{
     auth::{ClientHandshake, ServerHandshake, SessionPassword},
+    secure::{ChannelRole, SecureTransport},
     session::{SessionConnectionError, SessionConnections},
     session_control::*,
     transport::*,
@@ -22,6 +23,8 @@ pub const AUTH_ATTEMPT_BURST: u32 = 8;
 pub enum ConnectionState {
     TransportConnected,
     Authenticating,
+    /// Host has installed keys, but still awaits encrypted SecureChannelReady.
+    Securing,
     Authenticated,
     Syncing,
     Ready,
@@ -145,7 +148,7 @@ impl HostBootstrap {
         &mut self,
         connection: ConnectionId,
         reason: DisconnectReason,
-        transport: &mut dyn Transport,
+        transport: &mut SecureTransport<impl Transport>,
         connections: &mut SessionConnections,
     ) -> BootstrapError {
         self.peers.remove(&connection);
@@ -158,7 +161,7 @@ impl HostBootstrap {
     pub fn process(
         &mut self,
         event: &TransportEvent,
-        transport: &mut dyn Transport,
+        transport: &mut SecureTransport<impl Transport>,
         connections: &mut SessionConnections,
         now: Instant,
     ) -> Result<BootstrapOutcome, BootstrapError> {
@@ -174,11 +177,17 @@ impl HostBootstrap {
                 }
                 // Clear stale gameplay registration even if a faulty backend reuses a token.
                 disconnect_mapping(connections, *connection, DisconnectReason::Requested);
+                transport.start_connection(*connection);
                 connections.observe(event);
                 if self
                     .peers
                     .values()
-                    .filter(|p| p.state == ConnectionState::Authenticating)
+                    .filter(|p| {
+                        matches!(
+                            p.state,
+                            ConnectionState::Authenticating | ConnectionState::Securing
+                        )
+                    })
                     .count()
                     >= MAX_PENDING_AUTH
                     || !self.failures.available(now)
@@ -238,6 +247,7 @@ impl HostBootstrap {
             TransportEvent::Disconnected { connection, .. }
             | TransportEvent::ConnectionFailed { connection, .. } => {
                 self.peers.remove(connection);
+                transport.forget_connection(*connection);
                 connections.observe(event);
                 Ok(BootstrapOutcome::Consumed)
             }
@@ -254,8 +264,10 @@ impl HostBootstrap {
                         connections,
                     ));
                 };
-                if peer.state == ConnectionState::Authenticating
-                    && now.saturating_duration_since(peer.started) >= AUTH_TIMEOUT
+                if matches!(
+                    peer.state,
+                    ConnectionState::Authenticating | ConnectionState::Securing
+                ) && now.saturating_duration_since(peer.started) >= AUTH_TIMEOUT
                 {
                     return Err(self.reject(
                         *connection,
@@ -292,6 +304,13 @@ impl HostBootstrap {
                         connections,
                     ));
                 };
+                if peer.state == ConnectionState::Securing
+                    && message
+                        == WireMessage::SessionControl(SessionControlMessage::SecureChannelReady)
+                {
+                    peer.state = ConnectionState::Authenticated;
+                    return Ok(BootstrapOutcome::Consumed);
+                }
                 let WireMessage::SessionControl(SessionControlMessage::ClientProof(proof)) =
                     message
                 else {
@@ -310,7 +329,7 @@ impl HostBootstrap {
                         connections,
                     ));
                 };
-                let Ok(confirmation) = handshake.finish(proof) else {
+                let Ok((confirmation, secret)) = handshake.finish(proof) else {
                     self.failures.take(now);
                     return Err(self.reject(
                         *connection,
@@ -336,8 +355,18 @@ impl HostBootstrap {
                     );
                     return Err(error);
                 }
+                // AuthAccepted must be queued in plaintext before installation.
+                if let Err(error) = transport.install(*connection, secret, ChannelRole::Host) {
+                    let _ = self.reject(
+                        *connection,
+                        DisconnectReason::ProtocolViolation,
+                        transport,
+                        connections,
+                    );
+                    return Err(BootstrapError::Transport(error));
+                }
                 self.peers.get_mut(connection).expect("live peer").state =
-                    ConnectionState::Authenticated;
+                    ConnectionState::Securing;
                 Ok(BootstrapOutcome::Consumed)
             }
         }
@@ -345,7 +374,7 @@ impl HostBootstrap {
     /// Nonblocking timer maintenance; no crypto or piece work for stable peers.
     pub fn expire(
         &mut self,
-        transport: &mut dyn Transport,
+        transport: &mut SecureTransport<impl Transport>,
         connections: &mut SessionConnections,
         now: Instant,
     ) -> Vec<(ConnectionId, BootstrapError)> {
@@ -353,8 +382,10 @@ impl HostBootstrap {
             .peers
             .iter()
             .filter(|(_, p)| {
-                p.state == ConnectionState::Authenticating
-                    && now.saturating_duration_since(p.started) >= AUTH_TIMEOUT
+                matches!(
+                    p.state,
+                    ConnectionState::Authenticating | ConnectionState::Securing
+                ) && now.saturating_duration_since(p.started) >= AUTH_TIMEOUT
             })
             .map(|(&id, _)| id)
             .collect();
@@ -408,7 +439,7 @@ impl HostBootstrap {
 
 /// One designated host per client bootstrap; authenticated metadata needs no snapshot.
 pub struct ClientBootstrap {
-    password: SessionPassword,
+    password: Option<SessionPassword>,
     host_connection: ConnectionId,
     state: Option<ConnectionState>,
     started: Option<Instant>,
@@ -420,7 +451,7 @@ pub struct ClientBootstrap {
 impl ClientBootstrap {
     pub fn new(password: SessionPassword, host_connection: ConnectionId) -> Self {
         Self {
-            password,
+            password: Some(password),
             host_connection,
             state: None,
             started: None,
@@ -442,6 +473,10 @@ impl ClientBootstrap {
     pub fn failure(&self) -> Option<DisconnectReason> {
         self.failure
     }
+    #[cfg(test)]
+    pub(crate) fn retains_password(&self) -> bool {
+        self.password.is_some()
+    }
     fn clear(&mut self) {
         self.state = None;
         self.started = None;
@@ -452,7 +487,7 @@ impl ClientBootstrap {
     fn reject(
         &mut self,
         reason: DisconnectReason,
-        transport: &mut dyn Transport,
+        transport: &mut SecureTransport<impl Transport>,
         connections: &mut SessionConnections,
     ) -> BootstrapError {
         self.clear();
@@ -466,7 +501,7 @@ impl ClientBootstrap {
     pub fn process(
         &mut self,
         event: &TransportEvent,
-        transport: &mut dyn Transport,
+        transport: &mut SecureTransport<impl Transport>,
         connections: &mut SessionConnections,
         now: Instant,
     ) -> Result<BootstrapOutcome, BootstrapError> {
@@ -497,6 +532,7 @@ impl ClientBootstrap {
                 self.clear();
                 self.failure = None;
                 disconnect_mapping(connections, connection, DisconnectReason::Requested);
+                transport.start_connection(connection);
                 connections.observe(event);
                 self.state = Some(ConnectionState::TransportConnected);
                 self.started = Some(now);
@@ -516,6 +552,7 @@ impl ClientBootstrap {
                     );
                 }
                 self.clear();
+                transport.forget_connection(connection);
                 connections.observe(event);
                 Ok(BootstrapOutcome::Consumed)
             }
@@ -557,7 +594,14 @@ impl ClientBootstrap {
                         Some(ConnectionState::TransportConnected),
                         WireMessage::SessionControl(SessionControlMessage::ServerHello(hello)),
                     ) => {
-                        let Ok((handshake, proof)) = ClientHandshake::start(&self.password, &hello)
+                        let Some(password) = self.password.as_ref() else {
+                            return Err(self.reject(
+                                DisconnectReason::ProtocolViolation,
+                                transport,
+                                connections,
+                            ));
+                        };
+                        let Ok((handshake, proof)) = ClientHandshake::start(password, &hello)
                         else {
                             return Err(self.reject(
                                 DisconnectReason::AuthenticationFailed,
@@ -591,13 +635,39 @@ impl ClientBootstrap {
                             .take()
                             .ok_or(())
                             .and_then(|h| h.finish(accepted).map_err(|_| ()));
-                        let Ok(player) = result else {
+                        let Ok((player, secret)) = result else {
                             return Err(self.reject(
                                 DisconnectReason::AuthenticationFailed,
                                 transport,
                                 connections,
                             ));
                         };
+                        if let Err(error) =
+                            transport.install(connection, secret, ChannelRole::Client)
+                        {
+                            let _ = self.reject(
+                                DisconnectReason::ProtocolViolation,
+                                transport,
+                                connections,
+                            );
+                            return Err(BootstrapError::Transport(error));
+                        }
+                        self.state = Some(ConnectionState::Securing);
+                        if let Err(error) = send_control(
+                            transport,
+                            connection,
+                            SessionControlMessage::SecureChannelReady,
+                        ) {
+                            let _ = self.reject(
+                                DisconnectReason::BackendFailure,
+                                transport,
+                                connections,
+                            );
+                            return Err(error);
+                        }
+                        // No reconnect/password reuse after establishment: a new
+                        // client bootstrap requires fresh out-of-band provisioning.
+                        self.password.take();
                         self.player = Some(player);
                         self.state = Some(ConnectionState::Authenticated);
                         Ok(BootstrapOutcome::Consumed)
@@ -614,14 +684,18 @@ impl ClientBootstrap {
     fn timed_out(&self, now: Instant) -> bool {
         matches!(
             self.state,
-            Some(ConnectionState::TransportConnected | ConnectionState::Authenticating)
+            Some(
+                ConnectionState::TransportConnected
+                    | ConnectionState::Authenticating
+                    | ConnectionState::Securing
+            )
         ) && self
             .started
             .is_some_and(|t| now.saturating_duration_since(t) >= AUTH_TIMEOUT)
     }
     pub fn expire(
         &mut self,
-        transport: &mut dyn Transport,
+        transport: &mut SecureTransport<impl Transport>,
         connections: &mut SessionConnections,
         now: Instant,
     ) -> Result<(), BootstrapError> {

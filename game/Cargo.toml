@@ -29,6 +29,9 @@ pakery-crypto = { version = "=0.6.0", default-features = false, features = ["std
 getrandom = { version = "0.4", features = ["sys_rng"] }
 rand_core = "0.10"
 zeroize = "1.9"
+chacha20poly1305 = { version = "=0.11.0", default-features = false, features = ["alloc", "zeroize"] }
+hkdf = "=0.13.0"
+sha2_channel = { package = "sha2", version = "=0.11.0" }
 
 [target.'cfg(windows)'.dependencies]
 wgpu-hal.workspace = true

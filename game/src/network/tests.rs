@@ -86,10 +86,11 @@ fn connected(connections: &mut SessionConnections, connection: ConnectionId, pla
 }
 
 #[derive(Default)]
-struct FakeTransport {
-    inbox: Vec<TransportEvent>,
-    sent: Vec<TransportEvent>,
-    fail: Option<ConnectionId>,
+pub(super) struct FakeTransport {
+    pub(super) inbox: Vec<TransportEvent>,
+    pub(super) sent: Vec<TransportEvent>,
+    pub(super) fail: Option<ConnectionId>,
+    pub(super) fail_close: bool,
 }
 impl Transport for FakeTransport {
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
@@ -117,6 +118,9 @@ impl Transport for FakeTransport {
         connection: ConnectionId,
         reason: DisconnectReason,
     ) -> Result<(), TransportError> {
+        if self.fail_close {
+            return Err(TransportError::NotConnected);
+        }
         self.inbox
             .push(TransportEvent::Disconnected { connection, reason });
         Ok(())
@@ -304,7 +308,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 2, 4] {
+    for version in [1u16, 2, 3, 5] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),

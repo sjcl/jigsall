@@ -47,4 +47,6 @@ pub enum SessionControlMessage {
     ServerHello(ServerHello),
     ClientProof(ClientProof),
     AuthAccepted(AuthAccepted),
+    /// First encrypted Control record; confirms possession of the channel keys.
+    SecureChannelReady,
 }

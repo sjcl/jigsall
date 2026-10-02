@@ -62,6 +62,7 @@ pub enum TransportError {
     NotConnected,
     PayloadTooLarge,
     Capacity,
+    ProtocolViolation,
     Backend(String),
 }
 
@@ -115,6 +116,8 @@ pub trait Transport {
 pub trait DirectIpTransport: Transport {
     fn listen(&mut self, address: SocketAddr) -> Result<ListenerId, TransportError>;
     fn listener_address(&self, listener: ListenerId) -> Result<SocketAddr, TransportError>;
+    /// Queue lifecycle events for every closed peer for the next poll, including
+    /// peers already closed when a later close fails partway through the listener.
     fn close_listener(&mut self, listener: ListenerId) -> Result<(), TransportError>;
     fn connect(&mut self, address: SocketAddr) -> Result<ConnectionId, TransportError>;
 }

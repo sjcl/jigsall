@@ -316,14 +316,14 @@ mod tests {
 
     #[test]
     fn defaults_allow_120_hz_drags_and_maximum_frame_bursts() {
-        use crate::network::wire::frame_limit;
+        use crate::network::secure::record_limit;
         let now = Instant::now();
         let mut limiter = InboundRateLimiter::new(now);
         for tick in 0..7200 {
             assert_eq!(
                 limiter.check(
                     MessageClass::Transient,
-                    frame_limit(MessageClass::Transient),
+                    record_limit(MessageClass::Transient),
                     now + Duration::from_nanos(tick * 1_000_000_000 / 120)
                 ),
                 RateDecision::Allow
@@ -332,7 +332,7 @@ mod tests {
         for class in [MessageClass::Control, MessageClass::Bulk] {
             for _ in 0..16 {
                 assert_eq!(
-                    limiter.check(class, frame_limit(class), now),
+                    limiter.check(class, record_limit(class), now),
                     RateDecision::Allow
                 );
             }

@@ -1,10 +1,10 @@
 use crate::network::{
     rate_limit::{InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY},
+    secure::record_limit,
     transport::{
         ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Transport,
         TransportError, TransportEvent,
     },
-    wire::frame_limit,
 };
 use ::gns::{
     sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
@@ -324,7 +324,7 @@ impl Transport for GnsDirectIp {
                     continue;
                 };
                 let payload = message.payload();
-                if payload.len() > frame_limit(class) {
+                if payload.len() > record_limit(class) {
                     self.terminate(id, DisconnectReason::InvalidMessage, events);
                     continue;
                 }
@@ -352,7 +352,7 @@ impl Transport for GnsDirectIp {
         class: MessageClass,
         payload: &[u8],
     ) -> Result<(), TransportError> {
-        if payload.len() > frame_limit(class) {
+        if payload.len() > record_limit(class) {
             return Err(TransportError::PayloadTooLarge);
         }
         let connection = self
@@ -757,7 +757,7 @@ mod tests {
             let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
             let mut client = GnsDirectIp::new().unwrap();
             let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
-            native_burst(&client, outgoing, lane(class), 1, frame_limit(class) + 1);
+            native_burst(&client, outgoing, lane(class), 1, record_limit(class) + 1);
             assert_eq!(
                 poll(&mut host),
                 vec![TransportEvent::Disconnected {

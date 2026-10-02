@@ -13,6 +13,8 @@ bootstrap (mandatory session password, authenticated/syncing/ready gate)
         ↓
 wire (versioned Postcard binary messages)
         ↓
+SecureTransport<T> (PAKE-derived application AEAD, sequences, replay protection)
+        ↓
 Transport (opaque Puzzella identities, byte messages, lifecycle events)
         ├ Direct-IP open-source GameNetworkingSockets (gns feature)
         └ future Steamworks ISteamNetworkingSockets
@@ -33,7 +35,7 @@ Entering Menu resets `LocalPlayerId` to its offline default. Snapshot installati
 may replace `PieceDataStore` but leaves the independent identity resource intact.
 It is excluded from checkpoints, snapshots, save files, puzzle definitions, and
 wire messages. The password bootstrap now exposes the host-assigned identity via
-`ClientBootstrap::assigned_player()` after mutual confirmation. A future runtime
+`ClientBootstrap::assigned_player()` after secure channel establishment. A future runtime
 join will set `LocalPlayerId` from that value and pass it to the routers;
 runtime/input/UI integration is still outside this change. This identity is
 independent of SteamID.
@@ -76,18 +78,23 @@ serialization, Display or persistent-settings path. Neither plaintext passwords
 nor password hashes/scalars are sent on the wire or saved. Password provisioning
 is out of band; Host/Join/password-entry UI is still outside this change.
 
-GNS transport encryption and Puzzella password authentication are separate layers.
-`HostBootstrap` and `ClientBootstrap` operate on `Transport`, without IP addresses,
+GNS transport security, SPAKE2 password authentication, and PAKE-derived application
+AEAD are separate layers. `HostBootstrap` and `ClientBootstrap` require
+`SecureTransport<T>`, without IP addresses,
 native handles or SteamIDs, so a future backend can use the same password layer.
 This authenticates knowledge of a shared session password, not a named account.
 
 ```text
 GNS Connected / TransportConnected
-  host -> client: ServerHello(metadata, reserved PlayerId, nonce, SPAKE2 share)
-  client -> host: ClientProof(SPAKE2 share, client confirmation)
+  host -> client: ServerHello(metadata, reserved PlayerId, nonce, SPAKE2 share) plaintext
+  client -> host: ClientProof(SPAKE2 share, client confirmation) plaintext
   host verifies client confirmation
-  host -> client: AuthAccepted(assigned PlayerId, server confirmation)
+  host -> client: AuthAccepted(assigned PlayerId, server confirmation) plaintext
+  host installs channel only after AuthAccepted is queued; enters Securing
   client verifies server confirmation
+  client installs channel and sends encrypted SecureChannelReady (Control sequence 0)
+  client becomes Authenticated only after successful send; discards password
+  host decrypts and consumes SecureChannelReady, then becomes Authenticated
 Authenticated -> explicit begin_sync() -> Syncing
   trusted snapshot-sync coordinator completes baseline/catch-up on both ends
   explicit promote_ready() -> Ready -> SessionConnections::assign_player()
@@ -98,7 +105,8 @@ mappings unassigned; on the client the eventual mapping identifies the host, whi
 the independently assigned local PlayerId stays in bootstrap state. Metadata can
 be authenticated without owning a snapshot: SessionDefinition (SessionId/ImageHash),
 AuthorityCursor and host PlayerId. This change implements no snapshot/image transfer
-or Ready negotiation on the wire. The future synchronization coordinator must
+or gameplay Ready negotiation on the wire. SecureChannelReady confirms channel
+possession only. The future synchronization coordinator must
 coordinate both endpoints' promotion and stream ordering before sending gameplay.
 It must also check the supplied image hash and installed snapshot/catch-up cursor.
 
@@ -146,10 +154,117 @@ expose only a generic failure/close; client `failure()` can report password
 authentication failed. OS RNG failure aborts nonce generation; pakery's infallible
 RNG interface uses its documented SysRng/UnwrapErr adapter (fail-stop on RNG error).
 
-The PAKE key is discarded after mutual confirmation. Subsequent wire messages rely
-on the backend's encrypted connection, not a new application MAC/encryption layer.
-Shared-password holders can act as either role; this does not protect against a
-malicious participant who knows the password or a compromised endpoint.
+The verified PAKE key is consumed by the secure-channel key derivation described
+below. GNS encryption remains enabled, but all post-authentication gameplay traffic
+must also pass through PAKE-derived application AEAD. Routers retain their existing
+wire, authority, replication, and LocalPlayerId behavior.
+
+## Application secure channel
+
+`network::secure::SecureTransport<T>` implements `Transport` and delegates
+`DirectIpTransport` establishment when supported by T. It contains no GNS type.
+Bootstrap's typed transport boundary requires this wrapper; its inner backend is
+private, with no production mutable/consuming accessor and no public downgrade or
+raw-key installation API. Uninstalled connections pass valid plaintext PZLA frames
+through; bootstrap still gates every event before routing. Installed connections
+interpret every incoming payload exclusively as an encrypted record. Plaintext
+gameplay or readiness markers never get a fallback decoder.
+
+Pakery 0.6.0's actual `Spake2Output::into_session_key()` API returns Ke after peer
+confirmation verification. In this P-256 suite Ke is **16 bytes** (NH / 2), distinct
+from the 32-byte confirmation MAC. `auth.rs` copies it into a library-independent
+`AuthenticatedSecret` with a `Zeroizing<Vec<u8>>` key, then drops the original zeroizing
+SharedSecret. Neither secret wrapper implements Debug/Display/Serialize/Clone.
+Only a successful confirmation yields this value. Client assignment validation
+also precedes key extraction. Pakery binds the public session context into its
+confirmation-key HKDF, rather than directly into Ke=Hash(TT)[..NH/2]. The adapter
+therefore carries that confirmation-verified context into the application HKDF
+too, explicitly binding SessionId, ImageHash, host, cursor, handshake nonce and
+reserved/assigned PlayerId. Existing context confirmation remains unchanged.
+
+HKDF-SHA256 uses Ke as IKM, `puzzella-secure-channel-v1` as salt, and the following
+six separate info labels, each followed by the u16 LE WIRE_VERSION and the
+complete confirmation-verified session context byte sequence described above:
+
+```text
+puzzella-secure-channel-v1/client-to-host/control
+puzzella-secure-channel-v1/client-to-host/transient
+puzzella-secure-channel-v1/client-to-host/bulk
+puzzella-secure-channel-v1/host-to-client/control
+puzzella-secure-channel-v1/host-to-client/transient
+puzzella-secure-channel-v1/host-to-client/bulk
+```
+
+Each result is a 32-byte ChaCha20Poly1305 key; HKDF does not increase Ke's entropy.
+The PAKE secret is destroyed after this one-time derivation. Per-connection keys
+use `Zeroizing<[[u8; 32]; 6]>`; temporary cipher key copies use the crate's zeroize
+feature. Disconnect, connection failure, explicit close, replacement Connected,
+authentication timeout and failed encrypted send destroy the channel. Native close
+failure does not preserve keys or permit later plaintext sends. Closing a listener
+drains its queued backend lifecycle events immediately, destroys affected
+channels and blocks deferred records before the next ordinary poll. Unrelated
+connections keep their channels. Dropping the wrapper destroys all keys.
+Zeroization reduces owned-buffer lifetime; it is not a guarantee about compiler,
+register/stack copies, OS memory, or every dependency's internal KDF temporary.
+
+Standard RustCrypto `chacha20poly1305` 0.11.0 provides the RFC 8439 algorithm and
+16-byte tag. `hkdf` 0.13.0 and `sha2` 0.11.0 are direct dependencies (the latter is
+aliased for this layer, keeping existing SHA-256 callers on their current version).
+Their Rust 1.85 minimum is compatible with the workspace's Rust 1.95. No cipher or
+MAC primitive is implemented here. RustCrypto describes an audit of an earlier
+ChaCha20Poly1305 implementation; that does not certify these versions, pakery,
+this integration, or the complete application. See the
+[RustCrypto security notes](https://docs.rs/chacha20poly1305/0.11.0/chacha20poly1305/#security-notes).
+
+The complete existing wire frame (including PZLA header) is the AEAD plaintext.
+One native message carries this fixed outer record, without serde or reassembly:
+
+```text
+u64 sequence LE | ciphertext of entire inner PZLA frame | 16-byte AEAD tag
+```
+
+Nonce is `00 00 00 00 || sequence_le_u64`. AAD is the ASCII
+`puzzella-secure-record-v1`, u16 LE WIRE_VERSION, one class byte
+(Control=0, Transient=1, Bulk=2), and u64 LE sequence. Opposite directions and classes
+have independent keys, and each key starts its send sequence at zero. Counters
+never roll back, including after an ambiguous backend send error: that error
+closes the connection rather than allowing nonce reuse or a reliable gap. u64::MAX
+is reserved as exhausted and never sent/accepted. Reconnect performs a fresh PAKE;
+old session records cannot authenticate under the new keys.
+
+Control and Bulk independently accept exactly their next expected sequence;
+duplicates, stale records and gaps close only that connection. Transient permits
+gaps, accepts only a sequence greater than the highest authenticated sequence,
+and silently drops duplicate/reordered old records. Authentication failure does
+not advance receive state. Reflection, class substitution, ciphertext/tag changes,
+malformed records, pre-install secure packets and plaintext after installation
+cause a generic ProtocolViolation close. No cryptographic failure details, keys,
+passwords or session secrets are sent to the peer or logged.
+
+Native size checks now allow `wire::frame_limit(class) + 24` **before copying**.
+The existing inbound limiter charges the encrypted outer bytes before the copy
+and AEAD verification. Inner Control/Transient/Bulk/SessionControl payload bounds
+are unchanged. Open verifies outer bounds, decrypts in the owned bounded buffer,
+and returns the original frame. Existing `wire::decode_for_class` still applies
+the inner kind/class/declared/actual limits before gameplay.
+
+Plaintext handshakes are per-connection poll-batch barriers: return at most one
+such event, preserve the raw tail, let bootstrap install keys, then decrypt that
+tail on the next poll. The wrapper finishes this bounded native batch before
+requesting another, so deferred pre-auth data cannot grow without bound. Stable
+secure connections decrypt the whole batch with no handshake/KDF/password work,
+piece scans, per-piece cryptography or connection-map rebuild. Consume every
+returned event through bootstrap before the next poll. Securing remains subject
+to the existing pending cap and original 10-second authentication deadline.
+
+For shared-password authentication, a MITM relaying SPAKE2 unchanged while
+terminating GNS connections cannot read or modify the application channel without
+the PAKE-derived keys. A relay can still drop/delay traffic. A participant who
+knows the password can instead establish its own authenticated session and act
+as either role; password possession does not make gameplay trustworthy. Host
+authority remains responsible for malicious gameplay, identity claims and state
+validation. Compromised endpoints, password disclosure, PAKE/library security and
+fresh OS randomness remain security assumptions; this is not an independent audit.
 
 ## Classes and lanes
 
@@ -197,11 +312,12 @@ The immutable `DEFAULT_INBOUND_POLICY` uses the following byte-equivalent rates:
 | Bulk | 8 MiB/s | 16 MiB | 32 KiB | Disconnect with `DisconnectReason::RateLimited` |
 
 Every message costs `max(native_payload.len(), policy.minimum_charge)`, using its
-class's `BucketPolicy`. The native payload includes the wire header.
+class's `BucketPolicy`. The native payload includes the inner wire header and, after activation, the
+24-byte secure record overhead.
 Empty and tiny malformed packets therefore consume credit too. These are generous
-initial policies: 120 maximum-size 140-byte Drag frames per second are charged
+initial policies: 120 maximum-size 164-byte secure Drag records per second are charged
 61,440 bytes/s, comfortably below 128 KiB/s. Control's burst holds 31 maximum-size
-262,156-byte frames; Bulk's burst holds 511 maximum-size 32,780-byte chunks.
+262,180-byte secure records; Bulk's burst holds 511 maximum-size 32,804-byte secure records.
 Each burst holds two
 seconds of steady credit, allowing ordinary same-frame Grab/Release and handshake
 bursts while bounding sustained abnormal traffic. Each class permits at most 512
@@ -252,14 +368,15 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v3
+## Wire v4
 
-One native message is one Puzzella frame, with no stream reassembly:
+Each inner Puzzella frame has this header; after activation it is inside one
+secure record/native message, with no stream reassembly:
 
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 3 |
+| 4..6 | u16 wire version, little-endian, currently 4 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkChunk, 6 SessionControl |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -272,17 +389,18 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v3 Postcard field order and enum representation are part of the wire contract.
+The v4 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
-Version 3 adds SessionControl and mandatory password-bootstrap semantics. It retains
+Version 4 adds mandatory PAKE-derived AEAD and encrypted SecureChannelReady to
+version 3's SessionControl/password bootstrap. It retains
 Rotate / RotationCommitted, RotateDrag / DragRotationCommitted
-and the RemoteDragUpdate basis sequence. Only version 3 is decoded; pre-release
-versions 1 and 2 frames are rejected without a compatibility decoder.
-Fixed v3 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+and the RemoteDragUpdate basis sequence. Only version 4 is decoded; pre-release
+versions 1, 2 and 3 frames are rejected without a compatibility decoder.
+Fixed v4 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
-RotationCommitted, DragRotationCommitted, RemoteDragUpdate and AuthAccepted. Each checks encoding
+RotationCommitted, DragRotationCommitted, RemoteDragUpdate, AuthAccepted and SecureChannelReady. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
@@ -304,16 +422,19 @@ restore presentation. This keeps drag updates O(1) with scalar metadata only.
 | SessionControl (Control lane) | 4,096 |
 | Transient | 128 |
 | Bulk chunk | 32,768 |
-| Maximum whole frame | 262,156 (includes header) |
+| Maximum whole plaintext frame | 262,156 (includes header) |
+| Maximum secure outer record | 262,180 (includes sequence/tag) |
 
-Native receive checks the lane's frame limit **before copying** the GNS buffer.
+Native receive checks the lane's outer record limit (plaintext frame limit +24)
+**before copying** the GNS buffer. Decryption preserves the inner limits below.
 Wire decode checks the complete frame, kind-specific declared limit and exact
 length before deserializing. Existing core bounded visitors clamp sparse lists
 and rejected refs to 32 and masks to 31,250 u32 words / 1,000,000 pieces; malformed
 dimensions and nonzero padding bits are rejected. There is no allocation based
 on an unchecked network length. A full 1M-bit mask fits even with Postcard's
 worst-case word varints. Drag packets contain only scalar identity/context/tick/
-delta fields and are bounded by 140 bytes including the header.
+delta fields and are bounded by 140 plaintext bytes including the header,
+or 164 bytes as a secure record.
 
 BulkChunk is only a size-bounded opaque carrier for testing/reserving a class.
 It has no transfer identifiers, offsets, completion, compression or image logic.
@@ -326,8 +447,9 @@ The topology remains a host-authoritative star. No peer-to-peer mesh is created.
 
 ```text
 peer ClientRouter::send_command
- → wire encode / class → Transport::send(host_connection)
- → host poll → SessionConnections identity → wire decode
+ → wire encode / class → SecureTransport::send → AEAD record → backend
+ → host SecureTransport::poll → AEAD verification/decryption
+ → bootstrap Ready gate → SessionConnections identity → wire decode
  → HostRouter::route → ProtocolDragContexts::apply_replicated
  → HostCommandOutcome → HostRouter::publish
  → authority event to all assigned remote peers (including sender)
@@ -344,9 +466,10 @@ returned to the caller without touching gameplay; commands/events in the wrong
 direction are rejected. The backend never interprets protocol objects or accesses
 `PieceDataStore`.
 
-During each Bevy frame, keep the backend in caller-owned state, call `poll`, process
-every event through HostBootstrap/ClientBootstrap::process, and forward only
-BootstrapOutcome::Gameplay to the appropriate router.
+During each Bevy frame, keep SecureTransport<T> in caller-owned state, call its
+`poll`, process every event through HostBootstrap/ClientBootstrap::process, and
+forward only BootstrapOutcome::Gameplay to the appropriate router. Call bootstrap
+`expire` each frame too.
 Routers borrow the existing session/store/context; they do not duplicate gameplay.
 No systems are automatically scheduled and no piece scan occurs while idle.
 
@@ -354,6 +477,8 @@ Host apply and publication are separate: `route` returns the already applied
 outcome even if the next send might fail. `publish` attempts every eligible peer
 and returns per-connection failures. The caller must retain and retry failed
 Control bytes in original cursor order, or disconnect/resynchronize that peer;
+a secure send failure always closes that channel, so its recovery requires a
+fresh connection/authentication/synchronization rather than same-key retries;
 **do not re-apply a command to retry publication**. A successful send means native
 queue acceptance, not an application ACK. Late join/baseline synchronization,
 backpressure recovery and disconnect ownership cancellation remain explicit
@@ -427,15 +552,24 @@ backoff, explicit closes and RAII cleanup on panic. The routing test validates
 actual listener acceptance, A's reliable Grab, both replicas' ACK, a Transient drag
 delivered only to B, a small independent Bulk message, reliable Release with snap, equal final
 piece/connectivity/snapshot/cursor state, and disconnect on both ends. That test
-now performs mutual SPAKE2 confirmation for both clients, verifies independent
+now performs mutual SPAKE2 confirmation plus encrypted SecureChannelReady for both
+clients, checks ciphertext immediately below the wrapper on actual UDP sends, and verifies independent
 PlayerIds and unassigned gameplay mappings, and explicitly promotes through
 Syncing to Ready before Grab/Drag/Release. A separate actual-socket wrong-password
-test verifies rejection, close, no registration and no gameplay mutation.
+test verifies rejection, close, no channel installation, no registration and no
+gameplay mutation. An actual-socket ciphertext-tampered Grab test verifies
+ProtocolViolation close, destroyed keys and unchanged host pieces/cursor.
 Socket-free bootstrap tests cover byte-length password validation/redaction,
 both confirmations, altered metadata/identity, nonce/session/image replay,
 malformed points/control, pre-decode size limits, timeouts, pending capacity,
 independent global start/failure buckets, pre-Ready routing/broadcast exclusion,
-send failure cleanup, stale registrations and one-time Ready promotion. Receive
+send failure cleanup, stale registrations and one-time Ready promotion. Secure
+unit tests cover both directions/all classes, reflection and lane substitution,
+ciphertext/tag/sequence tampering, reliable replay/gaps, Transient gaps and stale
+drops, exhaustion, owned-key zeroization, fresh-PAKE key separation, downgrade
+rejection, outer/inner limits, same-batch activation and channel lifecycle.
+Bootstrap tests also cover Securing timeout/capacity and encrypted-ready send
+failure. Receive
 regressions preload reliable UDP messages and wait for native ACKs without polling
 the receiver, then verify shared 512-message limits, rotation between listeners,
 partial-chunk retention, outgoing-socket draining and server-initiated close.
@@ -469,8 +603,12 @@ DirectIpTransport or introduce an address enum into protocol messages.
 Steam session authentication should validate the Steam user and session membership
 alongside the reusable session password layer. Independent PlayerId assignment
 still belongs to bootstrap, and SessionConnections registration waits for Ready.
-The existing wire codec, host/client routers and authority/replication adapters
-remain the integration points. Steam P2P/SDR selection belongs to that future
+Wrap the future Steamworks Transport in SecureTransport<T> and apply its outer
+record limit before native copies. The existing wire codec, host/client routers
+and authority/replication adapters remain the integration points. Future snapshot
+and image chunks use this same secured Transport, with begin_sync/promote_ready
+coordinated separately on both ends; add chunk semantics in wire/bootstrap,
+without a separate encryption path. Steam P2P/SDR selection belongs to that future
 backend. `SteamLobbyBackend`, if added, separately chooses session members and
 the lobby owner/host identity; it does not send gameplay messages. No lobby or
 Steamworks placeholder dependency/module is added in this change.

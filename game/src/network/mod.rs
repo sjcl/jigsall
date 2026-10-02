@@ -8,6 +8,7 @@ pub mod client;
 pub mod gns;
 pub mod host;
 pub mod rate_limit;
+pub mod secure;
 pub mod session;
 pub mod session_control;
 pub mod transport;

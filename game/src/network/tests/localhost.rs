@@ -3,6 +3,7 @@ use crate::network::gns::GnsDirectIp;
 use crate::network::{
     auth::SessionPassword,
     bootstrap::{BootstrapOutcome, ClientBootstrap, ConnectionState, HostBootstrap},
+    secure::SecureTransport,
     session_control::SessionMetadata,
 };
 use std::{
@@ -10,9 +11,85 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Inspect/tamper the bytes immediately below SecureTransport, before real GNS
+/// sends them. Test-only access cannot bypass protection in production.
+struct RecordedGns {
+    inner: GnsDirectIp,
+    sent: Vec<(ConnectionId, MessageClass, Vec<u8>)>,
+    tamper_next: bool,
+}
+impl RecordedGns {
+    fn new() -> Self {
+        Self {
+            inner: GnsDirectIp::new().unwrap(),
+            sent: Vec::new(),
+            tamper_next: false,
+        }
+    }
+    fn assert_protected_after_handshake(&self, plaintext_count: usize) {
+        assert_eq!(
+            self.sent
+                .iter()
+                .filter(|(_, _, bytes)| wire::decode(bytes).is_ok())
+                .count(),
+            plaintext_count
+        );
+        assert!(self.sent.len() > plaintext_count);
+        assert!(self
+            .sent
+            .iter()
+            .filter(|(_, class, _)| *class != MessageClass::Control)
+            .all(|(_, _, bytes)| wire::decode(bytes).is_err()));
+    }
+}
+impl Transport for RecordedGns {
+    fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
+        self.inner.poll(events)
+    }
+    fn send(
+        &mut self,
+        connection: ConnectionId,
+        class: MessageClass,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        let mut bytes = payload.to_vec();
+        if self.tamper_next {
+            self.tamper_next = false;
+            assert!(
+                wire::decode(&bytes).is_err(),
+                "tamper ciphertext, never a plaintext handshake"
+            );
+            bytes[8] ^= 1;
+        }
+        self.sent.push((connection, class, bytes.clone()));
+        self.inner.send(connection, class, &bytes)
+    }
+    fn close(
+        &mut self,
+        connection: ConnectionId,
+        reason: DisconnectReason,
+    ) -> Result<(), TransportError> {
+        self.inner.close(connection, reason)
+    }
+}
+impl DirectIpTransport for RecordedGns {
+    fn listen(&mut self, address: SocketAddr) -> Result<ListenerId, TransportError> {
+        self.inner.listen(address)
+    }
+    fn listener_address(&self, listener: ListenerId) -> Result<SocketAddr, TransportError> {
+        self.inner.listener_address(listener)
+    }
+    fn close_listener(&mut self, listener: ListenerId) -> Result<(), TransportError> {
+        self.inner.close_listener(listener)
+    }
+    fn connect(&mut self, address: SocketAddr) -> Result<ConnectionId, TransportError> {
+        self.inner.connect(address)
+    }
+}
+
 struct Live {
-    host: GnsDirectIp,
-    clients: [GnsDirectIp; 2],
+    host: SecureTransport<RecordedGns>,
+    clients: [SecureTransport<RecordedGns>; 2],
     s: Scenario,
     host_peers: [Option<ConnectionId>; 2],
     client_hosts: [Option<ConnectionId>; 2],
@@ -142,8 +219,11 @@ impl Live {
 #[test]
 fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
     let mut live = Live {
-        host: GnsDirectIp::new().unwrap(),
-        clients: [GnsDirectIp::new().unwrap(), GnsDirectIp::new().unwrap()],
+        host: SecureTransport::new(RecordedGns::new()),
+        clients: [
+            SecureTransport::new(RecordedGns::new()),
+            SecureTransport::new(RecordedGns::new()),
+        ],
         s: Scenario::new(),
         host_peers: [None; 2],
         client_hosts: [None; 2],
@@ -180,6 +260,8 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
         live.until("mutual password authentication", Some(index), |live| {
             live.host_peers[index].is_some()
                 && live.client_bootstraps[index].as_ref().unwrap().state()
+                    == Some(ConnectionState::Authenticated)
+                && live.host_bootstrap.state(live.host_peers[index].unwrap())
                     == Some(ConnectionState::Authenticated)
         });
         let host_peer = live.host_peers[index].unwrap();
@@ -254,6 +336,10 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
     });
     assert_eq!(live.host_commands, 3);
     live.s.assert_final_equal();
+    live.host.backend_mut().assert_protected_after_handshake(4);
+    for client in &mut live.clients {
+        client.backend_mut().assert_protected_after_handshake(1);
+    }
     assert_eq!(
         live.host
             .send(ConnectionId::new(u64::MAX), MessageClass::Control, &bulk),
@@ -273,10 +359,12 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
         live.clients[index]
             .close(client, DisconnectReason::Requested)
             .unwrap();
+        assert!(!live.clients[index].has_channel(client));
         live.until("disconnect on both endpoints", None, |live| {
             live.s.host.connections.player(host_peer).is_none()
                 && live.s.peers[index].connections.player(client).is_none()
         });
+        assert!(!live.host.has_channel(host_peer));
     }
     live.host.close_listener(listener).unwrap();
     assert_eq!(
@@ -300,8 +388,8 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
 #[test]
 fn gns_localhost_wrong_password_never_registers_or_mutates() {
     use crate::network::bootstrap::BootstrapError;
-    let mut host = GnsDirectIp::new().unwrap();
-    let mut client = GnsDirectIp::new().unwrap();
+    let mut host = SecureTransport::new(GnsDirectIp::new().unwrap());
+    let mut client = SecureTransport::new(GnsDirectIp::new().unwrap());
     let listener = host
         .listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .unwrap();
@@ -374,6 +462,8 @@ fn gns_localhost_wrong_password_never_registers_or_mutates() {
         std::thread::park_timeout(Duration::from_millis(1));
     }
     assert!(rejected);
+    assert!(!host.has_channel(incoming.unwrap()));
+    assert!(!client.has_channel(outgoing));
     let incoming = incoming.unwrap();
     assert_eq!(scenario.host.connections.player(incoming), None);
     assert_eq!(scenario.peers[0].connections.player(outgoing), None);
@@ -388,5 +478,139 @@ fn gns_localhost_wrong_password_never_registers_or_mutates() {
         HostRouteError::Unauthenticated
     );
     assert_eq!(scenario.host.store.states, original);
+    host.close_listener(listener).unwrap();
+}
+
+#[test]
+fn gns_localhost_tampered_secure_grab_closes_without_gameplay_mutation() {
+    let mut host = SecureTransport::new(RecordedGns::new());
+    let mut client = SecureTransport::new(RecordedGns::new());
+    let listener = host
+        .listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .unwrap();
+    let outgoing = client
+        .connect(host.listener_address(listener).unwrap())
+        .unwrap();
+    let mut scenario = Scenario::new();
+    let before = scenario.host.store.states.clone();
+    let before_cursor = scenario.host.session.cursor();
+    let mut hb = HostBootstrap::new(
+        SessionPassword::new("correct password".into()).unwrap(),
+        SessionMetadata {
+            definition: SESSION,
+            cursor: AuthorityCursor::new(3, 0),
+            host: HOST,
+        },
+        [],
+        Instant::now(),
+    );
+    let mut cb = ClientBootstrap::new(
+        SessionPassword::new("correct password".into()).unwrap(),
+        outgoing,
+    );
+    let mut incoming = None;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while cb.state() != Some(ConnectionState::Authenticated)
+        || incoming.is_none_or(|id| hb.state(id) != Some(ConnectionState::Authenticated))
+    {
+        assert!(Instant::now() < deadline, "secure authentication timeout");
+        let mut events = Vec::new();
+        host.poll(&mut events).unwrap();
+        for event in events {
+            if let TransportEvent::Connected { connection } = event {
+                incoming = Some(connection);
+            }
+            assert_eq!(
+                hb.process(
+                    &event,
+                    &mut host,
+                    &mut scenario.host.connections,
+                    Instant::now()
+                )
+                .unwrap(),
+                BootstrapOutcome::Consumed
+            );
+        }
+        let mut events = Vec::new();
+        client.poll(&mut events).unwrap();
+        for event in events {
+            cb.process(
+                &event,
+                &mut client,
+                &mut scenario.peers[0].connections,
+                Instant::now(),
+            )
+            .unwrap();
+        }
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+    let incoming = incoming.unwrap();
+    assert!(host.has_channel(incoming));
+    assert!(client.has_channel(outgoing));
+    hb.begin_sync(incoming).unwrap();
+    cb.begin_sync().unwrap();
+    hb.promote_ready(incoming, &mut scenario.host.connections)
+        .unwrap();
+    cb.promote_ready(&mut scenario.peers[0].connections)
+        .unwrap();
+    client.backend_mut().tamper_next = true;
+    let mut command = grab();
+    command.player = cb.assigned_player().unwrap();
+    let mut router = scenario.client_router(0, outgoing);
+    router.local_player = command.player;
+    router.send_command(&mut client, &command).unwrap();
+    let mut rejected = false;
+    let mut remote_closed = false;
+    while !rejected || !remote_closed {
+        assert!(Instant::now() < deadline, "tampered channel close timeout");
+        let mut events = Vec::new();
+        host.poll(&mut events).unwrap();
+        for event in events {
+            if event
+                == (TransportEvent::Disconnected {
+                    connection: incoming,
+                    reason: DisconnectReason::ProtocolViolation,
+                })
+            {
+                rejected = true;
+            }
+            assert_eq!(
+                hb.process(
+                    &event,
+                    &mut host,
+                    &mut scenario.host.connections,
+                    Instant::now()
+                )
+                .unwrap(),
+                BootstrapOutcome::Consumed
+            );
+        }
+        let mut events = Vec::new();
+        client.poll(&mut events).unwrap();
+        for event in events {
+            if matches!(event, TransportEvent::Disconnected { .. }) {
+                remote_closed = true;
+            }
+            cb.process(
+                &event,
+                &mut client,
+                &mut scenario.peers[0].connections,
+                Instant::now(),
+            )
+            .unwrap();
+        }
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+    assert_eq!(scenario.host.store.states, before);
+    assert_eq!(scenario.host.session.cursor(), before_cursor);
+    assert_eq!(scenario.host.connections.player(incoming), None);
+    assert!(!host.has_channel(incoming));
+    assert!(!client.has_channel(outgoing));
+    let mut after_close = Vec::new();
+    host.poll(&mut after_close).unwrap();
+    assert!(
+        after_close.is_empty(),
+        "bootstrap observes one local close event"
+    );
     host.close_listener(listener).unwrap();
 }

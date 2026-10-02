@@ -2,6 +2,7 @@ use super::*;
 use crate::network::{
     auth::{ClientHandshake, PasswordError, ServerHandshake, SessionPassword},
     bootstrap::*,
+    secure::SecureTransport,
     session_control::*,
 };
 use std::time::{Duration, Instant};
@@ -31,8 +32,8 @@ struct Pair {
     client: ClientBootstrap,
     host_connections: SessionConnections,
     client_connections: SessionConnections,
-    ht: FakeTransport,
-    ct: FakeTransport,
+    ht: SecureTransport<FakeTransport>,
+    ct: SecureTransport<FakeTransport>,
     now: Instant,
 }
 const CLIENT_HOST: ConnectionId = ConnectionId::new(200);
@@ -44,8 +45,8 @@ impl Pair {
             client: ClientBootstrap::new(password(client_password), CLIENT_HOST),
             host_connections: SessionConnections::default(),
             client_connections: SessionConnections::default(),
-            ht: FakeTransport::default(),
-            ct: FakeTransport::default(),
+            ht: SecureTransport::new(FakeTransport::default()),
+            ct: SecureTransport::new(FakeTransport::default()),
             now,
         }
     }
@@ -70,11 +71,11 @@ impl Pair {
             .unwrap();
     }
     fn client_proof(&mut self) -> TransportEvent {
-        let event = remap(self.ht.sent.pop().unwrap(), CLIENT_HOST);
+        let event = remap(self.ht.backend_mut().sent.pop().unwrap(), CLIENT_HOST);
         self.client
             .process(&event, &mut self.ct, &mut self.client_connections, self.now)
             .unwrap();
-        remap(self.ct.sent.pop().unwrap(), HA)
+        remap(self.ct.backend_mut().sent.pop().unwrap(), HA)
     }
     fn authenticate(&mut self) {
         self.connect();
@@ -82,11 +83,46 @@ impl Pair {
         self.host
             .process(&event, &mut self.ht, &mut self.host_connections, self.now)
             .unwrap();
+        assert_eq!(self.host.state(HA), Some(ConnectionState::Securing));
+        assert!(self.ht.has_channel(HA));
+        assert_eq!(self.host.assigned_player(HA), None);
+        assert!(self.host.begin_sync(HA).is_err());
         assert_eq!(self.client.state(), Some(ConnectionState::Authenticating));
         assert_eq!(self.client.assigned_player(), None);
-        let event = remap(self.ht.sent.pop().unwrap(), CLIENT_HOST);
+        let event = remap(self.ht.backend_mut().sent.pop().unwrap(), CLIENT_HOST);
+        let TransportEvent::Message { payload, .. } = &event else {
+            unreachable!()
+        };
+        assert!(matches!(
+            wire::decode(payload),
+            Ok(WireMessage::SessionControl(
+                SessionControlMessage::AuthAccepted(_)
+            ))
+        ));
         self.client
             .process(&event, &mut self.ct, &mut self.client_connections, self.now)
+            .unwrap();
+        assert!(self.ct.has_channel(CLIENT_HOST));
+        assert!(!self.client.retains_password());
+        let event = remap(self.ct.backend_mut().sent.pop().unwrap(), HA);
+        let TransportEvent::Message { payload, .. } = &event else {
+            unreachable!()
+        };
+        assert!(
+            wire::decode(payload).is_err(),
+            "SecureChannelReady is encrypted"
+        );
+        self.ht.backend_mut().inbox.push(event);
+        let mut decrypted = Vec::new();
+        self.ht.poll(&mut decrypted).unwrap();
+        assert_eq!(decrypted.len(), 1);
+        self.host
+            .process(
+                &decrypted[0],
+                &mut self.ht,
+                &mut self.host_connections,
+                self.now,
+            )
             .unwrap();
     }
 }
@@ -170,11 +206,16 @@ fn wrong_password_closes_without_registering_or_mutating_gameplay() {
         ))
     );
     assert_eq!(p.host_connections.player(HA), None);
-    assert!(p.ht.sent.is_empty());
-    assert!(p.ht.inbox.contains(&TransportEvent::Disconnected {
+    assert!(p.ht.backend_mut().sent.is_empty());
+    let mut events = Vec::new();
+    p.ht.poll(&mut events).unwrap();
+    assert!(events.contains(&TransportEvent::Disconnected {
         connection: HA,
         reason: DisconnectReason::AuthenticationFailed
     }));
+    assert!(!p.ht.has_channel(HA));
+    assert!(!p.ct.has_channel(CLIENT_HOST));
+    assert!(p.ct.backend_mut().sent.is_empty());
     let mut s = Scenario::new();
     let before = s.host.store.states.clone();
     assert_eq!(
@@ -196,7 +237,7 @@ fn wrong_client_and_server_confirmations_and_altered_assignment_fail() {
         let (client, proof) = ClientHandshake::start(&password("correct password"), &h).unwrap();
         let mut accepted = AuthAccepted {
             player: A,
-            confirmation: server.finish(proof).unwrap(),
+            confirmation: server.finish(proof).unwrap().0,
         };
         if alter_player {
             accepted.player = B;
@@ -214,7 +255,7 @@ fn wrong_client_and_server_confirmations_and_altered_assignment_fail() {
     let wrong = message_event(
         CLIENT_HOST,
         &WireMessage::SessionControl(SessionControlMessage::AuthAccepted(AuthAccepted {
-            player: p.host.assigned_player(HA).unwrap(),
+            player: PlayerId(0),
             confirmation: [0; 32],
         })),
     );
@@ -371,7 +412,7 @@ fn host_global_start_and_failure_buckets_refill() {
             if fail {
                 // Valid point but invalid confirmation: consumes a failed attempt.
                 let WireMessage::SessionControl(SessionControlMessage::ServerHello(h)) =
-                    wire::decode(match p.ht.sent.last().unwrap() {
+                    wire::decode(match p.ht.backend_mut().sent.last().unwrap() {
                         TransportEvent::Message { payload, .. } => payload,
                         _ => unreachable!(),
                     })
@@ -620,7 +661,7 @@ fn authentication_and_syncing_peers_receive_no_gameplay_broadcasts() {
 #[test]
 fn failed_handshake_sends_clear_state_and_cannot_promote() {
     let mut p = Pair::new("correct password");
-    p.ht.fail = Some(HA);
+    p.ht.backend_mut().fail = Some(HA);
     assert_eq!(
         p.host.process(
             &TransportEvent::Connected { connection: HA },
@@ -635,7 +676,7 @@ fn failed_handshake_sends_clear_state_and_cannot_promote() {
     let mut p = Pair::new("correct password");
     p.connect();
     let proof = p.client_proof();
-    p.ht.fail = Some(HA);
+    p.ht.backend_mut().fail = Some(HA);
     assert_eq!(
         p.host
             .process(&proof, &mut p.ht, &mut p.host_connections, p.now),
@@ -645,8 +686,8 @@ fn failed_handshake_sends_clear_state_and_cannot_promote() {
     assert!(p.host.begin_sync(HA).is_err());
     let mut p = Pair::new("correct password");
     p.connect();
-    p.ct.fail = Some(CLIENT_HOST);
-    let hello = remap(p.ht.sent.pop().unwrap(), CLIENT_HOST);
+    p.ct.backend_mut().fail = Some(CLIENT_HOST);
+    let hello = remap(p.ht.backend_mut().sent.pop().unwrap(), CLIENT_HOST);
     assert_eq!(
         p.client
             .process(&hello, &mut p.ct, &mut p.client_connections, p.now),
@@ -712,4 +753,139 @@ fn malformed_curve_points_and_stale_registration_are_rejected() {
     assert_eq!(p.client_connections.player(CLIENT_HOST), None);
     assert!(p.host.begin_sync(HA).is_err());
     assert!(p.client.begin_sync().is_err());
+}
+
+#[test]
+fn securing_timeout_and_plaintext_ready_cannot_complete_authentication() {
+    for timeout in [false, true] {
+        let mut p = Pair::new("correct password");
+        p.connect();
+        let proof = p.client_proof();
+        p.host
+            .process(&proof, &mut p.ht, &mut p.host_connections, p.now)
+            .unwrap();
+        assert_eq!(p.host.state(HA), Some(ConnectionState::Securing));
+        assert!(p.ht.has_channel(HA));
+        if timeout {
+            assert_eq!(
+                p.host
+                    .expire(&mut p.ht, &mut p.host_connections, p.now + AUTH_TIMEOUT)
+                    .len(),
+                1
+            );
+        } else {
+            p.ht.backend_mut().inbox.push(message_event(
+                HA,
+                &WireMessage::SessionControl(SessionControlMessage::SecureChannelReady),
+            ));
+            let mut events = Vec::new();
+            p.ht.poll(&mut events).unwrap();
+            assert_eq!(
+                events,
+                vec![TransportEvent::Disconnected {
+                    connection: HA,
+                    reason: DisconnectReason::ProtocolViolation
+                }]
+            );
+            p.host
+                .process(&events[0], &mut p.ht, &mut p.host_connections, p.now)
+                .unwrap();
+        }
+        assert!(!p.ht.has_channel(HA));
+        assert_eq!(p.host.state(HA), None);
+        assert_eq!(p.host.assigned_player(HA), None);
+        assert_eq!(p.host_connections.player(HA), None);
+    }
+}
+
+#[test]
+fn securing_connections_still_count_towards_pending_capacity() {
+    let mut p = Pair::new("correct password");
+    for n in 0..MAX_PENDING_AUTH {
+        let id = ConnectionId::new(n as u64);
+        let now = p.now + Duration::from_millis(n as u64 * 250);
+        p.host
+            .process(
+                &TransportEvent::Connected { connection: id },
+                &mut p.ht,
+                &mut p.host_connections,
+                now,
+            )
+            .unwrap();
+        let TransportEvent::Message { payload, .. } = p.ht.backend_mut().sent.pop().unwrap() else {
+            unreachable!()
+        };
+        let WireMessage::SessionControl(SessionControlMessage::ServerHello(hello)) =
+            wire::decode(&payload).unwrap()
+        else {
+            unreachable!()
+        };
+        let (_, proof) = ClientHandshake::start(&password("correct password"), &hello).unwrap();
+        p.host
+            .process(
+                &message_event(
+                    id,
+                    &WireMessage::SessionControl(SessionControlMessage::ClientProof(proof)),
+                ),
+                &mut p.ht,
+                &mut p.host_connections,
+                now,
+            )
+            .unwrap();
+        assert_eq!(p.host.state(id), Some(ConnectionState::Securing));
+    }
+    assert_eq!(
+        p.host.process(
+            &TransportEvent::Connected {
+                connection: ConnectionId::new(999)
+            },
+            &mut p.ht,
+            &mut p.host_connections,
+            p.now + Duration::from_secs(8)
+        ),
+        Err(BootstrapError::Rejected(DisconnectReason::RateLimited))
+    );
+}
+
+#[test]
+fn encrypted_ready_send_failure_destroys_client_channel_and_assignment() {
+    let mut p = Pair::new("correct password");
+    p.connect();
+    let proof = p.client_proof();
+    p.host
+        .process(&proof, &mut p.ht, &mut p.host_connections, p.now)
+        .unwrap();
+    let accepted = remap(p.ht.backend_mut().sent.pop().unwrap(), CLIENT_HOST);
+    p.ct.backend_mut().fail = Some(CLIENT_HOST);
+    assert!(p
+        .client
+        .process(&accepted, &mut p.ct, &mut p.client_connections, p.now)
+        .is_err());
+    assert!(!p.ct.has_channel(CLIENT_HOST));
+    assert_eq!(p.client.assigned_player(), None);
+    assert_eq!(p.client.state(), None);
+    assert!(p.ct.backend_mut().sent.is_empty());
+    assert!(p.client.begin_sync().is_err());
+}
+
+#[test]
+fn tampered_channel_close_routed_through_bootstrap_notifies_exactly_once() {
+    let mut p = Pair::new("correct password");
+    p.authenticate();
+    p.ht.backend_mut().inbox.push(TransportEvent::Message {
+        connection: HA,
+        class: MessageClass::Control,
+        payload: vec![0],
+    });
+    let mut events = Vec::new();
+    p.ht.poll(&mut events).unwrap();
+    assert_eq!(events.len(), 1);
+    p.host
+        .process(&events[0], &mut p.ht, &mut p.host_connections, p.now)
+        .unwrap();
+    events.clear();
+    p.ht.poll(&mut events).unwrap();
+    assert!(events.is_empty());
+    assert!(!p.ht.has_channel(HA));
+    assert_eq!(p.host.state(HA), None);
 }

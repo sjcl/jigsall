@@ -36,10 +36,52 @@ impl fmt::Debug for SessionPassword {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AuthError;
-pub(crate) struct ServerHandshake(PartyAState<Spake2P256>);
+/// Verified PAKE output behind a replaceable, library-independent boundary.
+/// Never Clone/Debug/Display/Serialize. The P-256 suite's Ke is 16 bytes, not
+/// the 32-byte confirmation MAC; HKDF expands Ke into application keys.
+pub(crate) struct AuthenticatedSecret {
+    key: Zeroizing<Vec<u8>>,
+    // Public metadata, authenticated by pakery's peer confirmation. Pakery binds
+    // AAD into confirmation keys, not Ke itself; carry it into application HKDF.
+    binding: Vec<u8>,
+}
+impl AuthenticatedSecret {
+    fn from_output(output: Spake2Output, binding: Vec<u8>) -> Self {
+        let secret = output.into_session_key();
+        Self {
+            key: Zeroizing::new(secret.as_bytes().to_vec()),
+            binding,
+        }
+    }
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.key
+    }
+    pub(crate) fn binding(&self) -> &[u8] {
+        &self.binding
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture(bytes: &[u8]) -> Self {
+        Self {
+            key: Zeroizing::new(bytes.to_vec()),
+            binding: b"test context".to_vec(),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn fixture_binding(bytes: &[u8], binding: &[u8]) -> Self {
+        Self {
+            key: Zeroizing::new(bytes.to_vec()),
+            binding: binding.to_vec(),
+        }
+    }
+}
+pub(crate) struct ServerHandshake {
+    state: PartyAState<Spake2P256>,
+    binding: Vec<u8>,
+}
 pub(crate) struct ClientHandshake {
     output: Spake2Output,
     player: PlayerId,
+    binding: Vec<u8>,
 }
 
 fn scalar(
@@ -99,30 +141,38 @@ impl ServerHandshake {
         };
         getrandom::fill(&mut hello.nonce).map_err(|_| AuthError)?;
         let w = scalar(password)?;
+        let binding = context(&hello);
         let (message, state) = PartyA::<Spake2P256>::start(
             &w,
             b"puzzella-host",
             b"puzzella-client",
-            &context(&hello),
+            &binding,
             &mut rand_core::UnwrapErr(getrandom::SysRng),
         )
         .map_err(|_| AuthError)?;
         hello.public_message = public(&message)?;
-        Ok((Self(state), hello))
+        Ok((Self { state, binding }, hello))
     }
-    pub(crate) fn finish(self, proof: ClientProof) -> Result<[u8; 32], AuthError> {
+    pub(crate) fn finish(
+        self,
+        proof: ClientProof,
+    ) -> Result<([u8; 32], AuthenticatedSecret), AuthError> {
         let output = self
-            .0
+            .state
             .finish(&encoded(proof.public_message))
             .map_err(|_| AuthError)?;
         output
             .verify_peer_confirmation(&proof.confirmation)
             .map_err(|_| AuthError)?;
-        output
+        let confirmation = output
             .confirmation_mac
             .as_slice()
             .try_into()
-            .map_err(|_| AuthError)
+            .map_err(|_| AuthError)?;
+        Ok((
+            confirmation,
+            AuthenticatedSecret::from_output(output, self.binding),
+        ))
     }
 }
 impl ClientHandshake {
@@ -134,11 +184,12 @@ impl ClientHandshake {
             return Err(AuthError);
         }
         let w = scalar(password)?;
+        let binding = context(hello);
         let (message, state) = PartyB::<Spake2P256>::start(
             &w,
             b"puzzella-host",
             b"puzzella-client",
-            &context(hello),
+            &binding,
             &mut rand_core::UnwrapErr(getrandom::SysRng),
         )
         .map_err(|_| AuthError)?;
@@ -157,17 +208,24 @@ impl ClientHandshake {
             Self {
                 output,
                 player: hello.reserved_player,
+                binding,
             },
             proof,
         ))
     }
-    pub(crate) fn finish(self, accepted: AuthAccepted) -> Result<PlayerId, AuthError> {
+    pub(crate) fn finish(
+        self,
+        accepted: AuthAccepted,
+    ) -> Result<(PlayerId, AuthenticatedSecret), AuthError> {
         if accepted.player != self.player {
             return Err(AuthError);
         }
         self.output
             .verify_peer_confirmation(&accepted.confirmation)
             .map_err(|_| AuthError)?;
-        Ok(accepted.player)
+        Ok((
+            accepted.player,
+            AuthenticatedSecret::from_output(self.output, self.binding),
+        ))
     }
 }
