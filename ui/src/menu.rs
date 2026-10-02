@@ -55,7 +55,7 @@ pub fn draw_menu_ui(
                             theme::button(ui, "Join Multiplayer", width, false);
                             theme::button(ui, "Settings", width, false);
                             ui.add_space(4.0);
-                            if theme::button(ui, "Exit", width, false).clicked() {
+                            if theme::danger_button(ui, "Exit", width).clicked() {
                                 exit.write(AppExit::Success);
                             }
                         });

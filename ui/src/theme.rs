@@ -148,6 +148,26 @@ pub fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
 }
 
 pub fn button(ui: &mut egui::Ui, label: &str, width: f32, primary: bool) -> egui::Response {
+    button_with_color(
+        ui,
+        label,
+        width,
+        primary,
+        if primary { BACKGROUND } else { TEXT },
+    )
+}
+
+pub fn danger_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
+    button_with_color(ui, label, width, false, DANGER)
+}
+
+fn button_with_color(
+    ui: &mut egui::Ui,
+    label: &str,
+    width: f32,
+    primary: bool,
+    text_color: Color32,
+) -> egui::Response {
     ui.add_sized(
         [
             width.max(0.0),
@@ -157,14 +177,10 @@ pub fn button(ui: &mut egui::Ui, label: &str, width: f32, primary: bool) -> egui
                 44.0
             },
         ],
-        egui::Button::new(egui::RichText::new(label).size(15.0).color(if primary {
-            BACKGROUND
-        } else {
-            TEXT
-        }))
-        .fill(if primary { ACCENT } else { SURFACE })
-        .stroke(Stroke::new(1.0, if primary { ACCENT } else { BORDER }))
-        .corner_radius(8),
+        egui::Button::new(egui::RichText::new(label).size(15.0).color(text_color))
+            .fill(if primary { ACCENT } else { SURFACE })
+            .stroke(Stroke::new(1.0, if primary { ACCENT } else { BORDER }))
+            .corner_radius(8),
     )
 }
 

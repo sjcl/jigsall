@@ -59,7 +59,7 @@ pub fn draw_in_game_menu_ui(
                         if theme::button(ui, "Return to Title", width, false).clicked() {
                             next_state.set(AppState::Menu);
                         }
-                        if theme::button(ui, "Exit Game", width, false).clicked() {
+                        if theme::danger_button(ui, "Exit Game", width).clicked() {
                             exit.write(AppExit::Success);
                         }
                     });
