@@ -39,12 +39,12 @@ pub fn generate_puzzle_state(
                 progress.generation_phase = GenerationPhase::UploadingGpu;
             }
             Ok(Err(error)) => {
-                progress.error = Some(error);
+                progress.error = Some(GenerationError::State(error));
                 progress.generation_phase = GenerationPhase::Failed;
                 progress.receiver = None;
             }
             Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                progress.error = Some("State worker stopped".into());
+                progress.error = Some(GenerationError::WorkerStopped);
                 progress.generation_phase = GenerationPhase::Failed;
                 progress.receiver = None;
             }
@@ -61,7 +61,7 @@ pub fn generate_puzzle_state(
         }
     }
     if let Some(error) = ready.error(store.epoch) {
-        progress.error = Some(error);
+        progress.error = Some(GenerationError::Renderer(error));
         progress.generation_phase = GenerationPhase::Failed;
         progress.is_generating = false;
     }

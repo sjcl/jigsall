@@ -18,10 +18,24 @@ pub struct PersistenceState {
     pub entries: Vec<SaveListEntry>,
     pub busy: bool,
     pub title_dialog_open: bool,
-    pub error: Option<String>,
-    pub message: Option<String>,
+    pub error: Option<PersistenceError>,
+    pub message: Option<PersistenceNotice>,
     pub generation: u64,
     pub(crate) capture_title: Option<SaveTitle>,
+}
+
+#[derive(Clone, Debug)]
+pub enum PersistenceError {
+    WorkerStopped,
+    DefinitionUnavailable,
+    Checkpoint(CheckpointError),
+    ImageImport(SaveError),
+    Save(SaveError),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PersistenceNotice {
+    Saved,
 }
 #[derive(Resource)]
 pub(crate) struct PendingRestore(pub Option<RestoredPuzzle>);
@@ -128,7 +142,7 @@ impl PersistenceService {
         if self.tx.send((state.generation, request)).is_ok() {
             state.busy = true;
         } else {
-            state.error = Some("Save worker stopped".into());
+            state.error = Some(PersistenceError::WorkerStopped);
         }
     }
     pub fn list(&self, state: &mut PersistenceState) {
@@ -142,10 +156,14 @@ impl PersistenceService {
     }
     /// The UI limits this to one in-flight request and selects only visible images.
     /// Thumbnail replies never change the foreground operation's busy/error state.
-    pub fn request_thumbnail(&self, generation: u64, hash: ImageHash) -> Result<(), String> {
+    pub fn request_thumbnail(
+        &self,
+        generation: u64,
+        hash: ImageHash,
+    ) -> Result<(), PersistenceError> {
         self.tx
             .send((generation, Request::Thumbnail(hash)))
-            .map_err(|_| "Save worker stopped".into())
+            .map_err(|_| PersistenceError::WorkerStopped)
     }
     pub fn try_recv_thumbnail(&self) -> Option<ThumbnailReply> {
         self.thumbnails.try_recv().ok()
@@ -198,12 +216,12 @@ pub(crate) fn capture_requested_save(
     };
     state.busy = false;
     let (Some(definition), Some(original)) = (definition, original) else {
-        state.error = Some("Puzzle definition or original image is unavailable".into());
+        state.error = Some(PersistenceError::DefinitionUnavailable);
         return;
     };
     match PuzzleCheckpoint::capture(&store, &definition, original.hash) {
         Ok(checkpoint) => service.save(&mut state, title, checkpoint, original.encoded.clone()),
-        Err(error) => state.error = Some(error.to_string()),
+        Err(error) => state.error = Some(PersistenceError::Checkpoint(error)),
     }
 }
 fn run_request<S: SaveStorage>(
@@ -301,10 +319,7 @@ pub(crate) fn poll_results(
                 if original.hash == hash {
                     match result {
                         Ok(()) => original.encoded = None,
-                        Err(e) => {
-                            state.error =
-                                Some(format!("Image import failed; original bytes retained: {e}"))
-                        }
+                        Err(e) => state.error = Some(PersistenceError::ImageImport(e)),
                     }
                 }
             }
@@ -318,7 +333,7 @@ pub(crate) fn poll_results(
             Reply::Saved(result) => result.map(|metadata| {
                 state.current_save = Some(metadata);
                 state.title_dialog_open = false;
-                state.message = Some("Game saved".into());
+                state.message = Some(PersistenceNotice::Saved);
                 if let Some(ref mut original) = original {
                     original.encoded = None;
                 }
@@ -353,7 +368,7 @@ pub(crate) fn poll_results(
             Reply::Imported(..) | Reply::Thumbnail(..) => unreachable!(),
         };
         if let Err(error) = result {
-            state.error = Some(error.to_string());
+            state.error = Some(PersistenceError::Save(error));
         }
     }
 }

@@ -213,13 +213,14 @@ fn failed_save_preserves_previous_config_and_allows_revert() {
         }),
     );
     action(&mut app, DisplaySettingsAction::Keep);
-    assert!(app
-        .world()
-        .resource::<DisplaySettingsState>()
-        .error
-        .as_ref()
-        .unwrap()
-        .contains("Could not save"));
+    assert!(matches!(
+        app.world()
+            .resource::<DisplaySettingsState>()
+            .error
+            .as_ref()
+            .unwrap(),
+        DisplaySettingsError::SaveFailed(_)
+    ));
     assert!(app
         .world()
         .resource::<DisplaySettingsState>()

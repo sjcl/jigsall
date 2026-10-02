@@ -15,6 +15,21 @@ pub fn prepare(ctx: &egui::Context) {
     if ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
         return;
     }
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "puzzella_japanese".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../fonts/MPLUS1p-Regular.ttf"
+        ))),
+    );
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("puzzella_japanese".into());
+    }
+    ctx.set_fonts(fonts);
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.visuals = egui::Visuals::dark();
     style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
@@ -122,7 +137,7 @@ pub fn frame() -> egui::Frame {
         .inner_margin(24)
 }
 
-pub fn section(ui: &mut egui::Ui, number: &str, title: &str) {
+pub fn section(ui: &mut egui::Ui, number: &str, title: impl Into<String>) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(number).size(11.0).color(ACCENT));
         ui.label(egui::RichText::new(title).size(17.0).strong());
@@ -130,7 +145,7 @@ pub fn section(ui: &mut egui::Ui, number: &str, title: &str) {
     ui.add_space(4.0);
 }
 
-pub fn heading(ui: &mut egui::Ui, title: &str) {
+pub fn heading(ui: &mut egui::Ui, title: impl Into<String>) {
     ui.label(
         egui::RichText::new(title)
             .size(if ui.ctx().content_rect().height() < 600.0 {
@@ -147,7 +162,12 @@ pub fn hint(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.label(egui::RichText::new(text).size(12.0).color(MUTED));
 }
 
-pub fn button(ui: &mut egui::Ui, label: &str, width: f32, primary: bool) -> egui::Response {
+pub fn button(
+    ui: &mut egui::Ui,
+    label: impl Into<String>,
+    width: f32,
+    primary: bool,
+) -> egui::Response {
     button_with_color(
         ui,
         label,
@@ -157,13 +177,13 @@ pub fn button(ui: &mut egui::Ui, label: &str, width: f32, primary: bool) -> egui
     )
 }
 
-pub fn danger_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response {
+pub fn danger_button(ui: &mut egui::Ui, label: impl Into<String>, width: f32) -> egui::Response {
     button_with_color(ui, label, width, false, DANGER)
 }
 
 fn button_with_color(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl Into<String>,
     width: f32,
     primary: bool,
     text_color: Color32,

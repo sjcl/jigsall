@@ -1,10 +1,13 @@
+use crate::localization::Localization;
 use crate::{grid::calculate_grid_from_config, theme};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use puzzella_game::asset_reader::{start_thread_image_load, ExternalFileRegistry};
 use puzzella_game::resources::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_game_setup_ui(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut config: ResMut<PuzzleConfig>,
     mut commands: Commands,
@@ -33,7 +36,7 @@ pub fn draw_game_setup_ui(
             theme::frame().show(ui, |ui| {
                 ui.set_width(width);
                 ui.set_max_height((screen.height() - 96.0).max(120.0));
-                theme::heading(ui, "New Game");
+                theme::heading(ui, i18n.text("menu-new-game"));
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height((screen.height() - 312.0).max(80.0))
@@ -46,8 +49,9 @@ pub fn draw_game_setup_ui(
                                     puzzle_image.as_deref(),
                                     texture,
                                     &file_registry,
+                                    &i18n,
                                 );
-                                piece_section(&mut columns[1], &mut config);
+                                piece_section(&mut columns[1], &mut config, &i18n);
                             });
                         } else {
                             select_image = image_section(
@@ -56,37 +60,53 @@ pub fn draw_game_setup_ui(
                                 puzzle_image.as_deref(),
                                 texture,
                                 &file_registry,
+                                &i18n,
                             );
                             ui.add_space(12.0);
-                            piece_section(ui, &mut config);
+                            piece_section(ui, &mut config, &i18n);
                         }
                         ui.add_space(8.0);
                     });
                 ui.separator();
-                if let Some((cols, rows, _)) =
+                if let Some((cols, rows)) =
                     calculate_grid_from_config(&config, puzzle_image.as_deref())
                 {
                     config.grid_size = (cols, rows);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            egui::RichText::new(format!("{} pieces", cols * rows))
-                                .strong()
-                                .color(theme::ACCENT),
+                            egui::RichText::new(
+                                i18n.format(
+                                    "setup-piece-count",
+                                    &[("count", (cols * rows).into())],
+                                ),
+                            )
+                            .strong()
+                            .color(theme::ACCENT),
                         );
-                        theme::hint(ui, format!("{cols} x {rows} grid"));
+                        theme::hint(
+                            ui,
+                            i18n.format(
+                                "setup-grid",
+                                &[("columns", cols.into()), ("rows", rows.into())],
+                            ),
+                        );
                     });
                 } else {
-                    theme::hint(ui, "Select an image to start your puzzle.");
+                    theme::hint(ui, i18n.text("setup-select-hint"));
                 }
                 ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 10.0) * 0.5).min(240.0);
-                    if theme::button(ui, "Back to Title", button_width, false).clicked() {
+                    if theme::button(ui, i18n.text("common-back-title"), button_width, false)
+                        .clicked()
+                    {
                         next_state.set(AppState::Menu);
                     }
                     ui.add_enabled_ui(
                         image_loaded && !config.image_path.is_empty() && !select_image,
                         |ui| {
-                            if theme::button(ui, "Start Game", button_width, true).clicked() {
+                            if theme::button(ui, i18n.text("setup-start-game"), button_width, true)
+                                .clicked()
+                            {
                                 next_state.set(AppState::InGame);
                             }
                         },
@@ -97,7 +117,10 @@ pub fn draw_game_setup_ui(
     // Keep the existing threaded decode and original-image persistence path.
     if select_image {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Image files", &["png", "jpg", "jpeg", "bmp", "gif", "webp"])
+            .add_filter(
+                i18n.text("setup-image-filter"),
+                &["png", "jpg", "jpeg", "bmp", "gif", "webp"],
+            )
             .pick_file()
         {
             let key = file_registry.register_file(&path);
@@ -115,16 +138,17 @@ fn image_section(
     image: Option<&PuzzleImage>,
     texture: Option<egui::TextureId>,
     registry: &ExternalFileRegistry,
+    i18n: &Localization,
 ) -> bool {
-    theme::section(ui, "01", "Puzzle Image");
+    theme::section(ui, "01", i18n.text("setup-image"));
     let width = ui.available_width();
     let compact = ui.ctx().content_rect().height() < 640.0;
     let label = if config.image_path.is_empty() {
-        "Select Image"
+        i18n.text("setup-select-image")
     } else {
-        "Change Image"
+        i18n.text("setup-change-image")
     };
-    let mut selected = compact && theme::button(ui, label, width, false).clicked();
+    let mut selected = compact && theme::button(ui, label.as_str(), width, false).clicked();
     let height = if compact {
         140.0
     } else if width >= 300.0 {
@@ -163,7 +187,7 @@ fn image_section(
         ui.painter().text(
             rect.center() + egui::vec2(0.0, 36.0),
             egui::Align2::CENTER_CENTER,
-            "Your next puzzle starts here",
+            i18n.text("setup-image-placeholder"),
             egui::FontId::proportional(13.0),
             theme::MUTED,
         );
@@ -179,13 +203,16 @@ fn image_section(
         if let Some(image) = image {
             theme::hint(
                 ui,
-                format!("{:.0} x {:.0} pixels", image.size.x, image.size.y),
+                i18n.format(
+                    "setup-image-pixels",
+                    &[
+                        ("width", format!("{:.0}", image.size.x).as_str().into()),
+                        ("height", format!("{:.0}", image.size.y).as_str().into()),
+                    ],
+                ),
             );
         } else {
-            theme::hint(
-                ui,
-                "Preparing image. Select another image if loading fails.",
-            );
+            theme::hint(ui, i18n.text("setup-preparing-image"));
         }
     }
     if !compact {
@@ -194,38 +221,42 @@ fn image_section(
     selected
 }
 
-fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig) {
+fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localization) {
     ui.spacing_mut().item_spacing.y = 8.0;
-    theme::section(ui, "02", "Piece Configuration");
+    theme::section(ui, "02", i18n.text("setup-pieces"));
     ui.horizontal_wrapped(|ui| {
         ui.selectable_value(
             &mut config.piece_mode,
             PieceMode::SquarePieces,
-            "Aspect Ratio",
+            i18n.text("setup-aspect-ratio"),
         );
         ui.selectable_value(
             &mut config.piece_mode,
             PieceMode::TargetCount,
-            "Target Count",
+            i18n.text("setup-target-count"),
         );
-        ui.selectable_value(&mut config.piece_mode, PieceMode::ManualGrid, "Manual Grid");
+        ui.selectable_value(
+            &mut config.piece_mode,
+            PieceMode::ManualGrid,
+            i18n.text("setup-manual-grid"),
+        );
     });
     ui.add_space(8.0);
     ui.spacing_mut().slider_width = (ui.available_width() - 110.0).clamp(60.0, 250.0);
     match config.piece_mode {
         PieceMode::SquarePieces => {
-            ui.label("Aspect ratio scale");
+            ui.label(i18n.text("setup-aspect-scale"));
             ui.add(
                 egui::Slider::new(&mut config.target_piece_size, 1.0..=50.0)
                     .suffix("x")
                     .fixed_decimals(1),
             );
-            theme::hint(ui, "Keeps pieces balanced to match your image.");
+            theme::hint(ui, i18n.text("setup-balanced-hint"));
         }
         PieceMode::TargetCount => {
-            ui.label("Target piece count");
+            ui.label(i18n.text("setup-target-pieces"));
             ui.add(egui::Slider::new(&mut config.target_piece_count, 4..=10000).logarithmic(true));
-            theme::hint(ui, "The final count follows your image's proportions.");
+            theme::hint(ui, i18n.text("setup-proportions-hint"));
             ui.horizontal_wrapped(|ui| {
                 for count in [100, 500, 1000] {
                     if ui
@@ -238,28 +269,28 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig) {
             });
         }
         PieceMode::ManualGrid => {
-            ui.label("Columns");
+            ui.label(i18n.text("setup-columns"));
             ui.add(egui::Slider::new(&mut config.grid_size.0, 2..=1000).logarithmic(true));
-            ui.label("Rows");
+            ui.label(i18n.text("setup-rows"));
             ui.add(egui::Slider::new(&mut config.grid_size.1, 2..=1000).logarithmic(true));
             theme::hint(
                 ui,
-                format!(
-                    "{} pieces in your custom grid",
-                    config.grid_size.0 * config.grid_size.1
+                i18n.format(
+                    "setup-custom-grid",
+                    &[("count", (config.grid_size.0 * config.grid_size.1).into())],
                 ),
             );
         }
     }
     ui.add_space(12.0);
-    theme::section(ui, "03", "Fine Tuning");
+    theme::section(ui, "03", i18n.text("setup-tuning"));
     ui.horizontal(|ui| {
-        ui.label("Seed");
+        ui.label(i18n.text("setup-seed"));
         ui.add(egui::DragValue::new(&mut config.seed).speed(1));
     });
-    theme::hint(ui, "Use the same seed to repeat the piece layout.");
+    theme::hint(ui, i18n.text("setup-seed-hint"));
     ui.add_space(4.0);
-    ui.label("Snap distance");
+    ui.label(i18n.text("setup-snap-distance"));
     ui.add(egui::Slider::new(&mut config.snap_distance, 1.0..=100.0).suffix(" px"));
-    theme::hint(ui, "A larger distance makes pieces easier to place.");
+    theme::hint(ui, i18n.text("setup-snap-hint"));
 }

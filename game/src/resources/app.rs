@@ -42,6 +42,7 @@ pub enum GameCompleteSubState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlayerInfo {
     pub id: PlayerId,
-    pub name: String,
+    /// None has no user-supplied name; the UI supplies its localized default.
+    pub name: Option<String>,
     pub score: u32,
 }

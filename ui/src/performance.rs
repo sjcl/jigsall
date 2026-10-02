@@ -1,11 +1,12 @@
+use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::resources::{PerformanceDebugLevel, PerformanceMonitor, PieceDataStore};
-use std::fmt::Write;
 
 pub fn draw_performance_overlay(
     mut contexts: EguiContexts,
     perf: Res<PerformanceMonitor>,
+    i18n: Res<Localization>,
     store: Res<PieceDataStore>,
 ) {
     if perf.debug_level == PerformanceDebugLevel::Off {
@@ -14,10 +15,15 @@ pub fn draw_performance_overlay(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    paint_overlay(ctx, &perf, store.len());
+    paint_overlay(ctx, &perf, store.len(), &i18n);
 }
 
-fn paint_overlay(ctx: &egui::Context, perf: &PerformanceMonitor, piece_count: usize) {
+fn paint_overlay(
+    ctx: &egui::Context,
+    perf: &PerformanceMonitor,
+    piece_count: usize,
+    i18n: &Localization,
+) {
     if perf.debug_level == PerformanceDebugLevel::Off {
         return;
     }
@@ -35,7 +41,7 @@ fn paint_overlay(ctx: &egui::Context, perf: &PerformanceMonitor, piece_count: us
         13.0
     };
     let galley = painter.layout_no_wrap(
-        overlay_text(perf, piece_count),
+        overlay_text(perf, piece_count, i18n),
         egui::FontId::monospace(font_size),
         egui::Color32::WHITE,
     );
@@ -51,22 +57,37 @@ fn paint_overlay(ctx: &egui::Context, perf: &PerformanceMonitor, piece_count: us
     painter.galley(position + padding, galley, egui::Color32::WHITE);
 }
 
-fn overlay_text(perf: &PerformanceMonitor, piece_count: usize) -> String {
-    let mut text = format!("FPS: {:.1}", perf.get_fps());
+fn overlay_text(perf: &PerformanceMonitor, piece_count: usize, i18n: &Localization) -> String {
+    let fps = format!("{:.1}", perf.get_fps());
     if perf.debug_level != PerformanceDebugLevel::Verbose {
-        return text;
+        return i18n.format("performance-fps", &[("fps", fps.as_str().into())]);
     }
     let min_frame = perf.frame_times.iter().min().copied().unwrap_or_default();
     let max_frame = perf.frame_times.iter().max().copied().unwrap_or_default();
-    let _ = write!(
-        text,
-        "\nFrame: {:.2} ms (avg)\n  min: {:.2} ms / max: {:.2} ms\nPieces: {}\nSamples: {} (window: {})\n\nCPU systems (ms):",
-        perf.get_frame_time_ms(),
-        min_frame.as_secs_f32() * 1000.0,
-        max_frame.as_secs_f32() * 1000.0,
-        piece_count,
-        perf.frame_count,
-        perf.frame_times.len(),
+    let mut text = i18n.format(
+        "performance-summary",
+        &[
+            ("fps", fps.as_str().into()),
+            (
+                "average",
+                format!("{:.2}", perf.get_frame_time_ms()).as_str().into(),
+            ),
+            (
+                "min",
+                format!("{:.2}", min_frame.as_secs_f32() * 1000.0)
+                    .as_str()
+                    .into(),
+            ),
+            (
+                "max",
+                format!("{:.2}", max_frame.as_secs_f32() * 1000.0)
+                    .as_str()
+                    .into(),
+            ),
+            ("pieces", piece_count.into()),
+            ("samples", perf.frame_count.into()),
+            ("window", perf.frame_times.len().into()),
+        ],
     );
     let mut systems: Vec<_> = perf.system_timings.iter().collect();
     systems.sort_by(|(name_a, a), (name_b, b)| {
@@ -75,15 +96,39 @@ fn overlay_text(perf: &PerformanceMonitor, piece_count: usize) -> String {
             .then_with(|| name_a.cmp(name_b))
     });
     for (name, timing) in systems {
-        let _ = write!(
-            text,
-            "\n{}\n  last: {:.2} / avg: {:.2}\n  min: {:.2} / max: {:.2} / calls: {}",
-            name,
-            timing.last_duration.as_secs_f32() * 1000.0,
-            timing.average_duration().as_secs_f32() * 1000.0,
-            timing.min_duration.as_secs_f32() * 1000.0,
-            timing.max_duration.as_secs_f32() * 1000.0,
-            timing.call_count,
+        text.push('\n');
+        text.push_str(
+            &i18n.format(
+                "performance-system",
+                &[
+                    ("name", name.as_str().into()),
+                    (
+                        "last",
+                        format!("{:.2}", timing.last_duration.as_secs_f32() * 1000.0)
+                            .as_str()
+                            .into(),
+                    ),
+                    (
+                        "average",
+                        format!("{:.2}", timing.average_duration().as_secs_f32() * 1000.0)
+                            .as_str()
+                            .into(),
+                    ),
+                    (
+                        "min",
+                        format!("{:.2}", timing.min_duration.as_secs_f32() * 1000.0)
+                            .as_str()
+                            .into(),
+                    ),
+                    (
+                        "max",
+                        format!("{:.2}", timing.max_duration.as_secs_f32() * 1000.0)
+                            .as_str()
+                            .into(),
+                    ),
+                    ("calls", timing.call_count.into()),
+                ],
+            ),
         );
     }
     text
@@ -98,6 +143,10 @@ mod tests {
     #[test]
     fn overlay_paints_each_mode_without_capturing_pointer_input() {
         let ctx = egui::Context::default();
+        let mut i18n = Localization::default();
+        i18n.set_preference(crate::localization::LanguagePreference::Locale(
+            crate::localization::Locale::EN_US,
+        ));
         let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
         let mut perf = PerformanceMonitor::default();
         perf.frame_times.push_back(Duration::from_millis(20));
@@ -111,13 +160,14 @@ mod tests {
             PerformanceDebugLevel::Off,
         ] {
             perf.debug_level = mode;
-            let output = ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(viewport),
                     ..default()
                 },
-                |ui| paint_overlay(ui.ctx(), &perf, 1000),
+                |ui| paint_overlay(ui.ctx(), &perf, 1000, &i18n),
             );
+            output.textures_delta.clear();
             let text = output.shapes.iter().find_map(|shape| {
                 if let egui::Shape::Text(text) = &shape.shape {
                     Some(text.galley.job.text.as_str())
@@ -160,7 +210,7 @@ mod tests {
                         ],
                         ..default()
                     },
-                    |ui| paint_overlay(ui.ctx(), &perf, 1000),
+                    |ui| paint_overlay(ui.ctx(), &perf, 1000, &i18n),
                 );
                 assert!(!ctx.egui_wants_pointer_input());
                 output.drop_without_applying_deltas();

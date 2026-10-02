@@ -149,7 +149,7 @@ fn initialize_game(
     *game = GameData {
         players: vec![PlayerInfo {
             id: LOCAL_PLAYER,
-            name: "Player".into(),
+            name: None,
             score: 0,
         }],
         ..default()
@@ -181,7 +181,7 @@ fn initialize_game(
         snap_distance: config.snap_distance,
     };
     if let Err(error) = definition.validate() {
-        progress.error = Some(error.into());
+        progress.error = Some(GenerationError::InvalidDefinition(error.into()));
         progress.generation_phase = GenerationPhase::Failed;
         return;
     }
@@ -525,10 +525,16 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             let state = app.world().resource::<PersistenceState>();
-            assert!(state
-                .error
-                .as_ref()
-                .is_some_and(|error| error.contains("expected revision 2, found 3")));
+            assert!(matches!(
+                state.error.as_ref(),
+                Some(crate::persistence::runtime::PersistenceError::Save(
+                    crate::persistence::SaveError::Conflict {
+                        expected_revision: 2,
+                        actual_revision: 3,
+                        ..
+                    }
+                ))
+            ));
             assert_eq!(state.current_save.as_ref(), Some(&current));
             assert!(state.message.is_none());
             assert_eq!(repo.load(current.id).unwrap().save.metadata, external);

@@ -2,6 +2,8 @@
 
 表示設定の機能は `game/src/settings.rs` の `DisplaySettingsPlugin` が担当し、egui画面からは `DisplaySettingsAction` を送ります。パズルの状態・セーブデータとは独立しています。
 
+言語設定は UI 側で別途保存し、表示設定の適用・取り消しから独立しています。多言語対応、通知の型、フォント、将来のプラットフォーム接続については [LOCALIZATION.md](LOCALIZATION.md) を参照してください。
+
 ## 技術的な対応
 
 Bevy 0.19.1の `Window` を変更すると、bevy_winitが実行中のOSウィンドウへ反映します。新しい依存エンジンやウィンドウの作り直しは不要です。

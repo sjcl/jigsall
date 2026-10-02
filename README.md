@@ -20,6 +20,8 @@ cargo run --locked --release
 
 タイトルの「Settings」から解像度、Fullscreen / Borderless / Windowed、最大FPS（10〜1000、無制限あり）を変更できます。「Apply」で反映し、解像度・画面モードを変更した場合は15秒以内に「Keep Changes」で確定します。「Revert」または時間切れで元に戻ります。確定した設定は次回起動時も復元します。ボーダーレスはデスクトップの解像度を使用します。実装・保存先・検証方法は[DISPLAY_SETTINGS.md](docs/DISPLAY_SETTINGS.md)を参照してください。「Join Multiplayer」は未実装です。タイトル・新規ゲーム・ロード・セーブ・設定は共通の落ち着いた配色で表示し、小さいウィンドウではスクロールできます。ロゴは`assets/icon.svg`から変換したPNGを実行ファイルに同梱しています。
 
+UI は English (`en-US`) と日本語 (`ja`) に対応しています。Settings の Language（設定 → 言語）で自動・English・日本語を選ぶと、再起動なしで表示が切り替わり、次回起動時も設定を復元します。自動では OS の言語を使用し、未対応の場合は英語に戻ります。翻訳カタログ、保存方式、日本語フォント、将来の Steam 接続については [LOCALIZATION.md](docs/LOCALIZATION.md) を参照してください。
+
 同じ画像寸法・grid・seed・generator versionから、同じ整数形状パラメータ、安定PieceId、初期配置を再構成します。通常プレイはversion 5を要求します。v4の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせました。decodeと輪郭が変わるためv4を含む旧versionの定義は拒否します。v2は比較用featureとテストに残しています。異GPU間の浮動小数点・ラスタライズのbit一致は保証しません。
 
 ## 操作

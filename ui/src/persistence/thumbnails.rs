@@ -1,8 +1,8 @@
-use crate::theme;
+use crate::{localization::Localization, theme};
 use bevy::prelude::Resource;
 use bevy_egui::egui;
 use puzzella_core::session::ImageHash;
-use puzzella_game::persistence::runtime::{PersistenceService, ThumbnailReply};
+use puzzella_game::persistence::runtime::{PersistenceError, PersistenceService, ThumbnailReply};
 use std::collections::HashMap;
 
 const CACHE_CAPACITY: usize = 64;
@@ -10,7 +10,7 @@ const SLOT_SIZE: egui::Vec2 = egui::vec2(112.0, 84.0);
 
 enum Thumbnail {
     Ready(egui::TextureHandle),
-    Failed(String),
+    Failed(PersistenceError),
 }
 
 #[cfg(test)]
@@ -78,7 +78,7 @@ impl SaveThumbnails {
                 egui::ColorImage::from_rgba_unmultiplied(image.size, &image.rgba),
                 egui::TextureOptions::LINEAR,
             )),
-            Err(error) => Thumbnail::Failed(error.to_string()),
+            Err(error) => Thumbnail::Failed(PersistenceError::Save(error)),
         };
         self.insert(reply.hash, thumbnail);
         ctx.request_repaint();
@@ -104,7 +104,13 @@ impl SaveThumbnails {
         );
     }
 
-    pub fn paint(&mut self, ui: &mut egui::Ui, hash: ImageHash, visible: &mut Vec<ImageHash>) {
+    pub fn paint(
+        &mut self,
+        ui: &mut egui::Ui,
+        hash: ImageHash,
+        visible: &mut Vec<ImageHash>,
+        i18n: &Localization,
+    ) {
         let size = egui::vec2(SLOT_SIZE.x.min(ui.available_width()), SLOT_SIZE.y);
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
         if !ui.is_rect_visible(rect) {
@@ -132,8 +138,8 @@ impl SaveThumbnails {
                         return;
                     }
                     Thumbnail::Failed(error) => {
-                        response.on_hover_text(error);
-                        "Image unavailable"
+                        response.on_hover_text(i18n.persistence_error(error));
+                        i18n.text("save-image-unavailable")
                     }
                 }
             }
@@ -145,7 +151,7 @@ impl SaveThumbnails {
                         egui::Vec2::splat(24.0),
                     ),
                 );
-                "Loading image..."
+                i18n.text("save-loading-image")
             }
         };
         ui.painter().text(

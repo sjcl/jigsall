@@ -26,18 +26,14 @@ pub struct SaveTitle(String);
 impl SaveTitle {
     pub fn new(value: &str) -> Result<Self, SaveError> {
         if value.chars().any(char::is_control) || value.contains(['\u{2028}', '\u{2029}']) {
-            return Err(SaveError::InvalidTitle(
-                "Control characters and line breaks are not allowed",
-            ));
+            return Err(SaveError::InvalidTitle(SaveTitleError::ControlCharacters));
         }
         let value = value.trim();
         if value.is_empty() {
-            return Err(SaveError::InvalidTitle("Enter a title"));
+            return Err(SaveError::InvalidTitle(SaveTitleError::Empty));
         }
         if value.chars().count() > MAX_SAVE_TITLE_CHARS {
-            return Err(SaveError::InvalidTitle(
-                "Title must be at most 80 characters",
-            ));
+            return Err(SaveError::InvalidTitle(SaveTitleError::TooLong));
         }
         Ok(Self(value.into()))
     }
@@ -60,8 +56,14 @@ pub struct PuzzleSave {
     pub checkpoint: PuzzleCheckpoint,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveTitleError {
+    ControlCharacters,
+    Empty,
+    TooLong,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaveError {
-    InvalidTitle(&'static str),
+    InvalidTitle(SaveTitleError),
     UnsupportedSaveFormat(u16),
     UnsupportedImageFormat(u16),
     UnsupportedGenerator(u16),
@@ -82,7 +84,7 @@ pub enum SaveError {
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidTitle(s) => write!(f, "{s}"),
+            Self::InvalidTitle(s) => write!(f, "Invalid save title: {s:?}"),
             Self::UnsupportedSaveFormat(v) => write!(f, "Unsupported save format: {v}"),
             Self::UnsupportedImageFormat(v) => write!(f, "Unsupported image container format: {v}"),
             Self::UnsupportedGenerator(v) => write!(f, "Unsupported puzzle generator version: {v}"),

@@ -1,4 +1,8 @@
 use crate::theme;
+use crate::{
+    localization::{LanguagePreference, Locale, Localization},
+    preferences::{PreferenceError, UiPreferences},
+};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::settings::*;
@@ -31,6 +35,8 @@ pub fn reset_dialog(mut dialog: ResMut<SettingsDialog>) {
 }
 
 pub fn draw_settings_ui(
+    mut i18n: ResMut<Localization>,
+    mut preferences: ResMut<UiPreferences>,
     mut contexts: EguiContexts,
     mut dialog: ResMut<SettingsDialog>,
     state: Res<DisplaySettingsState>,
@@ -43,16 +49,23 @@ pub fn draw_settings_ui(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    if let Some(action) = paint_settings(ctx, &mut dialog, &state, &capabilities) {
+    if let Some(action) = paint_settings(
+        ctx,
+        &mut dialog,
+        &state,
+        &capabilities,
+        &mut i18n,
+        &mut preferences,
+    ) {
         actions.write(action);
     }
 }
 
-fn mode_label(mode: ScreenMode) -> &'static str {
+fn mode_label(mode: ScreenMode, i18n: &Localization) -> String {
     match mode {
-        ScreenMode::Windowed => "Windowed",
-        ScreenMode::Borderless => "Borderless",
-        ScreenMode::Fullscreen => "Fullscreen",
+        ScreenMode::Windowed => i18n.text("settings-windowed"),
+        ScreenMode::Borderless => i18n.text("settings-borderless"),
+        ScreenMode::Fullscreen => i18n.text("settings-fullscreen"),
     }
 }
 
@@ -65,6 +78,8 @@ fn paint_settings(
     dialog: &mut SettingsDialog,
     state: &DisplaySettingsState,
     capabilities: &DisplayCapabilities,
+    i18n: &mut Localization,
+    preferences: &mut UiPreferences,
 ) -> Option<DisplaySettingsAction> {
     theme::prepare(ctx);
     let screen = ctx.content_rect();
@@ -79,12 +94,12 @@ fn paint_settings(
         .frame(theme::frame())
         .show(ctx, |ui| {
             ui.set_width((screen.width() - 96.0).clamp(160.0, 520.0));
-            theme::heading(ui, "Settings");
+            theme::heading(ui, i18n.text("settings-title"));
             ui.separator();
             if let Some(seconds) = seconds {
                 ui.colored_label(
                     theme::ACCENT,
-                    format!("Keep these display settings? Reverting in {seconds}s."),
+                    i18n.format("settings-display-confirm", &[("seconds", seconds.into())]),
                 );
                 ctx.request_repaint();
             }
@@ -93,14 +108,57 @@ fn paint_settings(
                     (screen.height() - if seconds.is_some() { 280.0 } else { 240.0 }).max(80.0),
                 )
                 .show(ui, |ui| {
+                    theme::card().show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(i18n.text("settings-language"));
+                        let mut language = preferences.language;
+                        egui::ComboBox::from_id_salt("language_preference")
+                            .width(ui.available_width())
+                            .selected_text(match language {
+                                LanguagePreference::Auto => i18n.text("settings-language-auto"),
+                                LanguagePreference::Locale(locale) => i18n.native_name(locale),
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut language,
+                                    LanguagePreference::Auto,
+                                    i18n.text("settings-language-auto"),
+                                );
+                                for locale in Locale::available() {
+                                    ui.selectable_value(
+                                        &mut language,
+                                        LanguagePreference::Locale(locale),
+                                        i18n.native_name(locale),
+                                    );
+                                }
+                            });
+                        if language != preferences.language {
+                            preferences.set_language(language, i18n);
+                            ctx.request_repaint();
+                        }
+                        if let Some(error) = &preferences.error {
+                            let (key, reason) = match error {
+                                PreferenceError::Read(reason) => {
+                                    ("settings-language-read-failed", reason)
+                                }
+                                PreferenceError::Save(reason) => {
+                                    ("settings-language-save-failed", reason)
+                                }
+                            };
+                            ui.colored_label(
+                                theme::DANGER,
+                                i18n.format(key, &[("reason", reason.as_str().into())]),
+                            );
+                        }
+                    });
                     ui.add_enabled_ui(seconds.is_none(), |ui| {
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label("Display mode");
+                            ui.label(i18n.text("settings-display-mode"));
                             let previous_mode = dialog.draft.mode;
                             egui::ComboBox::from_id_salt("display_mode")
                                 .width(ui.available_width())
-                                .selected_text(mode_label(dialog.draft.mode))
+                                .selected_text(mode_label(dialog.draft.mode, i18n))
                                 .show_ui(ui, |ui| {
                                     for mode in [
                                         ScreenMode::Windowed,
@@ -114,7 +172,7 @@ fn paint_settings(
                                                 ui.selectable_value(
                                                     &mut dialog.draft.mode,
                                                     mode,
-                                                    mode_label(mode),
+                                                    mode_label(mode, i18n),
                                                 );
                                             },
                                         );
@@ -140,20 +198,29 @@ fn paint_settings(
                                 }
                             }
                             ui.add_space(4.0);
-                            ui.label("Resolution");
+                            ui.label(i18n.text("settings-resolution"));
                             if dialog.draft.mode == ScreenMode::Borderless {
                                 ui.add_enabled(
                                     false,
-                                    egui::Button::new(format!(
-                                        "{}  (Desktop)",
-                                        capabilities
-                                            .desktop_resolution
-                                            .map(resolution_label)
-                                            .unwrap_or_else(|| "Unavailable".into())
-                                    ))
+                                    egui::Button::new(
+                                        i18n.format(
+                                            "settings-desktop-resolution",
+                                            &[(
+                                                "resolution",
+                                                capabilities
+                                                    .desktop_resolution
+                                                    .map(resolution_label)
+                                                    .unwrap_or_else(|| {
+                                                        i18n.text("settings-unavailable")
+                                                    })
+                                                    .as_str()
+                                                    .into(),
+                                            )],
+                                        ),
+                                    )
                                     .min_size(egui::vec2(ui.available_width(), 34.0)),
                                 );
-                                theme::hint(ui, "Borderless uses your desktop resolution.");
+                                theme::hint(ui, i18n.text("settings-borderless-hint"));
                             } else {
                                 egui::ComboBox::from_id_salt("display_resolution")
                                     .width(ui.available_width())
@@ -172,9 +239,9 @@ fn paint_settings(
                                 theme::hint(
                                     ui,
                                     if dialog.draft.mode == ScreenMode::Fullscreen {
-                                        "Fullscreen uses a resolution supported by your display."
+                                        i18n.text("settings-fullscreen-hint")
                                     } else {
-                                        "Window size in pixels."
+                                        i18n.text("settings-window-size-hint")
                                     },
                                 );
                             }
@@ -182,9 +249,9 @@ fn paint_settings(
                         ui.add_space(2.0);
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label("Maximum FPS");
+                            ui.label(i18n.text("settings-max-fps"));
                             let mut unlimited = dialog.draft.max_fps.is_none();
-                            ui.checkbox(&mut unlimited, "Unlimited");
+                            ui.checkbox(&mut unlimited, i18n.text("settings-unlimited"));
                             ui.add_enabled_ui(!unlimited, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.add(
@@ -195,7 +262,7 @@ fn paint_settings(
                                     );
                                     egui::ComboBox::from_id_salt("fps_presets")
                                         .width(100.0)
-                                        .selected_text("Presets")
+                                        .selected_text(i18n.text("settings-presets"))
                                         .show_ui(ui, |ui| {
                                             for fps in
                                                 [30, 60, 90, 120, 144, 165, 180, 240, 360, 480]
@@ -217,10 +284,10 @@ fn paint_settings(
                         });
                     });
                     if let Some(error) = &state.error {
-                        ui.colored_label(theme::DANGER, error);
+                        ui.colored_label(theme::DANGER, i18n.display_error(error));
                     }
                     if let Some(notice) = &state.notice {
-                        ui.colored_label(theme::ACCENT, notice);
+                        ui.colored_label(theme::ACCENT, i18n.display_notice(notice));
                     }
                     ui.add_space(2.0);
                 });
@@ -228,14 +295,14 @@ fn paint_settings(
             ui.horizontal(|ui| {
                 let width = (ui.available_width() - 10.0) * 0.5;
                 if seconds.is_some() {
-                    if theme::button(ui, "Revert", width, false).clicked() {
+                    if theme::button(ui, i18n.text("settings-revert"), width, false).clicked() {
                         action = Some(DisplaySettingsAction::Revert);
                     }
-                    if theme::button(ui, "Keep Changes", width, true).clicked() {
+                    if theme::button(ui, i18n.text("settings-keep"), width, true).clicked() {
                         action = Some(DisplaySettingsAction::Keep);
                     }
                 } else {
-                    if theme::button(ui, "Back to Title", width, false).clicked() {
+                    if theme::button(ui, i18n.text("common-back-title"), width, false).clicked() {
                         dialog.open = false;
                     }
                     let valid = dialog.draft.validate().is_ok()
@@ -244,7 +311,7 @@ fn paint_settings(
                                 .fullscreen_mode(dialog.draft.resolution)
                                 .is_some());
                     ui.add_enabled_ui(valid, |ui| {
-                        if theme::button(ui, "Apply", width, true).clicked() {
+                        if theme::button(ui, i18n.text("settings-apply"), width, true).clicked() {
                             action = Some(DisplaySettingsAction::Apply(dialog.draft.clone()));
                         }
                     });

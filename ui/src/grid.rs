@@ -6,7 +6,7 @@ use puzzella_puzzle::grid::{calculate_aspect_ratio_grid, generate_columns_rows_n
 pub fn calculate_grid_from_config(
     config: &PuzzleConfig,
     puzzle_image: Option<&PuzzleImage>,
-) -> Option<(usize, usize, String)> {
+) -> Option<(usize, usize)> {
     // 画像サイズを取得（適切でない場合はNoneを返す）
     let (image_width, image_height) = {
         let puzzle_image = puzzle_image?;
@@ -24,42 +24,20 @@ pub fn calculate_grid_from_config(
             // 既存のロジック：目標ピース数から最適なグリッドを計算
             let (optimal_cols, optimal_rows) =
                 generate_columns_rows_numbers(image_width, image_height, config.target_piece_count);
-            let actual_pieces = optimal_cols * optimal_rows;
-            let info = if actual_pieces != config.target_piece_count {
-                format!(
-                    "{}x{} = {} pieces (target: {})",
-                    optimal_cols, optimal_rows, actual_pieces, config.target_piece_count
-                )
-            } else {
-                format!(
-                    "{}x{} = {} pieces",
-                    optimal_cols, optimal_rows, actual_pieces
-                )
-            };
-            Some((optimal_cols, optimal_rows, info))
+            Some((optimal_cols, optimal_rows))
         }
 
         PieceMode::ManualGrid => {
             // 既存のロジック：手動で指定されたグリッドサイズを使用
-            let total_pieces = config.grid_size.0 * config.grid_size.1;
-            let info = format!(
-                "{}x{} = {} pieces (manual)",
-                config.grid_size.0, config.grid_size.1, total_pieces
-            );
-            Some((config.grid_size.0, config.grid_size.1, info))
+            Some(config.grid_size)
         }
 
         PieceMode::SquarePieces => {
             // 新ロジック：縦横比保持スケールから計算
-            let (grid_width, grid_height, actual_width, actual_height) =
+            let (grid_width, grid_height, _, _) =
                 calculate_aspect_ratio_grid(image_width, image_height, config.target_piece_size);
 
-            let total_pieces = grid_width * grid_height;
-            let info = format!(
-                "{}x{} = {} pieces ({:.0}x{:.0}px each)",
-                grid_width, grid_height, total_pieces, actual_width, actual_height
-            );
-            Some((grid_width, grid_height, info))
+            Some((grid_width, grid_height))
         }
     }
 }

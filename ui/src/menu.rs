@@ -1,3 +1,4 @@
+use crate::localization::Localization;
 use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -5,6 +6,7 @@ use puzzella_game::resources::*;
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_menu_ui(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
@@ -49,20 +51,27 @@ pub fn draw_menu_ui(
                             !persistence.busy && !dialogs.load_open && !settings_dialog.open,
                             |ui| {
                                 ui.spacing_mut().item_spacing.y = 8.0;
-                                if theme::button(ui, "New Game", width, true).clicked() {
+                                if theme::button(ui, i18n.text("menu-new-game"), width, true)
+                                    .clicked()
+                                {
                                     next_state.set(AppState::GameSetup);
                                 }
-                                if theme::button(ui, "Load Game", width, false).clicked() {
+                                if theme::button(ui, i18n.text("menu-load-game"), width, false)
+                                    .clicked()
+                                {
                                     dialogs.load_open = true;
                                     service.list(&mut persistence);
                                 }
                                 // Multiplayer is reserved until network play is implemented.
-                                theme::button(ui, "Join Multiplayer", width, false);
-                                if theme::button(ui, "Settings", width, false).clicked() {
+                                theme::button(ui, i18n.text("menu-multiplayer"), width, false);
+                                if theme::button(ui, i18n.text("menu-settings"), width, false)
+                                    .clicked()
+                                {
                                     settings_dialog.open(&display_settings);
                                 }
                                 ui.add_space(4.0);
-                                if theme::danger_button(ui, "Exit", width).clicked() {
+                                if theme::danger_button(ui, i18n.text("menu-exit"), width).clicked()
+                                {
                                     exit.write(AppExit::Success);
                                 }
                             },
@@ -77,7 +86,7 @@ pub fn draw_menu_ui(
     painter.text(
         egui::pos2(screen.left() + 32.0, screen.bottom() - 22.0),
         egui::Align2::LEFT_CENTER,
-        "JIGSAW PUZZLE",
+        i18n.text("menu-subtitle"),
         egui::FontId::proportional(10.0),
         theme::MUTED,
     );

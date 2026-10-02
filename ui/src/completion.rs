@@ -1,3 +1,4 @@
+use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::resources::*;
@@ -10,6 +11,7 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(172, 197, 174);
 
 /// A quiet result card over the completed puzzle, without clearing its session.
 pub fn draw_completion_ui(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     store: Res<PieceDataStore>,
     mut next_state: ResMut<NextState<AppState>>,
@@ -20,6 +22,7 @@ pub fn draw_completion_ui(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    crate::theme::prepare(ctx);
     let width = (ctx.content_rect().width() - 72.0).clamp(160.0, 360.0);
     let height = (ctx.content_rect().height() - 72.0).max(120.0);
     let compact = ctx.content_rect().height() < 520.0;
@@ -69,7 +72,7 @@ pub fn draw_completion_ui(
 
                             ui.add_space(if compact { 0.0 } else { 8.0 });
                             ui.label(
-                                egui::RichText::new("Puzzle Complete")
+                                egui::RichText::new(i18n.text("completion-title"))
                                     .size(if compact { 26.0 } else { 30.0 })
                                     .strong(),
                             );
@@ -81,9 +84,9 @@ pub fn draw_completion_ui(
                                 .inner_margin(egui::Margin::symmetric(16, 10))
                                 .show(ui, |ui| {
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} pieces  /  100% complete",
-                                            store.len()
+                                        egui::RichText::new(i18n.format(
+                                            "completion-summary",
+                                            &[("count", store.len().into())],
                                         ))
                                         .size(13.0)
                                         .color(ACCENT),
@@ -95,7 +98,7 @@ pub fn draw_completion_ui(
                                 .add_sized(
                                     [ui.available_width(), 46.0],
                                     egui::Button::new(
-                                        egui::RichText::new("View Completed Puzzle")
+                                        egui::RichText::new(i18n.text("completion-view"))
                                             .size(15.0)
                                             .strong()
                                             .color(PANEL),
@@ -111,7 +114,7 @@ pub fn draw_completion_ui(
                                 .add_sized(
                                     [ui.available_width(), 42.0],
                                     egui::Button::new(
-                                        egui::RichText::new("Return to Title")
+                                        egui::RichText::new(i18n.text("common-return-title"))
                                             .size(14.0)
                                             .color(TEXT),
                                     )
@@ -124,10 +127,13 @@ pub fn draw_completion_ui(
                                 next_state.set(AppState::Menu);
                             }
                             if ui
-                                .add_enabled(!persistence.busy, egui::Button::new("Save Game"))
+                                .add_enabled(
+                                    !persistence.busy,
+                                    egui::Button::new(i18n.text("common-save-game")),
+                                )
                                 .clicked()
                             {
-                                dialogs.open_title(&mut persistence);
+                                dialogs.open_title(&mut persistence, &i18n);
                             }
                             ui.add_space(4.0);
                         });
@@ -138,6 +144,7 @@ pub fn draw_completion_ui(
 
 /// A small HUD leaves the finished canvas available for pan and zoom.
 pub fn draw_completed_puzzle_ui(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut capture: ResMut<GameUiPointerCapture>,
     mut next: ResMut<NextState<GameCompleteSubState>>,
@@ -162,17 +169,17 @@ pub fn draw_completed_puzzle_ui(
         .show(&mut viewport_ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    egui::RichText::new("Completed Puzzle")
+                    egui::RichText::new(i18n.text("completion-puzzle"))
                         .color(ACCENT)
                         .strong(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("ESC  Menu").clicked() {
+                    if ui.button(i18n.text("completion-menu")).clicked() {
                         next.set(GameCompleteSubState::Paused);
                     }
                     if ui.available_width() >= 240.0 {
                         ui.label(
-                            egui::RichText::new("Scroll to zoom / Right-drag to pan")
+                            egui::RichText::new(i18n.text("completion-navigation"))
                                 .size(12.0)
                                 .color(MUTED),
                         );

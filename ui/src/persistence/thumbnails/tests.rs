@@ -1,4 +1,11 @@
 use super::*;
+fn english() -> Localization {
+    let mut i18n = Localization::default();
+    i18n.set_preference(crate::localization::LanguagePreference::Locale(
+        crate::localization::Locale::EN_US,
+    ));
+    i18n
+}
 use crate::persistence::{paint_load_dialog, SaveDialogs};
 use puzzella_game::persistence::{
     executor::{StorageOperation, StorageRequests},
@@ -75,7 +82,7 @@ fn input_frame(
         // Feed the same per-frame scroll input consumed by ScrollArea.
         ui.ctx()
             .input_mut(|input| input.smooth_scroll_delta.y = scroll);
-        paint_load_dialog(ui.ctx(), dialogs, state, service, thumbnails);
+        paint_load_dialog(ui.ctx(), dialogs, state, service, thumbnails, &english());
     })
 }
 
@@ -705,7 +712,7 @@ fn cache_reuses_images_limits_memory_and_ignores_obsolete_replies() {
             )),
             ..Default::default()
         },
-        |ui| thumbnails.paint(ui, hash(0), &mut Vec::new()),
+        |ui| thumbnails.paint(ui, hash(0), &mut Vec::new(), &english()),
     );
     let image_rect = output
         .shapes
@@ -719,7 +726,10 @@ fn cache_reuses_images_limits_memory_and_ignores_obsolete_replies() {
     output.drop_without_applying_deltas();
     for index in 1..=CACHE_CAPACITY as u32 {
         thumbnails.frame += 1;
-        thumbnails.insert(hash(index), Thumbnail::Failed("Unavailable".into()));
+        thumbnails.insert(
+            hash(index),
+            Thumbnail::Failed(PersistenceError::WorkerStopped),
+        );
     }
     assert_eq!(thumbnails.cache.len(), CACHE_CAPACITY);
     assert!(!thumbnails.cache.contains_key(&hash(0)));
@@ -758,4 +768,146 @@ fn cache_reuses_images_limits_memory_and_ignores_obsolete_replies() {
         },
     );
     assert!(thumbnails.cache.is_empty());
+}
+
+#[test]
+fn japanese_load_dialog_keeps_actions_inside_small_windows() {
+    let mut i18n = english();
+    i18n.set_preference(crate::localization::LanguagePreference::Locale(
+        crate::localization::Locale::JA,
+    ));
+    for size in [egui::vec2(640.0, 360.0), egui::vec2(320.0, 360.0)] {
+        let ctx = egui::Context::default();
+        let (service, _inbox) = PersistenceService::with_storage_requests();
+        let mut thumbnails = SaveThumbnails::default();
+        let mut dialogs = SaveDialogs {
+            load_open: true,
+            ..Default::default()
+        };
+        let mut state = state();
+        for _ in 0..3 {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ui| {
+                    crate::theme::prepare(ui.ctx());
+                    paint_load_dialog(
+                        ui.ctx(),
+                        &mut dialogs,
+                        &mut state,
+                        &service,
+                        &mut thumbnails,
+                        &i18n,
+                    );
+                },
+            )
+            .drop_without_applying_deltas();
+        }
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            },
+            |ui| {
+                paint_load_dialog(
+                    ui.ctx(),
+                    &mut dialogs,
+                    &mut state,
+                    &service,
+                    &mut thumbnails,
+                    &i18n,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        let panel = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.corner_radius.nw == 16 => Some(rect.rect),
+                _ => None,
+            })
+            .unwrap();
+        assert!(viewport.contains_rect(panel));
+        for label in ["タイトルへ戻る", "更新"] {
+            let rects = text_rects(&output, label);
+            assert!(!rects.is_empty(), "missing Japanese action {label}");
+            for (rect, _) in rects {
+                assert!(
+                    viewport.contains_rect(rect),
+                    "action outside viewport {label}"
+                );
+            }
+        }
+        output.drop_without_applying_deltas();
+    }
+}
+
+#[test]
+fn japanese_delete_confirmation_fits_beside_resume() {
+    let mut i18n = english();
+    i18n.set_preference(crate::localization::LanguagePreference::Locale(
+        crate::localization::Locale::JA,
+    ));
+    for width in [220.0, 320.0, 600.0] {
+        let ctx = egui::Context::default();
+        let mut dialogs = SaveDialogs {
+            pending_delete: Some(SaveId(0)),
+            ..Default::default()
+        };
+        let state = state();
+        let render = |input, dialogs: &mut SaveDialogs| {
+            ctx.run_ui(input, |ui| {
+                crate::theme::prepare(ui.ctx());
+                crate::persistence::paint_load_actions(ui, dialogs, &state, SaveId(0), true, &i18n);
+            })
+        };
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(width, 240.0),
+            )),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            render(input(), &mut dialogs).drop_without_applying_deltas();
+        }
+        let mut output = render(input(), &mut dialogs);
+        output.textures_delta.clear();
+        let (resume, _) = text_rects(&output, "パズルを再開")[0];
+        for label in ["この保存データを完全に削除しますか？", "削除", "キャンセル"]
+        {
+            let (rect, clip) = text_rects(&output, label)[0];
+            assert!(
+                clip.contains_rect(rect),
+                "Clipped {label}: {rect:?}, {clip:?}"
+            );
+            assert!(
+                rect.left() >= resume.right(),
+                "Confirmation must be beside Resume"
+            );
+        }
+        let cancel = text_rects(&output, "キャンセル")[0].0.center();
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            let mut click = input();
+            click.events = vec![
+                egui::Event::PointerMoved(cancel),
+                egui::Event::PointerButton {
+                    pos: cancel,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ];
+            render(click, &mut dialogs).drop_without_applying_deltas();
+        }
+        assert!(
+            dialogs.pending_delete.is_none(),
+            "Cancel must dismiss confirmation"
+        );
+    }
 }

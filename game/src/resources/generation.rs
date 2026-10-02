@@ -18,5 +18,13 @@ pub struct PieceGenerationProgress {
     pub grid_size: (usize, usize),
     pub pieces_created: usize,
     pub receiver: Option<channel::Receiver<Result<DensePieceStates, String>>>,
-    pub error: Option<String>,
+    pub error: Option<GenerationError>,
+}
+
+#[derive(Clone, Debug)]
+pub enum GenerationError {
+    WorkerStopped,
+    InvalidDefinition(String),
+    State(String),
+    Renderer(String),
 }

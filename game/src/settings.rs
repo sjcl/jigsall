@@ -17,6 +17,30 @@ use std::{
 
 const CONFIRM_SECONDS: u64 = 15;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplayValidationError {
+    InvalidResolution,
+    InvalidFps,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DisplaySettingsError {
+    Invalid(DisplayValidationError),
+    InvalidSaved(DisplayValidationError),
+    ReadFailed(String),
+    SaveFailed(String),
+    DirectoryUnavailable,
+    UnsupportedFullscreen,
+    NoDisplay,
+    FullscreenUnavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisplaySettingsNotice {
+    Restored,
+    Saved,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScreenMode {
     #[default]
@@ -45,16 +69,16 @@ impl Default for DisplaySettings {
 }
 
 impl DisplaySettings {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), DisplayValidationError> {
         if self.resolution.x < 640
             || self.resolution.y < 360
             || self.resolution.x > 16384
             || self.resolution.y > 16384
         {
-            return Err("Resolution must be between 640 x 360 and 16384 x 16384 pixels.".into());
+            return Err(DisplayValidationError::InvalidResolution);
         }
         if self.max_fps.is_some_and(|fps| !(10..=1000).contains(&fps)) {
-            return Err("Maximum FPS must be between 10 and 1000, or Unlimited.".into());
+            return Err(DisplayValidationError::InvalidFps);
         }
         Ok(())
     }
@@ -130,8 +154,8 @@ struct DisplayPreview {
 #[derive(Resource)]
 pub struct DisplaySettingsState {
     pub current: DisplaySettings,
-    pub error: Option<String>,
-    pub notice: Option<String>,
+    pub error: Option<DisplaySettingsError>,
+    pub notice: Option<DisplaySettingsNotice>,
     path: Option<PathBuf>,
     preview: Option<DisplayPreview>,
 }
@@ -159,20 +183,16 @@ impl DisplaySettingsState {
                 Ok(bytes) => match serde_json::from_slice::<DisplaySettings>(&bytes) {
                     Ok(settings) => match settings.validate() {
                         Ok(()) => state.current = settings,
-                        Err(error) => {
-                            state.error = Some(format!(
-                                "Saved settings were invalid. Defaults restored. {error}"
-                            ))
-                        }
+                        Err(error) => state.error = Some(DisplaySettingsError::InvalidSaved(error)),
                     },
                     Err(error) => {
-                        state.error = Some(format!(
-                            "Could not read saved settings. Defaults restored. {error}"
-                        ))
+                        state.error = Some(DisplaySettingsError::ReadFailed(error.to_string()))
                     }
                 },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => state.error = Some(format!("Could not read saved settings: {error}")),
+                Err(error) => {
+                    state.error = Some(DisplaySettingsError::ReadFailed(error.to_string()))
+                }
             }
         }
         state
@@ -188,11 +208,13 @@ impl DisplaySettingsState {
         })
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&self) -> Result<(), DisplaySettingsError> {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let parent = path.parent().ok_or("Settings directory is unavailable.")?;
+        let parent = path
+            .parent()
+            .ok_or(DisplaySettingsError::DirectoryUnavailable)?;
         let write = || -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(parent)?;
             let mut file = tempfile::NamedTempFile::new_in(parent)?;
@@ -201,14 +223,14 @@ impl DisplaySettingsState {
             file.persist(path)?;
             Ok(())
         };
-        write().map_err(|error| format!("Could not save settings: {error}"))
+        write().map_err(|error| DisplaySettingsError::SaveFailed(error.to_string()))
     }
 
     fn revert(&mut self) {
         if let Some(preview) = self.preview.take() {
             self.current = preview.previous;
             self.error = None;
-            self.notice = Some("Previous display settings restored.".into());
+            self.notice = Some(DisplaySettingsNotice::Restored);
         }
     }
 
@@ -217,7 +239,7 @@ impl DisplaySettingsState {
             Ok(()) => {
                 self.preview = None;
                 self.error = None;
-                self.notice = Some("Settings saved.".into());
+                self.notice = Some(DisplaySettingsNotice::Saved);
             }
             Err(error) => self.error = Some(error),
         }
@@ -300,22 +322,22 @@ fn process_actions(
                 if state.preview.is_some() {
                     continue;
                 }
-                let validation = settings.validate().and_then(|()| {
-                    if settings.mode == ScreenMode::Fullscreen
-                        && capabilities.fullscreen_mode(settings.resolution).is_none()
-                    {
-                        Err(
-                            "This monitor does not support the selected fullscreen resolution."
-                                .into(),
-                        )
-                    } else if settings.mode != ScreenMode::Windowed
-                        && capabilities.monitor.is_none()
-                    {
-                        Err("No display is available for fullscreen mode.".into())
-                    } else {
-                        Ok(())
-                    }
-                });
+                let validation = settings
+                    .validate()
+                    .map_err(DisplaySettingsError::Invalid)
+                    .and_then(|()| {
+                        if settings.mode == ScreenMode::Fullscreen
+                            && capabilities.fullscreen_mode(settings.resolution).is_none()
+                        {
+                            Err(DisplaySettingsError::UnsupportedFullscreen)
+                        } else if settings.mode != ScreenMode::Windowed
+                            && capabilities.monitor.is_none()
+                        {
+                            Err(DisplaySettingsError::NoDisplay)
+                        } else {
+                            Ok(())
+                        }
+                    });
                 if let Err(error) = validation {
                     state.error = Some(error);
                     continue;
@@ -371,9 +393,7 @@ fn apply_window_settings(
                 )
             } else {
                 state.current.mode = ScreenMode::Windowed;
-                state.error = Some(
-                    "Saved fullscreen resolution is unavailable. Switched to Windowed.".into(),
-                );
+                state.error = Some(DisplaySettingsError::FullscreenUnavailable);
                 WindowMode::Windowed
             }
         }

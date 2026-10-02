@@ -1,3 +1,4 @@
+use crate::localization::Localization;
 use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
@@ -19,12 +20,12 @@ pub struct SaveDialogs {
     focus_title: bool,
 }
 impl SaveDialogs {
-    pub fn open_title(&mut self, state: &mut PersistenceState) {
+    pub fn open_title(&mut self, state: &mut PersistenceState, i18n: &Localization) {
         self.title = state
             .current_save
             .as_ref()
             .map(|m| m.title.as_str().to_owned())
-            .unwrap_or_else(|| "My Puzzle".into());
+            .unwrap_or_else(|| i18n.text("save-default-title"));
         self.focus_title = true;
         state.title_dialog_open = true;
         state.error = None;
@@ -37,6 +38,7 @@ pub fn reset_dialogs(mut dialogs: ResMut<SaveDialogs>) {
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_save_dialogs(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut dialogs: ResMut<SaveDialogs>,
     mut thumbnails: ResMut<SaveThumbnails>,
@@ -66,7 +68,14 @@ pub fn draw_save_dialogs(
     }
     thumbnails.begin_frame(ctx, &service, state.generation, load_open);
     if load_open {
-        paint_load_dialog(ctx, &mut dialogs, &mut state, &service, &mut thumbnails);
+        paint_load_dialog(
+            ctx,
+            &mut dialogs,
+            &mut state,
+            &service,
+            &mut thumbnails,
+            &i18n,
+        );
     }
     if state.title_dialog_open
         && matches!(app_state.get(), AppState::InGame | AppState::GameComplete)
@@ -89,7 +98,7 @@ pub fn draw_save_dialogs(
                         .max(80.0),
                     )
                     .show(ui, |ui| {
-                        theme::heading(ui, "Save Game");
+                        theme::heading(ui, i18n.text("common-save-game"));
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
@@ -105,31 +114,43 @@ pub fn draw_save_dialogs(
                                 }
                                 ui.vertical(|ui| {
                                     ui.label(
-                                        egui::RichText::new(format!("{} pieces", store.len()))
-                                            .strong(),
+                                        egui::RichText::new(i18n.format(
+                                            "setup-piece-count",
+                                            &[("count", store.len().into())],
+                                        ))
+                                        .strong(),
                                     );
                                     let progress = store.placed_count as f64
                                         / store.len().max(1) as f64
                                         * 100.0;
-                                    theme::hint(ui, format!("{progress:.1}% complete"));
+                                    theme::hint(
+                                        ui,
+                                        i18n.format(
+                                            "save-progress",
+                                            &[(
+                                                "percent",
+                                                format!("{progress:.1}").as_str().into(),
+                                            )],
+                                        ),
+                                    );
                                     theme::hint(
                                         ui,
                                         if state.current_save.is_some() {
-                                            "Updates your current save"
+                                            i18n.text("save-update-hint")
                                         } else {
-                                            "Creates a new save"
+                                            i18n.text("save-create-hint")
                                         },
                                     );
                                 });
                             });
                         });
                         ui.add_space(8.0);
-                        ui.label("Puzzle title");
+                        ui.label(i18n.text("save-puzzle-title"));
                         let field = ui.add_enabled(
                             !state.busy,
                             egui::TextEdit::singleline(&mut dialogs.title)
                                 .desired_width(f32::INFINITY)
-                                .hint_text("Give your puzzle a name"),
+                                .hint_text(i18n.text("save-title-placeholder")),
                         );
                         if dialogs.focus_title && !state.busy {
                             field.request_focus();
@@ -137,39 +158,40 @@ pub fn draw_save_dialogs(
                         }
                         theme::hint(
                             ui,
-                            format!(
-                                "{} / {} characters",
-                                dialogs.title.trim().chars().count(),
-                                MAX_SAVE_TITLE_CHARS
+                            i18n.format(
+                                "save-title-length",
+                                &[
+                                    ("count", dialogs.title.trim().chars().count().into()),
+                                    ("max", MAX_SAVE_TITLE_CHARS.into()),
+                                ],
                             ),
                         );
                         let title = SaveTitle::new(&dialogs.title);
                         if let Err(error) = &title {
-                            ui.colored_label(theme::DANGER, error.to_string());
+                            ui.colored_label(theme::DANGER, i18n.save_error(error));
                         }
-                        theme::hint(ui, "Your original image is included in the save.");
+                        theme::hint(ui, i18n.text("save-original-hint"));
                         if original.is_none() {
-                            ui.colored_label(
-                                theme::DANGER,
-                                "Original image bytes are unavailable.",
-                            );
+                            ui.colored_label(theme::DANGER, i18n.text("save-original-unavailable"));
                         }
                         ui.add_space(8.0);
                     });
                 let title = SaveTitle::new(&dialogs.title);
-                status(ui, &state);
+                status(ui, &state, &i18n);
                 ui.separator();
                 ui.horizontal(|ui| {
                     let width = (ui.available_width() - 10.0) * 0.5;
                     ui.add_enabled_ui(!state.busy, |ui| {
-                        if theme::button(ui, "Cancel", width, false).clicked() {
+                        if theme::button(ui, i18n.text("common-cancel"), width, false).clicked() {
                             state.title_dialog_open = false;
                         }
                     });
                     ui.add_enabled_ui(
                         !state.busy && title.is_ok() && original.is_some() && definition.is_some(),
                         |ui| {
-                            if theme::button(ui, "Save Game", width, true).clicked() {
+                            if theme::button(ui, i18n.text("common-save-game"), width, true)
+                                .clicked()
+                            {
                                 if let Ok(title) = title {
                                     service.request_save(&mut state, title);
                                 }
@@ -190,6 +212,7 @@ fn paint_load_dialog(
     state: &mut PersistenceState,
     service: &PersistenceService,
     thumbnails: &mut SaveThumbnails,
+    i18n: &Localization,
 ) {
     let screen = ctx.content_rect();
     let mut visible = Vec::new();
@@ -199,7 +222,7 @@ fn paint_load_dialog(
         .show(ctx, |ui| {
             ui.set_width((screen.width() - 96.0).clamp(160.0, 640.0));
             ui.set_max_height((screen.height() - 96.0).max(120.0));
-            theme::heading(ui, "Load Game");
+            theme::heading(ui, i18n.text("menu-load-game"));
             ui.separator();
             let mut action = None;
             egui::ScrollArea::vertical()
@@ -217,11 +240,11 @@ fn paint_load_dialog(
                             );
                             ui.add_space(10.0);
                             ui.label(
-                                egui::RichText::new("A fresh collection")
+                                egui::RichText::new(i18n.text("save-empty-title"))
                                     .size(18.0)
                                     .strong(),
                             );
-                            theme::hint(ui, "Save a puzzle during play and it will appear here.");
+                            theme::hint(ui, i18n.text("save-empty-hint"));
                             ui.add_space(28.0);
                         });
                     }
@@ -251,10 +274,16 @@ fn paint_load_dialog(
                                                     .format("%Y-%m-%d  %H:%M")
                                                     .to_string()
                                             })
-                                            .unwrap_or_else(|| "Unknown time".into());
+                                            .unwrap_or_else(|| i18n.text("save-unknown-time"));
                                         theme::hint(
                                             ui,
-                                            format!("{} pieces  /  {time}", summary.piece_count),
+                                            i18n.format(
+                                                "save-summary",
+                                                &[
+                                                    ("count", summary.piece_count.into()),
+                                                    ("time", time.as_str().into()),
+                                                ],
+                                            ),
                                         );
                                         let progress = summary.placed_count as f32
                                             / summary.piece_count.max(1) as f32;
@@ -263,37 +292,57 @@ fn paint_load_dialog(
                                                 .fill(theme::ACCENT)
                                                 .corner_radius(4)
                                                 .desired_width(ui.available_width())
-                                                .text(format!("{:.1}% complete", progress * 100.0)),
+                                                .text(
+                                                    i18n.format(
+                                                        "save-progress",
+                                                        &[(
+                                                            "percent",
+                                                            format!("{:.1}", progress * 100.0)
+                                                                .as_str()
+                                                                .into(),
+                                                        )],
+                                                    ),
+                                                ),
                                         );
-                                        if let Some(delete) =
-                                            paint_load_actions(ui, dialogs, state, entry.id, true)
-                                        {
+                                        if let Some(delete) = paint_load_actions(
+                                            ui, dialogs, state, entry.id, true, i18n,
+                                        ) {
                                             action = Some((entry.id, delete));
                                         }
                                     };
                                     if wide {
                                         ui.horizontal_top(|ui| {
-                                            thumbnails.paint(ui, summary.image_hash, &mut visible);
+                                            thumbnails.paint(
+                                                ui,
+                                                summary.image_hash,
+                                                &mut visible,
+                                                i18n,
+                                            );
                                             ui.vertical(|ui| {
                                                 ui.set_width(ui.available_width());
                                                 details(ui);
                                             });
                                         });
                                     } else {
-                                        thumbnails.paint(ui, summary.image_hash, &mut visible);
+                                        thumbnails.paint(
+                                            ui,
+                                            summary.image_hash,
+                                            &mut visible,
+                                            i18n,
+                                        );
                                         details(ui);
                                     }
                                 }
                                 Err(error) => {
                                     ui.label(
-                                        egui::RichText::new("Unavailable save")
+                                        egui::RichText::new(i18n.text("save-unavailable"))
                                             .strong()
                                             .color(theme::DANGER),
                                     );
-                                    theme::hint(ui, error.to_string());
-                                    if let Some(delete) =
-                                        paint_load_actions(ui, dialogs, state, entry.id, false)
-                                    {
+                                    theme::hint(ui, i18n.save_error(error));
+                                    if let Some(delete) = paint_load_actions(
+                                        ui, dialogs, state, entry.id, false, i18n,
+                                    ) {
                                         action = Some((entry.id, delete));
                                     }
                                 }
@@ -313,22 +362,23 @@ fn paint_load_dialog(
             status_with_label(
                 ui,
                 state,
+                i18n,
                 if dialogs.loading_save.is_some() {
-                    "Loading puzzle..."
+                    i18n.text("save-loading-puzzle")
                 } else {
-                    "Loading saves..."
+                    i18n.text("save-loading-saves")
                 },
             );
             ui.separator();
             ui.add_enabled_ui(!state.busy, |ui| {
                 ui.horizontal(|ui| {
                     let width = ((ui.available_width() - 10.0) * 0.5).min(200.0);
-                    if theme::button(ui, "Back to Title", width, false).clicked() {
+                    if theme::button(ui, i18n.text("common-back-title"), width, false).clicked() {
                         dialogs.load_open = false;
                         dialogs.pending_delete = None;
                         dialogs.reveal_delete = None;
                     }
-                    if theme::button(ui, "Refresh", width, false).clicked() {
+                    if theme::button(ui, i18n.text("save-refresh"), width, false).clicked() {
                         thumbnails.invalidate();
                         service.list(state);
                     }
@@ -353,6 +403,7 @@ fn paint_load_actions(
     state: &PersistenceState,
     id: SaveId,
     can_resume: bool,
+    i18n: &Localization,
 ) -> Option<bool> {
     let mut action = None;
     let confirming = dialogs.pending_delete == Some(id);
@@ -373,9 +424,9 @@ fn paint_load_actions(
                 && theme::button(
                     ui,
                     if dialogs.loading_save == Some(id) {
-                        "Loading puzzle..."
+                        i18n.text("save-loading-puzzle")
                     } else {
-                        "Resume Puzzle"
+                        i18n.text("save-resume")
                     },
                     180.0_f32.min((available - delete_width - gap).max(0.0)),
                     true,
@@ -403,7 +454,7 @@ fn paint_load_actions(
                                 ui.spacing_mut().button_padding.x = 6.0;
                             }
                             ui.label(
-                                egui::RichText::new("Permanently delete this save?")
+                                egui::RichText::new(i18n.text("save-delete-confirm"))
                                     .size(font_size)
                                     .color(theme::DANGER),
                             );
@@ -411,7 +462,10 @@ fn paint_load_actions(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui
-                                        .button(egui::RichText::new("Cancel").size(font_size))
+                                        .button(
+                                            egui::RichText::new(i18n.text("common-cancel"))
+                                                .size(font_size),
+                                        )
                                         .clicked()
                                     {
                                         dialogs.pending_delete = None;
@@ -419,7 +473,7 @@ fn paint_load_actions(
                                     }
                                     if ui
                                         .button(
-                                            egui::RichText::new("Delete")
+                                            egui::RichText::new(i18n.text("save-delete"))
                                                 .size(font_size)
                                                 .color(theme::DANGER),
                                         )
@@ -447,14 +501,14 @@ fn paint_load_actions(
                         .add_sized(
                             [delete_width, height],
                             egui::Button::new(
-                                egui::RichText::new("Delete save")
+                                egui::RichText::new(i18n.text("save-delete-action"))
                                     .size(12.0)
                                     .color(theme::MUTED),
                             )
                             .frame(false)
                             .truncate(),
                         )
-                        .on_hover_text("Delete save")
+                        .on_hover_text(i18n.text("save-delete-action"))
                         .clicked()
                     {
                         dialogs.pending_delete = Some(id);
@@ -472,11 +526,16 @@ fn paint_load_actions(
     action
 }
 
-pub fn status(ui: &mut egui::Ui, state: &PersistenceState) {
-    status_with_label(ui, state, "Working...");
+pub fn status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Localization) {
+    status_with_label(ui, state, i18n, i18n.text("save-working"));
 }
 
-fn status_with_label(ui: &mut egui::Ui, state: &PersistenceState, label: &str) {
+fn status_with_label(
+    ui: &mut egui::Ui,
+    state: &PersistenceState,
+    i18n: &Localization,
+    label: String,
+) {
     if state.busy {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -484,9 +543,9 @@ fn status_with_label(ui: &mut egui::Ui, state: &PersistenceState, label: &str) {
         });
     }
     if let Some(error) = &state.error {
-        ui.colored_label(theme::DANGER, error);
+        ui.colored_label(theme::DANGER, i18n.persistence_error(error));
     }
     if let Some(message) = &state.message {
-        ui.colored_label(theme::ACCENT, message);
+        ui.colored_label(theme::ACCENT, i18n.persistence_notice(message));
     }
 }

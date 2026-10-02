@@ -13,7 +13,7 @@ pub use app::{AppState, GameCompleteSubState, GameData, GameSubState, PlayerInfo
 #[cfg(any(test, feature = "cpu-picking-debug"))]
 pub use collision::{PieceCollisionData, PieceCollisionSystem};
 pub use config::{PieceMode, PuzzleConfig};
-pub use generation::{GenerationPhase, PieceGenerationProgress};
+pub use generation::{GenerationError, GenerationPhase, PieceGenerationProgress};
 pub use images::{ImageLoadChannels, ImageLoadSender, PuzzleImage};
 pub use input::{GameUiPointerCapture, InputState};
 pub use performance::{PerformanceDebugLevel, PerformanceMonitor, SystemTiming};

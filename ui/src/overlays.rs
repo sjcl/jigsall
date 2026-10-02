@@ -1,3 +1,4 @@
+use crate::localization::Localization;
 use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -6,6 +7,7 @@ use puzzella_game::resources::*;
 /// Pause actions use the same visual language as the title and save dialog.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_in_game_menu_ui(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
@@ -32,15 +34,22 @@ pub fn draw_in_game_menu_ui(
             egui::ScrollArea::vertical()
                 .max_height((ctx.content_rect().height() - 112.0).max(100.0))
                 .show(ui, |ui| {
-                    theme::heading(ui, if completed { "Puzzle Menu" } else { "Paused" });
+                    theme::heading(
+                        ui,
+                        if completed {
+                            i18n.text("pause-puzzle-menu")
+                        } else {
+                            i18n.text("pause-title")
+                        },
+                    );
                     ui.add_enabled_ui(!persistence.busy, |ui| {
                         let width = ui.available_width();
                         if theme::button(
                             ui,
                             if completed {
-                                "Back to Puzzle"
+                                i18n.text("pause-back-puzzle")
                             } else {
-                                "Resume Game"
+                                i18n.text("pause-resume")
                             },
                             width,
                             true,
@@ -53,24 +62,27 @@ pub fn draw_in_game_menu_ui(
                                 next_sub_state.set(GameSubState::Playing);
                             }
                         }
-                        if theme::button(ui, "Save Game", width, false).clicked() {
-                            dialogs.open_title(&mut persistence);
+                        if theme::button(ui, i18n.text("common-save-game"), width, false).clicked()
+                        {
+                            dialogs.open_title(&mut persistence, &i18n);
                         }
-                        if theme::button(ui, "Return to Title", width, false).clicked() {
+                        if theme::button(ui, i18n.text("common-return-title"), width, false)
+                            .clicked()
+                        {
                             next_state.set(AppState::Menu);
                         }
-                        if theme::danger_button(ui, "Exit Game", width).clicked() {
+                        if theme::danger_button(ui, i18n.text("pause-exit"), width).clicked() {
                             exit.write(AppExit::Success);
                         }
                     });
-                    crate::persistence::status(ui, &persistence);
+                    crate::persistence::status(ui, &persistence, &i18n);
                     ui.add_space(8.0);
                     theme::hint(
                         ui,
                         if completed {
-                            "ESC  Back to your puzzle"
+                            i18n.text("pause-puzzle-hint")
                         } else {
-                            "ESC  Resume game"
+                            i18n.text("pause-resume-hint")
                         },
                     );
                 });
@@ -79,6 +91,7 @@ pub fn draw_in_game_menu_ui(
 
 /// パズル生成進捗UI
 pub fn draw_generation_progress_ui(
+    i18n: Res<Localization>,
     mut contexts: EguiContexts,
     progress: Res<PieceGenerationProgress>,
     mut next_state: ResMut<NextState<AppState>>,
@@ -119,35 +132,36 @@ pub fn draw_generation_progress_ui(
 
                 // フェーズ名
                 let phase_text = match progress.generation_phase {
-                    GenerationPhase::NotStarted => "Starting...",
-                    GenerationPhase::GeneratingState => "Generating state",
-                    GenerationPhase::UploadingGpu => "Uploading GPU state",
-                    GenerationPhase::Completed => "Completed",
-                    GenerationPhase::Failed => "Failed",
+                    GenerationPhase::NotStarted => i18n.text("generation-starting"),
+                    GenerationPhase::GeneratingState => i18n.text("generation-state"),
+                    GenerationPhase::UploadingGpu => i18n.text("generation-uploading"),
+                    GenerationPhase::Completed => i18n.text("generation-completed"),
+                    GenerationPhase::Failed => i18n.text("generation-failed"),
                 };
 
                 // プログレスバー（フェーズに応じて適切な数値を表示）
                 let (current_count, label) = match progress.generation_phase {
-                    GenerationPhase::GeneratingState => (0, "pieces"),
-                    GenerationPhase::UploadingGpu => (progress.pieces_created, "pieces"),
-                    _ => (0, "items"),
+                    GenerationPhase::GeneratingState => (0, "generation-pieces"),
+                    GenerationPhase::UploadingGpu => (progress.pieces_created, "generation-pieces"),
+                    _ => (0, "generation-items"),
                 };
 
                 let progress_bar = egui::ProgressBar::new(progress_ratio)
-                    .text(format!(
-                        "{} / {} {}",
-                        current_count.min(progress.total_pieces),
-                        progress.total_pieces,
-                        label
+                    .text(i18n.format(
+                        label,
+                        &[
+                            ("current", current_count.min(progress.total_pieces).into()),
+                            ("total", progress.total_pieces.into()),
+                        ],
                     ))
                     .desired_width(400.0);
 
                 ui.add(progress_bar);
-                ui.label(format!("Phase: {}", phase_text));
+                ui.label(i18n.format("generation-phase", &[("phase", phase_text.as_str().into())]));
                 if let Some(error) = &progress.error {
-                    ui.colored_label(egui::Color32::RED, error);
+                    ui.colored_label(egui::Color32::RED, i18n.generation_error(error));
                 }
-                if ui.button("Return to Title").clicked() {
+                if ui.button(i18n.text("common-return-title")).clicked() {
                     next_state.set(AppState::Menu);
                 }
             });
