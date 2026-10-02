@@ -88,21 +88,25 @@ a player, including connected peers with `player: None`.
 
 The immutable `DEFAULT_INBOUND_POLICY` uses the following byte-equivalent rates:
 
-| Class | Steady rate | Burst capacity | Over-limit action |
-| --- | --- | --- | --- |
-| Transient | 128 KiB/s | 256 KiB | Silent drop; connection stays open |
-| Control | 4 MiB/s | 8 MiB | Disconnect with `DisconnectReason::RateLimited` |
-| Bulk | 8 MiB/s | 16 MiB | Disconnect with `DisconnectReason::RateLimited` |
+| Class | Steady rate | Burst capacity | Minimum charge | Over-limit action |
+| --- | --- | --- | --- | --- |
+| Transient | 128 KiB/s | 256 KiB | 512 B | Silent drop; connection stays open |
+| Control | 4 MiB/s | 8 MiB | 16 KiB | Disconnect with `DisconnectReason::RateLimited` |
+| Bulk | 8 MiB/s | 16 MiB | 32 KiB | Disconnect with `DisconnectReason::RateLimited` |
 
-Every message costs `max(native_payload.len(), MIN_MESSAGE_CHARGE)`, where
-`MIN_MESSAGE_CHARGE = 64` bytes. The native payload includes the wire header.
+Every message costs `max(native_payload.len(), policy.minimum_charge)`, using its
+class's `BucketPolicy`. The native payload includes the wire header.
 Empty and tiny malformed packets therefore consume credit too. These are generous
-initial policies: 120 maximum-size 140-byte Drag frames per second use only
-16,800 bytes/s. Control's burst holds 31 maximum-size 262,156-byte frames, and
-Bulk's burst holds 511 maximum-size 32,780-byte chunks. Each burst holds two
+initial policies: 120 maximum-size 140-byte Drag frames per second are charged
+61,440 bytes/s, comfortably below 128 KiB/s. Control's burst holds 31 maximum-size
+262,156-byte frames; Bulk's burst holds 511 maximum-size 32,780-byte chunks.
+Each burst holds two
 seconds of steady credit, allowing ordinary same-frame Grab/Release and handshake
-bursts while bounding sustained abnormal traffic. Minimum charge also bounds
-tiny-message rates to 2,048/s, 65,536/s and 131,072/s respectively after bursts.
+bursts while bounding sustained abnormal traffic. Each class permits at most 512
+tiny messages from a full bucket without refill, and 256 tiny messages/s at steady
+rate. The larger reliable-class minimum charges prevent their generous byte bursts
+from permitting hundreds of thousands of tiny messages that monopolize the shared
+receive budget. This bounds per-message CPU work with the existing single bucket.
 
 Refill uses elapsed `Instant` time and integer arithmetic: multiply elapsed
 nanoseconds by the class's bytes/s rate, retain fractional byte credit in
@@ -112,7 +116,8 @@ surplus credit. Zero elapsed time earns nothing. There is no fixed one-second
 window, float accounting, rate history, allocation or background task. Each check
 updates only its class's bucket in O(1). On x86_64 Windows, the added limiter state
 is 104 bytes per connection (three 32-byte buckets and one 8-byte shared policy
-reference); the immutable policy is shared rather than copied per connection.
+reference); adding class-specific minimum charges leaves this state size unchanged.
+The immutable 72-byte policy is shared rather than copied per connection.
 
 In `GnsDirectIp::poll`, native receive first resolves the existing connection and
 validates the lane and frame-size limit, then calls `rate_limit.check` **before**
@@ -306,9 +311,12 @@ piece/connectivity/snapshot/cursor state, and disconnect on both ends. Receive
 regressions preload reliable UDP messages and wait for native ACKs without polling
 the receiver, then verify shared 512-message limits, rotation between listeners,
 partial-chunk retention, outgoing-socket draining and server-initiated close.
+Receive-drain fixtures use a larger Control burst so their 513-message backlog
+tests receive behavior independently of the production tiny-message rate limit.
 Rate-limit unit tests cover burst spending, zero elapsed time, fractional refill,
-capacity, extreme idle/rate arithmetic, minimum charge, Transient recovery,
-reliable disconnects, independent classes/connections, zero policies and default
+capacity, extreme idle/rate arithmetic, per-class minimum charge and tiny-message
+burst/steady bounds, Transient recovery, reliable disconnects, independent
+classes/connections, zero policies and default
 120 Hz drags/maximum-frame bursts. Small-policy localhost tests cover Transient
 drop without events or disconnect, dropped messages consuming the receive budget,
 Control independence, fresh connection credit, Control/Bulk disconnect exactly once

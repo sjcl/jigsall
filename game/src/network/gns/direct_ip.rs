@@ -628,11 +628,22 @@ mod tests {
         crate::network::rate_limit::BucketPolicy {
             bytes_per_second: 0,
             burst_bytes: 128,
+            minimum_charge: 64,
         };
     const TEST_POLICY: InboundRatePolicy = InboundRatePolicy {
         transient: TEST_BUCKET,
         control: TEST_BUCKET,
         bulk: TEST_BUCKET,
+    };
+
+    // These fixtures test draining, not rate limits: keep their 513-message
+    // backlog below capacity while retaining production minimum charges.
+    const DRAIN_POLICY: InboundRatePolicy = InboundRatePolicy {
+        control: crate::network::rate_limit::BucketPolicy {
+            burst_bytes: 64 * 1024 * 1024,
+            ..DEFAULT_INBOUND_POLICY.control
+        },
+        ..DEFAULT_INBOUND_POLICY
     };
 
     #[test]
@@ -796,8 +807,9 @@ mod tests {
 
     #[test]
     fn gns_localhost_receive_budget_is_shared_and_preserves_partial_chunk() {
-        let mut host = GnsDirectIp::new().unwrap();
-        let mut clients: [_; 3] = std::array::from_fn(|_| GnsDirectIp::new().unwrap());
+        let mut host = GnsDirectIp::with_rate_policy(&DRAIN_POLICY).unwrap();
+        let mut clients: [_; 3] =
+            std::array::from_fn(|_| GnsDirectIp::with_rate_policy(&DRAIN_POLICY).unwrap());
         let pairs = clients
             .each_mut()
             .map(|client| connect_pair(&mut host, client));
@@ -832,8 +844,8 @@ mod tests {
 
     #[test]
     fn gns_localhost_outgoing_socket_drains_and_server_close_removes_once() {
-        let mut host = GnsDirectIp::new().unwrap();
-        let mut client = GnsDirectIp::new().unwrap();
+        let mut host = GnsDirectIp::with_rate_policy(&DRAIN_POLICY).unwrap();
+        let mut client = GnsDirectIp::with_rate_policy(&DRAIN_POLICY).unwrap();
         let (listener, incoming, outgoing) = connect_pair(&mut host, &mut client);
         send_burst(&mut host, incoming, 513);
         let first = receive_sequences(&mut client);
