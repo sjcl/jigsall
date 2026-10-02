@@ -32,4 +32,6 @@ Bevy 0.19.1 / bevy_egui 0.42を使用します。Windows向けのwgpu-halはCarg
 
 旧Renet試作は削除済みです。Renet importの変更や、gpu-allocatorの古いpatchを追加する必要はありません。
 
+optionalな `gns` feature（`--all-features`も含む）はCMake、Git、libclangとvcpkg経由のnative依存が必要です。通常buildはこれらを要求しません。セットアップとlocalhostテストは[NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md)を参照してください。
+
 形状生成・入力・状態の設計と今後の課題は[ARCHITECTURE.md](ARCHITECTURE.md)、操作方法は[README.md](../README.md)を参照してください。

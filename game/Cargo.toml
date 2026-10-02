@@ -21,12 +21,15 @@ tempfile = "3"
 crossbeam.workspace = true
 instant.workspace = true
 rstar = { workspace = true, optional = true }
+gns = { package = "game-networking-sockets", version = "=0.3.0", optional = true }
+postcard = { version = "1.1", features = ["alloc"], default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 wgpu-hal.workspace = true
 
 [features]
 default = []
+gns = ["dep:gns"]
 cpu-geometry-reference = ["puzzella-puzzle/cpu-geometry-reference"]
 cpu-picking-debug = ["puzzella-puzzle/cpu-picking-debug", "dep:rstar"]
 
