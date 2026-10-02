@@ -4,6 +4,10 @@ struct PuzzleUniform {
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
     selection_min:vec2<f32>,selection_max:vec2<f32>,selection_enabled:vec4<u32>,
     drag_delta:vec2<f32>,drag_active:u32,preview_active:u32,
+    viewport_size:vec2<f32>,viewport_origin:vec2<f32>,
+    piece_size_px:vec2<f32>,pixel_world_size:vec2<f32>,
+    render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
+    far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
@@ -26,23 +30,40 @@ struct VertexOutput {
 @vertex fn vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
     let corners=array<vec2<f32>,4>(vec2(-1.0,-1.0),vec2(1.0,-1.0),vec2(-1.0,1.0),vec2(1.0,1.0));
     let id=visible[instance];let state=states[id];let cell=vec2(id%config.grid.x,id/config.grid.x);
-    let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
-    let local=corners[vi]*half;let edges=piece_profiles(config.seed,config.grid,cell);
     var position=state.position;
     if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
         position+=config.drag_delta;
     }
-    var out:VertexOutput;out.position=config.clip_from_world*vec4(position+local,0.0,1.0);
+    var out:VertexOutput;
+    if config.far_zoom!=0u {
+        let center=config.clip_from_world*vec4(position,0.0,1.0);
+        let center_px=config.viewport_origin+(center.xy/center.w*vec2(0.5,-0.5)+0.5)*config.viewport_size;
+        let snapped_px=floor(center_px)+0.5;
+        let splat_size=max(config.piece_size_px,vec2(config.splat_min_px));
+        let pixel=snapped_px+corners[vi]*vec2(1.0,-1.0)*splat_size*0.5;
+        let ndc=(pixel-config.viewport_origin)/config.viewport_size*vec2(2.0,-2.0)+vec2(-1.0,1.0);
+        out.position=vec4(ndc*center.w,center.z,center.w);
+        // Snap first, crop second: a 1x1 point target keeps the main footprint.
+        out.position=vec4(out.position.xy*config.render_clip_scale+config.render_clip_offset*out.position.w,out.position.zw);
+        // Constant cell-center UV; no edge hash, profile decoding or SDF data.
+        out.uv=(vec2<f32>(cell)+0.5)/vec2<f32>(config.grid);
+    } else {
+        let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
+        let local=corners[vi]*half;let edges=piece_profiles(config.seed,config.grid,cell);
+        out.position=config.clip_from_world*vec4(position+local,0.0,1.0);
+        out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);
+        out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];
+    }
     // Reverse-Z in the exact 24-bit range; placed pieces have rank zero.
     let rank=select(state.z_order+2u,1u,(state.flags&1u)!=0u);
     out.position.z=f32(rank)/16777216.0*out.position.w;
-    out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);out.id=id;out.flags=state.flags&~6u;
+    out.id=id;out.flags=state.flags&~6u;
     // An explicit branch keeps ordinary frames from loading component roots.
     if config.preview_active!=0u && (state.flags&9u)==0u {
         let root=component_roots[id];
         if (preview[root/32u]&(1u<<(root%32u)))!=0u {out.flags|=4u;}
     }
-    out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];return out;
+    return out;
 }
 fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
 fn selection_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
@@ -56,7 +77,24 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     let color=textureSample(image,image_sampler,in.uv);
     if color.a<=0.0 {discard;} return color;
 }
+fn sample_splat(in:VertexOutput)->vec4<f32> {
+    // Keep alpha semantics shared with both pick paths: a fully transparent
+    // center sample produces no color, depth or hit. No opaque fallback color.
+    let color=textureSampleLevel(image,image_sampler,in.uv,0.0);
+    if color.a<=0.0 {discard;} return color;
+}
+fn pick_visible(in:VertexOutput) {
+    if config.far_zoom!=0u {sample_splat(in);} else {sample_visible(in,distance(in));}
+}
 @fragment fn fragment(in:VertexOutput)->@location(0) vec4<f32> {
+    if config.far_zoom!=0u {
+        let color=sample_splat(in);
+        var flags=in.flags;
+        if (selected[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=2u;}
+        if (flags&2u)!=0u {return vec4(mix(color.rgb,vec3(1.0,0.8,0.0),0.5),color.a);}
+        if (flags&4u)!=0u {return vec4(mix(color.rgb,vec3(0.3,0.6,1.0),0.5),color.a);}
+        return color;
+    }
     let edges=piece_edge_distances(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));
     let d=max_edge_distance(edges);let color=sample_visible(in,d);
     // Evaluate derivatives before the per-piece highlight branch.
@@ -78,10 +116,10 @@ fn check_selectable(id:u32) {
     if (selectable[id/32u]&(1u<<(id%32u)))==0u {discard;}
 }
 @fragment fn point_fragment(in:VertexOutput)->@location(0) u32 {
-    sample_visible(in,distance(in));check_selectable(in.id);return in.id+1u;
+    pick_visible(in);check_selectable(in.id);return in.id+1u;
 }
 @fragment fn rectangle_fragment(in:VertexOutput) {
-    sample_visible(in,distance(in));check_selectable(in.id);atomicOr(&selection[in.id/32u],1u<<(in.id%32u));
+    pick_visible(in);check_selectable(in.id);atomicOr(&selection[in.id/32u],1u<<(in.id%32u));
 }
 
 @vertex fn box_vertex(@builtin(vertex_index) vi:u32)->@builtin(position) vec4<f32> {

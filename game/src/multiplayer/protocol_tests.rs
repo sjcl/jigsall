@@ -1,5 +1,6 @@
 use super::*;
 use crate::multiplayer::{GameSnapshot, SnapshotExpectation};
+use crate::resources::pieces::{ENABLED, PLACED};
 use bevy::math::{UVec2, Vec2};
 use puzzella_core::{
     protocol::{ComponentRef, DenseTarget, PieceTarget, MAX_COMPONENT_REFS},
@@ -425,8 +426,9 @@ fn release_revalidates_stale_membership_ownership_placed_and_enabled() {
                 f.store.states[0].flags &= !ENABLED;
             }
         }
-        let ProtocolCommandResult::Released { applied, rejected } =
-            f.apply(&Fixture::release(1, 0, Vec2::ONE)).unwrap()
+        let ProtocolCommandResult::Released {
+            applied, rejected, ..
+        } = f.apply(&Fixture::release(1, 0, Vec2::ONE)).unwrap()
         else {
             panic!()
         };

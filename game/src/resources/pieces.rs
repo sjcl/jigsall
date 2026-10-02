@@ -510,6 +510,20 @@ impl PieceDataStore {
         self.apply_grab(player, plan, false)
     }
 
+    /// Replica-only semantic apply after full consistency validation. Do not run
+    /// authority acceptance again or silently omit any accepted component.
+    pub(crate) fn grab_authority_components(
+        &mut self,
+        player: PlayerId,
+        minima: impl IntoIterator<Item = PieceId>,
+    ) -> AppliedCommand {
+        let ids = minima
+            .into_iter()
+            .flat_map(|minimum| self.connectivity.iter_component(minimum))
+            .collect();
+        self.apply_grab(player, GrabPlan { ids, members: None }, false)
+    }
+
     /// Full masks emit the minimum member once; partial masks deduplicate only
     /// roots whose minimum is absent. Small partial sets stay on the stack.
     fn grab_component_roots<'a>(
