@@ -40,11 +40,21 @@ pub fn apply_piece_commands(
     mut commands: MessageReader<ClientCommand>,
     mut store: ResMut<PieceDataStore>,
     definition: Option<Res<PuzzleDefinition>>,
+    mut interaction: Option<ResMut<crate::interaction::PieceInteraction>>,
+    input: Option<Res<InputState>>,
     mut perf: ResMut<PerformanceMonitor>,
 ) {
     let start = perf.start_system_timing("apply_piece_commands");
     for request in commands.read() {
-        store.apply_command(request.player, &request.command, definition.as_deref());
+        let applied = store.apply_command(request.player, &request.command, definition.as_deref());
+        if applied.drag_rebased {
+            if let (Some(interaction), Some(pointer)) = (
+                interaction.as_deref_mut(),
+                input.as_ref().and_then(|input| input.mouse_position),
+            ) {
+                interaction.accept_drag_rotation(&request.command, pointer);
+            }
+        }
     }
     perf.end_system_timing("apply_piece_commands", start);
 }

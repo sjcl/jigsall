@@ -4,6 +4,9 @@ use crate::{resources::*, selection::*};
 use bevy::prelude::*;
 use puzzella_core::*;
 
+#[cfg(test)]
+mod drag_rotation_tests;
+
 #[derive(Default)]
 enum Gesture {
     #[default]
@@ -50,12 +53,19 @@ pub struct PointerFrame {
     pub focused: bool,
 }
 impl PieceInteraction {
-    /// Rotation is a committed-state operation; gestures keep translation only.
+    /// Discrete rotation commands never change the pointer basis before acceptance.
     pub fn rotation_command(
         &self,
         store: &PieceDataStore,
         quarter_turns: i8,
     ) -> Option<PieceCommand> {
+        if let Gesture::Dragging { members, .. } = &self.gesture {
+            return Some(PieceCommand::RotateDrag {
+                members: members.clone(),
+                delta: store.drag.delta,
+                quarter_turns,
+            });
+        }
         if !matches!(self.gesture, Gesture::Idle)
             || !store.drag.members.is_empty()
             || store.selected_pieces.is_empty()
@@ -71,6 +81,19 @@ impl PieceInteraction {
             target,
             quarter_turns,
         })
+    }
+    pub(crate) fn accept_drag_rotation(&mut self, command: &PieceCommand, pointer: Vec2) {
+        if let (
+            Gesture::Dragging { members, anchor },
+            PieceCommand::RotateDrag {
+                members: accepted, ..
+            },
+        ) = (&mut self.gesture, command)
+        {
+            if pointer.is_finite() && members == accepted {
+                *anchor = pointer;
+            }
+        }
     }
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })

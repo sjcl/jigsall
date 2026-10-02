@@ -62,6 +62,8 @@ Moveの最終座標を適用してからReleaseとsnapを処理します。bulk 
 
 入力はPostUpdateのegui処理、camera pan / zoom / edge scrollingの後です。現Transformで座標変換し、UI上の押下を抑制します。開始済みdragはUIを横切っても継続・解放できます。pauseとfocus lossで保持を解放し、未確定の矩形選択を元に戻します。
 
+ドラッグ中のQ/EはRotateDragで表示中のdeltaと回転をcanonical stateへ一度に確定し、成功後だけpointer anchorを現在pointerへ更新します。対象全体をpreflightし、拒否時はstate / delta / anchorを維持します。Releaseと同frameならReleaseを優先し、回転中にはsnapしません。pointer dragはmembers + deltaのCPU O(1)、state / membership upload 0を維持し、明示的なdrag rotation時だけO(k)の計算と変更memberだけのuploadを行います。GPU stateは16 bytes、component root bufferとmembershipは回転で変更しません。詳細は[ROTATION.md](ROTATION.md)を参照してください。
+
 `PieceInteraction`はIdle / Dragging / BoxSelectingを持ちます。point結果の受信前にreleaseした場合も最終座標を保持します。矩形previewとrelease時の確定要求を分け、古いGPU応答が確定選択を上書きしないようにします。
 
 ## Dirty同期とZ順序

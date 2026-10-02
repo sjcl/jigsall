@@ -6,7 +6,9 @@ use crate::resources::{
 use bevy::math::Vec2;
 use puzzella_core::{
     decode_rotation,
-    protocol::{ActiveDragTarget, RejectedComponentRef, ReleaseResultFingerprint, TargetError},
+    protocol::{
+        ActiveDrag, ActiveDragTarget, RejectedComponentRef, ReleaseResultFingerprint, TargetError,
+    },
     rotate_quarter, PieceBitSet, PieceId, PlayerId, PuzzleDefinition, ROTATION_MASK,
 };
 use sha2::{Digest, Sha256};
@@ -145,6 +147,30 @@ pub(super) fn result_fingerprint(
 ) -> ReleaseResultFingerprint {
     let mut scratch = FingerprintScratch::new(store.len());
     fingerprint_with_scratch(store, released_roots, definition, applied, &mut scratch)
+}
+
+/// Include the retained context/basis as well as canonical geometry and holds.
+pub(super) fn drag_rotation_fingerprint(
+    store: &PieceDataStore,
+    roots: &[PieceId],
+    definition: &PuzzleDefinition,
+    applied: &AppliedCommand,
+    player: PlayerId,
+    drag: &ActiveDrag,
+) -> ReleaseResultFingerprint {
+    let result = result_fingerprint(store, roots, Some(definition), applied);
+    let mut hash = Sha256::new();
+    hash.update(b"puzzella/drag-rotation/v1\0");
+    hash.update(result.0.to_le_bytes());
+    hash.update(player.0.to_le_bytes());
+    hash.update(drag.grab_sequence.to_le_bytes());
+    hash.update(drag.basis_sequence.to_le_bytes());
+    hash.update([u8::from(drag.last_tick.is_some())]);
+    hash.update(drag.last_tick.unwrap_or(0).to_le_bytes());
+    hash.update(drag.delta.x.to_bits().to_le_bytes());
+    hash.update(drag.delta.y.to_bits().to_le_bytes());
+    let bytes = hash.finalize();
+    ReleaseResultFingerprint(u128::from_le_bytes(bytes[..16].try_into().unwrap()))
 }
 
 fn fingerprint_with_scratch(

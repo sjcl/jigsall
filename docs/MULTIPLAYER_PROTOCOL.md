@@ -248,7 +248,7 @@ Sparse contexts retain at most 32 references; Dense contexts retain a canonical
 mask and its target-specific topology fingerprint. A million singletons remain
 125,000 bytes of COW mask words, never a permanent million-reference vector.
 
-`RemoteDragUpdate` contains session, authority epoch, player, grab sequence, tick
+`RemoteDragUpdate` contains session, authority epoch, player, grab sequence, basis sequence, tick
 and finite absolute delta. The authenticated sender must be the host. Tick gaps
 are allowed; larger ticks replace the delta, equal ticks return `DuplicateUpdate`
 and older ticks return `StaleUpdate`. Wrong session/epoch/host, missing context,
@@ -370,12 +370,14 @@ work.
 
 `ClientCommandSequence::Move` is also the transient drag stream, not only scalar
 local Move. Gaps are allowed, duplicate / old ticks are rejected, and each accepted
-update replaces the previous delta (latest wins). Both the latest consumed control
-and the active Grab must match `after_control_sequence`. Future/unprocessed control
+update replaces the previous delta (latest wins). The active drag basis (initial
+Grab or latest successful RotateDrag control) must match `after_control_sequence`. Future/unprocessed control
 contexts, older contexts, wrong authenticated players, wrong epochs and updates
-after Release are rejected. Ticks reset when a control is consumed.
+after Release are rejected. Ticks remain monotonic across rebases within one Grab;
+the rebase through_tick is the minimum retained floor. Rejected RotateDrag controls
+leave the previous move basis and tick tracker usable.
 
-The delta is absolute from Grab's base state, never an increment accumulated onto
+The delta is absolute from the most recent committed/rebased state, never an increment accumulated onto
 previous updates. DragUpdate updates only the stored scalar delta. It does not
 enumerate components, regenerate masks, serialize membership, move authoritative
 base positions, snap, or dirty-upload piece positions. Future presentation can use
@@ -402,7 +404,7 @@ Normal gameplay prevents external snapping into held components and does not mer
 the dragged components before Release, so accepted Dense topology stays fixed.
 The stored fingerprint also detects unexpected topology mutation defensively.
 
-Local `PieceCommand` remains unchanged. GPU rectangle results, selected pieces,
+Local `PieceCommand::RotateDrag` adds a discrete commit/rebase operation. GPU rectangle results, selected pieces,
 dirty pieces, local drag membership and bulk operations continue using PieceBitSet.
 Scalar Grab / Release reuse the existing mask-free paths. Point/Ctrl/rectangle
 selection, component expansion and outlines, O(1) pointer drag, GPU picking, renderer,
@@ -474,16 +476,60 @@ server, NAT traversal, matchmaking, or host election is added by this change.
 reliable control. Signed turns normalize modulo four. The authority resolves the
 existing sparse/dense topology, rejects complete placed, disabled, held or
 inconsistent bodies, and rotates each accepted component about its own current
-world-space position AABB center. Active player drags reject rotation. Sparse stale
+world-space position AABB center. Active player drags use RotateDrag instead. Sparse stale
 entries are rejected individually; a stale dense fingerprint rejects the command.
 
 `RotationCommitted` contains the exact accepted `PieceTarget`, normalized turns,
 player, and affected-state result fingerprint. Replicas preflight the whole event
 before mutation, then use the same canonical reconstruction and compare the
 fingerprint. Cursor/authentication checks and the divergence latch are shared with
-Grab/Release. Rotation adds no `DragUpdate` packets or retained drag state.
+Grab/Release. Normal rotation adds no transient presentation state.
 
 The result fingerprint also hashes rotation bits and reconstructs representative
 translations using the component rotation. Zero-rotation v1 byte vectors retain
 their existing values. For rotation events the released/placed counts are zero;
 member flags and positions encode the rotated result. See [ROTATION.md](ROTATION.md).
+
+## Reliable rotation during one Grab
+
+```text
+Control(42): Grab { target }
+Move { after_control_sequence: 42, tick: 10 }: DragUpdate { delta }
+Control(43): RotateDrag { grab_sequence: 42, final_delta, through_tick: Some(11), quarter_turns }
+Move { after_control_sequence: 43, tick: 12 }: DragUpdate { delta }
+Control(44): RotateDrag { grab_sequence: 42, final_delta, through_tick: Some(12), quarter_turns }
+Control(45): Release { grab_sequence: 42, final_delta }
+```
+
+No mask or PieceTarget is sent during rebases. The existing authority-accepted
+ActiveDragTarget must resolve completely, and every member must be enabled,
+unplaced, held by the same player with matching HELD/owner, and a consistent rigid
+transform with uniform rotation. One invalid component rejects the whole rebase
+before mutation. Rotation rebuilds final canonical coordinates directly from the
+displayed position AABB, preserves holds/Z/selection/connectivity, and does not snap.
+Pointer-only drag stays O(1), with no piece-state or membership uploads; only an
+explicit rotation visits O(k) members and uploads their changed states.
+
+through_tick is the maximum tick sent before Q/E, or None if no update has been
+sent. It cannot regress behind the authority/replica's last accepted tick or a
+previous floor. Equal floors permit multiple rotations without intervening moves.
+Successful rebases zero delta and retain the same Grab context. Released positions
+use the final rebased state plus Release.final_delta, followed by the existing snap.
+
+DragRotationCommitted carries player, original grab_sequence, new basis_sequence
+(the rotation's client control sequence), through_tick, final_delta, normalized
+turns and result fingerprint. Replicas validate the whole accepted context before
+mutation, replay the same rotation calculation, and compare a SHA-256 fingerprint
+of affected canonical states and the retained player/Grab/basis/tick/zero-delta
+context. A mismatch latches Diverged and requires the existing coordinated resync.
+
+RemoteDragUpdate also carries basis_sequence. Old basis packets, tick values at or
+below the floor, and future basis packets overtaking the reliable event are rejected
+without modifying presentation. The latter need no resync: the next absolute
+Transient or a reliable final_delta repairs presentation. Successful rebases alone
+advance the sequence tracker's move basis; rejected reliable rebases consume their
+control number while leaving states, holds and the previous basis intact.
+
+Wire version 2 and fixed golden frames cover all rotation commands/events, signed
+turns, optional floors, field order and enum indices. Pre-release wire v1 is rejected
+without a legacy decoder; snapshot schema 4 and its 16-byte records are unchanged.

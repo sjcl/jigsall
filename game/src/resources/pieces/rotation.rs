@@ -3,7 +3,7 @@ use super::*;
 use bevy::math::DVec2;
 use puzzella_core::{
     add_quarter_turns, matches_transform,
-    protocol::{PieceTarget, RejectedComponentRef, ResolvedPieceTarget},
+    protocol::{ActiveDragTarget, PieceTarget, RejectedComponentRef, ResolvedPieceTarget},
 };
 
 pub(crate) struct RotationResult {
@@ -17,6 +17,7 @@ struct RotationPlan {
     minimum: PieceId,
     rotation: u32,
     translation: DVec2,
+    singleton_center: Option<Vec2>,
 }
 
 impl PieceDataStore {
@@ -25,8 +26,11 @@ impl PieceDataStore {
         minimum: PieceId,
         quarter_turns: i8,
         definition: &PuzzleDefinition,
+        delta: Vec2,
+        owner: Option<PlayerId>,
+        members: Option<&PieceBitSet>,
     ) -> Option<RotationPlan> {
-        if !self.contains(minimum) {
+        if !self.contains(minimum) || !delta.is_finite() {
             return None;
         }
         let geometry = definition.geometry();
@@ -47,15 +51,27 @@ impl PieceDataStore {
                 .members
                 .get(id.0 as usize / 32)
                 .is_some_and(|word| word & (1 << (id.0 % 32)) != 0);
-            if !self.is_selectable(id)
-                || in_drag
+            let eligible = if let Some(player) = owner {
+                state.flags & (PLACED | ENABLED | HELD) == (ENABLED | HELD)
+                    && self.held_by.get(&id) == Some(&player)
+                    && members.is_none_or(|mask| mask.contains(&id))
+            } else {
+                self.is_selectable(id) && !in_drag
+            };
+            let displayed = if delta == Vec2::ZERO {
+                state.position
+            } else {
+                state.position + delta
+            };
+            if !eligible
+                || !displayed.is_finite()
                 || decode_rotation(state.flags) != old_rotation
                 || !matches_transform(state.position, correct, old_rotation, old_translation)
             {
                 return None;
             }
-            world_min = world_min.min(state.position);
-            world_max = world_max.max(state.position);
+            world_min = world_min.min(displayed);
+            world_max = world_max.max(displayed);
             let rotated = rotate_quarter(correct, rotation);
             correct_min = correct_min.min(rotated);
             correct_max = correct_max.max(rotated);
@@ -76,7 +92,147 @@ impl PieceDataStore {
                 minimum,
                 rotation,
                 translation,
+                singleton_center: (self.connectivity.component_size(minimum) == 1).then(|| {
+                    if delta == Vec2::ZERO {
+                        representative.position
+                    } else {
+                        representative.position + delta
+                    }
+                }),
             })
+    }
+
+    fn apply_rotation_plans(
+        &mut self,
+        plans: Vec<RotationPlan>,
+        definition: &PuzzleDefinition,
+    ) -> AppliedCommand {
+        let geometry = definition.geometry();
+        let mut applied = AppliedCommand::default();
+        let states = &mut *self.states;
+        for plan in plans {
+            for id in self.connectivity.iter_component(plan.minimum) {
+                let state = &mut states[id.0 as usize];
+                let position = plan.singleton_center.unwrap_or_else(|| {
+                    (rotate_quarter(geometry.correct_position(id), plan.rotation).as_dvec2()
+                        + plan.translation)
+                        .as_vec2()
+                });
+                let flags = with_rotation(state.flags, plan.rotation);
+                if position.to_array().map(f32::to_bits)
+                    != state.position.to_array().map(f32::to_bits)
+                    || flags != state.flags
+                {
+                    state.position = position;
+                    state.flags = flags;
+                    self.dirty_pieces.insert(id);
+                    self.exact_dirty_ranges = true;
+                }
+                applied.rotated += 1;
+            }
+        }
+        applied
+    }
+
+    fn drag_rotation_plans(
+        &self,
+        roots: &[PieceId],
+        player: PlayerId,
+        delta: Vec2,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+        members: Option<&PieceBitSet>,
+    ) -> Option<Vec<RotationPlan>> {
+        if roots.is_empty()
+            || definition.validate().is_err()
+            || definition.piece_count() != self.len()
+        {
+            return None;
+        }
+        roots
+            .iter()
+            .map(|&id| {
+                self.rotation_plan(id, quarter_turns, definition, delta, Some(player), members)
+            })
+            .collect()
+    }
+
+    pub(crate) fn rotate_local_drag(
+        &mut self,
+        player: PlayerId,
+        members: &PieceBitSet,
+        delta: Vec2,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+    ) -> Option<AppliedCommand> {
+        if player != puzzella_core::LOCAL_PLAYER
+            || members.bit_len() != self.len()
+            || (!Arc::ptr_eq(members.words(), &self.drag.members)
+                && **members.words() != *self.drag.members)
+        {
+            return None;
+        }
+        if members
+            .iter()
+            .any(|id| !members.contains(&self.connectivity.minimum_member(id)))
+        {
+            return None;
+        }
+        let roots: Vec<_> = members
+            .iter()
+            .filter(|&id| self.connectivity.minimum_member(id) == id)
+            .collect();
+        let plans = self.drag_rotation_plans(
+            &roots,
+            player,
+            delta,
+            quarter_turns,
+            definition,
+            Some(members),
+        )?;
+        let mut applied = self.apply_rotation_plans(plans, definition);
+        self.drag.delta = Vec2::ZERO;
+        applied.drag_rebased = true;
+        Some(applied)
+    }
+
+    /// Shared host/replica atomic rebase. Retains the exact accepted Grab target.
+    pub(crate) fn rotate_drag_target(
+        &mut self,
+        player: PlayerId,
+        target: &ActiveDragTarget,
+        delta: Vec2,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+    ) -> Option<(AppliedCommand, Vec<PieceId>)> {
+        let (roots, members) = match target {
+            ActiveDragTarget::Sparse(refs) => {
+                let roots: Vec<_> = refs
+                    .iter()
+                    .map(|r| r.resolve(&self.connectivity).ok())
+                    .collect::<Option<_>>()?;
+                (roots, None)
+            }
+            ActiveDragTarget::Dense(dense) => {
+                let members = dense.resolve(&self.connectivity).ok()?;
+                let roots = members
+                    .iter()
+                    .filter(|&id| self.connectivity.minimum_member(id) == id)
+                    .collect();
+                (roots, Some(members))
+            }
+        };
+        let plans = self.drag_rotation_plans(
+            &roots,
+            player,
+            delta,
+            quarter_turns,
+            definition,
+            members.as_ref(),
+        )?;
+        let mut applied = self.apply_rotation_plans(plans, definition);
+        applied.drag_rebased = true;
+        Some((applied, roots))
     }
 
     /// Replica preflight: reject the whole accepted event before any mutation.
@@ -97,13 +253,16 @@ impl PieceDataStore {
         }
         match resolved.target {
             ResolvedPieceTarget::Sparse(refs) => refs.iter().all(|r| {
-                self.rotation_plan(r.member, quarter_turns, definition)
+                self.rotation_plan(r.member, quarter_turns, definition, Vec2::ZERO, None, None)
                     .is_some()
             }),
             ResolvedPieceTarget::Dense(members) => members
                 .iter()
                 .filter(|&id| self.connectivity.minimum_member(id) == id)
-                .all(|id| self.rotation_plan(id, quarter_turns, definition).is_some()),
+                .all(|id| {
+                    self.rotation_plan(id, quarter_turns, definition, Vec2::ZERO, None, None)
+                        .is_some()
+                }),
         }
     }
 
@@ -121,7 +280,14 @@ impl PieceDataStore {
         let accepted = match resolved.target {
             ResolvedPieceTarget::Sparse(mut refs) => {
                 refs.retain(|r| {
-                    if let Some(plan) = self.rotation_plan(r.member, quarter_turns, definition) {
+                    if let Some(plan) = self.rotation_plan(
+                        r.member,
+                        quarter_turns,
+                        definition,
+                        Vec2::ZERO,
+                        None,
+                        None,
+                    ) {
                         plans.push(plan);
                         true
                     } else {
@@ -141,7 +307,9 @@ impl PieceDataStore {
                     .iter()
                     .filter(|&id| self.connectivity.minimum_member(id) == id)
                 {
-                    if let Some(plan) = self.rotation_plan(id, quarter_turns, definition) {
+                    if let Some(plan) =
+                        self.rotation_plan(id, quarter_turns, definition, Vec2::ZERO, None, None)
+                    {
                         plans.push(plan);
                     } else {
                         for member in self.connectivity.iter_component(id) {
@@ -155,27 +323,7 @@ impl PieceDataStore {
         let mut applied = AppliedCommand::default();
         let roots = plans.iter().map(|p| p.minimum).collect();
         if add_quarter_turns(0, quarter_turns) != 0 {
-            let geometry = definition.geometry();
-            let states = &mut *self.states;
-            for plan in plans {
-                let singleton = self.connectivity.component_size(plan.minimum) == 1;
-                for id in self.connectivity.iter_component(plan.minimum) {
-                    let state = &mut states[id.0 as usize];
-                    // A singleton rotates about its own position. Preserve that
-                    // exact center, including tiny offsets and signed zero that
-                    // would be lost even by f64 affine subtraction/addition.
-                    if !singleton {
-                        state.position =
-                            (rotate_quarter(geometry.correct_position(id), plan.rotation)
-                                .as_dvec2()
-                                + plan.translation)
-                                .as_vec2();
-                    }
-                    state.flags = with_rotation(state.flags, plan.rotation);
-                    self.dirty_pieces.insert(id);
-                    applied.rotated += 1;
-                }
-            }
+            applied = self.apply_rotation_plans(plans, definition);
         }
         Ok(RotationResult {
             applied,
@@ -189,3 +337,7 @@ impl PieceDataStore {
 #[cfg(test)]
 #[path = "rotation_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "drag_rotation_tests.rs"]
+mod drag_tests;

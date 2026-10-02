@@ -2,7 +2,7 @@
 use crate::resources::{pieces::AppliedCommand, PieceDataStore};
 use puzzella_core::{
     protocol::{
-        ActiveDrag, ActiveDragTarget, GrabAccepted, ProtocolAuthorityEvent,
+        ActiveDrag, ActiveDragTarget, DragRotationCommitted, GrabAccepted, ProtocolAuthorityEvent,
         ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand,
         RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint, RemoteDragUpdate,
         ResolvedPieceTarget, RotationCommitted, TargetError,
@@ -25,6 +25,8 @@ pub enum ProtocolCommandError {
     NoActiveDrag,
     WrongDragContext,
     InvalidDefinition,
+    InvalidRebaseTick,
+    InconsistentDragTarget,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,6 +47,10 @@ pub enum ProtocolCommandResult {
         applied: AppliedCommand,
         rejected: Vec<RejectedComponentRef>,
         commit: RotationCommitted,
+    },
+    DragRotated {
+        applied: AppliedCommand,
+        result: ReleaseResultFingerprint,
     },
 }
 
@@ -108,6 +114,31 @@ impl ProtocolDragContexts {
             ProtocolCommandResult::Rotated { commit, .. } => {
                 Some(ProtocolAuthorityEvent::RotationCommitted(commit.clone()))
             }
+            ProtocolCommandResult::DragRotated { result, .. } => {
+                let ProtocolPieceCommand::RotateDrag {
+                    grab_sequence,
+                    final_delta,
+                    through_tick,
+                    quarter_turns,
+                } = envelope.command
+                else {
+                    unreachable!()
+                };
+                let ClientCommandSequence::Control(basis_sequence) = envelope.sequence else {
+                    unreachable!()
+                };
+                Some(ProtocolAuthorityEvent::DragRotationCommitted(
+                    DragRotationCommitted {
+                        player: authenticated_player,
+                        grab_sequence,
+                        basis_sequence,
+                        through_tick,
+                        final_delta,
+                        quarter_turns: puzzella_core::add_quarter_turns(0, quarter_turns) as i8,
+                        result: *result,
+                    },
+                ))
+            }
         };
         let authority_event = event.map(|event| ProtocolAuthorityEventEnvelope {
             session: session.session_id(),
@@ -129,7 +160,8 @@ impl ProtocolDragContexts {
                 session: session.session_id(),
                 authority_epoch: session.cursor().epoch,
                 player: authenticated_player,
-                grab_sequence: after_control_sequence,
+                grab_sequence: self.players[&authenticated_player].grab_sequence,
+                basis_sequence: after_control_sequence,
                 tick,
                 delta,
             })
@@ -188,11 +220,49 @@ impl ProtocolDragContexts {
             self.players.clear();
             self.scope = Some(scope);
         }
-        let status = session
+        session
             .accept_command(envelope)
             .map_err(ProtocolCommandError::Sequence)?;
         let player = authenticated_player;
         match &envelope.command {
+            ProtocolPieceCommand::RotateDrag {
+                grab_sequence,
+                final_delta,
+                through_tick,
+                quarter_turns,
+            } => {
+                if !final_delta.is_finite() {
+                    return Err(ProtocolCommandError::InvalidDelta);
+                }
+                let definition = definition
+                    .filter(|d| d.validate().is_ok() && d.piece_count() == store.len())
+                    .ok_or(ProtocolCommandError::InvalidDefinition)?;
+                let drag = self
+                    .players
+                    .get_mut(&player)
+                    .ok_or(ProtocolCommandError::NoActiveDrag)?;
+                if *grab_sequence != drag.grab_sequence {
+                    return Err(ProtocolCommandError::WrongDragContext);
+                }
+                if !valid_rebase_tick(drag.last_tick, *through_tick) {
+                    return Err(ProtocolCommandError::InvalidRebaseTick);
+                }
+                let ClientCommandSequence::Control(basis_sequence) = envelope.sequence else {
+                    unreachable!()
+                };
+                let turns = puzzella_core::add_quarter_turns(0, *quarter_turns) as i8;
+                let (applied, roots) = store
+                    .rotate_drag_target(player, &drag.target, *final_delta, turns, definition)
+                    .ok_or(ProtocolCommandError::InconsistentDragTarget)?;
+                drag.delta = bevy::math::Vec2::ZERO;
+                drag.last_tick = *through_tick;
+                drag.basis_sequence = basis_sequence;
+                session.rebase_drag_sequence(player, basis_sequence, *through_tick);
+                let result = super::release::drag_rotation_fingerprint(
+                    store, &roots, definition, &applied, player, drag,
+                );
+                Ok(ProtocolCommandResult::DragRotated { applied, result })
+            }
             ProtocolPieceCommand::Rotate {
                 target,
                 quarter_turns,
@@ -265,6 +335,8 @@ impl ProtocolDragContexts {
                         player,
                         ActiveDrag {
                             grab_sequence,
+                            basis_sequence: grab_sequence,
+                            last_tick: None,
                             target,
                             delta: bevy::math::Vec2::ZERO,
                         },
@@ -282,16 +354,37 @@ impl ProtocolDragContexts {
                     .ok_or(ProtocolCommandError::NoActiveDrag)?;
                 let ClientCommandSequence::Move {
                     after_control_sequence,
-                    ..
+                    tick,
                 } = envelope.sequence
                 else {
                     unreachable!()
                 };
-                if after_control_sequence != drag.grab_sequence {
+                if after_control_sequence != drag.basis_sequence {
                     return Err(ProtocolCommandError::WrongDragContext);
                 }
+                if let Some(last) = drag.last_tick {
+                    if tick <= last {
+                        return Err(ProtocolCommandError::Sequence(if tick == last {
+                            ProtocolError::DuplicateCommand
+                        } else {
+                            ProtocolError::StaleCommand
+                        }));
+                    }
+                }
+                let expected = drag
+                    .last_tick
+                    .map_or(Some(0), |last| last.checked_add(1))
+                    .ok_or(ProtocolCommandError::Sequence(
+                        ProtocolError::CounterExhausted,
+                    ))?;
+                drag.last_tick = Some(tick);
                 drag.delta = *delta;
-                Ok(ProtocolCommandResult::DragUpdated { sequence: status })
+                let sequence = if tick == expected {
+                    CommandSequenceStatus::InOrder
+                } else {
+                    CommandSequenceStatus::Gap { expected }
+                };
+                Ok(ProtocolCommandResult::DragUpdated { sequence })
             }
             ProtocolPieceCommand::Release {
                 grab_sequence,
@@ -324,6 +417,10 @@ impl ProtocolDragContexts {
             }
         }
     }
+}
+
+pub(super) fn valid_rebase_tick(last: Option<u64>, through: Option<u64>) -> bool {
+    last.is_none_or(|last| through.is_some_and(|through| through >= last))
 }
 
 #[cfg(test)]

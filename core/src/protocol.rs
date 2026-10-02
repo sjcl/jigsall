@@ -244,6 +244,14 @@ pub enum ProtocolPieceCommand {
         target: PieceTarget,
         quarter_turns: i8,
     },
+    /// Reliable rebase of the existing accepted Grab, without resending membership.
+    RotateDrag {
+        grab_sequence: u64,
+        final_delta: Vec2,
+        /// Maximum tick sent before this rebase; None means no update was sent.
+        through_tick: Option<u64>,
+        quarter_turns: i8,
+    },
 }
 
 pub type ProtocolCommandEnvelope = crate::session::ClientCommandEnvelope<ProtocolPieceCommand>;
@@ -311,6 +319,18 @@ pub struct RotationCommitted {
     pub result: ReleaseResultFingerprint,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DragRotationCommitted {
+    pub player: PlayerId,
+    pub grab_sequence: u64,
+    /// The RotateDrag control sequence identifies the new transient basis.
+    pub basis_sequence: u64,
+    pub through_tick: Option<u64>,
+    pub final_delta: Vec2,
+    pub quarter_turns: i8,
+    pub result: ReleaseResultFingerprint,
+}
+
 /// Host-forwarded transient presentation. Never consumes an authority cursor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RemoteDragUpdate {
@@ -318,6 +338,7 @@ pub struct RemoteDragUpdate {
     pub authority_epoch: crate::session::AuthorityEpoch,
     pub player: PlayerId,
     pub grab_sequence: u64,
+    pub basis_sequence: u64,
     pub tick: u64,
     pub delta: Vec2,
 }
@@ -327,6 +348,7 @@ pub enum ProtocolAuthorityEvent {
     GrabAccepted(GrabAccepted),
     ReleaseCommitted(ReleaseCommitted),
     RotationCommitted(RotationCommitted),
+    DragRotationCommitted(DragRotationCommitted),
 }
 
 pub type ProtocolAuthorityEventEnvelope =
@@ -336,6 +358,8 @@ pub type ProtocolAuthorityEventEnvelope =
 #[derive(Clone, Debug, PartialEq)]
 pub struct ActiveDrag {
     pub grab_sequence: u64,
+    pub basis_sequence: u64,
+    pub last_tick: Option<u64>,
     pub target: ActiveDragTarget,
     pub delta: Vec2,
 }

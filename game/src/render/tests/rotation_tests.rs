@@ -30,6 +30,103 @@ fn screen_point(world: Vec2, resolution: f32) -> Rect {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_frames() {
+    let (mut app, _, target) = gpu_app(256);
+    let mut def = definition(UVec2::new(3, 2), 192, 42);
+    def.image_size.y = 64;
+    app.world_mut().insert_resource(def.clone());
+    let mut members = puzzella_core::PieceBitSet::new(6);
+    members.insert(PieceId(1));
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.initialize(vec![Vec2::new(-30.5, 20.5); 6]);
+        for (id, state) in store.states.iter_mut().enumerate() {
+            if id != 1 {
+                state.flags = 0;
+            }
+        }
+        store.drag.members = members.words().clone();
+        assert_eq!(
+            store
+                .apply_command(
+                    LOCAL_PLAYER,
+                    &PieceCommand::GrabGroup {
+                        members: members.clone()
+                    },
+                    Some(&def)
+                )
+                .grabbed,
+            1
+        );
+        store.drag.delta = Vec2::new(15., -10.);
+    }
+    wait_ready(&mut app);
+    update_gpu(&mut app);
+    let mask = app
+        .world()
+        .resource::<PieceDataStore>()
+        .drag
+        .members
+        .clone();
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        assert!(
+            store
+                .apply_command(
+                    LOCAL_PLAYER,
+                    &PieceCommand::RotateDrag {
+                        members: members.clone(),
+                        delta: Vec2::new(15., -10.),
+                        quarter_turns: 1,
+                    },
+                    Some(&def)
+                )
+                .drag_rebased
+        );
+    }
+    update_gpu(&mut app);
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+    assert_eq!(gpu.upload_bytes, 16);
+    assert_eq!(gpu.drag_upload_bytes, 0);
+    assert_eq!(gpu.root_upload_bytes, 0);
+    let store = app.world().resource::<PieceDataStore>();
+    assert_eq!(store.states[1].position, Vec2::new(-15.5, 10.5));
+    assert_eq!(store.drag.delta, Vec2::ZERO);
+    assert!(Arc::ptr_eq(&mask, &store.drag.members));
+    let pixels = rendered_pixels(&mut app, target.clone());
+    let point = screen_point(Vec2::new(-15.5, 10.5), 256.);
+    let offset = (point.min.y as usize * 256 + point.min.x as usize) * 4;
+    assert_eq!(&pixels[offset..offset + 4], &[255, 255, 255, 255]);
+    for delta in [Vec2::ZERO, Vec2::new(10., 0.)] {
+        app.world_mut().resource_mut::<PieceDataStore>().drag.delta = delta;
+        update_gpu(&mut app);
+        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+        assert_eq!(gpu.upload_bytes, 0);
+        assert_eq!(gpu.drag_upload_bytes, 0);
+        assert_eq!(gpu.root_upload_bytes, 0);
+    }
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .apply_command(
+            LOCAL_PLAYER,
+            &PieceCommand::ReleaseGroup {
+                members,
+                delta: Vec2::new(10., 0.),
+            },
+            Some(&def),
+        );
+    assert_eq!(
+        pick(
+            &mut app,
+            screen_point(Vec2::new(-5.5, 10.5), 256.),
+            SelectionMode::Point
+        ),
+        vec![PieceId(1)]
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_quarter_turn_images_shapes_and_picking_agree() {
     let (mut app, _, target) = gpu_app(256);
     let mut def = definition(UVec2::new(3, 2), 192, 42);

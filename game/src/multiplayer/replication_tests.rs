@@ -1,4 +1,6 @@
 use super::*;
+#[path = "drag_rotation_tests.rs"]
+mod drag_rotation_tests;
 use crate::{
     multiplayer::{
         install_migration_snapshot,
@@ -39,6 +41,27 @@ struct Simulation {
     peers: [Peer; 2],
 }
 impl Simulation {
+    fn rotate_drag(
+        &mut self,
+        sequence: u64,
+        through_tick: Option<u64>,
+        final_delta: Vec2,
+        turns: i8,
+    ) -> ProtocolAuthorityEventEnvelope {
+        self.command(
+            A,
+            ClientCommandSequence::Control(sequence),
+            ProtocolPieceCommand::RotateDrag {
+                grab_sequence: 0,
+                final_delta,
+                through_tick,
+                quarter_turns: turns,
+            },
+            true,
+        )
+        .authority_event
+        .unwrap()
+    }
     fn new(offsets: &[Vec2], links: &[(u32, u32)]) -> Self {
         Self::with_definition(
             PuzzleDefinition {
@@ -912,6 +935,7 @@ fn dense_million_piece_remote_context_retains_mask_and_scalar_presentation() {
             authority_epoch: AuthorityEpoch(3),
             player: A,
             grab_sequence: 0,
+            basis_sequence: 0,
             tick: 100,
             delta: Vec2::new(20.0, -30.0),
         };

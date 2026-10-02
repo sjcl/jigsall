@@ -5,7 +5,7 @@ use puzzella_core::protocol::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 1;
+pub const WIRE_VERSION: u16 = 2;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_TRANSIENT_PAYLOAD: usize = 128;
@@ -92,7 +92,7 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
     frame.extend_from_slice(MAGIC);
     frame.extend_from_slice(&WIRE_VERSION.to_le_bytes());
     frame.push(message.kind());
-    frame.push(0); // Reserved, required to be zero in v1.
+    frame.push(0); // Reserved, required to be zero.
     frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     frame.extend_from_slice(&payload);
     Ok(frame)

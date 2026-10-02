@@ -35,7 +35,7 @@ impl AuthorityCursor {
 }
 
 /// Reliable controls and best-effort transient drag updates within one player/epoch.
-/// Move ticks are scoped to after_control_sequence (the Grab context for protocol commands).
+/// Moves reference the latest control (Grab or RotateDrag for an active protocol drag).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientCommandSequence {
     Control(u64),
@@ -58,6 +58,9 @@ pub struct ClientCommandEnvelope<C = PieceCommand> {
 /// Both the established local adapter and the compact protocol use one tracker.
 pub trait SequencedPieceCommand {
     fn is_transient(&self) -> bool;
+    fn preserves_move_context(&self) -> bool {
+        false
+    }
 }
 impl SequencedPieceCommand for PieceCommand {
     fn is_transient(&self) -> bool {
@@ -67,6 +70,9 @@ impl SequencedPieceCommand for PieceCommand {
 impl SequencedPieceCommand for ProtocolPieceCommand {
     fn is_transient(&self) -> bool {
         matches!(self, Self::DragUpdate { .. })
+    }
+    fn preserves_move_context(&self) -> bool {
+        matches!(self, Self::RotateDrag { .. })
     }
 }
 /// A backend must authenticate the sender as host before applying this envelope.
@@ -107,6 +113,7 @@ pub enum CommandSequenceStatus {
 #[derive(Clone, Copy, Debug, Default)]
 struct PlayerCommandSequences {
     control: Option<u64>,
+    move_control: Option<u64>,
     move_tick: Option<u64>,
 }
 #[derive(Clone, Debug)]
@@ -151,8 +158,12 @@ impl CommandSequenceTracker {
                     return Err(ProtocolError::ControlGap { expected });
                 }
                 player.control = Some(sequence);
-                // Move ticks are scoped to the latest consumed control.
-                player.move_tick = None;
+                // A rejected rebase must leave the previous basis usable. The
+                // authority explicitly advances it only after successful gameplay.
+                if !envelope.command.preserves_move_context() {
+                    player.move_control = Some(sequence);
+                    player.move_tick = None;
+                }
                 CommandSequenceStatus::InOrder
             }
             ClientCommandSequence::Move {
@@ -162,7 +173,7 @@ impl CommandSequenceTracker {
                 if !envelope.command.is_transient() {
                     return Err(ProtocolError::WrongCommandStream);
                 }
-                match player.control {
+                match player.move_control {
                     None => {
                         return Err(ProtocolError::ControlNotProcessed {
                             required: after_control_sequence,
@@ -297,6 +308,22 @@ impl AuthoritySession {
     ) -> Result<CommandSequenceStatus, ProtocolError> {
         self.require_active()?;
         self.commands.validate_and_record(envelope)
+    }
+    /// Advance a protocol drag basis only after the matching reliable rebase succeeds.
+    pub fn rebase_drag_sequence(
+        &mut self,
+        player: PlayerId,
+        control: u64,
+        through_tick: Option<u64>,
+    ) {
+        let sequences = self
+            .commands
+            .players
+            .get_mut(&player)
+            .expect("rebase follows a consumed control");
+        assert_eq!(sequences.control, Some(control));
+        sequences.move_control = Some(control);
+        sequences.move_tick = through_tick;
     }
     /// Publish after a host-approved authoritative change; zero is the epoch baseline.
     pub fn advance_authority(&mut self) -> Result<AuthorityCursor, ProtocolError> {
@@ -821,6 +848,7 @@ mod tests {
             A,
             PlayerCommandSequences {
                 control: Some(u64::MAX - 1),
+                move_control: Some(u64::MAX - 1),
                 move_tick: None,
             },
         );

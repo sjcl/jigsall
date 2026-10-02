@@ -3,8 +3,8 @@
 Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu, authentication negotiation,
 snapshot/image transfer, interpolation, prediction, or migration orchestration.
-The existing authority, replication, cursor, topology and schema 4 semantics are
-unchanged. `core` has no transport/native dependency.
+Commands use the core authority, replication, cursor, topology and schema 4
+semantics. `core` has no transport/native dependency.
 
 ```text
 protocol / replication (existing gameplay semantics)
@@ -150,14 +150,14 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v1
+## Wire v2
 
 One native message is one Puzzella frame, with no stream reassembly:
 
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 1 |
+| 4..6 | u16 wire version, little-endian, currently 2 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkChunk |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -170,15 +170,30 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v1 Postcard field order and enum representation are part of the wire contract.
+The v2 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
-Fixed v1 golden frames cover Client Grab, Client Drag, GrabAccepted (including a
-rejected reference), ReleaseCommitted and RemoteDragUpdate. Each checks encoding
+Version 2 includes Rotate / RotationCommitted, RotateDrag / DragRotationCommitted
+and the RemoteDragUpdate basis sequence. Only version 2 is decoded; pre-release
+version 1 frames are rejected without a compatibility decoder.
+Fixed v2 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
+RotationCommitted, DragRotationCommitted and RemoteDragUpdate. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
+
+RotateDrag and DragRotationCommitted use reliable Control. No target/membership is
+resent: the accepted Grab context remains active. The reliable final_delta commits
+the displayed transform, rotates each component, and rebases to zero delta without
+snapping. through_tick sets the stale transient floor (None before any update).
+The sender keeps ticks monotonic and tags subsequent ClientDrag moves with the
+successful rotation control sequence in after_control_sequence. Forwarded
+RemoteDragUpdate carries that basis_sequence separately from the original
+grab_sequence. Hosts/peers reject old-basis updates and new-basis updates arriving
+before the matching reliable event; later absolute updates or reliable final_delta
+restore presentation. This keeps drag updates O(1) with scalar metadata only.
 
 | Bound | Payload bytes (12-byte header is additional) |
 | --- | --- |

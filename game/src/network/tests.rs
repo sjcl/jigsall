@@ -266,6 +266,7 @@ fn wire_header_and_protocol_roundtrips() {
             authority_epoch: AuthorityEpoch(u64::MAX),
             player: A,
             grab_sequence: u64::MAX,
+            basis_sequence: u64::MAX,
             tick: u64::MAX,
             delta: Vec2::ONE,
         }),
@@ -300,8 +301,13 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    bytes[4..6].copy_from_slice(&2u16.to_le_bytes());
-    assert_eq!(wire::decode(&bytes), Err(WireError::UnsupportedVersion(2)));
+    for version in [1u16, 3] {
+        bytes[4..6].copy_from_slice(&version.to_le_bytes());
+        assert_eq!(
+            wire::decode(&bytes),
+            Err(WireError::UnsupportedVersion(version))
+        );
+    }
     bytes = valid.clone();
     bytes[6] = 255;
     assert_eq!(wire::decode(&bytes), Err(WireError::UnknownKind(255)));
@@ -411,7 +417,7 @@ fn wire_bounded_sparse_and_million_piece_dense_decode() {
 fn malformed_binary_corpus_never_panics() {
     let mut seed = 0x73c1_a209u32;
     for len in 0..512 {
-        let mut frame = Vec::from(&b"PZLA\x01\x00\x01\x00"[..]);
+        let mut frame = Vec::from(&b"PZLA\x02\x00\x01\x00"[..]);
         frame.extend_from_slice(&(len as u32).to_le_bytes());
         for _ in 0..len {
             seed ^= seed << 13;
@@ -635,6 +641,29 @@ fn rotation_commands_and_semantic_events_use_reliable_control_wire() {
         expected_size: 3,
     });
     let messages = [
+        WireMessage::ClientCommand(command(
+            ClientCommandSequence::Control(7),
+            ProtocolPieceCommand::RotateDrag {
+                grab_sequence: 5,
+                final_delta: Vec2::ONE,
+                through_tick: Some(20),
+                quarter_turns: -1,
+            },
+        )),
+        WireMessage::AuthorityEvent(ProtocolAuthorityEventEnvelope {
+            session: SESSION.id,
+            host: HOST,
+            cursor: AuthorityCursor::new(3, 8),
+            event: ProtocolAuthorityEvent::DragRotationCommitted(DragRotationCommitted {
+                player: A,
+                grab_sequence: 5,
+                basis_sequence: 7,
+                through_tick: Some(20),
+                final_delta: Vec2::ONE,
+                quarter_turns: 3,
+                result: ReleaseResultFingerprint(123),
+            }),
+        }),
         WireMessage::ClientCommand(command(
             ClientCommandSequence::Control(7),
             ProtocolPieceCommand::Rotate {

@@ -35,17 +35,24 @@ pub fn handle_piece_input(
         over_ui,
         focused: input.window_focused,
     };
-    for command in interaction.update(frame, &mut store, &mut selection) {
+    let pointer_commands = interaction.update(frame, &mut store, &mut selection);
+    let released = pointer_commands
+        .iter()
+        .any(|command| matches!(command, PieceCommand::ReleaseGroup { .. }));
+    for command in pointer_commands {
         commands.write(ClientCommand {
             player: LOCAL_PLAYER,
             command,
         });
     }
-    if input.window_focused && !over_ui && !keyboard_captured {
+    if input.window_focused && !over_ui && !keyboard_captured && !released {
         // Q is counterclockwise, E is clockwise in world coordinates.
         let turns =
             i8::from(keys.just_pressed(KeyCode::KeyQ)) - i8::from(keys.just_pressed(KeyCode::KeyE));
-        if turns != 0 {
+        if turns != 0
+            && (!interaction.is_dragging()
+                || input.mouse_position.is_some_and(|point| point.is_finite()))
+        {
             if let Some(command) = interaction.rotation_command(&store, turns) {
                 commands.write(ClientCommand {
                     player: LOCAL_PLAYER,

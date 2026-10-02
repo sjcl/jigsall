@@ -28,13 +28,7 @@ pub enum ReplicationError {
     Snapshot(SnapshotError),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct RemoteDrag {
-    pub grab_sequence: u64,
-    pub target: ActiveDragTarget,
-    pub delta: Vec2,
-    pub last_tick: Option<u64>,
-}
+pub type RemoteDrag = puzzella_core::protocol::ActiveDrag;
 
 #[derive(Default, Debug)]
 pub struct PeerReplicationState {
@@ -141,6 +135,48 @@ impl PeerReplicationState {
         definition: Option<&PuzzleDefinition>,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
+            ProtocolAuthorityEvent::DragRotationCommitted(commit) => {
+                let definition = definition.ok_or(ReplicationError::Diverged)?;
+                let drag = self
+                    .remote_drags
+                    .get_mut(&commit.player)
+                    .ok_or(ReplicationError::MissingDragContext)?;
+                if commit.grab_sequence != drag.grab_sequence
+                    || commit.basis_sequence <= drag.basis_sequence
+                {
+                    return Err(ReplicationError::WrongDragContext);
+                }
+                if !(0..4).contains(&commit.quarter_turns)
+                    || !super::protocol::valid_rebase_tick(drag.last_tick, commit.through_tick)
+                    || !commit.final_delta.is_finite()
+                {
+                    return Err(ReplicationError::Diverged);
+                }
+                let (applied, roots) = store
+                    .rotate_drag_target(
+                        commit.player,
+                        &drag.target,
+                        commit.final_delta,
+                        commit.quarter_turns,
+                        definition,
+                    )
+                    .ok_or(ReplicationError::Diverged)?;
+                drag.delta = Vec2::ZERO;
+                drag.last_tick = commit.through_tick;
+                drag.basis_sequence = commit.basis_sequence;
+                let result = super::release::drag_rotation_fingerprint(
+                    store,
+                    &roots,
+                    definition,
+                    &applied,
+                    commit.player,
+                    drag,
+                );
+                if result != commit.result {
+                    return Err(ReplicationError::Diverged);
+                }
+                Ok(applied)
+            }
             ProtocolAuthorityEvent::RotationCommitted(commit) => {
                 let definition = definition.ok_or(ReplicationError::Diverged)?;
                 if !(0..4).contains(&commit.quarter_turns)
@@ -206,6 +242,7 @@ impl PeerReplicationState {
                         ack.player,
                         RemoteDrag {
                             grab_sequence: ack.grab_sequence,
+                            basis_sequence: ack.grab_sequence,
                             target,
                             delta: Vec2::ZERO,
                             last_tick: None,
@@ -276,7 +313,9 @@ impl PeerReplicationState {
             .remote_drags
             .get_mut(&update.player)
             .ok_or(ReplicationError::MissingDragContext)?;
-        if drag.grab_sequence != update.grab_sequence {
+        if drag.grab_sequence != update.grab_sequence
+            || drag.basis_sequence != update.basis_sequence
+        {
             return Err(ReplicationError::WrongDragContext);
         }
         if let Some(last) = drag.last_tick {

@@ -217,6 +217,7 @@ pub struct AppliedCommand {
     pub released: usize,
     pub placed: usize,
     pub rotated: usize,
+    pub drag_rebased: bool,
 }
 /// Operation-local accepted IDs and an optional shared presentation/bulk mask.
 /// Small authority-only grabs never construct membership words.
@@ -234,6 +235,8 @@ pub struct PieceDataStore {
     pub held_by: PieceOwners,
     pub selected_pieces: PieceBitSet,
     pub dirty_pieces: PieceBitSet,
+    /// Discrete rotation requires exact dirty spans, even for fragmented selections.
+    exact_dirty_ranges: bool,
     /// Only absorbed members; roots are derived at upload time, with no CPU mirror.
     pub component_root_dirty: PieceBitSet,
     pub placed_count: usize,
@@ -464,6 +467,13 @@ impl PieceDataStore {
         let definition =
             definition.filter(|d| d.piece_count() == self.len() && d.validate().is_ok());
         match command {
+            PieceCommand::RotateDrag {
+                members,
+                delta,
+                quarter_turns,
+            } => definition
+                .and_then(|d| self.rotate_local_drag(player, members, *delta, *quarter_turns, d))
+                .unwrap_or_default(),
             PieceCommand::Rotate {
                 target,
                 quarter_turns,
@@ -906,6 +916,7 @@ pub fn prepare_piece_upload(
     // Idle frame: O(1) Arc sharing/count checks, independent of selected count.
     upload.drag = store.drag.clone();
     upload.selected = store.selected_pieces.words().clone();
+    let exact_dirty_ranges = std::mem::take(&mut store.exact_dirty_ranges);
     store.sync_highlights();
     prepare_component_root_upload(&mut store, &mut upload);
     if store.epoch != upload.epoch {
@@ -945,7 +956,7 @@ pub fn prepare_piece_upload(
                 // Bound fragmented bulk updates too. After 128 separate spans,
                 // upload their enclosing span (possibly including unchanged gaps).
                 // Single/small edits still upload only exact dirty ranges.
-                if ranges.len() == 128 {
+                if ranges.len() == 128 && !exact_dirty_ranges {
                     let start = ranges[0].start;
                     let end = dirty.iter().last().unwrap().0;
                     ranges.clear();

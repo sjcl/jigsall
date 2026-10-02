@@ -166,12 +166,21 @@ pub enum PieceCommand {
         target: crate::protocol::PieceTarget,
         quarter_turns: i8,
     },
+    /// Atomically commit the displayed transform, rotate held components and rebase.
+    RotateDrag {
+        members: PieceBitSet,
+        delta: Vec2,
+        quarter_turns: i8,
+    },
 }
 impl PieceCommand {
     pub fn piece_id(&self) -> Option<PieceId> {
         match *self {
             Self::Grab(id) | Self::Move { id, .. } | Self::Release(id) => Some(id),
-            Self::GrabGroup { .. } | Self::ReleaseGroup { .. } | Self::Rotate { .. } => None,
+            Self::GrabGroup { .. }
+            | Self::ReleaseGroup { .. }
+            | Self::Rotate { .. }
+            | Self::RotateDrag { .. } => None,
         }
     }
 }
