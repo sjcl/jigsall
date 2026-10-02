@@ -267,6 +267,7 @@ pub(crate) fn poll_results(
             }
             Reply::Saved(result) => result.map(|metadata| {
                 state.current_save = Some(metadata);
+                state.title_dialog_open = false;
                 state.message = Some("Game saved".into());
                 if let Some(ref mut original) = original {
                     original.encoded = None;
