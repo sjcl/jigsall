@@ -6,7 +6,7 @@
 
 ```text
 puzzella
-  ├── puzzella-ui → puzzella-game / puzzella-puzzle
+  ├── puzzella-ui → puzzella-game / puzzella-puzzle / puzzella-core
   └── puzzella-game → puzzella-core / puzzella-puzzle
                                          └── puzzella-core
 ```
@@ -33,6 +33,8 @@ puzzella
 | `game/src/render/radix_sort.wgsl` | visible countからindirect dispatch、24bit Zの安定radix sort |
 | `game/src/selection/` | API、論理→物理座標、要求順序、readback復号 |
 | `ui/` | egui設定・メニュー・HUD・進捗 |
+| `game/src/checkpoint.rs` | multiplayer / persistent 共通 capture・validation・DSU 復元・install |
+| `game/src/persistence/` | versioned binary codec、画像 content addressing、backend 非依存 repository / logical storage、I/O worker |
 
 通常依存からlyon、lyon_tessellation、Rayonを外しました。`cpu-geometry-reference`はv2参照を、`cpu-picking-debug`は加えてCPU triangle判定を有効にします。通常の選択はGPUです。
 
@@ -95,6 +97,14 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 
 opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけをGPU radix sort（8bit × 3 pass）で後方→前方に並べblendし、depthを書きません。透明経路ではID順に可視IDを圧縮してから安定sortし、同じZのID順も維持します。workgroup数はGPUのinstance_countからindirect dispatchで決め、CPU readbackは不要です。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。sortは[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、選択は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
+
+## Persistent save の境界
+
+ローカル進捗保存は `PieceDataStore / PuzzleDefinition → PuzzleCheckpoint → PuzzleSave → SaveCodec → SaveRepository → SaveStorage → FilesystemStorage` の流れです。画像は選択時の original encoded bytes を SHA-256 で識別し、再エンコードしない `.puzimg` を save 間で共有します。進捗 `.puzsave` は 16 bytes/piece の明示的 little-endian codec と checksum を使い、ランダム SaveId で保存します。ユーザータイトルは validation を持つ metadata で、filename / identity には使いません。
+
+`GameSnapshot` schema 3 の serialized representation は保持し、borrowed checkpoint view を通じて同じ capture / validation / install を使います。restore は DSU / 接続 GPU cache / placed_count を再構築し、GameData の progress / completion を同期します。load worker が準備した store を直接採用するため、random 初期配置は生成しません。既存 epoch / RenderReady による GPU 準備待ちの後だけ Playing / GameComplete へ遷移します。disk I/O、decode、codec は worker/channel に分離し、O(N) capture は明示 Save 時だけです。通常 play に新しい piece 数比例の処理や per-piece Entity / persistent Vec は追加しません。
+
+保存先は OS user application data 以下で、logical key を storage に渡します。画像を先に保存し、save は temporary file の sync と atomic replace で publish します。将来の Steam Cloud は SaveStorage implementation と構築 adapter の追加を境界とし、checkpoint / codec / container / restore の変更を不要にすることが設計目標です。Steam Cloud 自体は未実装です。形式・layout・failure / worker lifecycle の詳細は [PERSISTENCE.md](PERSISTENCE.md) を参照してください。
 
 ## Multiplayerの境界と課題
 

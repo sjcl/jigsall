@@ -7,7 +7,9 @@ publish.workspace = true
 
 [dependencies]
 puzzella-game.workspace = true
+puzzella-core.workspace = true
 puzzella-puzzle.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
 rfd.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

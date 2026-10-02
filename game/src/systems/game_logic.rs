@@ -9,7 +9,11 @@ pub fn escape_just_pressed(keys: Res<ButtonInput<KeyCode>>) -> bool {
 pub fn toggle_game_menu(
     state: Res<State<GameSubState>>,
     mut next: ResMut<NextState<GameSubState>>,
+    persistence: Res<crate::persistence::runtime::PersistenceState>,
 ) {
+    if persistence.busy || persistence.title_dialog_open {
+        return;
+    }
     match *state.get() {
         GameSubState::Playing => next.set(GameSubState::Paused),
         GameSubState::Paused => next.set(GameSubState::Playing),
@@ -20,7 +24,11 @@ pub fn toggle_game_menu(
 pub fn toggle_completed_puzzle_menu(
     state: Res<State<GameCompleteSubState>>,
     mut next: ResMut<NextState<GameCompleteSubState>>,
+    persistence: Res<crate::persistence::runtime::PersistenceState>,
 ) {
+    if persistence.busy || persistence.title_dialog_open {
+        return;
+    }
     match *state.get() {
         GameCompleteSubState::Viewing => next.set(GameCompleteSubState::Paused),
         GameCompleteSubState::Paused => next.set(GameCompleteSubState::Viewing),
@@ -58,6 +66,7 @@ pub fn check_piece_placement_event_driven(
 
 pub fn update_game_state_event_driven(
     mut placed: MessageReader<PiecePlacedEvent>,
+    state: Option<Res<State<GameSubState>>>,
     store: Res<PieceDataStore>,
     mut game: ResMut<GameData>,
     mut next: ResMut<NextState<AppState>>,
@@ -71,7 +80,11 @@ pub fn update_game_state_event_driven(
     if !store.is_empty() {
         game.puzzle_progress = store.placed_count as f32 / store.len() as f32;
         game.puzzle_completed = store.placed_count == store.len();
-        if game.puzzle_completed {
+        if game.puzzle_completed
+            && state
+                .as_ref()
+                .is_none_or(|s| *s.get() != GameSubState::Initializing)
+        {
             next.set(AppState::GameComplete);
         }
     }

@@ -14,6 +14,8 @@ pub fn draw_completion_ui(
     store: Res<PieceDataStore>,
     mut next_state: ResMut<NextState<AppState>>,
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
+    mut dialogs: ResMut<crate::persistence::SaveDialogs>,
+    mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -35,98 +37,106 @@ pub fn draw_completion_ui(
             egui::ScrollArea::vertical()
                 .max_height(height)
                 .show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.spacing_mut().item_spacing.y = if compact { 6.0 } else { 8.0 };
-                        ui.visuals_mut().override_text_color = Some(TEXT);
-                        ui.add_space(if compact { 0.0 } else { 8.0 });
+                    ui.add_enabled_ui(!persistence.busy, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.spacing_mut().item_spacing.y = if compact { 6.0 } else { 8.0 };
+                            ui.visuals_mut().override_text_color = Some(TEXT);
+                            ui.add_space(if compact { 0.0 } else { 8.0 });
 
-                        // Draw the completion mark explicitly so it needs no emoji font.
-                        let size = if compact { 44.0 } else { 56.0 };
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-                        let center = rect.center();
-                        ui.painter().circle_filled(
-                            center,
-                            size / 2.0 - 1.0,
-                            egui::Color32::from_rgb(41, 58, 52),
-                        );
-                        ui.painter().circle_stroke(
-                            center,
-                            size / 2.0 - 1.0,
-                            egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.5)),
-                        );
-                        ui.painter().add(egui::Shape::line(
-                            vec![
-                                center + egui::vec2(-11.0, 0.0),
-                                center + egui::vec2(-3.0, 8.0),
-                                center + egui::vec2(12.0, -9.0),
-                            ],
-                            egui::Stroke::new(3.0, ACCENT),
-                        ));
+                            // Draw the completion mark explicitly so it needs no emoji font.
+                            let size = if compact { 44.0 } else { 56.0 };
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+                            let center = rect.center();
+                            ui.painter().circle_filled(
+                                center,
+                                size / 2.0 - 1.0,
+                                egui::Color32::from_rgb(41, 58, 52),
+                            );
+                            ui.painter().circle_stroke(
+                                center,
+                                size / 2.0 - 1.0,
+                                egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.5)),
+                            );
+                            ui.painter().add(egui::Shape::line(
+                                vec![
+                                    center + egui::vec2(-11.0, 0.0),
+                                    center + egui::vec2(-3.0, 8.0),
+                                    center + egui::vec2(12.0, -9.0),
+                                ],
+                                egui::Stroke::new(3.0, ACCENT),
+                            ));
 
-                        ui.add_space(if compact { 0.0 } else { 8.0 });
-                        ui.label(egui::RichText::new("WELL DONE").size(11.0).color(ACCENT));
-                        ui.label(
-                            egui::RichText::new("Puzzle Complete")
-                                .size(if compact { 26.0 } else { 30.0 })
-                                .strong(),
-                        );
-                        ui.label(
-                            egui::RichText::new("Every piece is in its place.")
-                                .size(14.0)
-                                .color(MUTED),
-                        );
-                        ui.add_space(if compact { 8.0 } else { 12.0 });
+                            ui.add_space(if compact { 0.0 } else { 8.0 });
+                            ui.label(egui::RichText::new("WELL DONE").size(11.0).color(ACCENT));
+                            ui.label(
+                                egui::RichText::new("Puzzle Complete")
+                                    .size(if compact { 26.0 } else { 30.0 })
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new("Every piece is in its place.")
+                                    .size(14.0)
+                                    .color(MUTED),
+                            );
+                            ui.add_space(if compact { 8.0 } else { 12.0 });
 
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(30, 43, 52))
-                            .corner_radius(8)
-                            .inner_margin(egui::Margin::symmetric(16, 10))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} pieces  /  100% complete",
-                                        store.len()
-                                    ))
-                                    .size(13.0)
-                                    .color(ACCENT),
-                                );
-                            });
-                        ui.add_space(if compact { 8.0 } else { 16.0 });
+                            egui::Frame::new()
+                                .fill(egui::Color32::from_rgb(30, 43, 52))
+                                .corner_radius(8)
+                                .inner_margin(egui::Margin::symmetric(16, 10))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} pieces  /  100% complete",
+                                            store.len()
+                                        ))
+                                        .size(13.0)
+                                        .color(ACCENT),
+                                    );
+                                });
+                            ui.add_space(if compact { 8.0 } else { 16.0 });
 
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 46.0],
-                                egui::Button::new(
-                                    egui::RichText::new("View Completed Puzzle")
-                                        .size(15.0)
-                                        .strong()
-                                        .color(PANEL),
+                            if ui
+                                .add_sized(
+                                    [ui.available_width(), 46.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("View Completed Puzzle")
+                                            .size(15.0)
+                                            .strong()
+                                            .color(PANEL),
+                                    )
+                                    .fill(ACCENT)
+                                    .corner_radius(8),
                                 )
-                                .fill(ACCENT)
-                                .corner_radius(8),
-                            )
-                            .clicked()
-                        {
-                            next_completion_state.set(GameCompleteSubState::Viewing);
-                        }
-                        if ui
-                            .add_sized(
-                                [ui.available_width(), 42.0],
-                                egui::Button::new(
-                                    egui::RichText::new("Return to Title")
-                                        .size(14.0)
-                                        .color(TEXT),
+                                .clicked()
+                            {
+                                next_completion_state.set(GameCompleteSubState::Viewing);
+                            }
+                            if ui
+                                .add_sized(
+                                    [ui.available_width(), 42.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("Return to Title")
+                                            .size(14.0)
+                                            .color(TEXT),
+                                    )
+                                    .fill(PANEL)
+                                    .stroke(egui::Stroke::new(1.0, BORDER))
+                                    .corner_radius(8),
                                 )
-                                .fill(PANEL)
-                                .stroke(egui::Stroke::new(1.0, BORDER))
-                                .corner_radius(8),
-                            )
-                            .clicked()
-                        {
-                            next_state.set(AppState::Menu);
-                        }
-                        ui.add_space(4.0);
+                                .clicked()
+                            {
+                                next_state.set(AppState::Menu);
+                            }
+                            if ui
+                                .add_enabled(!persistence.busy, egui::Button::new("Save Game"))
+                                .clicked()
+                            {
+                                dialogs.open_title(&mut persistence);
+                            }
+                            ui.add_space(4.0);
+                        });
                     });
                 });
         });

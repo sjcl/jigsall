@@ -6,6 +6,10 @@ use bevy_egui::EguiPostUpdateSet;
 use puzzella_core::ClientCommand;
 use puzzella_core::*;
 
+use crate::persistence::runtime::{
+    OriginalPuzzleImage, PendingRestore, PersistenceService, PersistenceState,
+};
+
 pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
@@ -13,6 +17,8 @@ impl Plugin for GamePlugin {
             .add_message::<ClientCommand>()
             .add_message::<PieceMoveCompleted>()
             .add_message::<PiecePlacedEvent>()
+            .init_resource::<PersistenceService>()
+            .init_resource::<PersistenceState>()
             .init_resource::<GameData>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<InputState>()
@@ -113,6 +119,16 @@ impl Plugin for GamePlugin {
                 )
                     .run_if(in_state(AppState::InGame)),
             )
+            .add_systems(
+                Update,
+                crate::persistence::runtime::poll_results.after(handle_image_load_results),
+            )
+            .add_systems(
+                PostUpdate,
+                crate::persistence::runtime::capture_requested_save
+                    .after(EguiPostUpdateSet::EndPass)
+                    .after(apply_piece_commands),
+            )
             .add_systems(Last, crate::resources::pieces::prepare_piece_upload);
     }
 }
@@ -126,6 +142,8 @@ fn initialize_game(
     image: Res<PuzzleImage>,
     mut game: ResMut<GameData>,
     mut progress: ResMut<PieceGenerationProgress>,
+    mut store: ResMut<PieceDataStore>,
+    pending: Option<ResMut<PendingRestore>>,
 ) {
     *game = GameData {
         players: vec![PlayerInfo {
@@ -136,6 +154,24 @@ fn initialize_game(
         ..default()
     };
     *progress = PieceGenerationProgress::default();
+    if let Some(mut pending) = pending {
+        if let Some(restored) = pending.0.take() {
+            *store = restored.store;
+            game.puzzle_progress = store.placed_count as f32 / store.len() as f32;
+            game.puzzle_completed = store.placed_count == store.len();
+            progress.is_generating = true;
+            progress.total_pieces = store.len();
+            progress.pieces_created = store.len();
+            progress.grid_size = (
+                restored.definition.grid_size.x as usize,
+                restored.definition.grid_size.y as usize,
+            );
+            progress.generation_phase = GenerationPhase::UploadingGpu;
+            commands.insert_resource(restored.definition);
+            commands.remove_resource::<PendingRestore>();
+            return;
+        }
+    }
     let definition = PuzzleDefinition {
         generator_version: GENERATOR_VERSION,
         seed: config.seed,
@@ -165,6 +201,7 @@ fn cleanup_game(
     mut game: ResMut<GameData>,
     mut config: ResMut<PuzzleConfig>,
     mut overlay: ResMut<crate::render::SelectionOverlay>,
+    mut persistence: ResMut<PersistenceState>,
 ) {
     for entity in &entities {
         commands.entity(entity).despawn();
@@ -177,6 +214,15 @@ fn cleanup_game(
     *progress = default();
     *game = default();
     config.image_path.clear();
+    persistence.generation = persistence.generation.wrapping_add(1);
+    persistence.current_save = None;
+    persistence.busy = false;
+    persistence.title_dialog_open = false;
+    persistence.error = None;
+    persistence.message = None;
+    persistence.capture_title = None;
+    commands.remove_resource::<OriginalPuzzleImage>();
+    commands.remove_resource::<PendingRestore>();
     commands.remove_resource::<PuzzleImage>();
     commands.remove_resource::<PuzzleDefinition>();
 }
@@ -198,6 +244,273 @@ mod tests {
         asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
         transform::TransformPlugin,
     };
+
+    #[test]
+    fn selected_image_is_imported_and_encoded_ram_is_released_before_play() {
+        use crate::persistence::{runtime::*, *};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([73, 191, 15]))
+            .save(&path)
+            .unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        let root = dir.path().join("data");
+        let mut app = App::new();
+        app.insert_resource(PersistenceService::for_test(root.clone()));
+        app.add_plugins((
+            MinimalPlugins,
+            StatesPlugin,
+            InputPlugin,
+            TransformPlugin,
+            AssetPlugin::default(),
+            crate::asset_reader::DirectFileAssetPlugin,
+            GamePlugin,
+        ))
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Assets<Image>>()
+        .init_resource::<bevy_egui::EguiUserTextures>();
+        app.update();
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::GameSetup);
+        app.update();
+        app.world_mut().resource_mut::<PuzzleConfig>().image_path = "fixture.png".into();
+        crate::asset_reader::start_thread_image_load(
+            "fixture.png".into(),
+            path.clone(),
+            app.world().resource::<ImageLoadSender>().tx_results.clone(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            app.update();
+            if app
+                .world()
+                .get_resource::<OriginalPuzzleImage>()
+                .is_some_and(|r| r.encoded.is_none())
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Image import must release retained bytes"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::fs::remove_file(path).unwrap();
+        let hash = app.world().resource::<OriginalPuzzleImage>().hash;
+        assert_eq!(hash, image_hash(&original_bytes));
+        assert_eq!(
+            SaveRepository::new(FilesystemStorage::new(root))
+                .read_image(hash)
+                .unwrap(),
+            original_bytes
+        );
+        assert!(app.world().get_resource::<PuzzleImage>().is_some());
+    }
+
+    #[test]
+    fn persistent_load_installs_directly_waits_for_gpu_and_resumes_same_save() {
+        use crate::{checkpoint::*, persistence::runtime::*, persistence::*};
+        let dir = tempfile::tempdir().unwrap();
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            2,
+            2,
+            image::Rgb([20, 80, 190]),
+        ))
+        .write_to(&mut encoded, image::ImageFormat::Png)
+        .unwrap();
+        let encoded = encoded.into_inner();
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+        for complete in [false, true] {
+            let definition = PuzzleDefinition {
+                generator_version: GENERATOR_VERSION,
+                seed: 271,
+                grid_size: UVec2::splat(2),
+                image_size: UVec2::splat(2),
+                snap_distance: 8.0,
+            };
+            let pieces = (0..4)
+                .map(|index| SnapshotPieceState {
+                    position: definition.correct_position(PieceId(index))
+                        + if complete || index == 0 {
+                            Vec2::ZERO
+                        } else {
+                            Vec2::splat(25.0)
+                        },
+                    z_order: index,
+                    flags: if complete || index == 0 {
+                        SNAPSHOT_PLACED
+                    } else {
+                        0
+                    },
+                })
+                .collect();
+            let checkpoint = PuzzleCheckpoint {
+                definition: definition.clone(),
+                image_hash: image_hash(&encoded),
+                next_z_order: 4,
+                pieces,
+            };
+            let metadata = repo
+                .create(
+                    SaveTitle::new("Restored puzzle").unwrap(),
+                    checkpoint.clone(),
+                    Some(&encoded),
+                )
+                .unwrap();
+            let mut app = App::new();
+            app.insert_resource(PersistenceService::for_test(dir.path().to_path_buf()));
+            app.add_plugins((
+                MinimalPlugins,
+                StatesPlugin,
+                InputPlugin,
+                TransformPlugin,
+                AssetPlugin::default(),
+                crate::asset_reader::DirectFileAssetPlugin,
+                GamePlugin,
+            ))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<bevy_egui::EguiUserTextures>();
+            app.update();
+            app.insert_resource(crate::render::RenderReady::waiting_for_test());
+            app.world_mut()
+                .resource_scope(|world, service: Mut<PersistenceService>| {
+                    service.load(&mut world.resource_mut::<PersistenceState>(), metadata.id);
+                });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while *app.world().resource::<State<AppState>>().get() == AppState::Menu {
+                app.update();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            for _ in 0..3 {
+                app.update();
+            }
+            assert_eq!(
+                *app.world().resource::<State<AppState>>().get(),
+                AppState::InGame
+            );
+            assert_eq!(
+                *app.world().resource::<State<GameSubState>>().get(),
+                GameSubState::Initializing
+            );
+            let progress = app.world().resource::<PieceGenerationProgress>();
+            assert_eq!(progress.generation_phase, GenerationPhase::UploadingGpu);
+            assert!(
+                progress.receiver.is_none(),
+                "Restore must never start random placement generation"
+            );
+            let store = app.world().resource::<PieceDataStore>();
+            assert_eq!(
+                PuzzleCheckpoint::capture(store, &definition, image_hash(&encoded)).unwrap(),
+                checkpoint
+            );
+            assert_eq!(store.placed_count, if complete { 4 } else { 1 });
+            assert_eq!(
+                app.world().resource::<GameData>().puzzle_progress,
+                if complete { 1.0 } else { 0.25 }
+            );
+            assert_eq!(
+                app.world().resource::<GameData>().puzzle_completed,
+                complete
+            );
+            assert!(app
+                .world()
+                .resource::<OriginalPuzzleImage>()
+                .encoded
+                .is_none());
+            let epoch = store.epoch;
+            app.world()
+                .resource::<crate::render::RenderReady>()
+                .signal_for_test(epoch);
+            app.update();
+            app.update();
+            if complete {
+                assert_eq!(
+                    *app.world().resource::<State<AppState>>().get(),
+                    AppState::GameComplete
+                );
+            } else {
+                assert_eq!(
+                    *app.world().resource::<State<GameSubState>>().get(),
+                    GameSubState::Playing
+                );
+                app.world_mut()
+                    .resource_mut::<NextState<GameSubState>>()
+                    .set(GameSubState::Paused);
+                app.update();
+            }
+            if !complete {
+                // A UI save queued in the release frame must capture committed delta.
+                {
+                    let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+                    store.apply_command(
+                        LOCAL_PLAYER,
+                        &PieceCommand::Grab(PieceId(1)),
+                        Some(&definition),
+                    );
+                    // The interaction adapter clears presentation drag when it queues release.
+                    store.drag = default();
+                }
+                let mut members = PieceBitSet::new(4);
+                members.insert(PieceId(1));
+                app.world_mut().write_message(ClientCommand {
+                    player: LOCAL_PLAYER,
+                    command: PieceCommand::ReleaseGroup {
+                        members,
+                        delta: Vec2::splat(9.0),
+                    },
+                });
+            }
+            app.world_mut()
+                .resource_scope(|world, service: Mut<PersistenceService>| {
+                    let mut state = world.resource_mut::<PersistenceState>();
+                    assert_eq!(state.current_save.as_ref().unwrap().id, metadata.id);
+                    service.request_save(&mut state, SaveTitle::new("Renamed").unwrap());
+                });
+            while app.world().resource::<PersistenceState>().busy {
+                app.update();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(
+                app.world().resource::<PersistenceState>().error.is_none(),
+                "{:?}",
+                app.world().resource::<PersistenceState>().error
+            );
+            let current = app
+                .world()
+                .resource::<PersistenceState>()
+                .current_save
+                .as_ref()
+                .unwrap();
+            assert_eq!(current.id, metadata.id);
+            assert_eq!(current.revision, 2);
+            assert_eq!(current.created_at, metadata.created_at);
+            assert_eq!(current.title.as_str(), "Renamed");
+            assert_eq!(repo.load(metadata.id).unwrap().save.metadata, *current);
+            if !complete {
+                assert_eq!(
+                    repo.load(metadata.id).unwrap().save.checkpoint.pieces[1].position,
+                    checkpoint.pieces[1].position + Vec2::splat(9.0)
+                );
+            }
+            app.world_mut()
+                .resource_mut::<NextState<AppState>>()
+                .set(AppState::Menu);
+            app.update();
+            assert!(app.world().get_resource::<OriginalPuzzleImage>().is_none());
+            assert!(app
+                .world()
+                .resource::<PersistenceState>()
+                .current_save
+                .is_none());
+        }
+    }
 
     #[test]
     fn session_lifecycle_resets_dense_state_workers_and_substate() {

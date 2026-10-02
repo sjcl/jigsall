@@ -50,6 +50,17 @@ pub struct RenderReady {
     error: Arc<Mutex<Option<(u64, String)>>>,
 }
 impl RenderReady {
+    #[cfg(test)]
+    pub(crate) fn waiting_for_test() -> Self {
+        Self {
+            enabled: true,
+            ..default()
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn signal_for_test(&self, epoch: u64) {
+        self.epoch.store(epoch, Ordering::Release);
+    }
     pub fn is_ready(&self, epoch: u64) -> bool {
         !self.enabled || self.epoch.load(Ordering::Acquire) == epoch
     }

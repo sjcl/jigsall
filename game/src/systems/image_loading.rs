@@ -20,6 +20,8 @@ pub fn handle_image_load_results(
     config: Res<PuzzleConfig>,
     mut images: ResMut<Assets<Image>>,
     mut commands: Commands,
+    service: Res<crate::persistence::runtime::PersistenceService>,
+    persistence: Res<crate::persistence::runtime::PersistenceState>,
 ) {
     // crossbeam-channelから直接try_recv
     while let Ok(result) = image_channels.rx_results.try_recv() {
@@ -35,6 +37,12 @@ pub fn handle_image_load_results(
 
         match result.image {
             Ok(image) => {
+                if let Some(original) = result.original {
+                    if let Some(bytes) = &original.encoded {
+                        service.import(persistence.generation, original.hash, bytes.clone());
+                    }
+                    commands.insert_resource(original);
+                }
                 println!(
                     "✅ Thread-based image loading completed for: {}",
                     result.virtual_key

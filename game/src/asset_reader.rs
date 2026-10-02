@@ -83,131 +83,65 @@ impl Plugin for DirectFileAssetPlugin {
 }
 
 /// 画像読み込み結果
-#[derive(Debug)]
 pub struct ImageLoadResult {
     pub virtual_key: String,
     pub image: Result<Image, String>,
+    pub original: Option<crate::persistence::runtime::OriginalPuzzleImage>,
 }
 
-/// std::thread::spawnを使った画像読み込みスレッドを開始
+/// Decode only; both selected source files and verified .puzimg payloads use this.
+pub fn decode_image_bytes(encoded: &[u8]) -> Result<Image, String> {
+    let decoded = image::load_from_memory(encoded).map_err(|e| e.to_string())?;
+    let rgba = decoded.into_rgba8();
+    let (width, height) = rgba.dimensions();
+    Ok(Image::new(
+        bevy::render::render_resource::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        rgba.into_raw(),
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    ))
+}
+
 pub fn start_thread_image_load(
     virtual_key: String,
     file_path: PathBuf,
     sender: crossbeam::channel::Sender<ImageLoadResult>,
 ) {
-    println!(
-        "🔄 MAIN THREAD [{:?}]: Starting thread image load for: {}",
-        std::thread::current().id(),
-        file_path.display()
-    );
-
-    // ネイティブスレッドを起動
     std::thread::spawn(move || {
-        println!(
-            "🔍 WORKER THREAD [{:?}]: Starting image processing...",
-            std::thread::current().id()
-        );
-
-        // ファイル読み込みからImage作成まで全て同期的に実行
-        let result = (|| -> Result<Image, String> {
-            // ファイルメタデータ取得
-            println!(
-                "🔍 WORKER THREAD [{:?}]: Getting file metadata...",
-                std::thread::current().id()
-            );
-            let metadata = std::fs::metadata(&file_path)
-                .map_err(|e| format!("Failed to get file metadata: {}", e))?;
-            let file_size = metadata.len();
-            println!(
-                "📂 WORKER THREAD [{:?}]: Starting file read: {} ({} MB)",
-                std::thread::current().id(),
-                file_path.display(),
-                file_size / 1024 / 1024
-            );
-
-            // ファイル読み込み
-            let image_bytes =
-                std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {}", e))?;
-            println!(
-                "📊 WORKER THREAD [{:?}]: Read {} bytes ({} MB) from {}",
-                std::thread::current().id(),
-                image_bytes.len(),
-                file_size / 1024 / 1024,
-                file_path.display()
-            );
-
-            // 画像デコード
-            println!(
-                "🎨 WORKER THREAD [{:?}]: Starting image decode...",
-                std::thread::current().id()
-            );
-            let dynamic_image = image::load_from_memory(&image_bytes)
-                .map_err(|e| format!("Failed to decode image: {}", e))?;
-            drop(image_bytes);
-
-            // RGBA変換
-            println!(
-                "🎨 WORKER THREAD [{:?}]: Image decode complete, starting RGBA conversion...",
-                std::thread::current().id()
-            );
-            let rgba_image = dynamic_image.into_rgba8();
-            let (width, height) = rgba_image.dimensions();
-            let rgba_data = rgba_image.into_raw();
-
-            // BevyのImageを作成
-            let image = Image::new(
-                bevy::render::render_resource::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                bevy::render::render_resource::TextureDimension::D2,
-                rgba_data,
-                bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                // Bevy moves pixels into the render world and retains Image metadata.
-                bevy::asset::RenderAssetUsages::RENDER_WORLD,
-            );
-
-            println!(
-                "✅ WORKER THREAD [{:?}]: Image processing complete: {}x{} pixels",
-                std::thread::current().id(),
-                width,
-                height
-            );
-            Ok(image)
-        })();
-
-        // 結果をチャネルに送信
-        let load_result = ImageLoadResult {
-            virtual_key: virtual_key.clone(),
-            image: result,
+        use std::io::Read;
+        let result =
+            (|| -> Result<(Image, crate::persistence::runtime::OriginalPuzzleImage), String> {
+                let file = std::fs::File::open(file_path).map_err(|e| e.to_string())?;
+                let limit = 512 * 1024 * 1024;
+                let mut bytes = Vec::new();
+                file.take(limit + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                if bytes.len() as u64 > limit {
+                    return Err("Image is too large".into());
+                }
+                let image = decode_image_bytes(&bytes)?;
+                let original = crate::persistence::runtime::OriginalPuzzleImage {
+                    hash: crate::persistence::image_hash(&bytes),
+                    encoded: Some(bytes.into()),
+                };
+                Ok((image, original))
+            })();
+        let (image, original) = match result {
+            Ok((image, original)) => (Ok(image), Some(original)),
+            Err(error) => (Err(error), None),
         };
-
-        println!(
-            "🔍 WORKER THREAD [{:?}]: Sending result to main thread...",
-            std::thread::current().id()
-        );
-        match sender.send(load_result) {
-            Ok(()) => println!(
-                "📤 WORKER THREAD [{:?}]: Result sent successfully",
-                std::thread::current().id()
-            ),
-            Err(e) => println!(
-                "❌ WORKER THREAD [{:?}]: Failed to send result: {:?}",
-                std::thread::current().id(),
-                e
-            ),
-        }
-        println!(
-            "🔍 WORKER THREAD [{:?}]: Thread completing",
-            std::thread::current().id()
-        );
+        let _ = sender.send(ImageLoadResult {
+            virtual_key,
+            image,
+            original,
+        });
     });
-
-    println!(
-        "🔍 MAIN THREAD [{:?}]: Worker thread spawned",
-        std::thread::current().id()
-    );
 }
 
 #[cfg(test)]
@@ -217,6 +151,28 @@ mod tests {
         asset::RenderAssetUsages,
         render::{render_asset::RenderAsset, texture::GpuImage},
     };
+
+    #[test]
+    fn selected_original_can_be_saved_after_source_file_is_deleted() {
+        use crate::persistence::*;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.jpg");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3]))
+            .save(&path)
+            .unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        start_thread_image_load("fixture.jpg".into(), path.clone(), tx);
+        let loaded = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert!(loaded.image.is_ok());
+        std::fs::remove_file(path).unwrap();
+        let original = loaded.original.unwrap();
+        assert_eq!(original.hash, image_hash(&original_bytes));
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path().join("data")));
+        repo.import_image(original.hash, original.encoded.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(repo.read_image(original.hash).unwrap(), original_bytes);
+    }
 
     #[test]
     fn decoded_image_moves_pixels_to_render_world_and_keeps_metadata() {

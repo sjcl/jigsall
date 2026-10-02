@@ -583,6 +583,7 @@ pub fn draw_game_setup_ui(
 
                                             // PuzzleImageリソースを削除（読み込み完了時に再作成される）
                                             commands.remove_resource::<PuzzleImage>();
+                                            commands.remove_resource::<puzzella_game::persistence::runtime::OriginalPuzzleImage>();
 
                                             println!("🚀 MAIN THREAD [{:?}]: Started async image loading: {}", std::thread::current().id(), virtual_path);
                                         } else {

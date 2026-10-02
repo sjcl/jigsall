@@ -8,6 +8,8 @@ pub fn generate_puzzle_state(
     mut store: ResMut<PieceDataStore>,
     mut next: ResMut<NextState<GameSubState>>,
     ready: Res<crate::render::RenderReady>,
+    game: Res<GameData>,
+    mut next_app: ResMut<NextState<AppState>>,
 ) {
     let Some(definition) = definition else {
         return;
@@ -52,7 +54,11 @@ pub fn generate_puzzle_state(
     if progress.generation_phase == GenerationPhase::UploadingGpu && ready.is_ready(store.epoch) {
         progress.generation_phase = GenerationPhase::Completed;
         progress.is_generating = false;
-        next.set(GameSubState::Playing);
+        if game.puzzle_completed {
+            next_app.set(AppState::GameComplete);
+        } else {
+            next.set(GameSubState::Playing);
+        }
     }
     if let Some(error) = ready.error(store.epoch) {
         progress.error = Some(error);

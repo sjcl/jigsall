@@ -9,6 +9,8 @@ pub fn draw_in_game_menu_ui(
     mut next_sub_state: ResMut<NextState<GameSubState>>,
     completion_state: Option<Res<State<GameCompleteSubState>>>,
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
+    mut dialogs: ResMut<crate::persistence::SaveDialogs>,
+    mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -44,62 +46,71 @@ pub fn draw_in_game_menu_ui(
         .show(ctx, |ui| {
             ui.set_min_size(egui::vec2(300.0, 200.0));
 
-            ui.vertical_centered(|ui| {
-                ui.spacing_mut().item_spacing.y = 20.0;
+            ui.add_enabled_ui(!persistence.busy, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 20.0;
 
-                ui.heading(if viewing_completed_puzzle {
-                    "Puzzle Menu"
-                } else {
-                    "Game Menu"
-                });
-
-                ui.separator();
-
-                // Resume Game ボタン
-                if ui
-                    .add_sized(
-                        [200.0, 40.0],
-                        egui::Button::new(if viewing_completed_puzzle {
-                            "Back to Puzzle"
-                        } else {
-                            "Resume Game"
-                        }),
-                    )
-                    .clicked()
-                {
-                    if viewing_completed_puzzle {
-                        next_completion_state.set(GameCompleteSubState::Viewing);
+                    ui.heading(if viewing_completed_puzzle {
+                        "Puzzle Menu"
                     } else {
-                        next_sub_state.set(GameSubState::Playing);
+                        "Game Menu"
+                    });
+
+                    ui.separator();
+
+                    // Resume Game ボタン
+                    if ui
+                        .add_sized(
+                            [200.0, 40.0],
+                            egui::Button::new(if viewing_completed_puzzle {
+                                "Back to Puzzle"
+                            } else {
+                                "Resume Game"
+                            }),
+                        )
+                        .clicked()
+                    {
+                        if viewing_completed_puzzle {
+                            next_completion_state.set(GameCompleteSubState::Viewing);
+                        } else {
+                            next_sub_state.set(GameSubState::Playing);
+                        }
                     }
-                }
 
-                // Return to Title ボタン
-                if ui
-                    .add_sized([200.0, 40.0], egui::Button::new("Return to Title"))
-                    .clicked()
-                {
-                    next_state.set(AppState::Menu);
-                    println!("🎮 Returning to title screen");
-                }
+                    if ui
+                        .add_sized([200.0, 40.0], egui::Button::new("Save Game"))
+                        .clicked()
+                    {
+                        dialogs.open_title(&mut persistence);
+                    }
+                    crate::persistence::status(ui, &persistence);
+                    // Return to Title ボタン
+                    if ui
+                        .add_sized([200.0, 40.0], egui::Button::new("Return to Title"))
+                        .clicked()
+                    {
+                        next_state.set(AppState::Menu);
+                        println!("🎮 Returning to title screen");
+                    }
 
-                ui.separator();
+                    ui.separator();
 
-                // Exit Game ボタン
-                if ui
-                    .add_sized([200.0, 40.0], egui::Button::new("Exit Game"))
-                    .clicked()
-                {
-                    println!("🎮 Exiting game");
-                    std::process::exit(0);
-                }
+                    // Exit Game ボタン
+                    if ui
+                        .add_sized([200.0, 40.0], egui::Button::new("Exit Game"))
+                        .clicked()
+                    {
+                        println!("🎮 Exiting game");
+                        std::process::exit(0);
+                    }
 
-                ui.separator();
+                    ui.separator();
 
-                ui.label(if viewing_completed_puzzle {
-                    "Press ESC to return to your puzzle"
-                } else {
-                    "Press ESC to resume"
+                    ui.label(if viewing_completed_puzzle {
+                        "Press ESC to return to your puzzle"
+                    } else {
+                        "Press ESC to resume"
+                    });
                 });
             });
         });
