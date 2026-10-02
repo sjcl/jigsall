@@ -2,17 +2,21 @@ use std::{fmt, net::SocketAddr};
 
 /// Backend-issued identity. The number is a Puzzella token, never a native handle.
 /// Backends must not reuse a token during their lifetime.
+/// Only backends inside this crate can construct tokens.
 /// The underlying value cannot be read as a native handle by callers:
 /// ```compile_fail
 /// use puzzella_game::network::transport::ConnectionId;
-/// let connection = ConnectionId::new(1);
-/// let native_handle = connection.0;
+/// fn native_handle(connection: ConnectionId) -> u64 {
+///     connection.0
+/// }
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConnectionId(u64);
 
 impl ConnectionId {
-    pub const fn new(token: u64) -> Self {
+    // Token issuance is unused in default builds without an opt-in backend.
+    #[cfg_attr(not(feature = "gns"), allow(dead_code))]
+    pub(crate) const fn new(token: u64) -> Self {
         Self(token)
     }
 }
@@ -22,7 +26,8 @@ impl ConnectionId {
 pub struct ListenerId(u64);
 
 impl ListenerId {
-    pub const fn new(token: u64) -> Self {
+    #[cfg_attr(not(feature = "gns"), allow(dead_code))]
+    pub(crate) const fn new(token: u64) -> Self {
         Self(token)
     }
 }

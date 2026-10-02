@@ -19,9 +19,10 @@ Transport (opaque Puzzella identities, byte messages, lifecycle events)
 ## Identity and establishment
 
 `Transport` exposes `poll`, `send` and `close`. `ConnectionId` and `ListenerId` are
-private-field u64 tokens, with constructors for backend implementors. They have no
-native-handle/address accessor. `GnsDirectIp` issues monotonically increasing,
-process-wide tokens, never converting a GNS handle to a token. Its private maps
+private-field u64 tokens. Their constructors are crate-private: backends inside
+`game` issue them, and external callers obtain them through transport APIs/events.
+They have no native-handle/address accessor. `GnsDirectIp` issues monotonically
+increasing, process-wide tokens, never converting a GNS handle to a token. Its private maps
 own the native handles. Stale IDs cannot refer to replacement connections.
 
 `DirectIpTransport` separately exposes `listen(SocketAddr)`, `connect(SocketAddr)`,
