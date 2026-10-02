@@ -5,6 +5,7 @@ pub mod client;
 #[cfg(feature = "gns")]
 pub mod gns;
 pub mod host;
+pub mod rate_limit;
 pub mod session;
 pub mod transport;
 pub mod wire;

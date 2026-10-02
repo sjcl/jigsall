@@ -78,6 +78,73 @@ It visits sockets and connections, never pieces. There are at most 64 connection
 and 8 listeners per backend. These bounds also bound a single frame's receive work.
 Poll appends events and returns any native receive error so the caller can handle it.
 
+## Inbound rate limiting
+
+`network::rate_limit::InboundRateLimiter` is a pure Rust helper with three independent
+per-connection token buckets. The GNS backend stores it directly in `Connection`,
+starting with full buckets when an incoming or outgoing connection is created and
+discarding it with that connection. It is active before `SessionConnections` assigns
+a player, including connected peers with `player: None`.
+
+The immutable `DEFAULT_INBOUND_POLICY` uses the following byte-equivalent rates:
+
+| Class | Steady rate | Burst capacity | Over-limit action |
+| --- | --- | --- | --- |
+| Transient | 128 KiB/s | 256 KiB | Silent drop; connection stays open |
+| Control | 4 MiB/s | 8 MiB | Disconnect with `DisconnectReason::RateLimited` |
+| Bulk | 8 MiB/s | 16 MiB | Disconnect with `DisconnectReason::RateLimited` |
+
+Every message costs `max(native_payload.len(), MIN_MESSAGE_CHARGE)`, where
+`MIN_MESSAGE_CHARGE = 64` bytes. The native payload includes the wire header.
+Empty and tiny malformed packets therefore consume credit too. These are generous
+initial policies: 120 maximum-size 140-byte Drag frames per second use only
+16,800 bytes/s. Control's burst holds 31 maximum-size 262,156-byte frames, and
+Bulk's burst holds 511 maximum-size 32,780-byte chunks. Each burst holds two
+seconds of steady credit, allowing ordinary same-frame Grab/Release and handshake
+bursts while bounding sustained abnormal traffic. Minimum charge also bounds
+tiny-message rates to 2,048/s, 65,536/s and 131,072/s respectively after bursts.
+
+Refill uses elapsed `Instant` time and integer arithmetic: multiply elapsed
+nanoseconds by the class's bytes/s rate, retain fractional byte credit in
+billionths, and add whole bytes up to capacity. Saturating `u128` intermediates
+make even extreme rates and very long idle durations safe; a full bucket discards
+surplus credit. Zero elapsed time earns nothing. There is no fixed one-second
+window, float accounting, rate history, allocation or background task. Each check
+updates only its class's bucket in O(1). On x86_64 Windows, the added limiter state
+is 104 bytes per connection (three 32-byte buckets and one 8-byte shared policy
+reference); the immutable policy is shared rather than copied per connection.
+
+In `GnsDirectIp::poll`, native receive first resolves the existing connection and
+validates the lane and frame-size limit, then calls `rate_limit.check` **before**
+`payload.to_vec()`. Only `Allow` creates a `TransportEvent::Message`; a rejected
+payload has no application allocation/copy or routing event. Wire decode runs
+later, so malformed wire bytes within the native size limit are charged too.
+Unknown lanes and oversized native messages still disconnect as `InvalidMessage`.
+No per-message spam log or metrics backend is added.
+
+Transient is latest-wins presentation, so an over-limit frame can be dropped and
+later frames accepted after refill; Release preserves final correctness. Reliable
+Control and Bulk must never silently lose a frame and then continue with a protocol
+sequence gap. Their first message that cannot fit the available credit closes the
+connection; tolerance for ordinary bursts comes from capacity, without a strike
+counter or grace-period drops. The local close-code mapping assigns `RateLimited`
+code 1003 for incoming native closes. Outgoing sockets retain their existing
+wrapper-owned close behavior and generic native code; local events still carry
+`RateLimited`, and the peer observes `RemoteClosed`.
+
+All dequeued messages, including drops, invalid messages and messages belonging to
+already-removed connections, consume the existing shared 512-message receive
+budget. The 32-slot chunks, partial-chunk retention and socket round-robin cursor
+are unchanged. There is no additional connection map/lookup, piece scan, idle
+gameplay work, protocol change or transfer-level backpressure.
+
+Time is passed explicitly to `check(class, payload_len, now)` for deterministic
+unit tests. `with_policy(&'static InboundRatePolicy, now)` permits small test policies;
+production GNS uses the defaults. A future Steamworks backend can store the same
+limiter in each connection and call it with the native `SteamNetworkingMessage_t`
+length before copying or routing. The helper knows no GNS handles, addresses,
+SteamIDs or networking identities and is available without the `gns` feature.
+
 ## Wire v1
 
 One native message is one Puzzella frame, with no stream reassembly:
@@ -227,6 +294,7 @@ cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
 cargo check --locked --features gns
+cargo test --locked -p puzzella-game --features gns
 cargo build --locked --features gns
 ```
 
@@ -238,6 +306,16 @@ piece/connectivity/snapshot/cursor state, and disconnect on both ends. Receive
 regressions preload reliable UDP messages and wait for native ACKs without polling
 the receiver, then verify shared 512-message limits, rotation between listeners,
 partial-chunk retention, outgoing-socket draining and server-initiated close.
+Rate-limit unit tests cover burst spending, zero elapsed time, fractional refill,
+capacity, extreme idle/rate arithmetic, minimum charge, Transient recovery,
+reliable disconnects, independent classes/connections, zero policies and default
+120 Hz drags/maximum-frame bursts. Small-policy localhost tests cover Transient
+drop without events or disconnect, dropped messages consuming the receive budget,
+Control independence, fresh connection credit, Control/Bulk disconnect exactly once
+on incoming and outgoing sockets, and oversized-message reason precedence. They
+use native reliable delivery on the Transient lane only to preload deterministic
+backlogs; production flags and the ordinary Grab/Drag/Release routing test remain
+unchanged. Refill timing tests advance explicit time without sleeping.
 No external network is contacted by tests; initial dependency downloads are build
 setup only.
 
@@ -247,6 +325,8 @@ Implement `game/src/network/steamworks` behind its own feature later. It should 
 `ISteamNetworkingSockets`, translate `CreateListenSocketP2P` / `ConnectP2P` and
 `SteamNetworkingIdentity` to private native handles and freshly issued Puzzella
 tokens, implement the shared `Transport`, and use the same class/lane/limit policy.
+Store `InboundRateLimiter` in each connection and apply the shared inbound policy
+before native payload copies, as described above.
 Expose separate `listen_p2p` / `connect_peer` establishment APIs; do not extend
 DirectIpTransport or introduce an address enum into protocol messages.
 

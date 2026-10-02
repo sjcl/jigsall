@@ -1,4 +1,5 @@
 use crate::network::{
+    rate_limit::{InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY},
     transport::{
         ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Transport,
         TransportError, TransportEvent,
@@ -14,6 +15,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     net::{SocketAddr, UdpSocket},
     sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
 };
 
 pub const MAX_CONNECTIONS: usize = 64;
@@ -57,6 +59,17 @@ fn flags(class: MessageClass) -> SendFlags {
     }
 }
 
+// Local application close codes share one mapping. Outgoing socket Drop uses
+// the wrapper's generic code, while its local event retains the precise reason.
+fn close_code(reason: DisconnectReason) -> u32 {
+    match reason {
+        DisconnectReason::Requested => 1000,
+        DisconnectReason::InvalidMessage => 1001,
+        DisconnectReason::RateLimited => 1003,
+        _ => 1002,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Endpoint {
     Listener(ListenerId),
@@ -85,11 +98,7 @@ impl Socket {
         connection: GnsConnection,
         reason: DisconnectReason,
     ) -> Result<(), TransportError> {
-        let code = match reason {
-            DisconnectReason::Requested => 1000,
-            DisconnectReason::InvalidMessage => 1001,
-            _ => 1002,
-        };
+        let code = close_code(reason);
         // A listener outlives its individual incoming connections, so close
         // those explicitly. Outgoing sockets own one connection: their wrapper
         // Drop closes it when bookkeeping removes the socket. Do not close twice.
@@ -123,6 +132,7 @@ struct Connection {
     native: GnsConnection,
     endpoint: Endpoint,
     connected: bool,
+    rate_limit: InboundRateLimiter,
 }
 
 /// Owns listeners/connections; Drop closes all of them, including pending connects.
@@ -135,10 +145,14 @@ pub struct GnsDirectIp {
     native_ids: HashMap<GnsConnection, ConnectionId>,
     pending: Vec<TransportEvent>,
     next_receive_endpoint: Option<Endpoint>,
+    rate_policy: &'static InboundRatePolicy,
 }
 
 impl GnsDirectIp {
     pub fn new() -> Result<Self, TransportError> {
+        Self::with_rate_policy(&DEFAULT_INBOUND_POLICY)
+    }
+    fn with_rate_policy(rate_policy: &'static InboundRatePolicy) -> Result<Self, TransportError> {
         Ok(Self {
             global: GnsGlobal::get().map_err(backend)?,
             sockets: BTreeMap::new(),
@@ -146,6 +160,7 @@ impl GnsDirectIp {
             native_ids: HashMap::new(),
             pending: Vec::new(),
             next_receive_endpoint: None,
+            rate_policy,
         })
     }
     /// Remove mappings; dropping an outgoing socket performs its owned close.
@@ -194,7 +209,12 @@ impl GnsDirectIp {
         if info.state() == State::k_ESteamNetworkingConnectionState_Connecting && id.is_none() {
             if let Some(Socket::Server(socket)) = self.sockets.get(&endpoint) {
                 if self.connections.len() >= MAX_CONNECTIONS {
-                    let _ = socket.close_connection(native, 1002, None, false);
+                    let _ = socket.close_connection(
+                        native,
+                        close_code(DisconnectReason::BackendFailure),
+                        None,
+                        false,
+                    );
                     return Ok(());
                 }
                 let issued = ConnectionId::new(token()?);
@@ -204,6 +224,10 @@ impl GnsDirectIp {
                         native,
                         endpoint,
                         connected: false,
+                        rate_limit: InboundRateLimiter::with_policy(
+                            self.rate_policy,
+                            Instant::now(),
+                        ),
                     },
                 );
                 self.native_ids.insert(native, issued);
@@ -269,6 +293,7 @@ impl Transport for GnsDirectIp {
         }
         let mut slots = [const { MessageSlot::uninit() }; RECEIVE_CHUNK];
         let mut remaining = MAX_RECEIVE_PER_POLL;
+        let now = Instant::now();
         while remaining != 0 {
             let Some(endpoint) = endpoints.pop_front() else {
                 break;
@@ -280,7 +305,7 @@ impl Transport for GnsDirectIp {
             // messages are released on Drop, which would discard reliable data.
             let messages = socket.receive(&mut slots[..RECEIVE_CHUNK.min(remaining)])?;
             let received = messages.len();
-            remaining -= received; // Unknown/invalid messages consume budget too.
+            remaining -= received; // Unknown, invalid and rate-limited messages count too.
             if received != 0 {
                 endpoints.push_back(endpoint);
             }
@@ -288,22 +313,32 @@ impl Transport for GnsDirectIp {
                 let Some(&id) = self.native_ids.get(&message.connection()) else {
                     continue;
                 };
-                if !self.connections.get(&id).is_some_and(|c| c.connected) {
+                let Some(connection) = self.connections.get_mut(&id) else {
+                    continue;
+                };
+                if !connection.connected {
                     continue;
                 }
                 let Some(class) = class(message.lane()) else {
                     self.terminate(id, DisconnectReason::InvalidMessage, events);
                     continue;
                 };
-                if message.payload().len() > frame_limit(class) {
+                let payload = message.payload();
+                if payload.len() > frame_limit(class) {
                     self.terminate(id, DisconnectReason::InvalidMessage, events);
                     continue;
                 }
-                events.push(TransportEvent::Message {
-                    connection: id,
-                    class,
-                    payload: message.payload().to_vec(),
-                });
+                match connection.rate_limit.check(class, payload.len(), now) {
+                    RateDecision::Allow => events.push(TransportEvent::Message {
+                        connection: id,
+                        class,
+                        payload: payload.to_vec(),
+                    }),
+                    RateDecision::Drop => {}
+                    RateDecision::Disconnect => {
+                        self.terminate(id, DisconnectReason::RateLimited, events);
+                    }
+                }
             }
         }
         // Continue with the next socket if budget ran out, rather than letting a
@@ -455,6 +490,7 @@ impl DirectIpTransport for GnsDirectIp {
                 native,
                 endpoint,
                 connected: false,
+                rate_limit: InboundRateLimiter::with_policy(self.rate_policy, Instant::now()),
             },
         );
         self.native_ids.insert(native, id);
@@ -529,6 +565,10 @@ mod tests {
                 .send(id, MessageClass::Control, &sequence.to_le_bytes())
                 .unwrap();
         }
+        flush_and_wait_for_reliable_ack(sender, id);
+    }
+
+    fn flush_and_wait_for_reliable_ack(sender: &GnsDirectIp, id: ConnectionId) {
         let connection = &sender.connections[&id];
         let socket = &sender.sockets[&connection.endpoint];
         match socket {
@@ -559,6 +599,165 @@ mod tests {
         }
     }
 
+    // Native RELIABLE is intentional even on lane 0: the drop/budget assertions
+    // require a deterministic delivered backlog, independent of UDP loss. The
+    // production Transient send flags remain unreliable (covered below).
+    fn native_burst(
+        sender: &GnsDirectIp,
+        id: ConnectionId,
+        native_lane: u16,
+        count: u32,
+        size: usize,
+    ) {
+        let connection = &sender.connections[&id];
+        let socket = &sender.sockets[&connection.endpoint];
+        for sequence in 0..count {
+            let mut payload = vec![0; size];
+            payload[..4].copy_from_slice(&sequence.to_le_bytes());
+            let message = sender
+                .global
+                .utils()
+                .allocate_message(connection.native, SendFlags::RELIABLE, payload)
+                .set_lane(native_lane);
+            socket.send(message).unwrap();
+        }
+        flush_and_wait_for_reliable_ack(sender, id);
+    }
+
+    const TEST_BUCKET: crate::network::rate_limit::BucketPolicy =
+        crate::network::rate_limit::BucketPolicy {
+            bytes_per_second: 0,
+            burst_bytes: 128,
+        };
+    const TEST_POLICY: InboundRatePolicy = InboundRatePolicy {
+        transient: TEST_BUCKET,
+        control: TEST_BUCKET,
+        bulk: TEST_BUCKET,
+    };
+
+    #[test]
+    fn gns_localhost_transient_drop_preserves_connection_and_receive_budget() {
+        let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
+        let mut client = GnsDirectIp::new().unwrap();
+        let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
+        // No SessionConnections/PlayerId assignment: protection is already active.
+        // Malformed wire bytes are still charged before any routing or decode.
+        native_burst(&client, outgoing, lane(MessageClass::Transient), 513, 4);
+        let events = poll(&mut host);
+        assert_eq!(
+            events,
+            (0_u32..2)
+                .map(|sequence| TransportEvent::Message {
+                    connection: incoming,
+                    class: MessageClass::Transient,
+                    payload: sequence.to_le_bytes().to_vec(),
+                })
+                .collect::<Vec<_>>()
+        );
+        assert!(host.connections[&incoming].connected);
+        // 510 rejected messages consumed budget; message 513 remains native-owned.
+        let connection = &host.connections[&incoming];
+        let socket = &host.sockets[&connection.endpoint];
+        let mut slots = [MessageSlot::uninit()];
+        let remaining = socket.receive(&mut slots).unwrap();
+        assert_eq!(remaining.len(), 1);
+        for message in remaining {
+            assert_eq!(message.payload(), &512_u32.to_le_bytes());
+        }
+        assert!(poll(&mut host).is_empty());
+
+        // Further over-limit data generates no event, and Control still passes.
+        native_burst(&client, outgoing, lane(MessageClass::Transient), 3, 4);
+        assert!(poll(&mut host).is_empty());
+        send_burst(&mut client, outgoing, 1);
+        assert_eq!(receive_sequences(&mut host), vec![(incoming, 0)]);
+        assert!(poll(&mut client).is_empty());
+
+        let mut other = GnsDirectIp::new().unwrap();
+        let (_, other_incoming, other_outgoing) = connect_pair(&mut host, &mut other);
+        native_burst(&other, other_outgoing, lane(MessageClass::Transient), 1, 4);
+        assert_eq!(
+            poll(&mut host),
+            vec![TransportEvent::Message {
+                connection: other_incoming,
+                class: MessageClass::Transient,
+                payload: 0_u32.to_le_bytes().to_vec(),
+            }]
+        );
+    }
+
+    #[test]
+    fn gns_localhost_reliable_excess_disconnects_incoming_and_outgoing_once() {
+        for class in [MessageClass::Control, MessageClass::Bulk] {
+            for outgoing_receive in [false, true] {
+                let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
+                let mut client = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
+                let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
+                let (receiver, receiver_id, sender, sender_id) = if outgoing_receive {
+                    (&mut client, outgoing, &mut host, incoming)
+                } else {
+                    (&mut host, incoming, &mut client, outgoing)
+                };
+                native_burst(sender, sender_id, lane(class), 20, 4);
+                let mut expected: Vec<_> = (0_u32..2)
+                    .map(|sequence| TransportEvent::Message {
+                        connection: receiver_id,
+                        class,
+                        payload: sequence.to_le_bytes().to_vec(),
+                    })
+                    .collect();
+                expected.push(TransportEvent::Disconnected {
+                    connection: receiver_id,
+                    reason: DisconnectReason::RateLimited,
+                });
+                assert_eq!(poll(receiver), expected);
+                assert!(!receiver.connections.contains_key(&receiver_id));
+                assert!(poll(receiver).is_empty());
+                let deadline = Instant::now() + Duration::from_secs(15);
+                loop {
+                    let events = poll(sender);
+                    if !events.is_empty() {
+                        assert_eq!(
+                            events,
+                            vec![TransportEvent::Disconnected {
+                                connection: sender_id,
+                                reason: DisconnectReason::RemoteClosed,
+                            }]
+                        );
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "timeout waiting for rate-limited close"
+                    );
+                    std::thread::park_timeout(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gns_localhost_oversize_keeps_invalid_message_reason_before_rate_limit() {
+        for class in [
+            MessageClass::Transient,
+            MessageClass::Control,
+            MessageClass::Bulk,
+        ] {
+            let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
+            let mut client = GnsDirectIp::new().unwrap();
+            let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
+            native_burst(&client, outgoing, lane(class), 1, frame_limit(class) + 1);
+            assert_eq!(
+                poll(&mut host),
+                vec![TransportEvent::Disconnected {
+                    connection: incoming,
+                    reason: DisconnectReason::InvalidMessage,
+                }]
+            );
+            assert!(poll(&mut host).is_empty());
+        }
+    }
+
     fn receive_sequences(transport: &mut GnsDirectIp) -> Vec<(ConnectionId, u32)> {
         poll(transport)
             .into_iter()
@@ -579,9 +778,15 @@ mod tests {
 
     #[test]
     fn lane_and_flag_policy() {
+        assert_eq!(close_code(DisconnectReason::Requested), 1000);
+        assert_eq!(close_code(DisconnectReason::InvalidMessage), 1001);
+        assert_eq!(close_code(DisconnectReason::BackendFailure), 1002);
+        assert_eq!(close_code(DisconnectReason::RateLimited), 1003);
         assert_eq!(lane(MessageClass::Transient), 0);
         assert_eq!(lane(MessageClass::Control), 1);
         assert_eq!(lane(MessageClass::Bulk), 2);
+        assert_eq!(class(3), None);
+        assert_eq!(class(u16::MAX), None);
         assert!(flags(MessageClass::Transient).contains(SendFlags::NO_NAGLE | SendFlags::NO_DELAY));
         assert!(!flags(MessageClass::Transient).contains(SendFlags::RELIABLE));
         assert!(flags(MessageClass::Control).contains(SendFlags::RELIABLE));
