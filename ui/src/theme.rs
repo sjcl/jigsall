@@ -17,6 +17,7 @@ pub fn prepare(ctx: &egui::Context) {
     }
     let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
     style.visuals = egui::Visuals::dark();
+    style.visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
     style.visuals.override_text_color = Some(TEXT);
     style.visuals.panel_fill = PANEL;
     style.visuals.window_fill = PANEL;
