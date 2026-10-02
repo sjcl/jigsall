@@ -5,8 +5,8 @@ use crate::resources::{
 };
 use puzzella_core::{
     protocol::{
-        ActiveDrag, ProtocolCommandEnvelope, ProtocolPieceCommand, RejectedComponentRef,
-        TargetError,
+        ActiveDrag, ActiveDragTarget, GrabAccepted, ProtocolCommandEnvelope, ProtocolPieceCommand,
+        RejectedComponentRef, ResolvedPieceTarget, TargetError,
     },
     session::{
         AuthorityEpoch, AuthoritySession, ClientCommandSequence, CommandSequenceStatus,
@@ -31,7 +31,7 @@ pub enum ProtocolCommandError {
 pub enum ProtocolCommandResult {
     Grabbed {
         applied: AppliedCommand,
-        rejected: Vec<RejectedComponentRef>,
+        ack: GrabAccepted,
     },
     DragUpdated {
         sequence: CommandSequenceStatus,
@@ -43,7 +43,7 @@ pub enum ProtocolCommandResult {
 }
 
 /// Per-player accepted sets, scoped to both authority epoch and store generation.
-/// No wire membership is retained. Transient updates touch only a scalar delta.
+/// Only validated, accepted membership is retained. Transient updates touch only a scalar delta.
 #[derive(Default, Debug)]
 pub struct ProtocolDragContexts {
     scope: Option<(SessionId, AuthorityEpoch, u64)>,
@@ -106,34 +106,49 @@ impl ProtocolDragContexts {
                 if self.players.contains_key(&player) {
                     return Err(ProtocolCommandError::ActiveDragExists);
                 }
-                let mut resolved = target
+                let resolved = target
                     .resolve(&store.connectivity)
                     .map_err(ProtocolCommandError::Target)?;
-                resolved.components.retain(|reference| {
-                    store
-                        .connectivity
-                        .iter_component(reference.member)
-                        .all(|id| store.is_selectable(id))
-                });
-                let applied = store
-                    .grab_resolved_components(player, resolved.components.iter().map(|r| r.member));
+                let (applied, target) = match resolved.target {
+                    ResolvedPieceTarget::Sparse(mut refs) => {
+                        refs.retain(|reference| {
+                            store
+                                .connectivity
+                                .iter_component(reference.member)
+                                .all(|id| store.is_selectable(id))
+                        });
+                        let applied =
+                            store.grab_resolved_components(player, refs.iter().map(|r| r.member));
+                        (applied, ActiveDragTarget::Sparse(refs))
+                    }
+                    ResolvedPieceTarget::Dense(members) => {
+                        let accepted = store.selectable_members(&members);
+                        let target =
+                            ActiveDragTarget::from_accepted_members(&store.connectivity, &accepted)
+                                .map_err(ProtocolCommandError::Target)?;
+                        (store.grab_accepted_members(player, &accepted), target)
+                    }
+                };
                 let ClientCommandSequence::Control(grab_sequence) = envelope.sequence else {
                     unreachable!()
+                };
+                let ack = GrabAccepted {
+                    player,
+                    grab_sequence,
+                    accepted: target.to_piece_target(),
+                    rejected: resolved.rejected,
                 };
                 if applied.grabbed != 0 {
                     self.players.insert(
                         player,
                         ActiveDrag {
                             grab_sequence,
-                            components: resolved.components,
+                            target,
                             delta: bevy::math::Vec2::ZERO,
                         },
                     );
                 }
-                Ok(ProtocolCommandResult::Grabbed {
-                    applied,
-                    rejected: resolved.rejected,
-                })
+                Ok(ProtocolCommandResult::Grabbed { applied, ack })
             }
             ProtocolPieceCommand::DragUpdate { delta } => {
                 if !delta.is_finite() {
@@ -170,28 +185,52 @@ impl ProtocolDragContexts {
                 if *grab_sequence != drag.grab_sequence {
                     return Err(ProtocolCommandError::WrongDragContext);
                 }
-                let drag = self.players.remove(&player).unwrap();
-                let mut roots = Vec::with_capacity(drag.components.len());
-                let mut rejected = Vec::new();
-                for reference in drag.components {
-                    match reference.resolve(&store.connectivity) {
-                        Ok(minimum) => {
-                            // Recheck the complete current component, including both
-                            // owner occupancy and its presentation flags.
-                            if store.connectivity.iter_component(minimum).all(|id| {
-                                store.states[id.0 as usize].flags & (PLACED | ENABLED | HELD)
-                                    == (ENABLED | HELD)
-                                    && store.held_by.get(&id) == Some(&player)
-                            }) {
-                                roots.push(minimum);
-                            }
-                        }
-                        Err(reason) => rejected.push(RejectedComponentRef { reference, reason }),
-                    }
-                }
                 let definition =
                     definition.filter(|d| d.validate().is_ok() && d.piece_count() == store.len());
-                let applied = store.release_roots(player, roots, *final_delta, definition);
+                let acceptable = |id: puzzella_core::PieceId| {
+                    store.states[id.0 as usize].flags & (PLACED | ENABLED | HELD)
+                        == (ENABLED | HELD)
+                        && store.held_by.get(&id) == Some(&player)
+                };
+                let (applied, rejected) = match &drag.target {
+                    ActiveDragTarget::Sparse(refs) => {
+                        let mut roots = Vec::with_capacity(refs.len());
+                        let mut rejected = Vec::new();
+                        for &reference in refs {
+                            match reference.resolve(&store.connectivity) {
+                                Ok(minimum)
+                                    if store
+                                        .connectivity
+                                        .iter_component(minimum)
+                                        .all(acceptable) =>
+                                {
+                                    roots.push(minimum)
+                                }
+                                Ok(_) => {}
+                                Err(reason) => {
+                                    rejected.push(RejectedComponentRef { reference, reason })
+                                }
+                            }
+                        }
+                        (
+                            store.release_roots(player, roots, *final_delta, definition),
+                            rejected,
+                        )
+                    }
+                    ActiveDragTarget::Dense(dense) => {
+                        // A topology mismatch rejects the whole dense context before
+                        // any mutation. Holds stay available for explicit cancellation.
+                        let canonical = dense
+                            .resolve(&store.connectivity)
+                            .map_err(ProtocolCommandError::Target)?;
+                        let accepted = store.canonical_members(&canonical, acceptable);
+                        (
+                            store.release_components(player, &accepted, *final_delta, definition),
+                            Vec::new(),
+                        )
+                    }
+                };
+                self.players.remove(&player);
                 Ok(ProtocolCommandResult::Released { applied, rejected })
             }
         }

@@ -496,6 +496,20 @@ impl PieceDataStore {
         self.apply_grab(player, plan, false)
     }
 
+    /// Protocol-only bulk adapter. The caller has validated canonical membership
+    /// and selectability. Reuse the existing temporary relative-Z sort/bulk path.
+    pub(crate) fn grab_accepted_members(
+        &mut self,
+        player: PlayerId,
+        members: &PieceBitSet,
+    ) -> AppliedCommand {
+        let plan = GrabPlan {
+            ids: members.iter().collect(),
+            members: Some(members.clone()),
+        };
+        self.apply_grab(player, plan, false)
+    }
+
     /// Full masks emit the minimum member once; partial masks deduplicate only
     /// roots whose minimum is absent. Small partial sets stay on the stack.
     fn grab_component_roots<'a>(
@@ -691,7 +705,7 @@ impl PieceDataStore {
         }
     }
 
-    fn release_components(
+    pub(crate) fn release_components(
         &mut self,
         player: PlayerId,
         requested: &PieceBitSet,
