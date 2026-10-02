@@ -20,6 +20,8 @@ pub fn draw_game_setup_ui(
 
     // 背景のグラデーション
     egui::Area::new(egui::Id::new("game_setup_background"))
+        .order(egui::Order::Background)
+        .interactable(false)
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
             let screen_rect = ctx.content_rect();

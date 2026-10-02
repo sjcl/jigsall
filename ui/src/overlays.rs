@@ -20,6 +20,8 @@ pub fn draw_in_game_menu_ui(
 
     // 半透明の背景を表示してゲーム画面を暗くする
     egui::Area::new(egui::Id::new("in_game_menu_background"))
+        .order(egui::Order::Background)
+        .interactable(false)
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
             let screen_rect = ctx.content_rect();
