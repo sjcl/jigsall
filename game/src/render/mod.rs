@@ -267,7 +267,6 @@ struct StateBuffers {
     current_selected: Arc<[u32]>,
     preview: Buffer,
     direct_hits: Buffer,
-    preview_rejected: Buffer,
     capacity: u32,
     pick_visible: Buffer,
     pick_args: Buffer,
@@ -357,7 +356,6 @@ struct GpuRenderer {
     pick_compute_layout: BindGroupLayoutDescriptor,
     preview_layout: BindGroupLayoutDescriptor,
     preview_collapse: Option<CachedComputePipelineId>,
-    preview_filter: Option<CachedComputePipelineId>,
     pick_cull: Option<CachedComputePipelineId>,
     main_pipelines: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
     box_pipelines: HashMap<TextureFormat, CachedRenderPipelineId>,
@@ -501,14 +499,11 @@ impl GpuRenderer {
                     (
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_sized(false, None),
                         storage_buffer_sized(false, None),
                     ),
                 ),
             ),
             preview_collapse: None,
-            preview_filter: None,
             main_pipelines: default(),
             box_pipelines: default(),
             point_pipeline: None,
@@ -543,18 +538,13 @@ impl GpuRenderer {
     }
     fn queue_pipelines(&mut self, cache: &PipelineCache, format: TextureFormat, opaque: bool) {
         if self.cull.is_none() {
-            for (entry, dest) in [
-                ("collapse_components", &mut self.preview_collapse),
-                ("filter_components", &mut self.preview_filter),
-            ] {
-                *dest = Some(cache.queue_compute_pipeline(ComputePipelineDescriptor {
-                    label: Some(entry.into()),
-                    layout: vec![self.preview_layout.clone()],
-                    shader: self.preview_shader.clone(),
-                    entry_point: Some(entry.into()),
-                    ..default()
-                }));
-            }
+            self.preview_collapse = Some(cache.queue_compute_pipeline(ComputePipelineDescriptor {
+                label: Some("collapse_components".into()),
+                layout: vec![self.preview_layout.clone()],
+                shader: self.preview_shader.clone(),
+                entry_point: Some("collapse_components".into()),
+                ..default()
+            }));
             self.pick_cull = Some(cache.queue_compute_pipeline(ComputePipelineDescriptor {
                 label: Some("picking visibility".into()),
                 layout: vec![self.pick_compute_layout.clone()],
@@ -814,12 +804,6 @@ fn prepare_buffers(
                 u64::from(count.div_ceil(32)) * 4,
                 BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
             ),
-            preview_rejected: buffer(
-                &device,
-                "unselectable component mask",
-                u64::from(count.div_ceil(32)) * 4,
-                BufferUsages::STORAGE | BufferUsages::COPY_DST,
-            ),
             capacity,
             pick_visible: buffer(
                 &device,
@@ -1000,7 +984,6 @@ fn puzzle_node(
         gpu.sort_scatter.unwrap(),
         gpu.pick_cull.unwrap(),
         gpu.preview_collapse.unwrap(),
-        gpu.preview_filter.unwrap(),
     ] {
         if let CachedPipelineState::Err(error) = cache.get_compute_pipeline_state(id) {
             *ready.error.lock().unwrap() = Some((frame.upload.epoch, error.to_string()));
@@ -1267,7 +1250,6 @@ fn draw_selection(
             let buffers = gpu.buffers.as_ref().unwrap();
             encoder.clear_buffer(&buffers.direct_hits, 0, None);
             encoder.clear_buffer(&buffers.preview, 0, None);
-            encoder.clear_buffer(&buffers.preview_rejected, 0, None);
         }
         if request.readback {
             let _ = gpu.sender.send(RawResult {
@@ -1282,9 +1264,10 @@ fn draw_selection(
     let point = request.mode == SelectionMode::Point;
     let collapse = !point && frame.config.preview_active != 0;
     if collapse
-        && [gpu.preview_collapse, gpu.preview_filter]
-            .into_iter()
-            .any(|id| id.and_then(|id| cache.get_compute_pipeline(id)).is_none())
+        && gpu
+            .preview_collapse
+            .and_then(|id| cache.get_compute_pipeline(id))
+            .is_none()
     {
         return;
     }
@@ -1401,7 +1384,6 @@ fn draw_selection(
     encoder.clear_buffer(bitset, 0, None);
     if !point {
         encoder.clear_buffer(&buffers.preview, 0, None);
-        encoder.clear_buffer(&buffers.preview_rejected, 0, None);
     }
     let color = if point {
         &gpu.point.as_ref().unwrap().id_view
@@ -1461,20 +1443,22 @@ fn draw_selection(
             &BindGroupEntries::sequential((
                 buffers.direct_hits.as_entire_buffer_binding(),
                 buffers.component_roots.as_entire_buffer_binding(),
-                selectable.as_entire_buffer_binding(),
                 buffers.preview.as_entire_buffer_binding(),
-                buffers.preview_rejected.as_entire_buffer_binding(),
             )),
         );
         let span = diagnostics.time_span(encoder, "puzzle_component_preview");
-        for pipeline in [gpu.preview_collapse.unwrap(), gpu.preview_filter.unwrap()] {
+        {
             let mut pass = encoder.begin_compute_pass(&default());
-            pass.set_pipeline(cache.get_compute_pipeline(pipeline).unwrap());
+            pass.set_pipeline(
+                cache
+                    .get_compute_pipeline(gpu.preview_collapse.unwrap())
+                    .unwrap(),
+            );
             pass.set_bind_group(0, &group, &[]);
             pass.dispatch_workgroups(frame.config.count.div_ceil(32).div_ceil(256), 1, 1);
         }
         span.end(encoder);
-        gpu.preview_dispatches += 2;
+        gpu.preview_dispatches += 1;
     }
     gpu.last_submitted = request.request_id;
     let Some(index) = index else {

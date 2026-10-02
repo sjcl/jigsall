@@ -6,7 +6,7 @@ use crate::{
 };
 use puzzella_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
-    PieceBitSet,
+    PieceBitSet, PieceCommand, PlayerId,
 };
 
 fn restore_components(app: &mut App, def: &PuzzleDefinition, unions: &[(u32, u32)]) {
@@ -69,6 +69,17 @@ fn preview(app: &mut App, rect: Rect) {
         .is_none());
     assert_eq!(gpu.root_upload_bytes, 0);
     assert_eq!(gpu.selection_upload_bytes, 0, "preview request {rect:?}");
+    assert_eq!(
+        gpu.preview_dispatches,
+        usize::from(
+            app.sub_app(RenderApp)
+                .world()
+                .resource::<ExtractedPuzzle>()
+                .region
+                .is_some()
+        ),
+        "one collapse pass for a nonempty preview, none for empty/clipped"
+    );
 }
 fn masks(app: &App) -> (u32, u32) {
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
@@ -224,36 +235,98 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
     assert_yellow(pixel(&pixels, 160, 128)); // Selected beats blue preview.
     assert_eq!(pixel(&pixels, 128, 140), &[255, 255, 255, 255]);
 
-    // Whole-component rejection with a nonselectable member matches CPU authority.
+    // A hold arriving after readback is still rejected by final CPU authority.
     app.world_mut()
         .resource_mut::<PieceDataStore>()
         .selected_pieces
         .clear();
     update_gpu(&mut app);
-    let flags = app.world().resource::<PieceDataStore>().states[1].flags;
-    for invalid in [flags & !ENABLED, flags | HELD, flags | PLACED] {
-        {
-            let mut store = app.world_mut().resource_mut::<PieceDataStore>();
-            store.states[1].flags = invalid;
-            store.dirty_pieces.insert(PieceId(1));
-        }
-        preview(&mut app, a);
-        assert_eq!(masks(&app), (1, 0));
-        let direct = final_rectangle(&mut app, a);
-        app.world_mut()
-            .resource_mut::<PieceDataStore>()
-            .commit_selection(direct, None);
-        assert!(app
-            .world()
-            .resource::<PieceDataStore>()
-            .selected_pieces
-            .is_empty());
-    }
+    let stale_direct = final_rectangle(&mut app, a);
+    let owner = PlayerId(2);
     {
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
-        store.states[1].flags = flags;
-        store.dirty_pieces.insert(PieceId(1));
+        assert_eq!(
+            store
+                .apply_command(owner, &PieceCommand::Grab(PieceId(0)), None)
+                .grabbed,
+            2
+        );
+        store.commit_selection(stale_direct, None);
+        assert!(store.selected_pieces.is_empty());
+        assert!(store
+            .connectivity
+            .iter_component(PieceId(0))
+            .all(|id| store.states[id.0 as usize].flags & HELD != 0));
     }
+    preview(&mut app, a);
+    assert_eq!(masks(&app), (0, 0), "held components have no direct hits");
+    assert!(final_rectangle(&mut app, a).is_empty());
+    assert_eq!(
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .apply_command(owner, &PieceCommand::Release(PieceId(0)), None)
+            .released,
+        2
+    );
+    preview(&mut app, a);
+    assert_eq!(
+        masks(&app),
+        (1, 1),
+        "release restores component selectability"
+    );
+
+    // Disabled fixtures preserve the same component-wide selectability invariant.
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        for id in [PieceId(0), PieceId(1)] {
+            store.states[id.0 as usize].flags &= !ENABLED;
+            store.dirty_pieces.insert(id);
+        }
+    }
+    preview(&mut app, a);
+    assert_eq!(masks(&app), (0, 0));
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        for id in [PieceId(0), PieceId(1)] {
+            store.states[id.0 as usize].flags |= ENABLED;
+            store.dirty_pieces.insert(id);
+        }
+        store.apply_command(owner, &PieceCommand::Grab(PieceId(0)), Some(&def));
+        store.apply_command(
+            owner,
+            &PieceCommand::Move {
+                id: PieceId(0),
+                position: def.correct_position(PieceId(0)),
+            },
+            Some(&def),
+        );
+        assert_eq!(
+            store
+                .apply_command(owner, &PieceCommand::Release(PieceId(0)), Some(&def))
+                .placed,
+            2
+        );
+        assert!(store
+            .connectivity
+            .iter_component(PieceId(0))
+            .all(|id| store.states[id.0 as usize].flags & PLACED != 0));
+    }
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = Vec3::ZERO;
+    preview(&mut app, a);
+    assert_eq!(
+        masks(&app),
+        (0, 0),
+        "visible placed components have no direct hits"
+    );
+    assert!(final_rectangle(&mut app, a).is_empty());
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = Vec2::splat(10_000.0).extend(0.0);
+    restore_components(&mut app, &def, &[(0, 1), (2, 6)]);
     update_gpu(&mut app);
 
     // A growing closure updates only formerly absorbed components.

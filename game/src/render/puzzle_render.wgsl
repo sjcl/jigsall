@@ -22,6 +22,7 @@ struct VertexOutput {
     @location(2) @interpolate(flat) id:u32,@location(3) @interpolate(flat) flags:u32,
     @location(4) @interpolate(flat) top:vec2<u32>,@location(5) @interpolate(flat) right:vec2<u32>,
     @location(6) @interpolate(flat) bottom:vec2<u32>,@location(7) @interpolate(flat) left:vec2<u32>,
+    @location(8) @interpolate(flat) root:u32,
 };
 @vertex fn vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
     let corners=array<vec2<f32>,4>(vec2(-1.0,-1.0),vec2(1.0,-1.0),vec2(-1.0,1.0),vec2(1.0,1.0));
@@ -37,6 +38,9 @@ struct VertexOutput {
     let rank=select(state.z_order+2u,1u,(state.flags&1u)!=0u);
     out.position.z=f32(rank)/16777216.0*out.position.w;
     out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);out.id=id;out.flags=state.flags;
+    out.root=id;
+    // An explicit branch keeps ordinary frames from loading component roots.
+    if config.preview_active!=0u && (state.flags&9u)==0u {out.root=component_roots[id];}
     out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];return out;
 }
 fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
@@ -59,7 +63,7 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     var flags=in.flags&~6u;
     if (selected[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=2u;}
     if config.preview_active!=0u && (flags&9u)==0u {
-        let root=component_roots[in.id];
+        let root=in.root;
         if (preview[root/32u]&(1u<<(root%32u)))!=0u {flags|=4u;}
     }
     if (flags&6u)==0u {return color;}
