@@ -284,9 +284,34 @@ pub struct GrabAccepted {
     pub rejected: Vec<RejectedComponentRef>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Truncated SHA-256 of affected final components, not an authentication MAC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseResultFingerprint(pub u128);
+
+/// Reliable outcome identified solely by the earlier accepted Grab context.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReleaseCommitted {
+    pub player: PlayerId,
+    pub grab_sequence: u64,
+    pub final_delta: Vec2,
+    pub result: ReleaseResultFingerprint,
+}
+
+/// Host-forwarded transient presentation. Never consumes an authority cursor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RemoteDragUpdate {
+    pub session: crate::session::SessionId,
+    pub authority_epoch: crate::session::AuthorityEpoch,
+    pub player: PlayerId,
+    pub grab_sequence: u64,
+    pub tick: u64,
+    pub delta: Vec2,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolAuthorityEvent {
     GrabAccepted(GrabAccepted),
+    ReleaseCommitted(ReleaseCommitted),
 }
 
 pub type ProtocolAuthorityEventEnvelope =

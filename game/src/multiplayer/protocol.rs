@@ -1,12 +1,11 @@
 //! Opt-in CPU authority adapter. No ECS systems, transport, or renderer changes.
-use crate::resources::{
-    pieces::{AppliedCommand, ENABLED, HELD, PLACED},
-    PieceDataStore,
-};
+use crate::resources::{pieces::AppliedCommand, PieceDataStore};
 use puzzella_core::{
     protocol::{
-        ActiveDrag, ActiveDragTarget, GrabAccepted, ProtocolCommandEnvelope, ProtocolPieceCommand,
-        RejectedComponentRef, ResolvedPieceTarget, TargetError,
+        ActiveDrag, ActiveDragTarget, GrabAccepted, ProtocolAuthorityEvent,
+        ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand,
+        RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint, RemoteDragUpdate,
+        ResolvedPieceTarget, TargetError,
     },
     session::{
         AuthorityEpoch, AuthoritySession, ClientCommandSequence, CommandSequenceStatus,
@@ -39,7 +38,17 @@ pub enum ProtocolCommandResult {
     Released {
         applied: AppliedCommand,
         rejected: Vec<RejectedComponentRef>,
+        result: ReleaseResultFingerprint,
     },
+}
+
+/// Mutation is complete before returning publication objects. A transport owns
+/// delivery/retention; no callback or send can fail halfway through gameplay.
+#[derive(Debug)]
+pub struct HostCommandOutcome {
+    pub result: ProtocolCommandResult,
+    pub authority_event: Option<ProtocolAuthorityEventEnvelope>,
+    pub drag_update: Option<RemoteDragUpdate>,
 }
 
 /// Per-player accepted sets, scoped to both authority epoch and store generation.
@@ -51,6 +60,79 @@ pub struct ProtocolDragContexts {
 }
 
 impl ProtocolDragContexts {
+    /// Use this entrypoint consistently for a replicated authority session.
+    /// Reliable outcomes advance the cursor; transient presentation never does.
+    pub fn apply_replicated(
+        &mut self,
+        session: &mut AuthoritySession,
+        store: &mut PieceDataStore,
+        authenticated_player: PlayerId,
+        envelope: &ProtocolCommandEnvelope,
+        definition: Option<&PuzzleDefinition>,
+    ) -> Result<HostCommandOutcome, ProtocolCommandError> {
+        // Publication must be possible BEFORE mutation. Counters never wrap.
+        if !matches!(envelope.command, ProtocolPieceCommand::DragUpdate { .. })
+            && session.cursor().sequence.0 == u64::MAX
+        {
+            return Err(ProtocolCommandError::Sequence(
+                ProtocolError::CounterExhausted,
+            ));
+        }
+        let result = self.apply(session, store, authenticated_player, envelope, definition)?;
+        let event = match &result {
+            ProtocolCommandResult::Grabbed { ack, .. } => {
+                Some(ProtocolAuthorityEvent::GrabAccepted(ack.clone()))
+            }
+            ProtocolCommandResult::Released { result, .. } => {
+                let ProtocolPieceCommand::Release {
+                    grab_sequence,
+                    final_delta,
+                } = envelope.command
+                else {
+                    unreachable!()
+                };
+                Some(ProtocolAuthorityEvent::ReleaseCommitted(ReleaseCommitted {
+                    player: authenticated_player,
+                    grab_sequence,
+                    final_delta,
+                    result: *result,
+                }))
+            }
+            ProtocolCommandResult::DragUpdated { .. } => None,
+        };
+        let authority_event = event.map(|event| ProtocolAuthorityEventEnvelope {
+            session: session.session_id(),
+            host: session.host(),
+            cursor: session
+                .advance_authority()
+                .expect("preflighted active cursor"),
+            event,
+        });
+        let drag_update = if let ProtocolPieceCommand::DragUpdate { delta } = envelope.command {
+            let ClientCommandSequence::Move {
+                after_control_sequence,
+                tick,
+            } = envelope.sequence
+            else {
+                unreachable!()
+            };
+            Some(RemoteDragUpdate {
+                session: session.session_id(),
+                authority_epoch: session.cursor().epoch,
+                player: authenticated_player,
+                grab_sequence: after_control_sequence,
+                tick,
+                delta,
+            })
+        } else {
+            None
+        };
+        Ok(HostCommandOutcome {
+            result,
+            authority_event,
+            drag_update,
+        })
+    }
     fn scope(
         session: &AuthoritySession,
         store: &PieceDataStore,
@@ -185,53 +267,20 @@ impl ProtocolDragContexts {
                 if *grab_sequence != drag.grab_sequence {
                     return Err(ProtocolCommandError::WrongDragContext);
                 }
-                let definition =
-                    definition.filter(|d| d.validate().is_ok() && d.piece_count() == store.len());
-                let acceptable = |id: puzzella_core::PieceId| {
-                    store.states[id.0 as usize].flags & (PLACED | ENABLED | HELD)
-                        == (ENABLED | HELD)
-                        && store.held_by.get(&id) == Some(&player)
-                };
-                let (applied, rejected) = match &drag.target {
-                    ActiveDragTarget::Sparse(refs) => {
-                        let mut roots = Vec::with_capacity(refs.len());
-                        let mut rejected = Vec::new();
-                        for &reference in refs {
-                            match reference.resolve(&store.connectivity) {
-                                Ok(minimum)
-                                    if store
-                                        .connectivity
-                                        .iter_component(minimum)
-                                        .all(acceptable) =>
-                                {
-                                    roots.push(minimum)
-                                }
-                                Ok(_) => {}
-                                Err(reason) => {
-                                    rejected.push(RejectedComponentRef { reference, reason })
-                                }
-                            }
-                        }
-                        (
-                            store.release_roots(player, roots, *final_delta, definition),
-                            rejected,
-                        )
-                    }
-                    ActiveDragTarget::Dense(dense) => {
-                        // A topology mismatch rejects the whole dense context before
-                        // any mutation. Holds stay available for explicit cancellation.
-                        let canonical = dense
-                            .resolve(&store.connectivity)
-                            .map_err(ProtocolCommandError::Target)?;
-                        let accepted = store.canonical_members(&canonical, acceptable);
-                        (
-                            store.release_components(player, &accepted, *final_delta, definition),
-                            Vec::new(),
-                        )
-                    }
-                };
+                let (applied, rejected, result) = super::release::release_drag(
+                    store,
+                    player,
+                    &drag.target,
+                    *final_delta,
+                    definition,
+                )
+                .map_err(ProtocolCommandError::Target)?;
                 self.players.remove(&player);
-                Ok(ProtocolCommandResult::Released { applied, rejected })
+                Ok(ProtocolCommandResult::Released {
+                    applied,
+                    rejected,
+                    result,
+                })
             }
         }
     }
