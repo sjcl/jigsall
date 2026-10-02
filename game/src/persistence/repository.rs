@@ -6,6 +6,7 @@ pub struct SaveRepository<S: SaveStorage> {
 #[derive(Clone, Debug)]
 pub struct SaveSummary {
     pub metadata: SaveMetadata,
+    pub image_hash: ImageHash,
     pub piece_count: usize,
     pub placed_count: usize,
 }
@@ -177,6 +178,7 @@ impl<S: SaveStorage> SaveRepository<S> {
                     return Err(SaveError::MissingImage(save.image_hash));
                 }
                 Ok(SaveSummary {
+                    image_hash: save.image_hash,
                     piece_count: save.piece_count,
                     placed_count: save.placed_count,
                     metadata: save.metadata,

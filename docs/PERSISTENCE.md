@@ -49,6 +49,8 @@ piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は pl
 
 一覧と更新元 metadata の取得は `read_range(key, 0, 492)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大24,600 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
 
+Load Game の各カードには元画像のサムネイルを表示します。一覧の header から ImageHash を取得し、画像枠がスクロールの表示領域に入ったときだけ worker に読み込みを要求します。worker は該当 `.puzimg` を検証・decode し、縦横比を保って最大224×224 pixelsに縮小したRGBAだけをUIへ返します。読み込み中は画像枠にスピナーと `Loading image...` を表示します。要求は同時に1件だけで、画面外の未読画像をqueueへ積みません。読み込み開始後に画面外へ出た画像の処理は完了させます。ImageHash が同じ保存はtextureを共有し、最大64件のLRU cacheを保持します。Refresh・画面を閉じる・session変更でcacheを破棄し、古いreplyを採用しません。サムネイルの失敗は `Image unavailable` とhoverの詳細に表示し、保存一覧やResumeボタンの状態を変更しません。保存一覧とパズル本体のロードにもスピナーと専用の読み込み表示があります。
+
 完全 load はファイル全体の checksum、header、exact state length を検証してから state 領域を確保し、共通 checkpoint validation を行います。body のみの破損は一覧では検出せず、load の失敗をその entry に表示します。truncation・過大 length・trailing bytes・checksum 不一致・invalid state はエラーです。最大1000×1000 piecesです。
 
 未 release のため、header checksum と placed_count cache を持つ現在の layout を version 1 として確定します。以前の試作 layout と version 2 の読み込み互換・migration は提供しません。一覧にはすべての対応 save の進捗を表示します。

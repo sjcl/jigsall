@@ -17,6 +17,7 @@ pub struct GameUiPlugin;
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<persistence::SaveDialogs>()
+            .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()
             .add_systems(OnEnter(AppState::Menu), persistence::reset_dialogs)
             .add_systems(OnEnter(AppState::Menu), settings::reset_dialog)

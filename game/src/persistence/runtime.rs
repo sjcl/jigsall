@@ -36,10 +36,22 @@ struct LoadedPuzzle {
     image: Image,
     opaque: bool,
 }
+/// Small CPU pixels for a menu texture; full decoded images stay on the worker.
+pub struct ThumbnailImage {
+    pub size: [usize; 2],
+    pub rgba: Vec<u8>,
+}
+pub struct ThumbnailReply {
+    pub generation: u64,
+    pub hash: ImageHash,
+    pub result: Result<ThumbnailImage, SaveError>,
+}
+pub const THUMBNAIL_MAX_EDGE: u32 = 224;
 enum Request {
     Import(ImageHash, Arc<[u8]>),
     List,
     Load(SaveId),
+    Thumbnail(ImageHash),
     Save {
         update: Option<(SaveId, u64)>,
         title: SaveTitle,
@@ -52,6 +64,7 @@ enum Reply {
     Imported(ImageHash, Result<(), SaveError>),
     Listed(Result<Vec<SaveListEntry>, SaveError>),
     Loaded(SaveId, Result<Box<LoadedPuzzle>, SaveError>),
+    Thumbnail(ImageHash, Result<ThumbnailImage, SaveError>),
     Saved(Result<SaveMetadata, SaveError>),
     Deleted(Result<Vec<SaveListEntry>, SaveError>),
 }
@@ -59,6 +72,7 @@ enum Reply {
 pub struct PersistenceService {
     tx: crossbeam::channel::Sender<(u64, Request)>,
     rx: crossbeam::channel::Receiver<(u64, Reply)>,
+    thumbnails: crossbeam::channel::Receiver<ThumbnailReply>,
 }
 impl Default for PersistenceService {
     fn default() -> Self {
@@ -83,16 +97,27 @@ impl PersistenceService {
     ) -> Self {
         let (tx, requests) = crossbeam::channel::unbounded();
         let (results, rx) = crossbeam::channel::unbounded();
+        let (thumbnail_results, thumbnails) = crossbeam::channel::unbounded();
         std::thread::spawn(move || {
             let repository = storage().map(SaveRepository::new);
             while let Ok((generation, request)) = requests.recv() {
                 let reply = run_request(&repository, request);
-                if results.send((generation, reply)).is_err() {
+                let sent = match reply {
+                    Reply::Thumbnail(hash, result) => thumbnail_results
+                        .send(ThumbnailReply {
+                            generation,
+                            hash,
+                            result,
+                        })
+                        .is_ok(),
+                    reply => results.send((generation, reply)).is_ok(),
+                };
+                if !sent {
                     break;
                 }
             }
         });
-        Self { tx, rx }
+        Self { tx, rx, thumbnails }
     }
     fn submit(&self, state: &mut PersistenceState, request: Request) {
         if state.busy {
@@ -114,6 +139,16 @@ impl PersistenceService {
     }
     pub fn delete(&self, state: &mut PersistenceState, id: SaveId) {
         self.submit(state, Request::Delete(id));
+    }
+    /// The UI limits this to one in-flight request and selects only visible images.
+    /// Thumbnail replies never change the foreground operation's busy/error state.
+    pub fn request_thumbnail(&self, generation: u64, hash: ImageHash) -> Result<(), String> {
+        self.tx
+            .send((generation, Request::Thumbnail(hash)))
+            .map_err(|_| "Save worker stopped".into())
+    }
+    pub fn try_recv_thumbnail(&self) -> Option<ThumbnailReply> {
+        self.thumbnails.try_recv().ok()
     }
     pub fn save(
         &self,
@@ -185,6 +220,21 @@ fn run_request<S: SaveStorage>(
             Reply::Imported(hash, repo().and_then(|r| r.import_image(hash, &bytes)))
         }
         Request::List => Reply::Listed(repo().and_then(SaveRepository::list)),
+        Request::Thumbnail(hash) => Reply::Thumbnail(
+            hash,
+            repo().and_then(|r| {
+                let bytes = r.read_image(hash)?;
+                let decoded = image::load_from_memory(&bytes)
+                    .map_err(|error| SaveError::Decode(error.to_string()))?;
+                let rgba = decoded
+                    .thumbnail(THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE)
+                    .to_rgba8();
+                Ok(ThumbnailImage {
+                    size: [rgba.width() as usize, rgba.height() as usize],
+                    rgba: rgba.into_raw(),
+                })
+            }),
+        ),
         Request::Delete(id) => Reply::Deleted(repo().and_then(|r| {
             r.delete(id)?;
             r.list()
@@ -300,7 +350,7 @@ pub(crate) fn poll_results(
                     next.set(AppState::InGame);
                 })
             }
-            Reply::Imported(..) => unreachable!(),
+            Reply::Imported(..) | Reply::Thumbnail(..) => unreachable!(),
         };
         if let Err(error) = result {
             state.error = Some(error.to_string());
@@ -313,6 +363,102 @@ mod tests {
     use super::*;
     use executor::{StorageOperation, StorageValue};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn thumbnail_worker_reads_only_the_image_and_keeps_foreground_replies_separate() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            800,
+            400,
+            image::Rgba([73, 100, 181, 128]),
+        ))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+        let bytes = bytes.into_inner();
+        let hash = image_hash(&bytes);
+        let (service, inbox) = PersistenceService::with_storage_requests();
+        let mut state = PersistenceState {
+            generation: 7,
+            ..default()
+        };
+        service.request_thumbnail(state.generation, hash).unwrap();
+        assert!(!state.busy);
+        service.list(&mut state);
+        let receive = || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(request) = inbox.try_recv() {
+                    break request;
+                }
+                assert!(Instant::now() < deadline, "Missing storage request");
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        };
+        let request = receive();
+        assert!(
+            matches!(request.operation, StorageOperation::Read(StorageKey::Image(h)) if h == hash)
+        );
+        request
+            .reply
+            .complete(Ok(StorageValue::Bytes(PuzImage::encode(&bytes).unwrap())))
+            .unwrap();
+        let reply = service
+            .thumbnails
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(reply.generation, 7);
+        assert_eq!(reply.hash, hash);
+        let image = reply.result.unwrap();
+        assert_eq!(image.size, [224, 112]);
+        assert_eq!(image.rgba.len(), 224 * 112 * 4);
+        assert_eq!(&image.rgba[..4], &[73, 100, 181, 128]);
+        assert!(state.busy);
+        assert!(state.error.is_none());
+        assert!(service.rx.try_recv().is_err());
+        let request = receive();
+        assert!(matches!(
+            request.operation,
+            StorageOperation::List(StorageNamespace::Saves)
+        ));
+        request
+            .reply
+            .complete(Ok(StorageValue::Keys(Vec::new())))
+            .unwrap();
+        assert!(
+            matches!(service.rx.recv_timeout(Duration::from_secs(10)).unwrap().1, Reply::Listed(Ok(entries)) if entries.is_empty())
+        );
+    }
+
+    #[test]
+    fn thumbnail_errors_do_not_change_the_save_list_or_restore_a_puzzle() {
+        let (service, inbox) = PersistenceService::with_storage_requests();
+        let hash = ImageHash([9; 32]);
+        service.request_thumbnail(0, hash).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let request = loop {
+            if let Ok(request) = inbox.try_recv() {
+                break request;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        // A container with different original bytes must fail verification.
+        request
+            .reply
+            .complete(Ok(StorageValue::Bytes(
+                PuzImage::encode(b"bad image").unwrap(),
+            )))
+            .unwrap();
+        assert!(matches!(
+            service
+                .thumbnails
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .result,
+            Err(SaveError::CorruptImage(_))
+        ));
+        assert!(service.rx.try_recv().is_err());
+    }
 
     #[test]
     fn owner_executor_can_reply_asynchronously_and_report_disconnects() {
