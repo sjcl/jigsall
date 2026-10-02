@@ -16,6 +16,12 @@ client command (ProtocolCommandEnvelope)
 authority validation (current connectivity, ownership, placed, enabled)
         ↓
 authoritative gameplay (existing grab / relative Z / release / snapping)
+        ↓ mutation complete, semantic outcome + authority cursor
+semantic authority event (ProtocolAuthorityEventEnvelope)
+        ↓ authenticated host + session / epoch / cursor validation
+peer replica (PeerReplicationState::apply_event)
+        ↓ deterministic replay + Release result fingerprint verification
+same authoritative puzzle state
 ```
 
 `core/src/protocol.rs` owns wire types and pure target resolution.
@@ -191,9 +197,165 @@ different players using the same Grab control sequence.
 
 `ProtocolAuthorityEvent::GrabAccepted(ack)` and `ProtocolAuthorityEventEnvelope`
 define the semantic host-to-peer boundary using the existing session, host and
-authority cursor. A future backend authenticates the host and advances/wraps the
-cursor when publishing an authoritative outcome. Delivery, event retention, peer
-application and remote rendering are not implemented here.
+authority cursor. `ProtocolDragContexts::apply_replicated` applies the authenticated
+client command, then returns `HostCommandOutcome { result, authority_event,
+drag_update }`. Successful Grab (including empty acceptance) and Release produce
+reliable envelopes and advance the host cursor exactly once. Counter exhaustion
+is checked before mutation. Rejected commands produce no publication object and
+do not advance the authority cursor. Successful transient commands produce only
+`RemoteDragUpdate`. Delivery/retention belongs to a future transport; gameplay
+never invokes a send callback. Use this entrypoint consistently for a replicated
+session; the existing `apply` remains an unpublishing authority adapter.
+
+## Replication streams and cursor semantics
+
+| Stream | Payload | Ordering |
+| --- | --- | --- |
+| Reliable client command | Grab, final Release | Per-player contiguous control sequence |
+| Reliable authority event | GrabAccepted, ReleaseCommitted | Contiguous authority cursor |
+| Best-effort drag presentation | RemoteDragUpdate | Independent per-player/per-grab latest tick |
+
+`PeerReplicationState::apply_event` first validates active migration state,
+session, epoch, claimed host and cursor via `AuthoritySession::validate_event`.
+The backend-authenticated sender is also checked against the actual session host.
+Only then is gameplay applied. Only after successful gameplay **and** result
+verification does `record_applied_event` record the cursor. Failure never advances
+it. There is no buffering or resend implementation.
+
+At cursor 100, event 102 returns `Protocol(EventGap { expected: 101 })` without
+mutation. Duplicate and older cursors both return `Protocol(StaleEvent)` before
+gameplay, so no operation can apply twice. Epoch counters do not wrap; sequence
+zero is the new epoch baseline. Presentation messages never change that cursor.
+
+## Peer accepted Grab and presentation
+
+`PeerReplicationState` retains a map from player to `RemoteDrag`:
+`grab_sequence`, adaptive `ActiveDragTarget`, scalar absolute `delta`, and an
+optional last transient tick. `remote_drag`/`remote_drags` expose these to a future
+renderer. No base-position copies or per-piece transforms are retained.
+
+The peer resolves **only** the event's accepted membership, without needing the
+client request. It checks all accepted members for contradictions before any
+mutation. A stale reference/topology or incompatible ownership/HELD/PLACED/ENABLED
+state returns `Diverged`; it never silently accepts a subset or replaces an owner.
+It then applies that complete accepted set using the shared Grab mutation, with
+the same `(z_order, PieceId)` ordering and MAX_Z compaction as the host. Ownership,
+HELD and Z therefore match. Existing component-wide local selection exclusion is
+reused; local selection and local drag presentation are not wire fields.
+
+Empty accepted membership consumes its reliable event but creates no drag.
+Sparse contexts retain at most 32 references; Dense contexts retain a canonical
+mask and its target-specific topology fingerprint. A million singletons remain
+125,000 bytes of COW mask words, never a permanent million-reference vector.
+
+`RemoteDragUpdate` contains session, authority epoch, player, grab sequence, tick
+and finite absolute delta. The authenticated sender must be the host. Tick gaps
+are allowed; larger ticks replace the delta, equal ticks return `DuplicateUpdate`
+and older ticks return `StaleUpdate`. Wrong session/epoch/host, missing context,
+wrong Grab sequence and nonfinite delta are rejected without consuming the tick.
+Updates after Release or cancellation have no context and are rejected. Ticks can
+reach u64::MAX but never wrap. Validation and application only access the context
+and scalar delta: no piece enumeration, topology resolution, mask creation,
+authoritative position writes or dirty-state changes occur. Presentation is
+authoritative base position plus that delta.
+
+## ReleaseCommitted and deterministic replay
+
+```rust
+pub struct ReleaseCommitted {
+    pub player: PlayerId,
+    pub grab_sequence: u64,
+    pub final_delta: Vec2,
+    pub result: ReleaseResultFingerprint,
+}
+```
+
+The final event resends no target. The peer uses the matching saved accepted Grab
+target and the event's final delta, independent of received presentation updates.
+Both host and peer call `game/src/multiplayer/release.rs::release_drag`, which
+preserves the existing target/ownership checks and calls `PieceDataStore::release_roots`.
+All translations commit before connected snap; board priority, fixed translation,
+same-offset/rounded closure, strict thresholds and no chained translation use the
+existing resolver. There is no peer-specific snap implementation. A matching
+successful Release removes the context.
+
+Host and peer must supply the same validated immutable `PuzzleDefinition`, or
+both supply `None` for unsnapped coordinate-only application. The existing
+authority adapter's behavior for an invalid/mismatched definition remains `None`.
+
+## Release result fingerprint and divergence detection
+
+`ReleaseResultFingerprint(u128)` is the first 16 SHA-256 bytes interpreted as a
+little-endian u128. It reuses the existing SHA-256 dependency with domain separation.
+It is a divergence checksum, not a security MAC. Only final components containing
+actually released roots are visited, including neighbors absorbed during snap.
+Unaffected piece arrays are never scanned or hashed. Temporary sorted root/member
+lists exist only during Release; the replica retains no such lists.
+
+The v1 serializer-independent SHA-256 input is fixed in this exact order:
+
+| Field | Encoding / ordering |
+| --- | --- |
+| Domain | UTF-8 `puzzella/release-result/v1`, then one zero byte |
+| Final affected component count | u32 little endian |
+| Each affected component | Ascending stable minimum PieceId; deduplicated |
+| Component minimum, size | Two u32 little endian fields |
+| Representative logical offset X, Y | Two f32 `to_bits()` values as u32 little endian |
+| Representative placed | One byte: 0 or 1 |
+| Each component member | Ascending PieceId, independent of DSU/list history |
+| Member ID | u32 little endian |
+| Member position X, Y | Two f32 `to_bits()` values as u32 little endian |
+| Member Z | u32 little endian |
+| Member authoritative flags | u32 little endian, masked to PLACED(1), HELD(8), ENABLED(16), connected edges(32+64+128+256) |
+| Member owner present | One byte: 0 or 1 |
+| Member owner | u64 little endian; zero when absent (presence distinguishes PlayerId(0)) |
+| Released count, newly placed count, total placed_count | Three u32 little endian fields |
+| next_z_order | u32 little endian |
+
+Representative offset is `position - definition.correct_position(minimum)` when
+a valid definition is supplied, otherwise `position - Vec2::ZERO`. Float bytes
+preserve signed zero and the exact IEEE-754 bit representation; they are not
+rounded, normalized, formatted as text, or serialized through serde. Counts fit
+u32 under the existing MAX_PIECES bound. Member IDs grouped by component encode
+membership topology; member positions, Z, owner and edge-cache bits detect
+discrepancies a representative offset/size alone would miss. Local selection,
+preview and other local presentation fields are excluded.
+
+The peer compares the computed fingerprint with the event **after** replay.
+Mismatch returns `ReplicationError::Diverged`, leaves the cursor unchanged and
+latches `needs_resync`. Reliable semantic inconsistencies (including missing or
+wrong Release contexts) also latch resync. While latched, subsequent gameplay and
+presentation stop; retrying the failed event cannot apply its delta twice. Replay
+may already have mutated affected pieces when a checksum fails. It is not rolled
+back or staged using a whole-puzzle/snapshot clone; a trusted snapshot must replace
+the store before continuation. Protocol/authentication/gap/stale rejections do not
+latch divergence and leave gameplay untouched.
+
+## Snapshot restore, migration and future resync
+
+Contexts are scoped to session ID, authority epoch and store generation. A restored
+store immediately hides old context through these scope checks; the next explicit
+apply clears retained old contexts. Frozen migration hides presentation and rejects
+both streams. Completing the existing migration snapshot installation changes
+store generation, host and epoch; old host events and old epoch updates are rejected,
+and new epoch Grab/Release events restart replication.
+
+`PeerReplicationState::install_snapshot` validates a trusted same-epoch baseline
+at/after the current applied cursor before replacing store/session state and
+clearing resync/context. Failed snapshot validation leaves them intact. Existing
+direct snapshot installation also invalidates contexts through store generation.
+Snapshot schema **3** and its 16-byte piece representation remain unchanged.
+It intentionally omits ownership and transient drag contexts: a backend must
+coordinate host/peer hold cancellation at a resync baseline, or use the existing
+new-epoch migration flow, before continuing an in-flight drag. A pending Release
+without a post-baseline Grab context requests resync rather than guessing membership.
+
+`cancel_player` removes that player's context and uses existing component-wide
+hold cleanup without translation or snap. Disconnect/timeout decisions must be
+coordinated by the backend on the host and all replicas; no timeout scheduler or
+cancellation wire event is added here. Snapshot request messages, source
+authentication, retention/catch-up policy and coordination are future transport
+work.
 
 ## Best-effort DragUpdate and presentation
 
@@ -258,6 +420,23 @@ stale Dense atomic rejection and the million-singleton context's 125,000-byte ma
 allocation with shared ACK storage. Superseded naked Dense masks cannot deserialize
 into the new target type. Snapshot format is unaffected by this command change.
 
+## Host/peer simulation coverage
+
+Normal `cargo test` runs socket-free simulations with one host and two peers
+restored from the same initial schema-3 snapshot. They compare exact position
+bits, placed/held/enabled flags, Z, stable component membership/size, connected
+edge cache, owners, placed_count and next_z_order. Coverage includes simple
+Grab/Release, lost and reordered presentation, connected and board snap, board
+priority, rounded/same-offset closure, multiple released roots, no chained
+translation, partial/empty acceptance, Z ties/compaction, million-piece Dense
+contexts, Dense Release/unrelated merges/stale topology, event gaps/duplicates,
+authenticated sender checks, divergence and snapshot recovery, cancellation,
+snapshot context invalidation and new-host/new-epoch migration. A different
+host/restore DSU root history is also replayed through connected snapping.
+The result fingerprint has an independently encoded fixed-byte vector and tests
+that unaffected piece changes do not enter its digest. No benchmarks are added
+or run; existing ignored benchmarks stay ignored.
+
 ## Future multiplayer work
 
 The same command protocol can be carried by Steam Networking or direct IP. No
@@ -265,16 +444,16 @@ transport is selected or implemented. Future work includes:
 
 - Steam Networking / direct IP transport, authentication and packet framing.
 - Reliable resend / congestion policy and best-effort update delivery.
-- Publication of the defined GrabAccepted event and additional semantic authority
-  events such as Release committed, components merged and pieces placed, wrapped
-  in `AuthorityEventEnvelope` with an authority cursor. Ordinary operations should
-  not replicate all million states.
+- Delivery and retention of semantic authority events and transient presentation;
+  snapshot request/resync messages and coordinated cancellation. ReleaseCommitted
+  already replays merge/placed outcomes without transmitting full puzzle state.
 - Join-in-progress: latest snapshot, then authority events after its cursor to catch
   up to current state; event log retention and recovery policy are not implemented.
 - Snapshot compression / chunking, separate from schema 3 and command targets.
 - Image transfer using `SessionDefinition.image_hash`: look up local cache, fetch
   retained encoded original bytes on a miss, and verify SHA-256 before use.
 - Remote interpolation and client prediction.
+- Rollback netcode and event log storage.
 
 No image transfer, snapshot/event-log backend, network encryption, dedicated
 server, NAT traversal, matchmaking, or host election is added by this change.
