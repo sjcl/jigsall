@@ -1,4 +1,4 @@
-//! Session authentication is deliberately separate from backend addressing.
+//! Gameplay-ready peers. Authentication/bootstrap keeps its own connection state.
 use super::transport::{ConnectionId, TransportEvent};
 use puzzella_core::PlayerId;
 use std::collections::BTreeMap;

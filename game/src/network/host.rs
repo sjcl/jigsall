@@ -72,7 +72,7 @@ impl HostRouter<'_> {
         }
     }
 
-    /// Authority controls echo to every authenticated remote peer (including sender).
+    /// Authority controls echo to every Ready remote peer (including sender).
     /// Transient presentation goes to other peers only. No host self-application.
     /// Collect each send failure and still attempt the other peers. The caller must
     /// retain/retry a failed control publication or disconnect/resynchronize its peer;

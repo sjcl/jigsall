@@ -50,6 +50,9 @@ pub enum DisconnectReason {
     InvalidMessage,
     RateLimited,
     BackendFailure,
+    AuthenticationFailed,
+    AuthenticationTimeout,
+    ProtocolViolation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

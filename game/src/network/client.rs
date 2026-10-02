@@ -89,7 +89,9 @@ impl ClientRouter<'_> {
                 .map(ClientRouteOutcome::Drag)
                 .map_err(ClientRouteError::Replication),
             WireMessage::BulkChunk(bytes) => Ok(ClientRouteOutcome::BulkChunk(bytes)),
-            WireMessage::ClientCommand(_) => Err(ClientRouteError::WrongDirection),
+            WireMessage::ClientCommand(_) | WireMessage::SessionControl(_) => {
+                Err(ClientRouteError::WrongDirection)
+            }
         }
     }
 
