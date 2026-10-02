@@ -1,9 +1,9 @@
+use crate::theme;
 use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts};
+use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
 use puzzella_core::PuzzleDefinition;
-use puzzella_game::persistence::runtime::PersistenceService;
 use puzzella_game::{
-    persistence::{runtime::*, SaveTitle, MAX_SAVE_TITLE_CHARS},
+    persistence::{runtime::*, SaveId, SaveTitle, MAX_SAVE_TITLE_CHARS},
     resources::*,
 };
 
@@ -11,6 +11,8 @@ use puzzella_game::{
 pub struct SaveDialogs {
     pub load_open: bool,
     pub title: String,
+    pending_delete: Option<SaveId>,
+    focus_title: bool,
 }
 impl SaveDialogs {
     pub fn open_title(&mut self, state: &mut PersistenceState) {
@@ -19,6 +21,7 @@ impl SaveDialogs {
             .as_ref()
             .map(|m| m.title.as_str().to_owned())
             .unwrap_or_else(|| "My Puzzle".into());
+        self.focus_title = true;
         state.title_dialog_open = true;
         state.error = None;
         state.message = None;
@@ -36,154 +39,328 @@ pub fn draw_save_dialogs(
     service: Res<PersistenceService>,
     definition: Option<Res<PuzzleDefinition>>,
     original: Option<Res<OriginalPuzzleImage>>,
+    image: Option<Res<PuzzleImage>>,
+    store: Res<PieceDataStore>,
     app_state: Res<State<AppState>>,
 ) {
+    let texture = if state.title_dialog_open {
+        image
+            .as_ref()
+            .map(|image| contexts.add_image(EguiTextureHandle::Weak(image.handle.id())))
+    } else {
+        None
+    };
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
+    theme::prepare(ctx);
+    let screen = ctx.content_rect();
     if dialogs.load_open && *app_state.get() == AppState::Menu {
-        egui::Modal::new("load_game".into()).show(ctx, |ui| {
-            ui.set_width(520.0_f32.min((ctx.content_rect().width() - 48.0).max(160.0)));
-            ui.heading("Load Game");
-            let mut action = None;
-            egui::ScrollArea::vertical()
-                .max_height((ctx.content_rect().height() - 180.0).max(100.0))
-                .show(ui, |ui| {
-                    if state.entries.is_empty() && !state.busy {
-                        ui.label("No saved games yet.");
-                    }
-                    for entry in &state.entries {
-                        ui.group(|ui| {
-                            match &entry.summary {
-                                Ok(summary) => {
-                                    ui.label(
-                                        egui::RichText::new(summary.metadata.title.as_str())
-                                            .strong(),
-                                    );
-                                    let time = i64::try_from(summary.metadata.updated_at)
-                                        .ok()
-                                        .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-                                        .map(|t| {
-                                            t.with_timezone(&chrono::Local)
-                                                .format("%Y-%m-%d %H:%M:%S")
-                                                .to_string()
-                                        })
-                                        .unwrap_or_else(|| "Unknown time".into());
-                                    let progress = format!(
-                                        "{:.1}%",
-                                        summary.placed_count as f64 / summary.piece_count as f64
-                                            * 100.0
-                                    );
-                                    ui.label(format!(
-                                        "{time}  /  {progress}  /  {} pieces",
-                                        summary.piece_count
-                                    ));
-                                    if ui
-                                        .add_enabled(!state.busy, egui::Button::new("Load"))
-                                        .clicked()
-                                    {
-                                        action = Some((entry.id, false));
+        let response = egui::Modal::new("load_game".into())
+            .backdrop_color(egui::Color32::from_black_alpha(185))
+            .frame(theme::frame())
+            .show(ctx, |ui| {
+                ui.set_width((screen.width() - 96.0).clamp(160.0, 640.0));
+                ui.set_max_height((screen.height() - 96.0).max(120.0));
+                theme::heading(
+                    ui,
+                    "YOUR PUZZLE COLLECTION",
+                    "Load Game",
+                    "Pick up where you left off.",
+                );
+                ui.separator();
+                let mut action = None;
+                egui::ScrollArea::vertical()
+                    .max_height((screen.height() - 280.0).max(80.0))
+                    .show(ui, |ui| {
+                        if state.entries.is_empty() && !state.busy {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(28.0);
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::Vec2::splat(48.0),
+                                    egui::Sense::hover(),
+                                );
+                                theme::piece_outline(
+                                    ui.painter(),
+                                    rect,
+                                    egui::Stroke::new(1.5, theme::BORDER),
+                                );
+                                ui.add_space(10.0);
+                                ui.label(
+                                    egui::RichText::new("A fresh collection")
+                                        .size(18.0)
+                                        .strong(),
+                                );
+                                theme::hint(
+                                    ui,
+                                    "Save a puzzle during play and it will appear here.",
+                                );
+                                ui.add_space(28.0);
+                            });
+                        }
+                        for entry in &state.entries {
+                            theme::card().show(ui, |ui| {
+                                ui.set_width((ui.available_width()).max(0.0));
+                                match &entry.summary {
+                                    Ok(summary) => {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(
+                                                    summary.metadata.title.as_str(),
+                                                )
+                                                .size(17.0)
+                                                .strong(),
+                                            )
+                                            .truncate(),
+                                        )
+                                        .on_hover_text(summary.metadata.title.as_str());
+                                        let time = i64::try_from(summary.metadata.updated_at)
+                                            .ok()
+                                            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+                                            .map(|t| {
+                                                t.with_timezone(&chrono::Local)
+                                                    .format("%Y-%m-%d  %H:%M")
+                                                    .to_string()
+                                            })
+                                            .unwrap_or_else(|| "Unknown time".into());
+                                        theme::hint(
+                                            ui,
+                                            format!("{} pieces  /  {time}", summary.piece_count),
+                                        );
+                                        let progress = summary.placed_count as f32
+                                            / summary.piece_count.max(1) as f32;
+                                        ui.add(
+                                            egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                                                .fill(theme::ACCENT)
+                                                .corner_radius(4)
+                                                .desired_width(ui.available_width())
+                                                .text(format!("{:.1}% complete", progress * 100.0)),
+                                        );
+                                        ui.add_enabled_ui(!state.busy, |ui| {
+                                            if theme::button(
+                                                ui,
+                                                "Resume Puzzle",
+                                                180.0_f32.min(ui.available_width()),
+                                                true,
+                                            )
+                                            .clicked()
+                                            {
+                                                action = Some((entry.id, false));
+                                            }
+                                        });
+                                    }
+                                    Err(error) => {
+                                        ui.label(
+                                            egui::RichText::new("Unavailable save")
+                                                .strong()
+                                                .color(theme::DANGER),
+                                        );
+                                        theme::hint(ui, error.to_string());
                                     }
                                 }
-                                Err(error) => {
-                                    ui.colored_label(
-                                        egui::Color32::LIGHT_RED,
-                                        format!("Unavailable save: {error}"),
+                                if dialogs.pending_delete == Some(entry.id) {
+                                    ui.label(
+                                        egui::RichText::new("Permanently delete this save?")
+                                            .color(theme::DANGER),
                                     );
+                                    ui.horizontal_wrapped(|ui| {
+                                        if ui
+                                            .add_enabled(
+                                                !state.busy,
+                                                egui::Button::new(
+                                                    egui::RichText::new("Delete")
+                                                        .color(theme::DANGER),
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Some((entry.id, true));
+                                            dialogs.pending_delete = None;
+                                        }
+                                        if ui
+                                            .add_enabled(!state.busy, egui::Button::new("Cancel"))
+                                            .clicked()
+                                        {
+                                            dialogs.pending_delete = None;
+                                        }
+                                    });
+                                } else if ui
+                                    .add_enabled(
+                                        !state.busy,
+                                        egui::Button::new(
+                                            egui::RichText::new("Delete save")
+                                                .size(12.0)
+                                                .color(theme::MUTED),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    dialogs.pending_delete = Some(entry.id);
                                 }
-                            }
-                            if ui
-                                .add_enabled(!state.busy, egui::Button::new("Delete save"))
-                                .clicked()
-                            {
-                                action = Some((entry.id, true));
-                            }
-                        });
+                            });
+                            ui.add_space(2.0);
+                        }
+                    });
+                if let Some((id, delete)) = action {
+                    if delete {
+                        service.delete(&mut state, id);
+                    } else {
+                        service.load(&mut state, id);
                     }
+                }
+                status(ui, &state);
+                ui.separator();
+                ui.add_enabled_ui(!state.busy, |ui| {
+                    ui.horizontal(|ui| {
+                        let width = ((ui.available_width() - 10.0) * 0.5).min(200.0);
+                        if theme::button(ui, "Back to Title", width, false).clicked() {
+                            dialogs.load_open = false;
+                            dialogs.pending_delete = None;
+                        }
+                        if theme::button(ui, "Refresh", width, false).clicked() {
+                            service.list(&mut state);
+                        }
+                    });
                 });
-            if let Some((id, delete)) = action {
-                if delete {
-                    service.delete(&mut state, id);
-                } else {
-                    service.load(&mut state, id);
-                }
-            }
-            status(ui, &state);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Refresh"))
-                    .clicked()
-                {
-                    service.list(&mut state);
-                }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Back"))
-                    .clicked()
-                {
-                    dialogs.load_open = false;
-                }
             });
-        });
+        if !state.busy && response.should_close() {
+            dialogs.load_open = false;
+            dialogs.pending_delete = None;
+        }
     }
     if state.title_dialog_open
         && matches!(app_state.get(), AppState::InGame | AppState::GameComplete)
     {
-        egui::Modal::new("save_game".into()).show(ctx, |ui| {
-            ui.set_width(360.0_f32.min((ctx.content_rect().width() - 48.0).max(160.0)));
-            ui.heading("Save Game");
-            ui.add_enabled(
-                !state.busy,
-                egui::TextEdit::singleline(&mut dialogs.title).desired_width(f32::INFINITY),
-            );
-            ui.label(format!(
-                "{} / {}",
-                dialogs.title.trim().chars().count(),
-                MAX_SAVE_TITLE_CHARS
-            ));
-            let title = SaveTitle::new(&dialogs.title);
-            if let Err(error) = &title {
-                ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
-            }
-            status(ui, &state);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(
-                        !state.busy && title.is_ok() && original.is_some() && definition.is_some(),
-                        egui::Button::new("Save"),
+        let response = egui::Modal::new("save_game".into())
+            .backdrop_color(egui::Color32::from_black_alpha(185))
+            .frame(theme::frame())
+            .show(ctx, |ui| {
+                ui.set_width((screen.width() - 96.0).clamp(160.0, 460.0));
+                ui.set_max_height((screen.height() - 96.0).max(120.0));
+                egui::ScrollArea::vertical()
+                    .max_height(
+                        (screen.height()
+                            - 180.0
+                            - if state.busy || state.error.is_some() || state.message.is_some() {
+                                32.0
+                            } else {
+                                0.0
+                            })
+                        .max(80.0),
                     )
-                    .clicked()
-                {
-                    if let Ok(title) = title {
-                        service.request_save(&mut state, title);
-                    }
-                }
-                if ui
-                    .add_enabled(!state.busy, egui::Button::new("Back"))
-                    .clicked()
-                {
-                    state.title_dialog_open = false;
-                }
+                    .show(ui, |ui| {
+                        theme::heading(
+                            ui,
+                            "KEEP YOUR PROGRESS",
+                            "Save Game",
+                            "A little pause. Everything stays in place.",
+                        );
+                        theme::card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal_wrapped(|ui| {
+                                if let (Some(image), Some(texture)) = (image.as_ref(), texture) {
+                                    let scale = (72.0 / image.size.x).min(72.0 / image.size.y);
+                                    ui.add(
+                                        egui::Image::new((
+                                            texture,
+                                            egui::vec2(image.size.x * scale, image.size.y * scale),
+                                        ))
+                                        .corner_radius(6),
+                                    );
+                                }
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} pieces", store.len()))
+                                            .strong(),
+                                    );
+                                    let progress = store.placed_count as f64
+                                        / store.len().max(1) as f64
+                                        * 100.0;
+                                    theme::hint(ui, format!("{progress:.1}% complete"));
+                                    theme::hint(
+                                        ui,
+                                        if state.current_save.is_some() {
+                                            "Updates your current save"
+                                        } else {
+                                            "Creates a new save"
+                                        },
+                                    );
+                                });
+                            });
+                        });
+                        ui.add_space(8.0);
+                        ui.label("Puzzle title");
+                        let field = ui.add_enabled(
+                            !state.busy,
+                            egui::TextEdit::singleline(&mut dialogs.title)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("Give your puzzle a name"),
+                        );
+                        if dialogs.focus_title && !state.busy {
+                            field.request_focus();
+                            dialogs.focus_title = false;
+                        }
+                        theme::hint(
+                            ui,
+                            format!(
+                                "{} / {} characters",
+                                dialogs.title.trim().chars().count(),
+                                MAX_SAVE_TITLE_CHARS
+                            ),
+                        );
+                        let title = SaveTitle::new(&dialogs.title);
+                        if let Err(error) = &title {
+                            ui.colored_label(theme::DANGER, error.to_string());
+                        }
+                        theme::hint(ui, "Your original image is included in the save.");
+                        if original.is_none() {
+                            ui.colored_label(
+                                theme::DANGER,
+                                "Original image bytes are unavailable.",
+                            );
+                        }
+                        ui.add_space(8.0);
+                    });
+                let title = SaveTitle::new(&dialogs.title);
+                status(ui, &state);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let width = (ui.available_width() - 10.0) * 0.5;
+                    ui.add_enabled_ui(!state.busy, |ui| {
+                        if theme::button(ui, "Cancel", width, false).clicked() {
+                            state.title_dialog_open = false;
+                        }
+                    });
+                    ui.add_enabled_ui(
+                        !state.busy && title.is_ok() && original.is_some() && definition.is_some(),
+                        |ui| {
+                            if theme::button(ui, "Save Game", width, true).clicked() {
+                                if let Ok(title) = title {
+                                    service.request_save(&mut state, title);
+                                }
+                            }
+                        },
+                    );
+                });
             });
-            if original.is_none() {
-                ui.colored_label(
-                    egui::Color32::LIGHT_RED,
-                    "Original image bytes are unavailable.",
-                );
-            }
-        });
+        if !state.busy && response.should_close() {
+            state.title_dialog_open = false;
+        }
     }
 }
+
 pub fn status(ui: &mut egui::Ui, state: &PersistenceState) {
     if state.busy {
         ui.horizontal(|ui| {
             ui.spinner();
-            ui.label("Working…");
+            theme::hint(ui, "Working...");
         });
     }
     if let Some(error) = &state.error {
-        ui.colored_label(egui::Color32::LIGHT_RED, error);
+        ui.colored_label(theme::DANGER, error);
     }
     if let Some(message) = &state.message {
-        ui.colored_label(egui::Color32::LIGHT_GREEN, message);
+        ui.colored_label(theme::ACCENT, message);
     }
 }

@@ -1,8 +1,10 @@
+use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::resources::*;
 
-/// インゲームメニューUI（ESCキーで表示）
+/// Pause actions use the same visual language as the title and save dialog.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_in_game_menu_ui(
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
@@ -11,110 +13,76 @@ pub fn draw_in_game_menu_ui(
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
+    mut exit: MessageWriter<AppExit>,
 ) {
+    if persistence.title_dialog_open {
+        return;
+    }
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-
-    let viewing_completed_puzzle = completion_state.is_some();
-
-    // 半透明の背景を表示してゲーム画面を暗くする
-    egui::Area::new(egui::Id::new("in_game_menu_background"))
-        .order(egui::Order::Background)
-        .interactable(false)
-        .fixed_pos(egui::pos2(0.0, 0.0))
+    theme::prepare(ctx);
+    let completed = completion_state.is_some();
+    egui::Modal::new("pause_menu".into())
+        .backdrop_color(egui::Color32::from_black_alpha(165))
+        .frame(theme::frame())
         .show(ctx, |ui| {
-            let screen_rect = ctx.content_rect();
-            ui.allocate_ui_with_layout(
-                screen_rect.size(),
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                |ui| {
-                    // 背景全体を半透明の黒で覆う
-                    ui.painter().rect_filled(
-                        screen_rect,
-                        egui::CornerRadius::ZERO,
-                        egui::Color32::from_black_alpha(128), // 半透明の黒
+            ui.set_width((ctx.content_rect().width() - 96.0).clamp(160.0, 320.0));
+            ui.set_max_height((ctx.content_rect().height() - 96.0).max(120.0));
+            egui::ScrollArea::vertical()
+                .max_height((ctx.content_rect().height() - 112.0).max(100.0))
+                .show(ui, |ui| {
+                    theme::heading(
+                        ui,
+                        if completed {
+                            "ALL PIECES IN PLACE"
+                        } else {
+                            "TAKE YOUR TIME"
+                        },
+                        if completed { "Puzzle Menu" } else { "Paused" },
+                        "Your puzzle will be here when you're ready.",
                     );
-                },
-            );
-        });
-
-    // メニューを画面中央に表示
-    egui::Window::new("Game Menu")
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .collapsible(false)
-        .resizable(false)
-        .title_bar(false)
-        .show(ctx, |ui| {
-            ui.set_min_size(egui::vec2(300.0, 200.0));
-
-            ui.add_enabled_ui(!persistence.busy, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().item_spacing.y = 20.0;
-
-                    ui.heading(if viewing_completed_puzzle {
-                        "Puzzle Menu"
-                    } else {
-                        "Game Menu"
-                    });
-
-                    ui.separator();
-
-                    // Resume Game ボタン
-                    if ui
-                        .add_sized(
-                            [200.0, 40.0],
-                            egui::Button::new(if viewing_completed_puzzle {
+                    ui.add_enabled_ui(!persistence.busy, |ui| {
+                        let width = ui.available_width();
+                        if theme::button(
+                            ui,
+                            if completed {
                                 "Back to Puzzle"
                             } else {
                                 "Resume Game"
-                            }),
+                            },
+                            width,
+                            true,
                         )
                         .clicked()
-                    {
-                        if viewing_completed_puzzle {
-                            next_completion_state.set(GameCompleteSubState::Viewing);
-                        } else {
-                            next_sub_state.set(GameSubState::Playing);
+                        {
+                            if completed {
+                                next_completion_state.set(GameCompleteSubState::Viewing);
+                            } else {
+                                next_sub_state.set(GameSubState::Playing);
+                            }
                         }
-                    }
-
-                    if ui
-                        .add_sized([200.0, 40.0], egui::Button::new("Save Game"))
-                        .clicked()
-                    {
-                        dialogs.open_title(&mut persistence);
-                    }
-                    crate::persistence::status(ui, &persistence);
-                    // Return to Title ボタン
-                    if ui
-                        .add_sized([200.0, 40.0], egui::Button::new("Return to Title"))
-                        .clicked()
-                    {
-                        next_state.set(AppState::Menu);
-                        println!("🎮 Returning to title screen");
-                    }
-
-                    ui.separator();
-
-                    // Exit Game ボタン
-                    if ui
-                        .add_sized([200.0, 40.0], egui::Button::new("Exit Game"))
-                        .clicked()
-                    {
-                        println!("🎮 Exiting game");
-                        std::process::exit(0);
-                    }
-
-                    ui.separator();
-
-                    ui.label(if viewing_completed_puzzle {
-                        "Press ESC to return to your puzzle"
-                    } else {
-                        "Press ESC to resume"
+                        if theme::button(ui, "Save Game", width, false).clicked() {
+                            dialogs.open_title(&mut persistence);
+                        }
+                        if theme::button(ui, "Return to Title", width, false).clicked() {
+                            next_state.set(AppState::Menu);
+                        }
+                        if theme::button(ui, "Exit Game", width, false).clicked() {
+                            exit.write(AppExit::Success);
+                        }
                     });
+                    crate::persistence::status(ui, &persistence);
+                    ui.add_space(8.0);
+                    theme::hint(
+                        ui,
+                        if completed {
+                            "ESC  Back to your puzzle"
+                        } else {
+                            "ESC  Resume game"
+                        },
+                    );
                 });
-            });
         });
 }
 

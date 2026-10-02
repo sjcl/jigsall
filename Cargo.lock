@@ -4945,6 +4945,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "chrono",
+ "image",
  "puzzella-core",
  "puzzella-game",
  "puzzella-puzzle",

@@ -7,6 +7,7 @@ mod menu;
 mod overlays;
 mod performance;
 mod persistence;
+mod theme;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use puzzella_game::resources::{AppState, GameCompleteSubState, GameSubState};

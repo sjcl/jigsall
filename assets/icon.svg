@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="bigPieceClip">
+      <path d="
+        M 304 236
+        H 424
+        C 424 183 461 148 512 148
+        C 563 148 600 183 600 236
+        H 720
+        C 758 236 788 266 788 304
+        V 414
+        C 835 414 868 449 868 496
+        C 868 543 835 578 788 578
+        V 720
+        C 788 758 758 788 720 788
+        H 600
+        C 600 735 563 700 512 700
+        C 461 700 424 735 424 788
+        H 304
+        C 266 788 236 758 236 720
+        V 578
+        C 189 578 156 543 156 496
+        C 156 449 189 414 236 414
+        V 304
+        C 236 266 266 236 304 236
+        Z"/>
+    </clipPath>
+
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0B1020"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect x="44" y="44" width="936" height="936" rx="220" fill="url(#bg)"/>
+
+  <!-- Main giant puzzle piece -->
+  <g filter="url(#shadow)">
+    <g clip-path="url(#bigPieceClip)">
+      <!-- 3x3 color field -->
+      <rect x="156" y="148" width="242" height="214" fill="#4F46E5"/>
+      <rect x="398" y="148" width="228" height="214" fill="#7C3AED"/>
+      <rect x="626" y="148" width="242" height="214" fill="#DB2777"/>
+
+      <rect x="156" y="362" width="242" height="210" fill="#2563EB"/>
+      <rect x="398" y="362" width="228" height="210" fill="#06B6D4"/>
+      <rect x="626" y="362" width="242" height="210" fill="#F97316"/>
+
+      <rect x="156" y="572" width="242" height="216" fill="#14B8A6"/>
+      <rect x="398" y="572" width="228" height="216" fill="#22C55E"/>
+      <rect x="626" y="572" width="242" height="216" fill="#EAB308"/>
+
+      <!-- Missing-ish internal region -->
+      <path d="M626 362 H788 V414
+               C835 414 868 449 868 496
+               C868 543 835 578 788 578
+               V572 H626 Z"
+            fill="#0F172A" opacity="0.38"/>
+
+      <!-- Diagonal seam: upper-right bump restored, others remain inverted -->
+      <g fill="none" stroke="#F8FAFC" stroke-opacity="0.72" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+        <path d="
+          M650 180
+          V286
+          C698 286 726 315 726 356
+          C726 397 698 426 650 426
+          V468
+          H548
+          C548 516 519 544 478 544
+          C437 544 408 516 408 468
+          H356
+          V566
+          C308 566 280 595 280 636
+          C280 677 308 706 356 706
+          V788"/>
+      </g>
+    </g>
+
+    <!-- Outer contour -->
+    <path d="
+      M 304 236
+      H 424
+      C 424 183 461 148 512 148
+      C 563 148 600 183 600 236
+      H 720
+      C 758 236 788 266 788 304
+      V 414
+      C 835 414 868 449 868 496
+      C 868 543 835 578 788 578
+      V 720
+      C 788 758 758 788 720 788
+      H 600
+      C 600 735 563 700 512 700
+      C 461 700 424 735 424 788
+      H 304
+      C 266 788 236 758 236 720
+      V 578
+      C 189 578 156 543 156 496
+      C 156 449 189 414 236 414
+      V 304
+      C 236 266 266 236 304 236
+      Z"
+      fill="none" stroke="#F8FAFC" stroke-width="22" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Floating piece -->
+  <g transform="translate(735 150) rotate(10)" filter="url(#shadow)">
+    <path d="
+      M 0 38
+      H 46
+      C 46 15 62 0 84 0
+      C 106 0 122 15 122 38
+      H 160
+      V 84
+      C 183 84 198 100 198 122
+      C 198 144 183 160 160 160
+      V 198
+      H 114
+      C 114 175 98 160 76 160
+      C 54 160 38 175 38 198
+      H 0
+      V 150
+      C -23 150 -38 134 -38 112
+      C -38 90 -23 74 0 74
+      Z"
+      fill="#EC4899"
+      stroke="#F8FAFC"
+      stroke-width="14"
+      stroke-linejoin="round"/>
+  </g>
+</svg>

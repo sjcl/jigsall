@@ -15,7 +15,7 @@ cargo build --locked --release
 .\target\release\puzzella.exe
 ```
 
-メニューの「Game Setup」から画像とパズルサイズ・seedを設定してください。通信のHost / Joinは未実装です。
+タイトルの「New Game」から画像とパズルサイズ・seedを設定してください。通信のHost / Joinは未実装です。
 
 ## 開発チェック
 

@@ -13,3 +13,4 @@ bevy.workspace = true
 bevy_egui.workspace = true
 rfd.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+image.workspace = true

@@ -11,10 +11,12 @@ cargo run --locked
 cargo run --locked --release
 ```
 
-1. メニューの「Game Setup」を選択します。
+1. タイトルの「New Game」を選択します。
 2. 「Select Image」でPNG / JPEG / WebP / BMPを読み込みます。
-3. アスペクト比・目標ピース数・手動グリッドからサイズを設定し、seedとスナップ距離を調整します。
+3. アスペクト比・目標ピース数・手動グリッドからサイズを設定し、seedとスナップ距離を調整します。画像のプレビューと最終ピース数を確認できます。
 4. 「Start Game」で初期配置とdense stateを生成します。GPU bufferとpipelineの準備後、プレイに進みます。
+
+タイトルの「Settings」（解像度などの設定）と「Join Multiplayer」は未実装で、現在はno-opです。タイトル・新規ゲーム・ロード・セーブは共通の落ち着いた配色で表示し、小さいウィンドウではスクロールできます。ロゴは`assets/icon.svg`から変換したPNGを実行ファイルに同梱しています。
 
 同じ画像寸法・grid・seed・generator versionから、同じ整数形状パラメータ、安定PieceId、初期配置を再構成します。通常プレイはversion 5を要求します。v4の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせました。decodeと輪郭が変わるためv4を含む旧versionの定義は拒否します。v2は比較用featureとテストに残しています。異GPU間の浮動小数点・ラスタライズのbit一致は保証しません。
 

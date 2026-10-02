@@ -1,113 +1,84 @@
+use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::resources::*;
 
-/// メインメニューUI
 pub fn draw_menu_ui(
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
     service: Res<puzzella_game::persistence::runtime::PersistenceService>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-
-    // 背景のグラデーションエフェクト
-    egui::Area::new(egui::Id::new("title_background"))
-        .order(egui::Order::Background)
-        .interactable(false)
-        .fixed_pos(egui::pos2(0.0, 0.0))
+    theme::background(ctx);
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 64.0).clamp(160.0, 360.0);
+    let compact = screen.height() < 660.0;
+    let logo = theme::logo(ctx);
+    egui::Area::new("title_menu".into())
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -12.0))
         .show(ctx, |ui| {
-            let screen_rect = ctx.content_rect();
-            ui.allocate_ui_with_layout(
-                screen_rect.size(),
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                |ui| {
-                    // 背景全体をダークブルーのグラデーションで覆う
-                    ui.painter().rect_filled(
-                        screen_rect,
-                        egui::CornerRadius::ZERO,
-                        egui::Color32::from_rgb(20, 30, 60), // ダークブルー
-                    );
-                },
-            );
-        });
-
-    // メインメニューを画面中央に表示
-    egui::Window::new("Main Menu")
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, -50.0))
-        .collapsible(false)
-        .resizable(false)
-        .title_bar(false)
-        .show(ctx, |ui| {
-            ui.set_min_size(egui::vec2(400.0, 350.0));
-
-            ui.add_enabled_ui(!persistence.busy, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.spacing_mut().item_spacing.y = 25.0;
-                    ui.spacing_mut().button_padding = egui::vec2(20.0, 12.0);
-
-                    ui.add_space(20.0);
-
-                    // タイトル（大きく、目立つように）
-                    ui.label(
-                        egui::RichText::new("🧩 Puzzella")
-                            .size(48.0)
-                            .color(egui::Color32::WHITE)
-                            .strong(),
-                    );
-
-                    ui.label(
-                        egui::RichText::new("Jigsaw Puzzle")
-                            .size(18.0)
-                            .color(egui::Color32::LIGHT_GRAY),
-                    );
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(15.0);
-
-                    // Game Setup ボタン
-                    if ui
-                        .add_sized(
-                            [280.0, 50.0],
-                            egui::Button::new(egui::RichText::new("🎮 Game Setup").size(20.0)),
-                        )
-                        .clicked()
-                    {
-                        next_state.set(AppState::GameSetup);
-                    }
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(10.0);
-
-                    if ui
-                        .add_sized([280.0, 50.0], egui::Button::new("Load Game"))
-                        .clicked()
-                    {
-                        dialogs.load_open = true;
-                        service.list(&mut persistence);
-                    }
-                    // Exit ボタン
-                    if ui
-                        .add_sized(
-                            [280.0, 45.0],
-                            egui::Button::new(
-                                egui::RichText::new("❌ Exit")
-                                    .size(16.0)
-                                    .color(egui::Color32::LIGHT_RED),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        std::process::exit(0);
-                    }
-
-                    ui.add_space(20.0);
+            ui.set_width(width);
+            ui.set_max_height((screen.height() - 88.0).max(120.0));
+            egui::ScrollArea::vertical()
+                .max_height((screen.height() - 88.0).max(120.0))
+                .show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        let size = if screen.height() < 540.0 {
+                            44.0
+                        } else if compact {
+                            72.0
+                        } else {
+                            104.0
+                        };
+                        ui.add(egui::Image::new((logo.id(), egui::vec2(size, size))));
+                        ui.label(
+                            egui::RichText::new("Puzzella")
+                                .size(if compact { 34.0 } else { 54.0 })
+                                .strong(),
+                        );
+                        theme::hint(ui, "Your image. Your puzzle. Your pace.");
+                        ui.add_space(if compact { 12.0 } else { 24.0 });
+                        ui.add_enabled_ui(!persistence.busy && !dialogs.load_open, |ui| {
+                            ui.spacing_mut().item_spacing.y = 8.0;
+                            if theme::button(ui, "New Game", width, true).clicked() {
+                                next_state.set(AppState::GameSetup);
+                            }
+                            if theme::button(ui, "Load Game", width, false).clicked() {
+                                dialogs.load_open = true;
+                                service.list(&mut persistence);
+                            }
+                            // Reserved menu actions intentionally have no side effects yet.
+                            theme::button(ui, "Join Multiplayer", width, false);
+                            theme::button(ui, "Settings", width, false);
+                            ui.add_space(4.0);
+                            if theme::button(ui, "Exit", width, false).clicked() {
+                                exit.write(AppExit::Success);
+                            }
+                        });
+                    });
                 });
-            });
         });
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        "title_footer".into(),
+    ));
+    painter.text(
+        egui::pos2(screen.left() + 32.0, screen.bottom() - 22.0),
+        egui::Align2::LEFT_CENTER,
+        "JIGSAW PUZZLE",
+        egui::FontId::proportional(10.0),
+        theme::MUTED,
+    );
+    painter.text(
+        egui::pos2(screen.right() - 32.0, screen.bottom() - 22.0),
+        egui::Align2::RIGHT_CENTER,
+        concat!("v", env!("CARGO_PKG_VERSION")),
+        egui::FontId::proportional(10.0),
+        theme::MUTED,
+    );
 }
