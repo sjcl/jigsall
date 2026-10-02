@@ -34,6 +34,11 @@ callbacks. Successful establishment emits `Connected`; a problem before that
 emits `ConnectionFailed`, and an established remote close/problem emits
 `Disconnected`. Local close also queues a lifecycle event for the next poll.
 Drop closes every owned connection and listener, including pending connections.
+Incoming connections are closed explicitly before removing their bookkeeping;
+outgoing connections close through the owning client socket wrapper's Drop.
+Neither path issues a second explicit native close. The wrapper uses its generic
+native close code for outgoing sockets; local lifecycle events retain the requested
+`DisconnectReason`.
 
 `SessionConnections` observes lifecycle events and starts each connection with
 `player: None`. A trusted session action calls `assign_player`. It enforces one
@@ -63,10 +68,14 @@ Final correctness comes from ReleaseCommitted's final delta and fingerprint.
 GNS handles UDP reliability, fragmentation, reassembly and native service threads.
 The application does not implement UDP reliability or an extra background thread.
 `poll(&mut events)` runs callbacks, normalizes lifecycle transitions, then receives
-up to 32 messages and 128 callbacks per socket per call. It visits sockets and
-connections, never pieces. There are at most 64 connections and 8 listeners per
-backend. These bounds also bound a single frame's receive work. Poll appends events
-and returns any native receive error so the caller can handle it.
+up to 128 callbacks per socket and drains messages in reusable 32-slot chunks.
+Sockets take turns until their queues are empty or a shared 512-message budget
+is reached. The next poll resumes with the next socket. Unknown/invalid messages
+also consume this budget. A final partial chunk receives only the remaining budget,
+so unread native messages stay queued for the next poll instead of being released.
+It visits sockets and connections, never pieces. There are at most 64 connections
+and 8 listeners per backend. These bounds also bound a single frame's receive work.
+Poll appends events and returns any native receive error so the caller can handle it.
 
 ## Wire v1
 
@@ -92,6 +101,11 @@ The v1 Postcard field order and enum representation are part of the wire contrac
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
+Fixed v1 golden frames cover Client Grab, Client Drag, GrabAccepted (including a
+rejected reference), ReleaseCommitted and RemoteDragUpdate. Each checks encoding
+against literal bytes and decodes those same bytes; field/variant order changes
+cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
+alongside any wire version change.
 
 | Bound | Payload bytes (12-byte header is additional) |
 | --- | --- |
@@ -215,12 +229,16 @@ cargo check --locked --features gns
 cargo build --locked --features gns
 ```
 
-The GNS test uses only 127.0.0.1, an ephemeral port, 15-second deadlines with polling
-backoff, explicit closes and RAII cleanup on panic. It validates actual listener
-acceptance, A's reliable Grab, both replicas' ACK, a Transient drag delivered only
-to B, a small independent Bulk message, reliable Release with snap, equal final
-piece/connectivity/snapshot/cursor state, and disconnect on both ends. No external
-network is contacted by tests; initial dependency downloads are build setup only.
+The GNS tests use only 127.0.0.1, ephemeral ports, 15-second deadlines with polling
+backoff, explicit closes and RAII cleanup on panic. The routing test validates
+actual listener acceptance, A's reliable Grab, both replicas' ACK, a Transient drag
+delivered only to B, a small independent Bulk message, reliable Release with snap, equal final
+piece/connectivity/snapshot/cursor state, and disconnect on both ends. Receive
+regressions preload reliable UDP messages and wait for native ACKs without polling
+the receiver, then verify shared 512-message limits, rotation between listeners,
+partial-chunk retention, outgoing-socket draining and server-initiated close.
+No external network is contacted by tests; initial dependency downloads are build
+setup only.
 
 ## Future Steamworks backend
 

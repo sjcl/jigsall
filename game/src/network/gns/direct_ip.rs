@@ -7,18 +7,19 @@ use crate::network::{
 };
 use ::gns::{
     sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
-    GnsLane, GnsNetworkMessage, GnsSocket, IsClient, IsCreated, IsServer, ReceivedMessages,
-    SendFlags, ToSend,
+    GnsLane, GnsNetworkMessage, GnsSocket, IsClient, IsCreated, IsServer, MessageSlot,
+    ReceivedMessagesInto, SendFlags, ToSend,
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     net::{SocketAddr, UdpSocket},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 pub const MAX_CONNECTIONS: usize = 64;
 pub const MAX_LISTENERS: usize = 8;
-const RECEIVE_BATCH: usize = 32;
+const RECEIVE_CHUNK: usize = 32;
+const MAX_RECEIVE_PER_POLL: usize = 512;
 const CALLBACK_BATCH: usize = 128;
 // The pinned native header specifies lower numbers as higher priority.
 const LANES: [GnsLane; 3] = [GnsLane::new(0, 1), GnsLane::new(0, 4), GnsLane::new(1, 1)];
@@ -79,7 +80,7 @@ impl Socket {
         }
         .map_err(backend)
     }
-    fn close(
+    fn close_before_removal(
         &self,
         connection: GnsConnection,
         reason: DisconnectReason,
@@ -89,11 +90,15 @@ impl Socket {
             DisconnectReason::InvalidMessage => 1001,
             _ => 1002,
         };
+        // A listener outlives its individual incoming connections, so close
+        // those explicitly. Outgoing sockets own one connection: their wrapper
+        // Drop closes it when bookkeeping removes the socket. Do not close twice.
         match self {
-            Self::Server(s) => s.close_connection(connection, code, None, false),
-            Self::Client(s) => s.close_connection(connection, code, None, false),
+            Self::Server(s) => s
+                .close_connection(connection, code, None, false)
+                .map_err(backend),
+            Self::Client(_) => Ok(()),
         }
-        .map_err(backend)
     }
     fn send(&self, message: GnsNetworkMessage<ToSend>) -> Result<(), TransportError> {
         match self {
@@ -103,10 +108,13 @@ impl Socket {
         .map(|_| ())
         .map_err(backend)
     }
-    fn receive(&self) -> Result<ReceivedMessages<RECEIVE_BATCH>, TransportError> {
+    fn receive<'a>(
+        &self,
+        slots: &'a mut [MessageSlot],
+    ) -> Result<ReceivedMessagesInto<'a>, TransportError> {
         match self {
-            Self::Server(s) => s.receive_messages(),
-            Self::Client(s) => s.receive_messages(),
+            Self::Server(s) => s.receive_messages_into(slots),
+            Self::Client(s) => s.receive_messages_into(slots),
         }
         .map_err(backend)
     }
@@ -126,6 +134,7 @@ pub struct GnsDirectIp {
     connections: BTreeMap<ConnectionId, Connection>,
     native_ids: HashMap<GnsConnection, ConnectionId>,
     pending: Vec<TransportEvent>,
+    next_receive_endpoint: Option<Endpoint>,
 }
 
 impl GnsDirectIp {
@@ -136,14 +145,14 @@ impl GnsDirectIp {
             connections: BTreeMap::new(),
             native_ids: HashMap::new(),
             pending: Vec::new(),
+            next_receive_endpoint: None,
         })
     }
-    fn forget(&mut self, id: ConnectionId, reason: DisconnectReason) {
+    /// Remove mappings; dropping an outgoing socket performs its owned close.
+    /// Incoming connection bookkeeping never calls the native close function.
+    fn forget(&mut self, id: ConnectionId) {
         if let Some(connection) = self.connections.remove(&id) {
             self.native_ids.remove(&connection.native);
-            if let Some(socket) = self.sockets.get(&connection.endpoint) {
-                let _ = socket.close(connection.native, reason);
-            }
             if matches!(connection.endpoint, Endpoint::Outgoing(_)) {
                 self.sockets.remove(&connection.endpoint);
             }
@@ -167,7 +176,10 @@ impl GnsDirectIp {
                     reason,
                 }
             });
-            self.forget(id, reason);
+            if let Some(socket) = self.sockets.get(&connection.endpoint) {
+                let _ = socket.close_before_removal(connection.native, reason);
+            }
+            self.forget(id);
         }
     }
     fn state_change(
@@ -247,12 +259,31 @@ impl Transport for GnsDirectIp {
         for (endpoint, event) in callbacks {
             self.state_change(endpoint, event, events)?;
         }
-        let endpoints: Vec<_> = self.sockets.keys().copied().collect();
-        for endpoint in endpoints {
+        let mut endpoints: VecDeque<_> = self.sockets.keys().copied().collect();
+        if let Some(next) = self.next_receive_endpoint {
+            let start = endpoints
+                .iter()
+                .position(|endpoint| *endpoint >= next)
+                .unwrap_or(0);
+            endpoints.rotate_left(start);
+        }
+        let mut slots = [const { MessageSlot::uninit() }; RECEIVE_CHUNK];
+        let mut remaining = MAX_RECEIVE_PER_POLL;
+        while remaining != 0 {
+            let Some(endpoint) = endpoints.pop_front() else {
+                break;
+            };
             let Some(socket) = self.sockets.get(&endpoint) else {
                 continue;
             };
-            let messages = socket.receive()?;
+            // Never receive more than the remaining budget. Unconsumed wrapper
+            // messages are released on Drop, which would discard reliable data.
+            let messages = socket.receive(&mut slots[..RECEIVE_CHUNK.min(remaining)])?;
+            let received = messages.len();
+            remaining -= received; // Unknown/invalid messages consume budget too.
+            if received != 0 {
+                endpoints.push_back(endpoint);
+            }
             for message in messages {
                 let Some(&id) = self.native_ids.get(&message.connection()) else {
                     continue;
@@ -275,6 +306,9 @@ impl Transport for GnsDirectIp {
                 });
             }
         }
+        // Continue with the next socket if budget ran out, rather than letting a
+        // busy listener always take precedence over another listener/client.
+        self.next_receive_endpoint = endpoints.front().copied();
         Ok(())
     }
     fn send(
@@ -312,9 +346,9 @@ impl Transport for GnsDirectIp {
         self.sockets
             .get(&connection.endpoint)
             .ok_or(TransportError::UnknownConnection)?
-            .close(connection.native, reason)?;
+            .close_before_removal(connection.native, reason)?;
         let connected = connection.connected;
-        self.forget(id, reason);
+        self.forget(id);
         self.pending.push(if connected {
             TransportEvent::Disconnected {
                 connection: id,
@@ -432,7 +466,7 @@ impl Drop for GnsDirectIp {
     fn drop(&mut self) {
         for connection in self.connections.values() {
             if let Some(socket) = self.sockets.get(&connection.endpoint) {
-                let _ = socket.close(connection.native, DisconnectReason::Requested);
+                let _ = socket.close_before_removal(connection.native, DisconnectReason::Requested);
             }
         }
         self.connections.clear();
@@ -443,6 +477,106 @@ impl Drop for GnsDirectIp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        net::Ipv4Addr,
+        time::{Duration, Instant},
+    };
+
+    fn poll(transport: &mut GnsDirectIp) -> Vec<TransportEvent> {
+        let mut events = Vec::new();
+        transport.poll(&mut events).unwrap();
+        events
+    }
+
+    fn connect_pair(
+        host: &mut GnsDirectIp,
+        client: &mut GnsDirectIp,
+    ) -> (ListenerId, ConnectionId, ConnectionId) {
+        let listener = host
+            .listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .unwrap();
+        let outgoing = client
+            .connect(host.listener_address(listener).unwrap())
+            .unwrap();
+        let mut incoming = None;
+        let mut client_connected = false;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while incoming.is_none() || !client_connected {
+            assert!(Instant::now() < deadline, "timeout connecting UDP loopback");
+            for event in poll(host) {
+                match event {
+                    TransportEvent::Connected { connection } => incoming = Some(connection),
+                    _ => panic!("unexpected host event: {event:?}"),
+                }
+            }
+            for event in poll(client) {
+                assert_eq!(
+                    event,
+                    TransportEvent::Connected {
+                        connection: outgoing
+                    }
+                );
+                client_connected = true;
+            }
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+        (listener, incoming.unwrap(), outgoing)
+    }
+
+    fn send_burst(sender: &mut GnsDirectIp, id: ConnectionId, count: u32) {
+        for sequence in 0..count {
+            sender
+                .send(id, MessageClass::Control, &sequence.to_le_bytes())
+                .unwrap();
+        }
+        let connection = &sender.connections[&id];
+        let socket = &sender.sockets[&connection.endpoint];
+        match socket {
+            Socket::Server(s) => s.flush_messages_on_connection(connection.native),
+            Socket::Client(s) => s.flush_messages_on_connection(connection.native),
+        }
+        .unwrap();
+        // Wait for native reliable ACKs without polling/dequeuing the receiver.
+        // Native service threads advance delivery. A fixed sleep would make the
+        // exact per-poll assertions depend on machine timing instead of backlog.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let (_, lanes) = match socket {
+                Socket::Server(s) => s.get_connection_real_time_status(connection.native, 3),
+                Socket::Client(s) => s.get_connection_real_time_status(connection.native, 3),
+            }
+            .unwrap();
+            if lanes.iter().all(|lane| {
+                lane.pending_bytes_reliable() == 0 && lane.bytes_sent_unacked_reliable() == 0
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timeout waiting for native reliable ACKs"
+            );
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+    }
+
+    fn receive_sequences(transport: &mut GnsDirectIp) -> Vec<(ConnectionId, u32)> {
+        poll(transport)
+            .into_iter()
+            .map(|event| {
+                let TransportEvent::Message {
+                    connection,
+                    class,
+                    payload,
+                } = event
+                else {
+                    panic!("unexpected event while draining: {event:?}");
+                };
+                assert_eq!(class, MessageClass::Control);
+                (connection, u32::from_le_bytes(payload.try_into().unwrap()))
+            })
+            .collect()
+    }
+
     #[test]
     fn lane_and_flag_policy() {
         assert_eq!(lane(MessageClass::Transient), 0);
@@ -453,5 +587,97 @@ mod tests {
         assert!(flags(MessageClass::Control).contains(SendFlags::RELIABLE));
         assert!(flags(MessageClass::Bulk).contains(SendFlags::RELIABLE));
         assert!(LANES[2].priority > LANES[1].priority);
+    }
+
+    #[test]
+    fn gns_localhost_receive_budget_is_shared_and_preserves_partial_chunk() {
+        let mut host = GnsDirectIp::new().unwrap();
+        let mut clients: [_; 3] = std::array::from_fn(|_| GnsDirectIp::new().unwrap());
+        let pairs = clients
+            .each_mut()
+            .map(|client| connect_pair(&mut host, client));
+        for (index, client) in clients.iter_mut().enumerate() {
+            send_burst(client, pairs[index].2, [300, 400, 400][index]);
+        }
+        let first = receive_sequences(&mut host);
+        // All listeners take turns within one shared budget.
+        assert_eq!(first.len(), 512);
+        let counts: [usize; 3] = std::array::from_fn(|index| {
+            first.iter().filter(|(id, _)| *id == pairs[index].1).count()
+        });
+        assert_eq!(counts, [192, 160, 160]);
+        let second = receive_sequences(&mut host);
+        // Resume at listener B, not A. A's last short chunk (12) eventually
+        // leaves only 20 slots in the budget; the rest must remain queued.
+        assert_eq!(second.len(), 512);
+        assert_eq!(second[0].0, pairs[1].1);
+        let third = receive_sequences(&mut host);
+        assert_eq!(third.len(), 76);
+        assert!(receive_sequences(&mut host).is_empty());
+        for (index, (_, incoming, _)) in pairs.into_iter().enumerate() {
+            let sequences: Vec<_> = first
+                .iter()
+                .chain(&second)
+                .chain(&third)
+                .filter_map(|&(id, sequence)| (id == incoming).then_some(sequence))
+                .collect();
+            assert_eq!(sequences, (0..[300, 400, 400][index]).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn gns_localhost_outgoing_socket_drains_and_server_close_removes_once() {
+        let mut host = GnsDirectIp::new().unwrap();
+        let mut client = GnsDirectIp::new().unwrap();
+        let (listener, incoming, outgoing) = connect_pair(&mut host, &mut client);
+        send_burst(&mut host, incoming, 513);
+        let first = receive_sequences(&mut client);
+        assert_eq!(
+            first,
+            (0..512)
+                .map(|sequence| (outgoing, sequence))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(receive_sequences(&mut client), vec![(outgoing, 512)]);
+        assert!(receive_sequences(&mut client).is_empty());
+
+        host.close(incoming, DisconnectReason::Requested).unwrap();
+        assert_eq!(
+            host.close(incoming, DisconnectReason::Requested),
+            Err(TransportError::UnknownConnection)
+        );
+        assert_eq!(
+            poll(&mut host),
+            vec![TransportEvent::Disconnected {
+                connection: incoming,
+                reason: DisconnectReason::Requested,
+            }]
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let events = poll(&mut client);
+            if !events.is_empty() {
+                assert_eq!(
+                    events,
+                    vec![TransportEvent::Disconnected {
+                        connection: outgoing,
+                        reason: DisconnectReason::RemoteClosed,
+                    }]
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timeout waiting for server close"
+            );
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+        assert_eq!(
+            client.close(outgoing, DisconnectReason::Requested),
+            Err(TransportError::UnknownConnection)
+        );
+        assert!(poll(&mut host).is_empty());
+        assert!(poll(&mut client).is_empty());
+        host.close_listener(listener).unwrap();
     }
 }

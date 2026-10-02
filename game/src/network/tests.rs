@@ -623,5 +623,7 @@ fn failed_publication_preserves_outcome_and_attempts_other_peers() {
     assert_eq!(router.session.cursor(), cursor);
 }
 
+mod golden;
+
 #[cfg(feature = "gns")]
 mod localhost;
