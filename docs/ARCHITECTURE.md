@@ -92,7 +92,9 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 ## GPU presentation
 
-接続componentの黄色selection outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。idle / camera / selection / pointer dragに追加のCPU走査やstate uploadはなく、16-byte stateと既存bufferを維持します。snapshot schema 3のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverageは全辺、黄色outlineは未接続辺を使います。青previewとpoint / rectangle pickingは従来の全辺SDFを使います。全4辺が接続した内部pieceの黄色outlineは描画しません。
+接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 3のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
+
+rectangleはdirect hit maskへrasterし、preview中だけGPU computeでcomponent rootのmaskへcollapseします。非selectable memberを持つcomponentをGPUで除外してからmainへ渡します。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を確定します。GPU root bufferは4 bytes / piece、CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootをrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、通常fragmentはpreview_active == 0ならrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
 Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 

@@ -304,7 +304,14 @@ impl PieceDataStore {
                 }
                 scratch.rounded_offsets.remove(&moving);
                 scratch.rounded_offsets.remove(&target);
-                moving = self.connectivity.union(moving, target);
+                let dirty = &mut self.component_root_dirty;
+                moving = self.connectivity.union_with_absorbed(
+                    moving,
+                    target,
+                    |_, absorbed, connectivity| {
+                        dirty.extend(connectivity.iter_component(absorbed));
+                    },
+                );
                 self.cache_connected_edge(member, neighbor, direction);
             }
         }

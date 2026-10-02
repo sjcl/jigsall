@@ -230,6 +230,8 @@ pub struct PieceDataStore {
     pub held_by: PieceOwners,
     pub selected_pieces: PieceBitSet,
     pub dirty_pieces: PieceBitSet,
+    /// Only absorbed members; roots are derived at upload time, with no CPU mirror.
+    pub component_root_dirty: PieceBitSet,
     pub placed_count: usize,
     pub next_z_order: u32,
     pub epoch: u64,
@@ -256,6 +258,7 @@ impl PieceDataStore {
         self.next_z_order = self.states.len() as u32;
         self.selected_pieces = PieceBitSet::new(self.len());
         self.dirty_pieces = PieceBitSet::new(self.len());
+        self.component_root_dirty = PieceBitSet::new(self.len());
     }
     /// Rare snapshot restore. Reuses the local upload/readback lifecycle counter.
     pub(crate) fn replace_snapshot_states(
@@ -275,6 +278,7 @@ impl PieceDataStore {
         self.next_z_order = next_z_order;
         self.selected_pieces = PieceBitSet::new(self.len());
         self.dirty_pieces = PieceBitSet::new(self.len());
+        self.component_root_dirty = PieceBitSet::new(self.len());
     }
     pub fn len(&self) -> usize {
         self.states.len()
@@ -822,8 +826,16 @@ pub struct UploadRange {
     pub start: u32,
     pub states: Vec<GpuPieceState>,
 }
+#[derive(Clone, Default)]
+pub struct ComponentRootRange {
+    pub start: u32,
+    pub roots: Vec<u32>,
+}
 #[derive(Resource, Default, Clone)]
 pub struct PieceUpload {
+    pub root_revision: u64,
+    pub initial_roots: Option<Arc<[u32]>>,
+    pub root_ranges: Arc<[ComponentRootRange]>,
     pub selected: Arc<[u32]>,
     pub drag: DragTransform,
     pub epoch: u64,
@@ -841,6 +853,7 @@ pub fn prepare_piece_upload(
     upload.drag = store.drag.clone();
     upload.selected = store.selected_pieces.words().clone();
     store.sync_highlights();
+    prepare_component_root_upload(&mut store, &mut upload);
     if store.epoch != upload.epoch {
         upload.epoch = store.epoch;
         upload.revision += 1;
@@ -897,6 +910,54 @@ pub fn prepare_piece_upload(
         upload.ranges = ranges.into();
         store.dirty_pieces.clear();
     }
+}
+
+fn prepare_component_root_upload(store: &mut PieceDataStore, upload: &mut PieceUpload) {
+    if store.epoch != upload.epoch {
+        upload.root_revision += 1;
+        upload.initial_roots = Some(
+            (0..store.len() as u32)
+                .map(|id| store.connectivity.find_root(PieceId(id)).0)
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        upload.root_ranges = Arc::default();
+        store.component_root_dirty.clear();
+        return;
+    }
+    if upload.initial_roots.is_none() && store.component_root_dirty.is_empty() {
+        return; // O(1) idle; no bitmap scan, root lookup or allocation.
+    }
+    upload.initial_roots = None;
+    upload.root_revision += 1;
+    let dirty = &store.component_root_dirty;
+    let root = |id: PieceId| store.connectivity.find_root(id).0;
+    let mut ranges: Vec<ComponentRootRange> = Vec::new();
+    for id in dirty.iter() {
+        if let Some(range) = ranges
+            .last_mut()
+            .filter(|r| r.start + r.roots.len() as u32 == id.0)
+        {
+            range.roots.push(root(id));
+        } else {
+            if ranges.len() == 128 {
+                let start = ranges[0].start;
+                let end = dirty.iter().last().unwrap().0;
+                ranges.clear();
+                ranges.push(ComponentRootRange {
+                    start,
+                    roots: (start..=end).map(|id| root(PieceId(id))).collect(),
+                });
+                break;
+            }
+            ranges.push(ComponentRootRange {
+                start: id.0,
+                roots: vec![root(id)],
+            });
+        }
+    }
+    upload.root_ranges = ranges.into();
+    store.component_root_dirty.clear();
 }
 #[cfg(test)]
 #[path = "pieces_tests.rs"]
@@ -962,6 +1023,14 @@ mod tests {
             allocation
         );
         app.update();
+        let roots = app
+            .world()
+            .resource::<PieceUpload>()
+            .initial_roots
+            .as_ref()
+            .unwrap();
+        assert_eq!(roots.len() * std::mem::size_of::<u32>(), 4_000_000);
+        assert_eq!((roots[0], roots[999_999]), (0, 999_999));
         assert_eq!(
             app.world()
                 .resource::<PieceUpload>()
@@ -984,6 +1053,12 @@ mod tests {
         let extracted = app.world().resource::<PieceUpload>().clone();
         app.update();
         assert!(app.world().resource::<PieceUpload>().initial.is_none());
+        assert!(app
+            .world()
+            .resource::<PieceUpload>()
+            .initial_roots
+            .is_none());
+        let root_revision = app.world().resource::<PieceUpload>().root_revision;
         drop(extracted);
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
         let id = PieceId(777777);
@@ -1004,6 +1079,11 @@ mod tests {
         assert_eq!(upload.ranges.len(), 1);
         assert_eq!(upload.ranges[0].start, id.0);
         assert_eq!(upload.ranges[0].states.len(), 1);
+        assert_eq!(
+            upload.root_revision, root_revision,
+            "singleton move never uploads roots"
+        );
+        assert!(upload.root_ranges.is_empty());
     }
 
     #[test]

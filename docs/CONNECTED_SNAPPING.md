@@ -54,7 +54,7 @@ f32の加減算では任意offsetを全memberでbit単位に保存できませ�
 
 Releaseはrequested maskから最小member順のcomponent rootsを取り出し、rootごとに全memberのownershipとplacedを検証します。部分maskでもcomponent全体を処理し、accepted maskの再構築は不要です。scalar Releaseはrootを直接渡すためN-bit requested maskも作りません。部分maskのcanonical expansion、全componentのownership accept/reject、mixed ownerの全体reject、scalar Grab / Move / Releaseのatomicity、remote holdのtarget拒否、disconnectの全component hold解放を維持します。複数の独立componentは1 GrabGroup / ReleaseGroupで操作でき、各componentは独立してsnapします。targetは静止し、同じgesture内の他componentが再translationされることはありません。
 
-point / Ctrl / final rectangleはcomponent全体へ展開し、union時は必要な未選択componentへだけselectionを伝播します。remote hold除外、rollbackとdelayed readbackのauthority再検証を維持します。rectangle previewは従来のGPU hit maskで、GPUにconnectivityを追加していません。pointerはfrozen drag maskを共有しdeltaだけを更新します。dense dirty uploadとrelative Zの既存境界も維持します。
+point / Ctrl / final rectangleはcomponent全体へ展開し、union時は必要な未選択componentへだけselectionを伝播します。remote hold除外、rollbackとdelayed readbackのauthority再検証を維持します。rectangle previewはGPU direct hit maskをcomponent rootのmaskへcollapseし、hitしたcomponent全体を表示します。final readbackはdirect hitのままCPU authorityで展開します。root bufferはunion-by-sizeでabsorbed memberだけdirtyにし、upload時に最終rootを取得します。pointerはfrozen drag maskを共有しdeltaだけを更新します。dense dirty uploadとrelative Zの既存境界も維持します。
 
 snapshot schema 3、`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`、16 bytes / pieceは変更しません。root IDを保存せず、右・下edgeから復元します。invalid border edge、inconsistent component、placed exact position、old schema reject、transactional install、migration round tripを維持します。integer / fractional offsetでDSU rootが変わる復元と、新resolverの単一snap・closure・board優先の復元前後一致をテストします。
 
@@ -62,7 +62,7 @@ snapshot schema 3、`SNAPSHOT_CONNECTED_RIGHT` / `SNAPSHOT_CONNECTED_DOWN`、16 
 
 選択outlineの接続辺cacheは既存16-byte `GpuPieceState.flags` のbit 5 / 6 / 7 / 8へtop / right / bottom / leftを保存します。authorityは引き続き`PieceConnectivity`です。固定offsetのclosureが既に列挙する正しいgrid neighborについて、union成立時と同じrootの辺を訪問した時に両側のbitを設定します。後者は2×2などの閉路の共有辺も記録します。bitが変わったpieceだけ既存dirty maskへ追加し、成長componentの追加走査・恒久allocation・GPU buffer・root ID uploadはありません。解決済みtargetのmember listも再走査しません。
 
-main fragmentは4辺のdistanceを一度計算し、全辺のmaxを従来どおりcoverage / discardへ使います。黄色selectionのboundaryだけ接続済み辺を候補から除外します。全4辺が接続したpieceにはoutlineがありません。rectangleの青previewはCPU component展開前のGPU hit maskなので従来のpiece outlineを維持します。point / rectangle pickingも従来の全辺SDFを使います。形状定数・fingerprint・generator versionは変更しません。
+main fragmentは4辺のdistanceを一度計算し、全辺のmaxを従来どおりcoverage / discardへ使います。黄色selectionと青いcomponent previewは同じboundary関数で接続済み辺を候補から除外します。全4辺が接続したpieceにはoutlineがありません。point / rectangle pickingは従来の全辺SDFを使います。形状定数・fingerprint・generator versionは変更しません。
 
 cacheは結合処理とsnapshot installだけで更新し、selection変更・idle・camera・pointer dragに再計算も追加state uploadもありません。新しい2piece接続は両側の16-byte state、計32 bytesをdirty uploadします。既存のposition / hold変更は同じdirty bitへ合流します。大量closureの瞬間には多数の新しい接続辺がdirtyになりますが、uploadのrange結合と128 spans超での既存fallbackを維持します。snapshot schema 3は変更せず、captureはrender flagsを保存せずDSUからright/downを導出します。installは既存state生成のmap内で復元DSUの隣接関係から全4方向を再構成し、保存edgeに明示されない共有閉路辺も復元します。追加DSU lookupはこの明示的なO(N)復元時だけです。
 

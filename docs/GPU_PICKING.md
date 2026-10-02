@@ -16,7 +16,17 @@ pointはcrop projectionで対象画素を1×1のR32Uint / Depth32Float targetへ
 
 rectangleはscissor内の同じgeometryからatomicOrでbitsetを設定します。depth testをしないので奥も返ります。readbackは4 * ceil(N / 32) bytes。1万は1,252 bytes、100万は125,000 bytesです。確保はpower-of-twoに丸めます。
 
-矩形previewは専用GPU bitsetへ直接出力し、main fragmentがそのbitsetから青いoutlineを描きます。preview要求はstaging buffer・copy・map・CPUのID集合・flags uploadを使いません。release時の最終矩形だけをreadbackし、CPUのPieceBitSetへwordのまま復号します。確定選択は別のGPU bitsetへuploadし、黄色のoutlineもそれを直接参照します。SELECTED flagのper-piece更新は不要です。preview描画passはmain passより前に実行し、取消時はuniformで非表示、空矩形はbitsetをclearします。
+矩形rasterはPieceId単位のdirect hit maskへ出力します。preview中だけ、そのwordのset bitをGPU computeでcomponent rootのbitへcollapseし、main fragmentが各pieceのrootからcomponent preview maskを参照します。fragmentでcomponent rootへのatomicを集中させません。computeも同じmask wordへ向かうroot bitsをまとめてatomic ORします。CPU readback・CPU component展開・expanded mask uploadはpreviewに追加しません。
+
+root mappingは4 bytes / pieceの専用GPU bufferです。CPU側の恒久root mirrorはなく、absorbed memberのdirty bitsetだけを持ちます。union-by-sizeのwinner / absorbedをlist splice前のcallbackで取得し、absorbed memberだけdirtyにします。upload時に最終DSU rootを求め、連続rangeへまとめます。同じRelease内の複数unionを重複なく反映し、128 spansを超える場合は既存state uploadと同じenclosing rangeへまとめます。epoch初回だけ現在のDSUから全rootを構築し、新規singletonとsnapshot restoreの両方に対応します。
+
+GPU previewは既存selectable maskの非selectable bitsから拒否component maskも生成し、2つ目のcompute passでpreviewから除きます。これによりPLACED / HELD / ENABLEDがmember間で混在しても、CPU canonical_membersと同じcomponent全体のrejectになります。通常commandはownershipとHELDを一緒に更新し、Grab / Release / placementはcomponent単位です。GPUは既存pickingと同じflags mirrorを参照し、CPU authorityを置き換えません。非同期authority変更との一時的なraceは最終CPU再検証で扱います。
+
+previewとselectedは共通のselection_boundary_distanceで内部接続辺を除き、外周だけを青 / 黄で表示します。黄色が優先です。coverage / point / rectangle pickingのSDFは全辺のままです。各rectangle requestでdirect / preview / rejection maskをclearし、empty / clippedでも古いpreviewを残しません。取消はuniformで非表示にします。
+
+release時のreadbackはcomponent maskではなくdirect hit maskの4 * ceil(N/32) bytesです。CPUのPieceBitSetへwordのまま復号し、commit_selection / selectable_members / canonical_membersによる最終展開・authority検証を維持します。確定selected bitsetだけを従来どおりuploadし、SELECTED flagのper-piece更新は不要です。
+
+追加常駐GPUメモリはroot bufferの4N bytesとdirect / rejection mask各4 * ceil(N/32) bytes（1Mで合計4,250,000 bytes）です。既存preview bufferをcomponent maskとして再利用します。CPUの追加常駐metadataはdirty root bitset（1Mで125,000 bytes）で、初回root uploadだけ一時的な4N-byte Arcを持ちます。previewの追加GPU処理はO(words + hits + nonselectable members)、filterはO(words)です。idle / pointer dragはroot scan・root upload・preview computeを行わず、通常fragmentもpreview_active == 0ならrootを読みません。
 
 ## Multi-drag
 
@@ -50,6 +60,8 @@ cargo test -p puzzella-game --release --locked gpu_raster_selection -- --ignored
 cargo test -p puzzella-game --release --locked gpu_transparency_and_visibility -- --ignored --nocapture
 cargo test -p puzzella-game --release --locked gpu_radix_sort_visible_counts_and_ties -- --ignored --nocapture
 cargo test -p puzzella-game --release --locked gpu_drag_transform_and_preview_without_readback -- --ignored --nocapture
+cargo test -p puzzella-game --locked gpu_component_rectangle_preview_matches_final_selection_without_readback -- --ignored --nocapture --test-threads=1
+cargo test -p puzzella-game --locked gpu_component_preview_crosses_mask_words_and_preserves_direct_high_bits -- --ignored --nocapture --test-threads=1
 cargo test -p puzzella-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture
 cargo test -p puzzella-game --release --locked procedural_gpu_benchmark -- --ignored --nocapture
 ```

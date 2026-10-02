@@ -1,4 +1,5 @@
 use super::*;
+mod component_preview_tests;
 mod outline_tests;
 mod selection_bench;
 use crate::{

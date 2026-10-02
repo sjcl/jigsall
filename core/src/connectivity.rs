@@ -99,6 +99,17 @@ impl PieceConnectivity {
 
     /// O(1) list splice; no member copies. Equal-sized trees choose the smaller root.
     pub fn union(&mut self, a: PieceId, b: PieceId) -> PieceId {
+        self.union_with_absorbed(a, b, |_, _, _| {})
+    }
+
+    /// Observe winner/absorbed roots before splicing their lists. Derived caches
+    /// can visit only the absorbed members; same-component unions never call back.
+    pub fn union_with_absorbed(
+        &mut self,
+        a: PieceId,
+        b: PieceId,
+        before_union: impl FnOnce(PieceId, PieceId, &Self),
+    ) -> PieceId {
         let mut a = self.compress_root(a);
         let mut b = self.compress_root(b);
         if a == b {
@@ -110,6 +121,7 @@ impl PieceConnectivity {
         if sa < sb || (sa == sb && a > b) {
             std::mem::swap(&mut a, &mut b);
         }
+        before_union(a, b, self);
         self.parent_or_size[a.0 as usize] = Self::root_word(sa + sb, minimum);
         self.parent_or_size[b.0 as usize] = a.0 as i32;
         self.next_member.swap(a.0 as usize, b.0 as usize);
@@ -149,6 +161,32 @@ impl PieceConnectivity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn union_observer_sees_only_absorbed_members_before_the_splice() {
+        let mut c = PieceConnectivity::new(8);
+        c.union(PieceId(3), PieceId(4));
+        c.union(PieceId(3), PieceId(5));
+        let mut observed = Vec::new();
+        let root = c.union_with_absorbed(PieceId(0), PieceId(3), |winner, absorbed, before| {
+            assert_eq!((winner, absorbed), (PieceId(3), PieceId(0)));
+            observed.extend(before.iter_component(absorbed));
+            assert!(!before.same_component(winner, absorbed));
+        });
+        assert_eq!(root, PieceId(3));
+        assert_eq!(observed, [PieceId(0)]);
+        assert_eq!(c.component_size(root), 4);
+        assert_eq!(c.minimum_member(root), PieceId(0));
+        c.union_with_absorbed(PieceId(4), PieceId(0), |_, _, _| panic!("no-op union"));
+        // Tie resolution uses the smaller root, regardless of argument order.
+        c.union_with_absorbed(PieceId(7), PieceId(6), |winner, absorbed, before| {
+            assert_eq!((winner, absorbed), (PieceId(6), PieceId(7)));
+            assert_eq!(
+                before.iter_component(absorbed).collect::<Vec<_>>(),
+                [PieceId(7)]
+            );
+        });
+    }
 
     #[test]
     fn lists_survive_balanced_unions_and_nonroot_splices() {

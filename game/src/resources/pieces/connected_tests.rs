@@ -62,6 +62,110 @@ fn assert_offset(store: &PieceDataStore, d: &PuzzleDefinition, id: u32, expected
     }
 }
 
+#[test]
+fn component_root_dirty_tracks_only_absorbed_members_and_coalesces_final_roots() {
+    let (d, mut s) = fixture(UVec2::new(4, 1), [Vec2::splat(100.0); 4]);
+    // Three-member target wins over the released singleton, even with a larger ID.
+    s.connectivity.union(PieceId(1), PieceId(2));
+    s.connectivity.union(PieceId(1), PieceId(3));
+    s.snap_unheld_component(PieceId(0), &d);
+    assert_eq!(
+        s.component_root_dirty.iter().collect::<Vec<_>>(),
+        [PieceId(0)]
+    );
+    assert_eq!(s.connectivity.find_root(PieceId(0)), PieceId(1));
+
+    let (d, s) = fixture(UVec2::splat(3), [Vec2::splat(100.0); 9]);
+    let mut app = App::new();
+    app.insert_resource(s)
+        .insert_resource(d.clone())
+        .init_resource::<PieceUpload>()
+        .add_systems(Update, prepare_piece_upload);
+    app.update();
+    assert_eq!(
+        &**app
+            .world()
+            .resource::<PieceUpload>()
+            .initial_roots
+            .as_ref()
+            .unwrap(),
+        &(0..9).collect::<Vec<_>>()
+    );
+    app.update();
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .snap_unheld_component(PieceId(0), &d);
+    app.update();
+    let upload = app.world().resource::<PieceUpload>();
+    assert_eq!(upload.root_ranges.len(), 1);
+    assert_eq!(upload.root_ranges[0].start, 1);
+    assert_eq!(upload.root_ranges[0].roots, vec![0; 8]);
+    assert!(app
+        .world()
+        .resource::<PieceDataStore>()
+        .component_root_dirty
+        .is_empty());
+    let revision = upload.root_revision;
+    for step in 0..16 {
+        app.world_mut().resource_mut::<PieceDataStore>().drag.delta = Vec2::splat(step as f32);
+        app.update();
+        assert_eq!(
+            app.world().resource::<PieceUpload>().root_revision,
+            revision
+        );
+    }
+}
+
+#[test]
+fn fragmented_component_root_uploads_are_bounded_and_snapshot_epoch_rebuilds_roots() {
+    let (_, mut store) = fixture(UVec2::new(300, 1), [Vec2::splat(100.0); 300]);
+    let mut upload = PieceUpload::default();
+    prepare_component_root_upload(&mut store, &mut upload);
+    assert_eq!(upload.initial_roots.as_ref().unwrap().len(), 300);
+    upload.epoch = store.epoch;
+    prepare_component_root_upload(&mut store, &mut upload);
+    store
+        .component_root_dirty
+        .extend((1..300).step_by(2).map(PieceId));
+    prepare_component_root_upload(&mut store, &mut upload);
+    assert_eq!(upload.root_ranges.len(), 1);
+    assert_eq!(upload.root_ranges[0].start, 1);
+    assert_eq!(upload.root_ranges[0].roots, (1..300).collect::<Vec<_>>());
+    let mut connectivity = PieceConnectivity::new(300);
+    connectivity.union(PieceId(3), PieceId(7));
+    store.replace_snapshot_states(store.states.to_vec(), store.next_z_order, connectivity);
+    prepare_component_root_upload(&mut store, &mut upload);
+    let roots = upload.initial_roots.as_ref().unwrap();
+    assert_eq!((roots[3], roots[7], roots[8]), (3, 3, 8));
+    assert!(upload.root_ranges.is_empty());
+}
+
+#[test]
+fn same_release_root_changes_upload_the_final_winner_once_per_dirty_member() {
+    let (d, mut store) = fixture(UVec2::new(6, 1), [Vec2::splat(100.0); 6]);
+    store.connectivity.union(PieceId(2), PieceId(3));
+    store.connectivity.union(PieceId(2), PieceId(4));
+    let mut upload = PieceUpload::default();
+    prepare_component_root_upload(&mut store, &mut upload);
+    upload.epoch = store.epoch;
+    prepare_component_root_upload(&mut store, &mut upload);
+    store.snap_unheld_component(PieceId(0), &d);
+    assert_eq!(
+        store.component_root_dirty.iter().collect::<Vec<_>>(),
+        [PieceId(0), PieceId(1), PieceId(5)]
+    );
+    prepare_component_root_upload(&mut store, &mut upload);
+    assert_eq!(upload.root_ranges.len(), 2);
+    assert_eq!(
+        (upload.root_ranges[0].start, &upload.root_ranges[0].roots),
+        (0, &vec![2, 2])
+    );
+    assert_eq!(
+        (upload.root_ranges[1].start, &upload.root_ranges[1].roots),
+        (5, &vec![2])
+    );
+}
+
 fn assert_render_edges(store: &PieceDataStore, d: &PuzzleDefinition) {
     for (index, state) in store.states.iter().enumerate() {
         let id = PieceId(index as u32);

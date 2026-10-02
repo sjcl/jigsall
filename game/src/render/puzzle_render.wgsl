@@ -12,6 +12,7 @@ struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 @group(0) @binding(3) var<storage,read> drag_members:array<u32>;
 @group(0) @binding(4) var<storage,read> preview:array<u32>;
 @group(0) @binding(5) var<storage,read> selected:array<u32>;
+@group(0) @binding(6) var<storage,read> component_roots:array<u32>;
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -57,15 +58,18 @@ fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     let aa=fwidth(d);
     var flags=in.flags&~6u;
     if (selected[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=2u;}
-    if config.preview_active!=0u && (flags&9u)==0u && (preview[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=4u;}
+    if config.preview_active!=0u && (flags&9u)==0u {
+        let root=component_roots[in.id];
+        if (preview[root/32u]&(1u<<(root%32u)))!=0u {flags|=4u;}
+    }
     if (flags&6u)==0u {return color;}
     let width=min(16.0,min(config.size.x,config.size.y)*0.16)*0.5;
     var line=vec3(0.3,0.6,1.0);
     var boundary=d;
     if (flags&2u)!=0u {
         line=vec3(1.0,0.8,0.0);
-        if (flags&480u)!=0u {boundary=selection_boundary_distance(edges,flags);}
     }
+    if (flags&480u)!=0u {boundary=selection_boundary_distance(edges,flags);}
     let coverage=1.0-smoothstep(width-aa,width+aa,abs(boundary));
     return vec4(mix(color.rgb,line,coverage),color.a);
 }
