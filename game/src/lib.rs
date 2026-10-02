@@ -12,5 +12,6 @@ mod piece_geometry;
 pub mod render;
 pub mod resources;
 mod selection;
+pub mod settings;
 mod systems;
 pub use game::GamePlugin;

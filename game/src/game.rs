@@ -13,6 +13,7 @@ use crate::persistence::runtime::{
 pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(crate::settings::DisplaySettingsPlugin);
         app.add_plugins(crate::selection::PuzzleSelectionPlugin)
             .add_message::<ClientCommand>()
             .add_message::<PieceMoveCompleted>()

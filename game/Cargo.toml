@@ -12,6 +12,7 @@ puzzella-puzzle.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
 serde.workspace = true
+serde_json = "1"
 image.workspace = true
 rand.workspace = true
 sha2 = "0.10"
@@ -30,6 +31,5 @@ cpu-geometry-reference = ["puzzella-puzzle/cpu-geometry-reference"]
 cpu-picking-debug = ["puzzella-puzzle/cpu-picking-debug", "dep:rstar"]
 
 [dev-dependencies]
-serde_json = "1"
 rstar.workspace = true
 puzzella-puzzle = { workspace = true, features = ["cpu-picking-debug"] }

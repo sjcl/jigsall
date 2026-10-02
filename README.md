@@ -16,7 +16,7 @@ cargo run --locked --release
 3. アスペクト比・目標ピース数・手動グリッドからサイズを設定し、seedとスナップ距離を調整します。画像のプレビューと最終ピース数を確認できます。
 4. 「Start Game」で初期配置とdense stateを生成します。GPU bufferとpipelineの準備後、プレイに進みます。
 
-タイトルの「Settings」（解像度などの設定）と「Join Multiplayer」は未実装で、現在はno-opです。タイトル・新規ゲーム・ロード・セーブは共通の落ち着いた配色で表示し、小さいウィンドウではスクロールできます。ロゴは`assets/icon.svg`から変換したPNGを実行ファイルに同梱しています。
+タイトルの「Settings」から解像度、Fullscreen / Borderless / Windowed、最大FPS（10〜1000、無制限あり）を変更できます。「Apply」で反映し、解像度・画面モードを変更した場合は15秒以内に「Keep Changes」で確定します。「Revert」または時間切れで元に戻ります。確定した設定は次回起動時も復元します。ボーダーレスはデスクトップの解像度を使用します。実装・保存先・検証方法は[DISPLAY_SETTINGS.md](docs/DISPLAY_SETTINGS.md)を参照してください。「Join Multiplayer」は未実装です。タイトル・新規ゲーム・ロード・セーブ・設定は共通の落ち着いた配色で表示し、小さいウィンドウではスクロールできます。ロゴは`assets/icon.svg`から変換したPNGを実行ファイルに同梱しています。
 
 同じ画像寸法・grid・seed・generator versionから、同じ整数形状パラメータ、安定PieceId、初期配置を再構成します。通常プレイはversion 5を要求します。v4の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせました。decodeと輪郭が変わるためv4を含む旧versionの定義は拒否します。v2は比較用featureとテストに残しています。異GPU間の浮動小数点・ラスタライズのbit一致は保証しません。
 

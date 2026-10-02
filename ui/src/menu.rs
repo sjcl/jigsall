@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::resources::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_menu_ui(
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
@@ -10,6 +11,8 @@ pub fn draw_menu_ui(
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
     service: Res<puzzella_game::persistence::runtime::PersistenceService>,
     mut exit: MessageWriter<AppExit>,
+    mut settings_dialog: ResMut<crate::settings::SettingsDialog>,
+    display_settings: Res<puzzella_game::settings::DisplaySettingsState>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -42,23 +45,28 @@ pub fn draw_menu_ui(
                                 .strong(),
                         );
                         ui.add_space(if compact { 12.0 } else { 24.0 });
-                        ui.add_enabled_ui(!persistence.busy && !dialogs.load_open, |ui| {
-                            ui.spacing_mut().item_spacing.y = 8.0;
-                            if theme::button(ui, "New Game", width, true).clicked() {
-                                next_state.set(AppState::GameSetup);
-                            }
-                            if theme::button(ui, "Load Game", width, false).clicked() {
-                                dialogs.load_open = true;
-                                service.list(&mut persistence);
-                            }
-                            // Reserved menu actions intentionally have no side effects yet.
-                            theme::button(ui, "Join Multiplayer", width, false);
-                            theme::button(ui, "Settings", width, false);
-                            ui.add_space(4.0);
-                            if theme::danger_button(ui, "Exit", width).clicked() {
-                                exit.write(AppExit::Success);
-                            }
-                        });
+                        ui.add_enabled_ui(
+                            !persistence.busy && !dialogs.load_open && !settings_dialog.open,
+                            |ui| {
+                                ui.spacing_mut().item_spacing.y = 8.0;
+                                if theme::button(ui, "New Game", width, true).clicked() {
+                                    next_state.set(AppState::GameSetup);
+                                }
+                                if theme::button(ui, "Load Game", width, false).clicked() {
+                                    dialogs.load_open = true;
+                                    service.list(&mut persistence);
+                                }
+                                // Multiplayer is reserved until network play is implemented.
+                                theme::button(ui, "Join Multiplayer", width, false);
+                                if theme::button(ui, "Settings", width, false).clicked() {
+                                    settings_dialog.open(&display_settings);
+                                }
+                                ui.add_space(4.0);
+                                if theme::danger_button(ui, "Exit", width).clicked() {
+                                    exit.write(AppExit::Success);
+                                }
+                            },
+                        );
                     });
                 });
         });

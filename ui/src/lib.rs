@@ -7,6 +7,7 @@ mod menu;
 mod overlays;
 mod performance;
 mod persistence;
+mod settings;
 mod theme;
 use bevy::prelude::*;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
@@ -16,7 +17,9 @@ pub struct GameUiPlugin;
 impl Plugin for GameUiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<persistence::SaveDialogs>()
+            .init_resource::<settings::SettingsDialog>()
             .add_systems(OnEnter(AppState::Menu), persistence::reset_dialogs)
+            .add_systems(OnEnter(AppState::Menu), settings::reset_dialog)
             .add_plugins(EguiPlugin::default())
             .add_systems(
                 EguiPrimaryContextPass,
@@ -26,6 +29,9 @@ impl Plugin for GameUiPlugin {
                         .after(overlays::draw_in_game_menu_ui)
                         .after(completion::draw_completion_ui),
                     menu::draw_menu_ui.run_if(in_state(AppState::Menu)),
+                    settings::draw_settings_ui
+                        .after(menu::draw_menu_ui)
+                        .run_if(in_state(AppState::Menu)),
                     game_setup::draw_game_setup_ui.run_if(in_state(AppState::GameSetup)),
                     game_play::draw_game_ui.run_if(in_state(AppState::InGame)),
                     performance::draw_performance_overlay.run_if(in_state(AppState::InGame)),
