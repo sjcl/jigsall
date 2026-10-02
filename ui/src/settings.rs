@@ -28,10 +28,22 @@ impl SettingsDialog {
         self.limited_fps = self.draft.max_fps.unwrap_or(60);
         self.confirming = state.confirmation_seconds().is_some();
     }
+
+    fn close(&mut self) -> DisplaySettingsAction {
+        *self = default();
+        DisplaySettingsAction::Dismiss
+    }
 }
 
-pub fn reset_dialog(mut dialog: ResMut<SettingsDialog>) {
-    *dialog = default();
+pub fn reset_dialog(
+    mut dialog: ResMut<SettingsDialog>,
+    mut actions: MessageWriter<DisplaySettingsAction>,
+) {
+    if dialog.open {
+        actions.write(dialog.close());
+    } else {
+        *dialog = default();
+    }
 }
 
 pub fn draw_settings_ui(
@@ -105,7 +117,7 @@ fn paint_settings(
             }
             egui::ScrollArea::vertical()
                 .max_height(
-                    (screen.height() - if seconds.is_some() { 280.0 } else { 240.0 }).max(80.0),
+                    (screen.height() - if seconds.is_some() { 320.0 } else { 260.0 }).max(80.0),
                 )
                 .show(ui, |ui| {
                     theme::card().show(ui, |ui| {
@@ -136,6 +148,7 @@ fn paint_settings(
                             preferences.set_language(language, i18n);
                             ctx.request_repaint();
                         }
+                        theme::hint(ui, i18n.text("settings-language-hint"));
                         if let Some(error) = &preferences.error {
                             let (key, reason) = match error {
                                 PreferenceError::Read(reason) => {
@@ -303,26 +316,22 @@ fn paint_settings(
                     }
                 } else {
                     if theme::button(ui, i18n.text("common-back-title"), width, false).clicked() {
-                        dialog.open = false;
+                        action = Some(dialog.close());
                     }
-                    let valid = dialog.draft.validate().is_ok()
-                        && (dialog.draft.mode != ScreenMode::Fullscreen
-                            || capabilities
-                                .fullscreen_mode(dialog.draft.resolution)
-                                .is_some());
-                    ui.add_enabled_ui(valid, |ui| {
-                        if theme::button(ui, i18n.text("settings-apply"), width, true).clicked() {
-                            action = Some(DisplaySettingsAction::Apply(dialog.draft.clone()));
-                        }
-                    });
+                    ui.add_enabled_ui(
+                        dialog.open && state.can_apply(&dialog.draft, capabilities),
+                        |ui| {
+                            if theme::button(ui, i18n.text("settings-apply"), width, true).clicked()
+                            {
+                                action = Some(DisplaySettingsAction::Apply(dialog.draft.clone()));
+                            }
+                        },
+                    );
                 }
             });
         });
     if response.should_close() {
-        dialog.open = false;
-        if seconds.is_some() {
-            action = Some(DisplaySettingsAction::Revert);
-        }
+        action = Some(dialog.close());
     }
     action
 }

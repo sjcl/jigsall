@@ -23,6 +23,24 @@ fn frame(
     size: egui::Vec2,
     events: Vec<egui::Event>,
 ) -> (egui::FullOutput, Option<DisplaySettingsAction>) {
+    frame_with_state(
+        ctx,
+        dialog,
+        &DisplaySettingsState::load(None),
+        &capabilities(),
+        size,
+        events,
+    )
+}
+
+fn frame_with_state(
+    ctx: &egui::Context,
+    dialog: &mut SettingsDialog,
+    state: &DisplaySettingsState,
+    capabilities: &DisplayCapabilities,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+) -> (egui::FullOutput, Option<DisplaySettingsAction>) {
     let mut action = None;
     let mut output = ctx.run_ui(
         egui::RawInput {
@@ -34,8 +52,8 @@ fn frame(
             action = paint_settings(
                 ui.ctx(),
                 dialog,
-                &DisplaySettingsState::load(None),
-                &capabilities(),
+                state,
+                capabilities,
                 &mut english(),
                 &mut UiPreferences::load(None),
             );
@@ -64,14 +82,37 @@ fn click(
     dialog: &mut SettingsDialog,
     label: &str,
 ) -> Option<DisplaySettingsAction> {
+    click_with_state(
+        ctx,
+        dialog,
+        &DisplaySettingsState::load(None),
+        &capabilities(),
+        label,
+    )
+}
+
+fn click_with_state(
+    ctx: &egui::Context,
+    dialog: &mut SettingsDialog,
+    state: &DisplaySettingsState,
+    capabilities: &DisplayCapabilities,
+    label: &str,
+) -> Option<DisplaySettingsAction> {
     let size = egui::vec2(1280.0, 720.0);
-    let (output, _) = frame(ctx, dialog, size, vec![]);
+    for _ in 0..3 {
+        frame_with_state(ctx, dialog, state, capabilities, size, vec![])
+            .0
+            .drop_without_applying_deltas();
+    }
+    let (output, _) = frame_with_state(ctx, dialog, state, capabilities, size, vec![]);
     let position = text_position(&output, label);
     output.drop_without_applying_deltas();
     for pressed in [true, false] {
-        let (output, action) = frame(
+        let (output, action) = frame_with_state(
             ctx,
             dialog,
+            state,
+            capabilities,
             size,
             vec![
                 egui::Event::PointerMoved(position),
@@ -163,10 +204,124 @@ fn escape_discards_unapplied_edits() {
         }],
     );
     output.drop_without_applying_deltas();
-    assert!(action.is_none());
+    assert!(matches!(action, Some(DisplaySettingsAction::Dismiss)));
     assert!(!dialog.open);
+    assert_eq!(dialog.draft, DisplaySettings::default());
     dialog.open(&DisplaySettingsState::load(None));
     assert_eq!(dialog.draft.max_fps, Some(60));
+}
+
+#[test]
+fn apply_requires_a_change_and_disables_again_after_applying() {
+    let ctx = egui::Context::default();
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(DisplaySettingsState::load(None))
+        .add_plugins(DisplaySettingsPlugin);
+    app.update();
+    let state = app.world().resource::<DisplaySettingsState>();
+    let caps = capabilities();
+    let mut dialog = SettingsDialog::default();
+    dialog.open(state);
+    assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
+    click_with_state(&ctx, &mut dialog, state, &caps, "Unlimited");
+    click_with_state(&ctx, &mut dialog, state, &caps, "Unlimited");
+    assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
+    click_with_state(&ctx, &mut dialog, state, &caps, "Unlimited");
+    let Some(action @ DisplaySettingsAction::Apply(_)) =
+        click_with_state(&ctx, &mut dialog, state, &caps, "Apply")
+    else {
+        panic!("A changed FPS limit must enable Apply");
+    };
+    app.world_mut().write_message(action);
+    app.update();
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert_eq!(state.notice, Some(DisplaySettingsNotice::Saved));
+    assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
+    let Some(action @ DisplaySettingsAction::Dismiss) =
+        click_with_state(&ctx, &mut dialog, state, &caps, "Back to Title")
+    else {
+        panic!("Closing the dialog must dismiss its notice");
+    };
+    assert!(!dialog.open);
+    assert_eq!(dialog.draft, DisplaySettings::default());
+    app.world_mut().write_message(action);
+    app.update();
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert!(state.notice.is_none());
+    assert_eq!(state.current.max_fps, None);
+    dialog.open(state);
+    assert_eq!(dialog.draft.max_fps, None);
+    assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
+}
+
+#[test]
+fn apply_is_disabled_for_unsupported_or_ineffective_display_changes() {
+    for (mode, resolution, caps) in [
+        (
+            ScreenMode::Fullscreen,
+            UVec2::new(1280, 720),
+            capabilities(),
+        ),
+        (
+            ScreenMode::Borderless,
+            UVec2::new(1280, 720),
+            DisplayCapabilities::default(),
+        ),
+        (ScreenMode::Windowed, UVec2::new(100, 100), capabilities()),
+    ] {
+        let ctx = egui::Context::default();
+        let state = DisplaySettingsState::load(None);
+        let mut dialog = SettingsDialog::default();
+        dialog.open(&state);
+        dialog.draft.mode = mode;
+        dialog.draft.resolution = resolution;
+        assert!(click_with_state(&ctx, &mut dialog, &state, &caps, "Apply").is_none());
+    }
+    let ctx = egui::Context::default();
+    let mut state = DisplaySettingsState::load(None);
+    state.current.mode = ScreenMode::Borderless;
+    let mut dialog = SettingsDialog::default();
+    dialog.open(&state);
+    dialog.draft.resolution = UVec2::new(1920, 1080);
+    assert!(click_with_state(&ctx, &mut dialog, &state, &capabilities(), "Apply").is_none());
+}
+
+#[test]
+fn backdrop_dismisses_and_discards_the_draft() {
+    let ctx = egui::Context::default();
+    let mut dialog = SettingsDialog::default();
+    dialog.open(&DisplaySettingsState::load(None));
+    dialog.draft.max_fps = None;
+    let size = egui::vec2(1280.0, 720.0);
+    for _ in 0..3 {
+        frame(&ctx, &mut dialog, size, vec![])
+            .0
+            .drop_without_applying_deltas();
+    }
+    let position = egui::pos2(10.0, 10.0);
+    let mut dismissed = false;
+    for pressed in [true, false] {
+        let (output, action) = frame(
+            &ctx,
+            &mut dialog,
+            size,
+            vec![
+                egui::Event::PointerMoved(position),
+                egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        );
+        output.drop_without_applying_deltas();
+        dismissed |= matches!(action, Some(DisplaySettingsAction::Dismiss));
+    }
+    assert!(dismissed);
+    assert!(!dialog.open);
+    assert_eq!(dialog.draft, DisplaySettings::default());
 }
 
 fn localized_frame(
@@ -242,6 +397,8 @@ fn language_widgets_persist_selection_and_update_next_frame_without_restart() {
     let output = localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![]);
     text_position(&output, "設定");
     text_position(&output, "適用");
+    text_position(&output, "言語は選択するとすぐに適用・保存されます。");
+    assert!(!DisplaySettingsState::load(None).can_apply(&dialog.draft, &capabilities()));
     assert!(dialog.open);
     output.drop_without_applying_deltas();
 }
@@ -350,7 +507,7 @@ fn native_settings_ui_probe() {
             }
             6 => {
                 preferences.set_language(LanguagePreference::Locale(Locale::JA), &mut i18n);
-                dialog.open = false;
+                actions.write(dialog.close());
             }
             7 => {
                 commands

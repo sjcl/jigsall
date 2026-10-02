@@ -98,6 +98,19 @@ pub struct DisplayCapabilities {
 }
 
 impl DisplayCapabilities {
+    fn validate_settings(&self, settings: &DisplaySettings) -> Result<(), DisplaySettingsError> {
+        settings.validate().map_err(DisplaySettingsError::Invalid)?;
+        if settings.mode != ScreenMode::Windowed && self.monitor.is_none() {
+            return Err(DisplaySettingsError::NoDisplay);
+        }
+        if settings.mode == ScreenMode::Fullscreen
+            && self.fullscreen_mode(settings.resolution).is_none()
+        {
+            return Err(DisplaySettingsError::UnsupportedFullscreen);
+        }
+        Ok(())
+    }
+
     pub fn fullscreen_mode(&self, size: UVec2) -> Option<VideoMode> {
         self.video_modes
             .iter()
@@ -208,6 +221,31 @@ impl DisplaySettingsState {
         })
     }
 
+    /// Whether applying this draft can change the display or retry a failed save.
+    pub fn can_apply(
+        &self,
+        settings: &DisplaySettings,
+        capabilities: &DisplayCapabilities,
+    ) -> bool {
+        self.preview.is_none()
+            && capabilities.validate_settings(settings).is_ok()
+            && (self.display_changed(settings)
+                || settings.max_fps != self.current.max_fps
+                || matches!(
+                    self.error,
+                    Some(
+                        DisplaySettingsError::SaveFailed(_)
+                            | DisplaySettingsError::DirectoryUnavailable
+                    )
+                ))
+    }
+
+    fn display_changed(&self, settings: &DisplaySettings) -> bool {
+        settings.mode != self.current.mode
+            || (settings.mode != ScreenMode::Borderless
+                && settings.resolution != self.current.resolution)
+    }
+
     fn save(&self) -> Result<(), DisplaySettingsError> {
         let Some(path) = &self.path else {
             return Ok(());
@@ -251,6 +289,8 @@ pub enum DisplaySettingsAction {
     Apply(DisplaySettings),
     Keep,
     Revert,
+    /// Discard an unconfirmed preview and clear the dialog's completion notice.
+    Dismiss,
 }
 
 pub struct DisplaySettingsPlugin;
@@ -312,6 +352,10 @@ fn process_actions(
     }
     for action in actions.read() {
         match action {
+            DisplaySettingsAction::Dismiss => {
+                state.revert();
+                state.notice = None;
+            }
             DisplaySettingsAction::Revert => state.revert(),
             DisplaySettingsAction::Keep => {
                 if state.preview.is_some() {
@@ -322,29 +366,14 @@ fn process_actions(
                 if state.preview.is_some() {
                     continue;
                 }
-                let validation = settings
-                    .validate()
-                    .map_err(DisplaySettingsError::Invalid)
-                    .and_then(|()| {
-                        if settings.mode == ScreenMode::Fullscreen
-                            && capabilities.fullscreen_mode(settings.resolution).is_none()
-                        {
-                            Err(DisplaySettingsError::UnsupportedFullscreen)
-                        } else if settings.mode != ScreenMode::Windowed
-                            && capabilities.monitor.is_none()
-                        {
-                            Err(DisplaySettingsError::NoDisplay)
-                        } else {
-                            Ok(())
-                        }
-                    });
-                if let Err(error) = validation {
+                if let Err(error) = capabilities.validate_settings(settings) {
                     state.error = Some(error);
                     continue;
                 }
-                let display_changed = settings.mode != state.current.mode
-                    || (settings.mode != ScreenMode::Borderless
-                        && settings.resolution != state.current.resolution);
+                if !state.can_apply(settings, &capabilities) {
+                    continue;
+                }
+                let display_changed = state.display_changed(settings);
                 if display_changed {
                     state.preview = Some(DisplayPreview {
                         previous: state.current.clone(),

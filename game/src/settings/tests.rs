@@ -44,6 +44,108 @@ fn action(app: &mut App, action: DisplaySettingsAction) {
 }
 
 #[test]
+fn unchanged_settings_do_not_write_or_show_a_completion_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut app = test_app(Some(path.clone()));
+    action(
+        &mut app,
+        DisplaySettingsAction::Apply(DisplaySettings::default()),
+    );
+    assert!(!path.exists());
+    assert!(app
+        .world()
+        .resource::<DisplaySettingsState>()
+        .notice
+        .is_none());
+    let borderless = DisplaySettings {
+        mode: ScreenMode::Borderless,
+        ..default()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(borderless.clone()));
+    action(&mut app, DisplaySettingsAction::Keep);
+    action(&mut app, DisplaySettingsAction::Dismiss);
+    action(
+        &mut app,
+        DisplaySettingsAction::Apply(DisplaySettings {
+            resolution: UVec2::new(1920, 1080),
+            ..borderless.clone()
+        }),
+    );
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert_eq!(state.current, borderless);
+    assert!(state.notice.is_none());
+    assert_eq!(DisplaySettingsState::load(Some(path)).current, borderless);
+}
+
+#[test]
+fn dismiss_clears_notices_and_reverts_only_unconfirmed_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut app = test_app(Some(path.clone()));
+    let saved = DisplaySettings {
+        max_fps: None,
+        ..default()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(saved.clone()));
+    assert_eq!(
+        app.world().resource::<DisplaySettingsState>().notice,
+        Some(DisplaySettingsNotice::Saved)
+    );
+    action(&mut app, DisplaySettingsAction::Dismiss);
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert!(state.notice.is_none());
+    assert_eq!(state.current, saved);
+    action(
+        &mut app,
+        DisplaySettingsAction::Apply(DisplaySettings {
+            resolution: UVec2::new(800, 600),
+            ..saved.clone()
+        }),
+    );
+    assert!(app
+        .world()
+        .resource::<DisplaySettingsState>()
+        .confirmation_seconds()
+        .is_some());
+    action(&mut app, DisplaySettingsAction::Dismiss);
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert!(state.notice.is_none());
+    assert!(state.confirmation_seconds().is_none());
+    assert_eq!(state.current, saved);
+    assert_eq!(DisplaySettingsState::load(Some(path)).current, saved);
+}
+
+#[test]
+fn a_failed_fps_save_can_be_retried_without_changing_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocked = dir.path().join("not-a-directory");
+    std::fs::write(&blocked, b"preserve me").unwrap();
+    let mut app = test_app(Some(blocked.join("settings.json")));
+    let settings = DisplaySettings {
+        max_fps: None,
+        ..default()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
+    action(&mut app, DisplaySettingsAction::Dismiss);
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert!(matches!(
+        state.error,
+        Some(DisplaySettingsError::SaveFailed(_))
+    ));
+    assert!(state.can_apply(&settings, app.world().resource::<DisplayCapabilities>()));
+    std::fs::remove_file(&blocked).unwrap();
+    action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
+    let state = app.world().resource::<DisplaySettingsState>();
+    assert!(state.error.is_none());
+    assert!(!state.can_apply(&settings, app.world().resource::<DisplayCapabilities>()));
+    assert_eq!(
+        DisplaySettingsState::load(Some(blocked.join("settings.json"))).current,
+        settings
+    );
+}
+
+#[test]
 fn modes_use_supported_fullscreen_video_and_restore_physical_window_size() {
     let mut app = test_app(None);
     let settings = DisplaySettings {

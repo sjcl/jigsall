@@ -28,6 +28,7 @@ impl Plugin for GameUiPlugin {
             .init_resource::<settings::SettingsDialog>()
             .add_systems(OnEnter(AppState::Menu), persistence::reset_dialogs)
             .add_systems(OnEnter(AppState::Menu), settings::reset_dialog)
+            .add_systems(OnExit(AppState::Menu), settings::reset_dialog)
             .add_plugins(EguiPlugin::default())
             .add_systems(
                 EguiPrimaryContextPass,
