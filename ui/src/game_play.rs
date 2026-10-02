@@ -51,6 +51,8 @@ pub fn draw_players_overlay(mut contexts: EguiContexts, game_state: Res<GameData
 
     // 半透明の背景を表示
     egui::Area::new(egui::Id::new("players_overlay_background"))
+        .order(egui::Order::Background)
+        .interactable(false)
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
             let screen_rect = ctx.content_rect();
