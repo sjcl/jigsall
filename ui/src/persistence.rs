@@ -69,15 +69,11 @@ pub fn draw_save_dialogs(
                                                 .to_string()
                                         })
                                         .unwrap_or_else(|| "Unknown time".into());
-                                    let progress = summary
-                                        .placed_count
-                                        .map(|placed| {
-                                            format!(
-                                                "{:.1}%",
-                                                placed as f64 / summary.piece_count as f64 * 100.0
-                                            )
-                                        })
-                                        .unwrap_or_else(|| "Progress available after load".into());
+                                    let progress = format!(
+                                        "{:.1}%",
+                                        summary.placed_count as f64 / summary.piece_count as f64
+                                            * 100.0
+                                    );
                                     ui.label(format!(
                                         "{time}  /  {progress}  /  {} pieces",
                                         summary.piece_count

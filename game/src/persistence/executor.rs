@@ -44,7 +44,7 @@ impl StorageRequest {
                 .map(StorageValue::Bytes),
             StorageOperation::Len(key) => storage.len(key).map(StorageValue::Len),
             StorageOperation::Write(key, bytes) => {
-                storage.write(key, &bytes).map(|()| StorageValue::Done)
+                storage.write(key, bytes).map(|()| StorageValue::Done)
             }
             StorageOperation::Delete(key) => storage.delete(key).map(|()| StorageValue::Done),
             StorageOperation::Exists(key) => storage.exists(key).map(StorageValue::Exists),
@@ -114,8 +114,8 @@ impl SaveStorage for StorageProxy {
             _ => Err(unexpected()),
         }
     }
-    fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
-        match self.request(StorageOperation::Write(key, bytes.to_vec()))? {
+    fn write(&self, key: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError> {
+        match self.request(StorageOperation::Write(key, bytes))? {
             StorageValue::Done => Ok(()),
             _ => Err(unexpected()),
         }

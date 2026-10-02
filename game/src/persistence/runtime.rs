@@ -41,7 +41,7 @@ enum Request {
     List,
     Load(SaveId),
     Save {
-        id: Option<SaveId>,
+        update: Option<(SaveId, u64)>,
         title: SaveTitle,
         checkpoint: PuzzleCheckpoint,
         bytes: Option<Arc<[u8]>>,
@@ -125,7 +125,7 @@ impl PersistenceService {
         self.submit(
             state,
             Request::Save {
-                id: state.current_save.as_ref().map(|m| m.id),
+                update: state.current_save.as_ref().map(|m| (m.id, m.revision)),
                 title,
                 checkpoint,
                 bytes,
@@ -190,14 +190,16 @@ fn run_request<S: SaveStorage>(
             r.list()
         })),
         Request::Save {
-            id,
+            update,
             title,
             checkpoint,
             bytes,
         } => Reply::Saved(repo().and_then(|r| {
             let bytes = bytes.as_deref();
-            match id {
-                Some(id) => r.update(id, title, checkpoint, bytes),
+            match update {
+                Some((id, expected_revision)) => {
+                    r.update(id, expected_revision, title, checkpoint, bytes)
+                }
                 None => r.create(title, checkpoint, bytes),
             }
         })),

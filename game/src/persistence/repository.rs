@@ -7,7 +7,7 @@ pub struct SaveRepository<S: SaveStorage> {
 pub struct SaveSummary {
     pub metadata: SaveMetadata,
     pub piece_count: usize,
-    pub placed_count: Option<usize>,
+    pub placed_count: usize,
 }
 #[derive(Clone, Debug)]
 pub struct SaveListEntry {
@@ -34,7 +34,7 @@ impl<S: SaveStorage> SaveRepository<S> {
             let existing = self.storage.read(key)?;
             PuzImage::decode(&existing, hash)?;
         } else {
-            self.storage.write(key, &PuzImage::encode(bytes)?)?;
+            self.storage.write(key, PuzImage::encode(bytes)?)?;
         }
         Ok(())
     }
@@ -91,14 +91,24 @@ impl<S: SaveStorage> SaveRepository<S> {
         }
         Err(SaveError::IdCollision)
     }
+    /// Reject a stale session before encoding or publishing any data.
+    /// Concurrent writers still need backend-specific atomic conflict handling.
     pub fn update(
         &self,
         id: SaveId,
+        expected_revision: u64,
         title: SaveTitle,
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
     ) -> Result<SaveMetadata, SaveError> {
         let previous = self.read_header(id)?;
+        if previous.metadata.revision != expected_revision {
+            return Err(SaveError::Conflict {
+                id,
+                expected_revision,
+                actual_revision: previous.metadata.revision,
+            });
+        }
         let metadata = SaveMetadata {
             id,
             title,
@@ -132,7 +142,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         }
         // Publish image first; any failure leaves at most a harmless orphan image.
         self.storage
-            .write(StorageKey::Save(save.metadata.id), &encoded)?;
+            .write(StorageKey::Save(save.metadata.id), encoded)?;
         Ok(save.metadata)
     }
     pub fn read_save(&self, id: SaveId) -> Result<PuzzleSave, SaveError> {

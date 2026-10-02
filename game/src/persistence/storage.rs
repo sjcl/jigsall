@@ -82,7 +82,8 @@ pub trait SaveStorage {
         length: usize,
     ) -> Result<Vec<u8>, StorageError>;
     fn len(&self, key: StorageKey) -> Result<u64, StorageError>;
-    fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError>;
+    /// Transfer the encoded allocation to the executor without a blob-sized copy.
+    fn write(&self, key: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError>;
     fn delete(&self, key: StorageKey) -> Result<(), StorageError>;
     fn exists(&self, key: StorageKey) -> Result<bool, StorageError>;
 }
@@ -187,7 +188,7 @@ impl SaveStorage for FilesystemStorage {
         }
         Ok(metadata.len())
     }
-    fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
+    fn write(&self, key: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError> {
         if bytes.len() as u64 > key.max_bytes() {
             return Err(StorageError::TooLarge);
         }
@@ -198,7 +199,7 @@ impl SaveStorage for FilesystemStorage {
             .suffix(".tmp")
             .tempfile_in(&directory)
             .map_err(io)?;
-        temp.write_all(bytes).map_err(io)?;
+        temp.write_all(&bytes).map_err(io)?;
         temp.flush().map_err(io)?;
         temp.as_file().sync_all().map_err(io)?;
         // tempfile uses atomic overwrite (MoveFileExW on Windows), never delete + rename.

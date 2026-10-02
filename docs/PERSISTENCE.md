@@ -19,13 +19,13 @@ PieceDataStore + PuzzleDefinition + ImageHash
 
 `game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、serialized fields・field order・schema version 3 を維持します。位置・Z・placed・右/下の接続のみを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component の offset / placed 一貫性、境界外接続、正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
 
-`SaveRepository` は create / update / list / load / delete / image import を提供します。ランダム 128-bit `SaveId` の collision を確認し、更新は同じ ID / created_at を保持して revision を増やします。ロードした session の通常 Save はロード元 ID を更新します。タイトル変更にも同じ規則を適用します。タイトルは trim 後 1–80 Unicode scalar values、control / 改行禁止で、重複可能です。タイトルをファイル名に使いません。
+`SaveRepository` は create / update / list / load / delete / image import を提供します。ランダム 128-bit `SaveId` の collision を確認し、更新は `update(id, expected_revision, title, checkpoint, original_bytes)` に session が読み込んだ revision を渡し、現在の header と一致した場合だけ同じ ID / created_at を保持して revision を増やします。`PersistenceService` は `current_save` の ID と revision を request に固定して worker に渡します。不一致は `SaveError::Conflict { id, expected_revision, actual_revision }` として、画像 import・encode・publish より前に拒否します。失敗した session の gameplay state と current_save は維持し、自動で最新 revision に付け替えて再試行しません。ロードした session の通常 Save はロード元 ID を更新します。タイトル変更にも同じ規則を適用します。タイトルは trim 後 1–80 Unicode scalar values、control / 改行禁止で、重複可能です。タイトルをファイル名に使いません。
 
 ## バイナリ形式
 
 全整数・f32 bits は little endian。Rust の memory layout を書き出しません。未知 format version はそれぞれ拒否します。`GENERATOR_VERSION` は形状の互換性であり、save/container version や multiplayer schema と独立です。generator migration は未実装で、対応外 generator は専用エラーになります。将来の migration は codec での definition 読み取りと共通 validation の間に追加できます。
 
-### `.puzsave` version 2（version 1 読み込み互換）
+### `.puzsave` version 1
 
 | 順序 | フィールド | 幅 |
 | --- | --- | --- |
@@ -51,7 +51,7 @@ piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は pl
 
 完全 load はファイル全体の checksum、header、exact state length を検証してから state 領域を確保し、共通 checkpoint validation を行います。body のみの破損は一覧では検出せず、load の失敗をその entry に表示します。truncation・過大 length・trailing bytes・checksum 不一致・invalid state はエラーです。最大1000×1000 piecesです。
 
-旧 version 1 の `156 + title UTF-8 bytes + 16 × N` layout も完全 load できます。v1 には独立した header checksum と placed_count cache がないため、一覧では進捗を未確認として表示し、完全性は load で検証します。次回 Save は同じ SaveId / created_at を保って v2 に更新します。v2 は旧アプリでは読み込めません。
+未 release のため、header checksum と placed_count cache を持つ現在の layout を version 1 として確定します。以前の試作 layout と version 2 の読み込み互換・migration は提供しません。一覧にはすべての対応 save の進捗を表示します。
 
 ### `.puzimg` version 1
 
@@ -69,7 +69,7 @@ piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は pl
 
 Windows は `%LOCALAPPDATA%/puzzella`、macOS はユーザー Application Support 以下、Linux は XDG data directory 以下です。production は working directory に依存しません。`FilesystemStorage::new(root)` で test の temporary directory を注入できます。
 
-storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と namespace を使います。`read_range` は指定範囲だけを読み、EOF では短い buffer を返します。backend は全 blob を取得して slice する実装を避け、`len` は blob size の metadata を取得します。任意 path、`PathBuf`、rename は上位 API にありません。固定 hex key だけから filename を作るため、タイトルによる path traversal はできません。storage-specific failure は表示可能な `StorageError` に変換します。
+storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と namespace を使います。`read_range` は指定範囲だけを読み、EOF では短い buffer を返します。backend は全 blob を取得して slice する実装を避け、`len` は blob size の metadata を取得します。任意 path、`PathBuf`、rename は上位 API にありません。固定 hex key だけから filename を作るため、タイトルによる path traversal はできません。storage-specific failure は表示可能な `StorageError` に変換します。`write(key, Vec<u8>)` は encoded allocation の所有権を渡します。repository → StorageProxy → StorageOperation::Write → owner backend の間で blob の clone は行いません。FilesystemStorage の atomic write 手順は同じです。非同期 write の executor は API が必要とする期間、受け取った buffer を保持してください。
 
 書き込みは同じ directory の `.puzzella-*.tmp` に write → flush → sync_all → atomic overwrite。`tempfile::persist` による Windows MoveFileExW / Unix rename を使い、旧 target の delete は行いません。Unix では directory も sync します。rename/replace の失敗で旧 file を失わず、temp は一覧に入りません。電源断時の durability は OS/filesystem の保証に依存します。
 
@@ -91,4 +91,6 @@ Steam Cloud / Steam Remote Storage、Steamworks crate、Steam feature flag は�
 
 [Valve の Remote Storage API](https://partner.steamgames.com/doc/api/ISteamRemoteStorage) は同期 FileRead / FileWrite が SteamAPI を block すると説明し、非同期版を推奨しています。Steam executor は operation を FileReadAsync / FileWriteAsync 等へ dispatch し、callback の成功・失敗で返信する必要があります。ReadRange は FileReadAsync の offset / length を使う経路を想定します。Rust crate で利用できる API と callback integration は実装時に確認してください。今回追加したのは request/reply の接続境界です。
 
-`PuzzleCheckpoint`、SaveRepository、SaveCodec、PuzImage format、gameplay restore、保存メニューは共通で使います。bytes に local / steam といった backend identity は入れません。remote の容量、atomic publish、conflict resolution / retry、callback cancellation / shutdown は backend / executor で設計する必要があります。revision はローカル更新の counter です。
+`PuzzleCheckpoint`、SaveRepository、SaveCodec、PuzImage format、gameplay restore、保存メニューは共通で使います。bytes に local / steam といった backend identity は入れません。期待 revision の照合は「backend から読み取れた save が、session の読み込んだものから更新されている」場合を検出します。header 読み取りと write は atomic な compare-and-swap ではなく、同じ revision から分岐した端末や照合後の同時更新までは保証しません。[Steam Cloud](https://partner.steamgames.com/doc/features/cloud) は session 前後に同期するため、将来の integration では Steam の同期競合と競合解決も扱う必要があります。
+
+remote の容量、atomic publish / conditional write、conflict resolution / retry、callback cancellation / shutdown は backend / executor で設計します。[Steam Cloud の現在の file size 制限](https://partner.steamgames.com/doc/features/cloud) には FileWrite / FileWriteStreamWriteChunk の1回100MB上限と、256MBでの非最適な endpoint 選択の可能性が記載されています。local container の512 MiB上限をそのまま remote API に適用せず、chunk / stream 経路や backend ごとの上限を実装時に確認してください。

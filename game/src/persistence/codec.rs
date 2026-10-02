@@ -5,11 +5,11 @@ use bevy::math::{UVec2, Vec2};
 use puzzella_core::{PuzzleDefinition, GENERATOR_VERSION};
 use sha2::{Digest, Sha256};
 
-pub const SAVE_FORMAT_VERSION: u16 = 2;
+pub const SAVE_FORMAT_VERSION: u16 = 1;
 pub const PUZIMG_FORMAT_VERSION: u16 = 1;
 const SAVE_MAGIC: &[u8; 8] = b"PUZSAVE\0";
 const IMAGE_MAGIC: &[u8; 8] = b"PUZIMG\0\0";
-/// Maximum prefix needed for either v1 or v2. Independent of piece count.
+/// Maximum prefix needed for the save header. Independent of piece count.
 pub const MAX_SAVE_HEADER_BYTES: usize = 172 + MAX_SAVE_TITLE_CHARS * 4;
 pub(crate) const MAX_SAVE_BYTES: u64 = 204 + 320 + 16 * 1_000_000;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024 + 50;
@@ -17,7 +17,7 @@ pub fn image_hash(bytes: &[u8]) -> ImageHash {
     ImageHash(Sha256::digest(bytes).into())
 }
 
-/// Lightweight preview. A v2 header has its own checksum; piece integrity and
+/// Lightweight preview. The header has its own checksum; piece integrity and
 /// the non-authoritative placed-count cache are verified only on full decode.
 #[derive(Clone, Debug)]
 pub struct SaveHeader {
@@ -25,8 +25,8 @@ pub struct SaveHeader {
     pub image_hash: ImageHash,
     pub definition: PuzzleDefinition,
     pub piece_count: usize,
-    /// v1 did not store this cache. Listing legacy saves never scans their states.
-    pub placed_count: Option<usize>,
+    /// Non-authoritative cache, checked against piece states on full decode.
+    pub placed_count: usize,
     next_z_order: u32,
     states_offset: usize,
 }
@@ -86,29 +86,26 @@ impl SaveCodec {
         Ok(out)
     }
     /// Decode a bounded prefix plus the actual blob size without allocating any
-    /// piece records or connectivity structures. Supports legacy v1 previews.
+    /// piece records or connectivity structures.
     pub fn decode_header(prefix: &[u8], file_len: u64) -> Result<SaveHeader, SaveError> {
         let bad = SaveError::CorruptSave;
         let mut r = Reader::new(&prefix[..prefix.len().min(MAX_SAVE_HEADER_BYTES)], bad);
-        let version = read_save_version(&mut r)?;
-        if !(156..=MAX_SAVE_BYTES).contains(&file_len) {
+        read_save_version(&mut r)?;
+        if !(204..=MAX_SAVE_BYTES).contains(&file_len) {
             return Err(bad("Invalid length"));
         }
-        let header_len = if version == 2 {
-            let len = r.u32()? as usize;
-            let declared_len = r.u64()?;
-            if !(172..=MAX_SAVE_HEADER_BYTES).contains(&len) || declared_len != file_len {
-                return Err(bad("Invalid header or file length"));
-            }
-            let header = prefix.get(..len).ok_or_else(|| bad("Truncated header"))?;
-            if image_hash(&header[..len - 32]).0 != header[len - 32..] {
-                return Err(bad("Header checksum mismatch"));
-            }
-            r.bytes = &header[..len - 32];
-            Some(len)
-        } else {
-            None
-        };
+        let header_len = r.u32()? as usize;
+        let declared_len = r.u64()?;
+        if !(172..=MAX_SAVE_HEADER_BYTES).contains(&header_len) || declared_len != file_len {
+            return Err(bad("Invalid header or file length"));
+        }
+        let header = prefix
+            .get(..header_len)
+            .ok_or_else(|| bad("Truncated header"))?;
+        if image_hash(&header[..header_len - 32]).0 != header[header_len - 32..] {
+            return Err(bad("Header checksum mismatch"));
+        }
+        r.bytes = &header[..header_len - 32];
         let id = SaveId(u128::from_le_bytes(r.array()?));
         let revision = r.u64()?;
         let created_at = r.u64()?;
@@ -144,18 +141,14 @@ impl SaveCodec {
             .map_err(|_| bad("Invalid puzzle definition"))?;
         let next_z_order = r.u32()?;
         let count = r.u32()? as usize;
-        let placed_count = if version == 2 {
-            Some(r.u32()? as usize)
-        } else {
-            None
-        };
-        let states_offset = header_len.unwrap_or(r.pos);
+        let placed_count = r.u32()? as usize;
+        let states_offset = header_len;
         if count != definition.piece_count()
             || file_len != states_offset as u64 + count as u64 * 16 + 32
-            || placed_count.is_some_and(|placed| placed > count)
+            || placed_count > count
             || next_z_order < count as u32
             || next_z_order > MAX_Z
-            || (version == 2 && r.remaining() != 0)
+            || r.remaining() != 0
         {
             return Err(bad("Invalid piece count, summary or length"));
         }
@@ -172,7 +165,7 @@ impl SaveCodec {
     pub fn decode(bytes: &[u8]) -> Result<PuzzleSave, SaveError> {
         let bad = SaveError::CorruptSave;
         read_save_version(&mut Reader::new(bytes, bad))?;
-        if bytes.len() < 156 || bytes.len() as u64 > MAX_SAVE_BYTES {
+        if bytes.len() < 204 || bytes.len() as u64 > MAX_SAVE_BYTES {
             return Err(bad("Invalid length"));
         }
         let end = bytes.len() - 32;
@@ -190,13 +183,12 @@ impl SaveCodec {
                 flags: r.u32()?,
             });
         }
-        if header.placed_count.is_some_and(|placed| {
-            placed
-                != pieces
-                    .iter()
-                    .filter(|p| p.flags & SNAPSHOT_PLACED != 0)
-                    .count()
-        }) {
+        if header.placed_count
+            != pieces
+                .iter()
+                .filter(|p| p.flags & SNAPSHOT_PLACED != 0)
+                .count()
+        {
             return Err(bad("Placed count cache mismatch"));
         }
         let checkpoint = PuzzleCheckpoint {
@@ -217,7 +209,7 @@ fn read_save_version(r: &mut Reader<'_>) -> Result<u16, SaveError> {
         return Err(SaveError::CorruptSave("Magic mismatch"));
     }
     let version = r.u16()?;
-    if ![1, SAVE_FORMAT_VERSION].contains(&version) {
+    if version != SAVE_FORMAT_VERSION {
         return Err(SaveError::UnsupportedSaveFormat(version));
     }
     Ok(version)

@@ -363,6 +363,7 @@ fn filesystem_create_update_list_load_delete_deduplicate_and_ignore_temps() {
     let updated = repo
         .update(
             first.id,
+            first.revision,
             SaveTitle::new("new title").unwrap(),
             checkpoint(&bytes),
             None,
@@ -394,7 +395,7 @@ fn failed_filesystem_replace_preserves_previous_file_and_temp_is_not_listed() {
     let dir = tempfile::tempdir().unwrap();
     let storage = FilesystemStorage::new(dir.path());
     let key = StorageKey::Save(SaveId(1));
-    storage.write(key, b"old data").unwrap();
+    storage.write(key, b"old data".to_vec()).unwrap();
     let path = dir.path().join("saves").join(key.filename());
     #[cfg(windows)]
     {
@@ -404,13 +405,13 @@ fn failed_filesystem_replace_preserves_previous_file_and_temp_is_not_listed() {
             .share_mode(1)
             .open(&path)
             .unwrap();
-        assert!(storage.write(key, b"new data").is_err());
+        assert!(storage.write(key, b"new data".to_vec()).is_err());
         assert_eq!(storage.read(key).unwrap(), b"old data");
         drop(locked);
     }
     #[cfg(not(windows))]
     let _ = path;
-    storage.write(key, b"new data").unwrap();
+    storage.write(key, b"new data".to_vec()).unwrap();
     assert_eq!(storage.read(key).unwrap(), b"new data");
     assert_eq!(storage.list(StorageNamespace::Saves).unwrap(), vec![key]);
 }
@@ -471,12 +472,12 @@ impl SaveStorage for MemoryStorage {
             .map(|bytes| bytes.len() as u64)
             .ok_or(StorageError::NotFound(key))
     }
-    fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
+    fn write(&self, key: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError> {
         if *self.fail.lock().unwrap() == Some(key) {
             return Err(StorageError::Io("injected failure".into()));
         }
         self.writes.lock().unwrap().push(key);
-        self.blobs.lock().unwrap().insert(key, bytes.to_vec());
+        self.blobs.lock().unwrap().insert(key, bytes);
         Ok(())
     }
     fn delete(&self, key: StorageKey) -> Result<(), StorageError> {
@@ -554,7 +555,7 @@ fn corrupt_save_and_missing_image_are_individual_list_errors() {
         )
         .unwrap();
     storage
-        .write(StorageKey::Save(SaveId(5)), b"broken")
+        .write(StorageKey::Save(SaveId(5)), b"broken".to_vec())
         .unwrap();
     let list = repo.list().unwrap();
     assert_eq!(list.len(), 2);
@@ -581,7 +582,7 @@ fn save_identity_must_match_its_storage_key() {
     storage
         .write(
             StorageKey::Save(SaveId(7)),
-            &SaveCodec::encode(&save()).unwrap(),
+            SaveCodec::encode(&save()).unwrap(),
         )
         .unwrap();
     let repo = SaveRepository::new(storage);
@@ -630,96 +631,6 @@ fn schema3_serialized_field_order_and_semantics_are_frozen() {
     assert_eq!(SNAPSHOT_SCHEMA_VERSION, 3);
 }
 
-/// Frozen v1 layout, independent of the current encoder's header implementation.
-fn legacy_v1(save: &PuzzleSave) -> Vec<u8> {
-    let m = &save.metadata;
-    let c = &save.checkpoint;
-    let d = &c.definition;
-    let mut out = b"PUZSAVE\0".to_vec();
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&m.id.0.to_le_bytes());
-    for n in [m.revision, m.created_at, m.updated_at] {
-        out.extend_from_slice(&n.to_le_bytes());
-    }
-    out.extend_from_slice(&(m.title.as_str().len() as u32).to_le_bytes());
-    out.extend_from_slice(m.title.as_str().as_bytes());
-    out.extend_from_slice(&c.image_hash.0);
-    out.extend_from_slice(&d.generator_version.to_le_bytes());
-    out.extend_from_slice(&d.seed.to_le_bytes());
-    for n in [
-        d.grid_size.x,
-        d.grid_size.y,
-        d.image_size.x,
-        d.image_size.y,
-        d.snap_distance.to_bits(),
-        c.next_z_order,
-        c.pieces.len() as u32,
-    ] {
-        out.extend_from_slice(&n.to_le_bytes());
-    }
-    for p in &c.pieces {
-        for n in [
-            p.position.x.to_bits(),
-            p.position.y.to_bits(),
-            p.z_order,
-            p.flags,
-        ] {
-            out.extend_from_slice(&n.to_le_bytes());
-        }
-    }
-    out.extend_from_slice(&image_hash(&out).0);
-    out
-}
-#[test]
-fn legacy_save_loads_lists_without_state_scan_and_upgrades_on_update() {
-    let save = save();
-    let old = legacy_v1(&save);
-    assert_eq!(old.len(), 156 + save.metadata.title.as_str().len() + 16 * 4);
-    assert_eq!(SaveCodec::decode(&old).unwrap(), save);
-    let storage = MemoryStorage::default();
-    let repo = SaveRepository::new(storage.clone());
-    repo.import_image(
-        save.checkpoint.image_hash,
-        &encoded_image(image::ImageFormat::Png),
-    )
-    .unwrap();
-    storage
-        .write(StorageKey::Save(save.metadata.id), &old)
-        .unwrap();
-    storage.reads.lock().unwrap().clear();
-    let entries = repo.list().unwrap();
-    assert_eq!(entries[0].summary.as_ref().unwrap().placed_count, None);
-    assert!(storage.reads.lock().unwrap().is_empty());
-    assert_eq!(repo.load(save.metadata.id).unwrap().save, save);
-    let metadata = repo
-        .update(
-            save.metadata.id,
-            save.metadata.title.clone(),
-            save.checkpoint.clone(),
-            None,
-        )
-        .unwrap();
-    assert_eq!(metadata.created_at, save.metadata.created_at);
-    assert_eq!(metadata.revision, 2);
-    let updated = storage.read(StorageKey::Save(metadata.id)).unwrap();
-    assert_eq!(&updated[8..10], &2u16.to_le_bytes());
-    assert_eq!(
-        SaveCodec::decode(&updated).unwrap().checkpoint,
-        save.checkpoint
-    );
-    assert_eq!(
-        repo.list().unwrap()[0]
-            .summary
-            .as_ref()
-            .unwrap()
-            .placed_count,
-        Some(1)
-    );
-    let mut corrupt = old;
-    let end = corrupt.len() - 33;
-    corrupt[end] ^= 1;
-    assert!(SaveCodec::decode(&corrupt).is_err());
-}
 #[test]
 fn preview_validates_header_but_load_checks_body_and_placed_cache() {
     let mut longest = save();
@@ -735,18 +646,10 @@ fn preview_validates_header_but_load_checks_body_and_placed_cache() {
             .metadata,
         longest.metadata
     );
-    let old = legacy_v1(&longest);
-    assert_eq!(
-        SaveCodec::decode_header(&old[..MAX_SAVE_HEADER_BYTES], old.len() as u64)
-            .unwrap()
-            .metadata,
-        longest.metadata
-    );
-    assert_eq!(SaveCodec::decode(&old).unwrap(), longest);
     let original = SaveCodec::encode(&save()).unwrap();
     let len = original.len() as u64;
     let header = SaveCodec::decode_header(&original, len).unwrap();
-    assert_eq!(header.placed_count, Some(1));
+    assert_eq!(header.placed_count, 1);
     assert_eq!(header.piece_count, 4);
     let header_len = u32::from_le_bytes(original[10..14].try_into().unwrap()) as usize;
     for n in 0..header_len {
@@ -771,7 +674,7 @@ fn preview_validates_header_but_load_checks_body_and_placed_cache() {
         SaveCodec::decode_header(&bytes[..header_len], len)
             .unwrap()
             .placed_count,
-        Some(2)
+        2
     );
     assert_eq!(
         SaveCodec::decode(&bytes),
@@ -799,8 +702,14 @@ fn normal_updates_never_read_image_or_previous_piece_state() {
     let key = StorageKey::Image(image_hash(&bytes));
     // External corruption after import is detected on load, not each Save.
     storage.blobs.lock().unwrap().get_mut(&key).unwrap()[50] ^= 1;
-    repo.update(saved.id, saved.title.clone(), checkpoint(&bytes), None)
-        .unwrap();
+    repo.update(
+        saved.id,
+        saved.revision,
+        saved.title.clone(),
+        checkpoint(&bytes),
+        None,
+    )
+    .unwrap();
     assert!(storage.reads.lock().unwrap().is_empty());
     assert_eq!(
         *storage.ranges.lock().unwrap(),
@@ -817,7 +726,13 @@ fn normal_updates_never_read_image_or_previous_piece_state() {
     let before = storage.blobs.lock().unwrap()[&StorageKey::Save(saved.id)].clone();
     storage.delete(key).unwrap();
     assert!(matches!(
-        repo.update(saved.id, saved.title, checkpoint(&bytes), None),
+        repo.update(
+            saved.id,
+            saved.revision + 1,
+            saved.title,
+            checkpoint(&bytes),
+            None
+        ),
         Err(SaveError::MissingImage(_))
     ));
     assert_eq!(
@@ -855,7 +770,7 @@ fn fifty_million_piece_previews_read_only_bounded_headers() {
         fn len(&self, _: StorageKey) -> Result<u64, StorageError> {
             Ok(self.length)
         }
-        fn write(&self, _: StorageKey, _: &[u8]) -> Result<(), StorageError> {
+        fn write(&self, _: StorageKey, _: Vec<u8>) -> Result<(), StorageError> {
             unreachable!()
         }
         fn delete(&self, _: StorageKey) -> Result<(), StorageError> {
@@ -900,7 +815,7 @@ fn fifty_million_piece_previews_read_only_bounded_headers() {
     for entry in list {
         let summary = entry.summary.unwrap();
         assert_eq!(summary.piece_count, 1_000_000);
-        assert_eq!(summary.placed_count, Some(1));
+        assert_eq!(summary.placed_count, 1);
     }
     assert_eq!(bytes_read.get(), 50 * header_len);
     assert!(bytes_read.get() <= 50 * MAX_SAVE_HEADER_BYTES);
@@ -910,7 +825,7 @@ fn filesystem_range_reads_are_bounded_and_handle_eof() {
     let dir = tempfile::tempdir().unwrap();
     let storage = FilesystemStorage::new(dir.path());
     let key = StorageKey::Save(SaveId(1));
-    storage.write(key, b"0123456789").unwrap();
+    storage.write(key, b"0123456789".to_vec()).unwrap();
     assert_eq!(storage.len(key).unwrap(), 10);
     assert_eq!(storage.read_range(key, 3, 4).unwrap(), b"3456");
     assert_eq!(storage.read_range(key, 9, 4).unwrap(), b"9");
@@ -962,7 +877,7 @@ fn thread_affine_backend_stays_with_owner_through_repository_operations() {
             self.check();
             self.memory.len(key)
         }
-        fn write(&self, key: StorageKey, bytes: &[u8]) -> Result<(), StorageError> {
+        fn write(&self, key: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError> {
             self.check();
             self.memory.write(key, bytes)
         }
@@ -996,11 +911,17 @@ fn thread_affine_backend_stays_with_owner_through_repository_operations() {
                 .as_ref()
                 .unwrap()
                 .placed_count,
-            Some(1)
+            1
         );
         assert_eq!(repo.load(saved.id).unwrap().image_bytes, bytes);
-        repo.update(saved.id, saved.title, checkpoint(&bytes), None)
-            .unwrap();
+        repo.update(
+            saved.id,
+            saved.revision,
+            saved.title,
+            checkpoint(&bytes),
+            None,
+        )
+        .unwrap();
         repo.delete(saved.id).unwrap();
         assert!(repo.list().unwrap().is_empty());
     });
@@ -1013,4 +934,176 @@ fn thread_affine_backend_stays_with_owner_through_repository_operations() {
         std::thread::sleep(Duration::from_millis(1));
     }
     worker.join().unwrap();
+}
+
+#[test]
+fn stale_revision_cannot_overwrite_a_newer_save_or_import_an_image() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let mut initial = save();
+    initial.metadata.revision = 10;
+    let bytes = encoded_image(image::ImageFormat::Png);
+    repo.import_image(initial.checkpoint.image_hash, &bytes)
+        .unwrap();
+    storage
+        .write(
+            StorageKey::Save(initial.metadata.id),
+            SaveCodec::encode(&initial).unwrap(),
+        )
+        .unwrap();
+    let pc_a = repo.load(initial.metadata.id).unwrap().save;
+    let pc_b = repo
+        .update(
+            initial.metadata.id,
+            10,
+            SaveTitle::new("PC B").unwrap(),
+            initial.checkpoint.clone(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(pc_b.revision, 11);
+    let key = StorageKey::Save(pc_b.id);
+    let before = storage.blobs.lock().unwrap()[&key].clone();
+    storage.writes.lock().unwrap().clear();
+    storage.reads.lock().unwrap().clear();
+    // Conflict must take precedence even over an invalid image import.
+    let result = repo.update(
+        pc_a.metadata.id,
+        pc_a.metadata.revision,
+        SaveTitle::new("Stale PC A").unwrap(),
+        pc_a.checkpoint,
+        Some(b"unrelated image"),
+    );
+    assert_eq!(
+        result,
+        Err(SaveError::Conflict {
+            id: pc_b.id,
+            expected_revision: 10,
+            actual_revision: 11,
+        })
+    );
+    assert!(storage.writes.lock().unwrap().is_empty());
+    assert!(storage.reads.lock().unwrap().is_empty());
+    assert_eq!(storage.blobs.lock().unwrap()[&key], before);
+    let loaded = repo.load(pc_b.id).unwrap().save;
+    assert_eq!(loaded.metadata, pc_b);
+    let next = repo
+        .update(
+            loaded.metadata.id,
+            loaded.metadata.revision,
+            SaveTitle::new("Reloaded PC A").unwrap(),
+            loaded.checkpoint,
+            None,
+        )
+        .unwrap();
+    assert_eq!(next.revision, 12);
+    assert_eq!(next.created_at, initial.metadata.created_at);
+    assert_eq!(repo.load(next.id).unwrap().save.metadata, next);
+}
+#[test]
+fn exhausted_revision_does_not_publish_or_wrap() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let mut initial = save();
+    initial.metadata.revision = u64::MAX;
+    let key = StorageKey::Save(initial.metadata.id);
+    let encoded = SaveCodec::encode(&initial).unwrap();
+    storage.write(key, encoded.clone()).unwrap();
+    storage.writes.lock().unwrap().clear();
+    assert_eq!(
+        repo.update(
+            initial.metadata.id,
+            u64::MAX,
+            initial.metadata.title,
+            initial.checkpoint,
+            None
+        ),
+        Err(SaveError::CounterExhausted)
+    );
+    assert!(storage.writes.lock().unwrap().is_empty());
+    assert_eq!(storage.blobs.lock().unwrap()[&key], encoded);
+}
+#[test]
+fn save_format_one_is_the_only_supported_layout() {
+    let original = SaveCodec::encode(&save()).unwrap();
+    assert_eq!(SAVE_FORMAT_VERSION, 1);
+    assert_eq!(&original[8..10], &1u16.to_le_bytes());
+    assert_eq!(SaveCodec::decode(&original).unwrap(), save());
+    for version in [0u16, 2, 9] {
+        let mut bytes = original.clone();
+        bytes[8..10].copy_from_slice(&version.to_le_bytes());
+        assert_eq!(
+            SaveCodec::decode(&bytes),
+            Err(SaveError::UnsupportedSaveFormat(version))
+        );
+        assert!(
+            matches!(SaveCodec::decode_header(&bytes, bytes.len() as u64),
+            Err(SaveError::UnsupportedSaveFormat(v)) if v == version)
+        );
+    }
+    // The abandoned layout had metadata immediately after version. There is
+    // no fallback parser even when its version field is also 1.
+    let mut abandoned = b"PUZSAVE\0".to_vec();
+    abandoned.extend_from_slice(&1u16.to_le_bytes());
+    abandoned.extend_from_slice(&save().metadata.id.0.to_le_bytes());
+    abandoned.resize(220, 0);
+    resign(&mut abandoned);
+    assert!(SaveCodec::decode(&abandoned).is_err());
+    assert!(SaveCodec::decode_header(&abandoned, abandoned.len() as u64).is_err());
+}
+#[test]
+fn proxy_transfers_the_same_blob_allocation_to_owner_backend() {
+    use std::time::{Duration, Instant};
+    struct AllocationStorage {
+        pointer: usize,
+        length: usize,
+    }
+    impl SaveStorage for AllocationStorage {
+        fn list(&self, _: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
+            unreachable!()
+        }
+        fn read(&self, _: StorageKey) -> Result<Vec<u8>, StorageError> {
+            unreachable!()
+        }
+        fn read_range(&self, _: StorageKey, _: u64, _: usize) -> Result<Vec<u8>, StorageError> {
+            unreachable!()
+        }
+        fn len(&self, _: StorageKey) -> Result<u64, StorageError> {
+            unreachable!()
+        }
+        fn write(&self, _: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError> {
+            assert_eq!(bytes.as_ptr() as usize, self.pointer);
+            assert_eq!(bytes.len(), self.length);
+            assert!(bytes.iter().all(|byte| *byte == 0x5a));
+            Ok(())
+        }
+        fn delete(&self, _: StorageKey) -> Result<(), StorageError> {
+            unreachable!()
+        }
+        fn exists(&self, _: StorageKey) -> Result<bool, StorageError> {
+            unreachable!()
+        }
+    }
+    let bytes = vec![0x5a; 1024 * 1024];
+    let storage = AllocationStorage {
+        pointer: bytes.as_ptr() as usize,
+        length: bytes.len(),
+    };
+    let (proxy, inbox) = executor::storage_channel();
+    let worker =
+        std::thread::spawn(move || proxy.write(StorageKey::Image(ImageHash([1; 32])), bytes));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let request = loop {
+        if let Ok(request) = inbox.try_recv() {
+            break request;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let executor::StorageOperation::Write(_, bytes) = &request.operation else {
+        panic!("Expected write request");
+    };
+    assert_eq!(bytes.as_ptr() as usize, storage.pointer);
+    request.execute(&storage).unwrap();
+    worker.join().unwrap().unwrap();
 }

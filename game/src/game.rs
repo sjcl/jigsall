@@ -487,18 +487,54 @@ mod tests {
                 .resource::<PersistenceState>()
                 .current_save
                 .as_ref()
-                .unwrap();
+                .unwrap()
+                .clone();
             assert_eq!(current.id, metadata.id);
             assert_eq!(current.revision, 2);
             assert_eq!(current.created_at, metadata.created_at);
             assert_eq!(current.title.as_str(), "Renamed");
-            assert_eq!(repo.load(metadata.id).unwrap().save.metadata, *current);
+            assert_eq!(repo.load(metadata.id).unwrap().save.metadata, current);
             if !complete {
                 assert_eq!(
                     repo.load(metadata.id).unwrap().save.checkpoint.pieces[1].position,
                     checkpoint.pieces[1].position + Vec2::splat(9.0)
                 );
             }
+            // Another writer advances the save while this session retains its
+            // loaded revision. A stale Save must leave both the game and file intact.
+            let latest = repo.load(current.id).unwrap().save;
+            let external = repo
+                .update(
+                    current.id,
+                    current.revision,
+                    SaveTitle::new("Saved elsewhere").unwrap(),
+                    latest.checkpoint,
+                    None,
+                )
+                .unwrap();
+            let states_before = app.world().resource::<PieceDataStore>().states.clone();
+            app.world_mut()
+                .resource_scope(|world, service: Mut<PersistenceService>| {
+                    let mut state = world.resource_mut::<PersistenceState>();
+                    service.request_save(&mut state, SaveTitle::new("Stale update").unwrap());
+                });
+            while app.world().resource::<PersistenceState>().busy {
+                app.update();
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let state = app.world().resource::<PersistenceState>();
+            assert!(state
+                .error
+                .as_ref()
+                .is_some_and(|error| error.contains("expected revision 2, found 3")));
+            assert_eq!(state.current_save.as_ref(), Some(&current));
+            assert!(state.message.is_none());
+            assert_eq!(repo.load(current.id).unwrap().save.metadata, external);
+            assert_eq!(
+                app.world().resource::<PieceDataStore>().states,
+                states_before
+            );
             app.world_mut()
                 .resource_mut::<NextState<AppState>>()
                 .set(AppState::Menu);
