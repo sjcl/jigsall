@@ -1,10 +1,25 @@
-//! Fixed v2 frames: encoder/decoder agreement alone cannot detect schema drift.
+//! Fixed v3 frames: encoder/decoder agreement alone cannot detect schema drift.
 use super::*;
+use crate::network::session_control::{AuthAccepted, SessionControlMessage};
 
-fn assert_v2_frame(message: WireMessage, hex: &str) {
+#[test]
+fn wire_v3_auth_accepted_golden() {
+    assert_v3_frame(
+        WireMessage::SessionControl(SessionControlMessage::AuthAccepted(AuthAccepted {
+            player: PlayerId(7),
+            confirmation: [0; 32],
+        })),
+        "50 5a 4c 41 03 00 06 00 22 00 00 00
+          02 07
+          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+          00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+    );
+}
+
+fn assert_v3_frame(message: WireMessage, hex: &str) {
     assert_eq!(
         wire::WIRE_VERSION,
-        2,
+        3,
         "review these fixtures when versioning the wire schema"
     );
     // The literals below include the header, Postcard enum indices, field order,
@@ -41,8 +56,8 @@ fn authority(sequence: u64, event: ProtocolAuthorityEvent) -> WireMessage {
 }
 
 #[test]
-fn wire_v2_client_grab_golden() {
-    assert_v2_frame(
+fn wire_v3_client_grab_golden() {
+    assert_v3_frame(
         client(
             ClientCommandSequence::Control(129),
             ProtocolPieceCommand::Grab {
@@ -58,14 +73,14 @@ fn wire_v2_client_grab_golden() {
                 ]),
             },
         ),
-        "50 5a 4c 41 02 00 01 00 0f 00 00 00
+        "50 5a 4c 41 03 00 01 00 0f 00 00 00
          b4 24 05 07 00 81 01 00 01 02 ac 02 04 0a 02",
     );
 }
 
 #[test]
-fn wire_v2_client_drag_golden() {
-    assert_v2_frame(
+fn wire_v3_client_drag_golden() {
+    assert_v3_frame(
         client(
             ClientCommandSequence::Move {
                 after_control_sequence: 129,
@@ -75,14 +90,14 @@ fn wire_v2_client_drag_golden() {
                 delta: Vec2::new(1.25, -2.5),
             },
         ),
-        "50 5a 4c 41 02 00 04 00 12 00 00 00
+        "50 5a 4c 41 03 00 04 00 12 00 00 00
          b4 24 05 07 01 81 01 81 02 01 00 00 a0 3f 00 00 20 c0",
     );
 }
 
 #[test]
-fn wire_v2_client_rotate_golden() {
-    assert_v2_frame(
+fn wire_v3_client_rotate_golden() {
+    assert_v3_frame(
         client(
             ClientCommandSequence::Control(129),
             ProtocolPieceCommand::Rotate {
@@ -100,14 +115,14 @@ fn wire_v2_client_rotate_golden() {
             },
         ),
         // Rotate is command variant 3; Postcard encodes i8 -1 as ff.
-        "50 5a 4c 41 02 00 01 00 10 00 00 00
+        "50 5a 4c 41 03 00 01 00 10 00 00 00
          b4 24 05 07 00 81 01 03 01 02 ac 02 04 0a 02 ff",
     );
 }
 
 #[test]
-fn wire_v2_grab_accepted_golden() {
-    assert_v2_frame(
+fn wire_v3_grab_accepted_golden() {
+    assert_v3_frame(
         authority(
             130,
             ProtocolAuthorityEvent::GrabAccepted(GrabAccepted {
@@ -126,14 +141,14 @@ fn wire_v2_grab_accepted_golden() {
                 }],
             }),
         ),
-        "50 5a 4c 41 02 00 02 00 12 00 00 00
+        "50 5a 4c 41 03 00 02 00 12 00 00 00
          b4 24 09 05 82 01 00 07 81 01 00 ac 02 04 01 0a 02 01",
     );
 }
 
 #[test]
-fn wire_v2_release_committed_golden() {
-    assert_v2_frame(
+fn wire_v3_release_committed_golden() {
+    assert_v3_frame(
         authority(
             131,
             ProtocolAuthorityEvent::ReleaseCommitted(ReleaseCommitted {
@@ -143,15 +158,15 @@ fn wire_v2_release_committed_golden() {
                 result: ReleaseResultFingerprint(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210),
             }),
         ),
-        "50 5a 4c 41 02 00 02 00 24 00 00 00
+        "50 5a 4c 41 03 00 02 00 24 00 00 00
          b4 24 09 05 83 01 01 07 81 01 00 00 70 40 00 00 90 c0
          90 e4 d0 b2 87 d3 ae ee fe df b7 de 9a f1 d9 a2 a3 02",
     );
 }
 
 #[test]
-fn wire_v2_rotation_committed_golden() {
-    assert_v2_frame(
+fn wire_v3_rotation_committed_golden() {
+    assert_v3_frame(
         authority(
             132,
             ProtocolAuthorityEvent::RotationCommitted(RotationCommitted {
@@ -165,15 +180,15 @@ fn wire_v2_rotation_committed_golden() {
             }),
         ),
         // RotationCommitted is event variant 2; normalized turns precede the fingerprint.
-        "50 5a 4c 41 02 00 02 00 1f 00 00 00
+        "50 5a 4c 41 03 00 02 00 1f 00 00 00
          b4 24 09 05 84 01 02 07 00 ac 02 04 03
          90 e4 d0 b2 87 d3 ae ee fe df b7 de 9a f1 d9 a2 a3 02",
     );
 }
 
 #[test]
-fn wire_v2_client_rotate_drag_golden() {
-    assert_v2_frame(
+fn wire_v3_client_rotate_drag_golden() {
+    assert_v3_frame(
         client(
             ClientCommandSequence::Control(130),
             ProtocolPieceCommand::RotateDrag {
@@ -184,14 +199,14 @@ fn wire_v2_client_rotate_drag_golden() {
             },
         ),
         // Command variant 4, absolute floats, Some(tick), then signed i8 turns.
-        "50 5a 4c 41 02 00 01 00 16 00 00 00
+        "50 5a 4c 41 03 00 01 00 16 00 00 00
          b4 24 05 07 00 82 01 04 81 01 00 00 a0 3f 00 00 20 c0 01 81 02 ff",
     );
 }
 
 #[test]
-fn wire_v2_client_rotate_drag_without_updates_golden() {
-    assert_v2_frame(
+fn wire_v3_client_rotate_drag_without_updates_golden() {
+    assert_v3_frame(
         client(
             ClientCommandSequence::Control(130),
             ProtocolPieceCommand::RotateDrag {
@@ -201,14 +216,14 @@ fn wire_v2_client_rotate_drag_without_updates_golden() {
                 quarter_turns: 1,
             },
         ),
-        "50 5a 4c 41 02 00 01 00 14 00 00 00
+        "50 5a 4c 41 03 00 01 00 14 00 00 00
          b4 24 05 07 00 82 01 04 81 01 00 00 00 00 00 00 00 00 00 01",
     );
 }
 
 #[test]
-fn wire_v2_drag_rotation_committed_golden() {
-    assert_v2_frame(
+fn wire_v3_drag_rotation_committed_golden() {
+    assert_v3_frame(
         authority(
             133,
             ProtocolAuthorityEvent::DragRotationCommitted(DragRotationCommitted {
@@ -221,7 +236,7 @@ fn wire_v2_drag_rotation_committed_golden() {
                 result: ReleaseResultFingerprint(0x0123_4567_89ab_cdef_fedc_ba98_7654_3210),
             }),
         ),
-        "50 5a 4c 41 02 00 02 00 2a 00 00 00
+        "50 5a 4c 41 03 00 02 00 2a 00 00 00
          b4 24 09 05 85 01 03 07 81 01 82 01 01 81 02
          00 00 a0 3f 00 00 20 c0 03
          90 e4 d0 b2 87 d3 ae ee fe df b7 de 9a f1 d9 a2 a3 02",
@@ -229,8 +244,8 @@ fn wire_v2_drag_rotation_committed_golden() {
 }
 
 #[test]
-fn wire_v2_remote_drag_update_golden() {
-    assert_v2_frame(
+fn wire_v3_remote_drag_update_golden() {
+    assert_v3_frame(
         WireMessage::DragUpdate(RemoteDragUpdate {
             session: SessionId(0x1234),
             authority_epoch: AuthorityEpoch(5),
@@ -240,7 +255,7 @@ fn wire_v2_remote_drag_update_golden() {
             tick: 258,
             delta: Vec2::new(-3.5, 4.25),
         }),
-        "50 5a 4c 41 02 00 03 00 12 00 00 00
+        "50 5a 4c 41 03 00 03 00 12 00 00 00
          b4 24 05 07 81 01 81 01 82 02 00 00 60 c0 00 00 88 40",
     );
 }

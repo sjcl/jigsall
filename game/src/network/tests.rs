@@ -5,6 +5,7 @@ use super::{
     transport::*,
     wire::{self, WireError, WireMessage},
 };
+mod bootstrap;
 use crate::{
     multiplayer::{
         protocol::{ProtocolCommandError, ProtocolDragContexts},
@@ -303,7 +304,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 3] {
+    for version in [1u16, 2, 4] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),
