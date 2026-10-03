@@ -3,6 +3,8 @@ pub mod asset_reader;
 pub mod checkpoint;
 mod components;
 mod game;
+mod gpu_memory;
+pub mod image_settings;
 mod interaction;
 pub mod keybindings;
 pub mod multiplayer;

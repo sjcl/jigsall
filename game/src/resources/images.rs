@@ -3,8 +3,51 @@ use bevy::prelude::*;
 #[derive(Resource)]
 pub struct PuzzleImage {
     pub handle: Handle<Image>,
-    pub size: Vec2,
+    /// Frozen game coordinates, shared by save files and all players.
+    pub logical_size: UVec2,
+    /// Local texture resolution, bounded before Assets<Image> registration.
+    pub texture_size: UVec2,
     pub opaque: bool,
+}
+
+/// Actual device limits, captured on the main thread after renderer startup.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct PuzzleImageLimits {
+    pub device_max_dimension: u32,
+    /// Dedicated VRAM or the active adapter's shared memory capacity, in bytes.
+    /// None means this backend cannot report it; the UI displays the fallback.
+    pub gpu_memory_bytes: Option<u64>,
+}
+
+impl PuzzleImageLimits {
+    /// Copy just the effective cap into worker requests; workers never access GPU resources.
+    pub fn decode_limits(
+        &self,
+        settings: &crate::image_settings::ImageSettings,
+    ) -> ImageDecodeLimits {
+        ImageDecodeLimits {
+            max_texture_dimension: self
+                .device_max_dimension
+                .min(settings.max_texture_dimension(self)),
+        }
+    }
+
+    pub fn max_budget_mib(&self) -> u64 {
+        self.gpu_memory_bytes
+            .map(|bytes| bytes / (1024 * 1024))
+            .unwrap_or_else(|| {
+                let edge = self
+                    .device_max_dimension
+                    .min(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION);
+                u64::from(edge).pow(2) * 4 / (1024 * 1024)
+            })
+            .max(1)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ImageDecodeLimits {
+    pub max_texture_dimension: u32,
 }
 
 /// A failed selection stays visible until the user selects another image.

@@ -11,8 +11,9 @@ pub fn calculate_grid_from_config(
     let (image_width, image_height) = {
         let puzzle_image = puzzle_image?;
         // 画像サイズが適切に読み込まれているかチェック
-        if puzzle_image.size.x > 10.0 && puzzle_image.size.y > 10.0 {
-            (puzzle_image.size.x, puzzle_image.size.y)
+        if puzzle_image.logical_size.min_element() > 10 {
+            let size = puzzle_image.logical_size.as_vec2();
+            (size.x, size.y)
         } else {
             // まだ読み込み中または無効なサイズの場合はNoneを返す
             return None;

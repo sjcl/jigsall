@@ -80,6 +80,7 @@ gestureはpending point、preview、release時の最終rectangleを管理しま�
 
 ```sh
 cargo test -p puzzella-game --release --locked gpu_raster_selection -- --ignored --nocapture
+cargo test -p puzzella-game --release --locked gpu_resized_texture_uses_logical_coordinates_and_shared_alpha_picking -- --ignored --nocapture --test-threads=1
 cargo test -p puzzella-game --release --locked gpu_transparency_and_visibility -- --ignored --nocapture
 cargo test -p puzzella-game --release --locked gpu_radix_sort_visible_counts_and_ties -- --ignored --nocapture
 cargo test -p puzzella-game --release --locked gpu_drag_transform_and_preview_without_readback -- --ignored --nocapture
@@ -90,5 +91,7 @@ cargo test -p puzzella-game --release --locked procedural_gpu_benchmark -- --ign
 ```
 
 2026-10-01、RTX 5090 / Vulkanで成功しました。Rust / WGSL raw hash、約9604画素のCPU shapeと実描画coverage、tab・neck・blank、Z順序、alpha blend、透明穴越しの選択、tabだけの可視性、camera移動、pan / zoom / viewport offset、16-byte単一uploadとidle 0-byte uploadを確認しました。
+
+2026-10-04、RTX 5090 / Vulkan（NVIDIA 610.88）で縮小textureの追加検証に成功しました。logical sizeを128×128のまま、textureを32×32 / 16×16へ縮小し、色の表示、完全にalphaが0の穴、point / rectangle選択の一致を確認しました。Startupから取得したdeviceの最大辺は32768 px、DEVICE_LOCAL heapの報告容量は32187 MiBでした。Lanczos3の境界補間で小さいalphaが残る領域と、完全に透明な領域を区別したfixtureです。
 
 移行時の計測は1k / 10k / 100k / 1Mのnear / medium / entireと全体半透明表示です。[CSV](../benchmarks/procedural-rtx5090.csv)と[計測条件](PROCEDURAL_RENDERER.md)を参照してください。現在のradix sortでは半透明のnear / medium / entireも計測し、[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)に記録しています。GPU完了waitは検証・計測fixture限定です。

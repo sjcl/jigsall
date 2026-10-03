@@ -59,6 +59,7 @@ struct LoadedPuzzle {
     metadata: SaveMetadata,
     hash: ImageHash,
     image: Image,
+    logical_size: UVec2,
     opaque: bool,
 }
 /// Small CPU pixels for a menu texture; full decoded images stay on the worker.
@@ -75,7 +76,7 @@ pub const THUMBNAIL_MAX_EDGE: u32 = 224;
 enum Request {
     Import(ImageHash, Arc<[u8]>),
     List,
-    Load(SaveId),
+    Load(SaveId, ImageDecodeLimits),
     Save {
         game_id: GameId,
         autosave_limit: Option<NonZeroU32>,
@@ -204,8 +205,8 @@ impl PersistenceService {
     pub fn list(&self, state: &mut PersistenceState) {
         self.submit(state, Request::List);
     }
-    pub fn load(&self, state: &mut PersistenceState, id: SaveId) {
-        self.submit(state, Request::Load(id));
+    pub fn load(&self, state: &mut PersistenceState, id: SaveId, limits: ImageDecodeLimits) {
+        self.submit(state, Request::Load(id, limits));
     }
     pub fn delete(&self, state: &mut PersistenceState, id: SaveId) {
         self.submit(state, Request::Delete(id));
@@ -389,18 +390,18 @@ fn run_request<S: SaveStorage>(
                 })
             }),
         ),
-        Request::Load(id) => Reply::Loaded(
+        Request::Load(id, limits) => Reply::Loaded(
             id,
             repo().and_then(|r| {
                 let loaded = r.load(id)?;
-                let image = crate::asset_reader::decode_image_bytes(&loaded.image_bytes)
+                let decoded = crate::asset_reader::decode_image_bytes(&loaded.image_bytes, limits)
                     .map_err(SaveError::Decode)?;
-                if image.size() != loaded.save.checkpoint.definition.image_size {
+                if decoded.logical_size != loaded.save.checkpoint.definition.image_size {
                     return Err(SaveError::CorruptSave(
                         "Image dimensions do not match puzzle definition",
                     ));
                 }
-                let opaque = images::image_is_opaque(&image);
+                let opaque = images::image_is_opaque(&decoded.image);
                 let mut store = PieceDataStore::default();
                 loaded.save.checkpoint.install(&mut store)?;
                 Ok(Box::new(LoadedPuzzle {
@@ -410,7 +411,8 @@ fn run_request<S: SaveStorage>(
                     },
                     metadata: loaded.save.metadata,
                     hash: loaded.save.checkpoint.image_hash,
-                    image,
+                    image: decoded.image,
+                    logical_size: decoded.logical_size,
                     opaque,
                 }))
             }),
@@ -508,11 +510,12 @@ pub(crate) fn poll_results(
                         return;
                     }
                     let loaded = *loaded;
-                    let size = loaded.image.size().as_vec2();
+                    let texture_size = loaded.image.size();
                     let handle = images.add(loaded.image);
                     commands.insert_resource(PuzzleImage {
                         handle,
-                        size,
+                        logical_size: loaded.logical_size,
+                        texture_size,
                         opaque: loaded.opaque,
                     });
                     commands.insert_resource(OriginalPuzzleImage {
@@ -541,6 +544,108 @@ mod tests {
     use crate::persistence::autosave::AutosaveSettingsState;
     use executor::{StorageOperation, StorageValue};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn restore_matches_logical_dimensions_and_installs_a_smaller_local_texture() {
+        use puzzella_core::{PieceId, GENERATOR_VERSION, MAX_PUZZLE_IMAGE_DIMENSION};
+        let dir = tempfile::tempdir().unwrap();
+        let repository = Ok(SaveRepository::new(FilesystemStorage::new(dir.path())));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            20000,
+            20,
+            image::Rgb([12, 34, 56]),
+        ))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+        let bytes = bytes.into_inner();
+        let hash = image_hash(&bytes);
+        let definition = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::new(2, 1),
+            image_size: UVec2::new(MAX_PUZZLE_IMAGE_DIMENSION, 16),
+            snap_distance: 5.0,
+        };
+        let mut store = PieceDataStore::default();
+        store.initialize(
+            (0..2)
+                .map(|id| definition.correct_position(PieceId(id)) + Vec2::splat(100.0))
+                .collect(),
+        );
+        let checkpoint = PuzzleCheckpoint::capture(&store, &definition, hash).unwrap();
+        let metadata = repository
+            .as_ref()
+            .unwrap()
+            .create(
+                SaveTitle::new("Large original").unwrap(),
+                checkpoint.clone(),
+                Some(&bytes),
+            )
+            .unwrap();
+        let (service, _storage) = PersistenceService::with_storage_requests();
+        let mut app = App::new();
+        app.insert_resource(service)
+            .init_resource::<PersistenceState>()
+            .init_resource::<Assets<Image>>()
+            .insert_resource(State::new(AppState::Menu))
+            .insert_resource(NextState::<AppState>::default())
+            .add_systems(Update, poll_results);
+        for cap in [128, 8192] {
+            let reply = run_request(
+                &repository,
+                Request::Load(
+                    metadata.id,
+                    ImageDecodeLimits {
+                        max_texture_dimension: cap,
+                    },
+                ),
+            );
+            // Inspect the actual worker reply before applying the identical UI path.
+            let Reply::Loaded(_, Ok(ref loaded)) = reply else {
+                panic!("restore failed")
+            };
+            assert_eq!(loaded.logical_size, definition.image_size);
+            assert_eq!(loaded.image.size().x, cap);
+            assert_eq!(loaded.restored.store.states, store.states);
+            let (tx, rx) = crossbeam::channel::unbounded();
+            app.world_mut().resource_mut::<PersistenceService>().rx = rx;
+            tx.send((0, reply)).unwrap();
+            app.update();
+            let image = app.world().resource::<PuzzleImage>();
+            assert_eq!(image.logical_size, definition.image_size);
+            assert_eq!(image.texture_size.x, cap);
+            assert_eq!(app.world().resource::<OriginalPuzzleImage>().hash, hash);
+        }
+        assert_eq!(
+            repository.as_ref().unwrap().read_image(hash).unwrap(),
+            bytes
+        );
+        let mut wrong = checkpoint;
+        wrong.definition.image_size.x -= 1;
+        let wrong = repository
+            .as_ref()
+            .unwrap()
+            .create(SaveTitle::new("Wrong dimensions").unwrap(), wrong, None)
+            .unwrap();
+        assert!(matches!(
+            run_request(
+                &repository,
+                Request::Load(
+                    wrong.id,
+                    ImageDecodeLimits {
+                        max_texture_dimension: 128
+                    }
+                )
+            ),
+            Reply::Loaded(
+                _,
+                Err(SaveError::CorruptSave(
+                    "Image dimensions do not match puzzle definition"
+                ))
+            )
+        ));
+    }
 
     #[test]
     fn filesystem_startup_cleans_stale_temps_on_worker_before_requests() {
@@ -762,7 +867,13 @@ mod tests {
                 let mut state = world.resource_mut::<PersistenceState>();
                 state.current_autosave = None;
                 state.game_id = GameId::default();
-                service.load(&mut state, automatic.id);
+                service.load(
+                    &mut state,
+                    automatic.id,
+                    ImageDecodeLimits {
+                        max_texture_dimension: 8192,
+                    },
+                );
             });
         let deadline = Instant::now() + Duration::from_secs(10);
         while app.world().resource::<PersistenceState>().busy {
@@ -878,7 +989,13 @@ mod tests {
         resumed
             .world_mut()
             .resource_scope(|world, service: Mut<PersistenceService>| {
-                service.load(&mut world.resource_mut::<PersistenceState>(), manual.id);
+                service.load(
+                    &mut world.resource_mut::<PersistenceState>(),
+                    manual.id,
+                    ImageDecodeLimits {
+                        max_texture_dimension: 8192,
+                    },
+                );
             });
         let deadline = Instant::now() + Duration::from_secs(10);
         while resumed.world().resource::<PersistenceState>().busy {
@@ -1048,7 +1165,13 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(1));
             }
         };
-        service.load(&mut state, metadata.id);
+        service.load(
+            &mut state,
+            metadata.id,
+            ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
+        );
         let (generation, reply) = foreground_reply();
         assert_eq!(generation, 7);
         let Reply::Loaded(id, Ok(loaded)) = reply else {

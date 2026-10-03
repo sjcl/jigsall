@@ -44,6 +44,8 @@ pub fn draw_save_dialogs(
     mut thumbnails: ResMut<SaveThumbnails>,
     mut state: ResMut<PersistenceState>,
     service: Res<PersistenceService>,
+    image_limits: Res<PuzzleImageLimits>,
+    image_settings: Res<puzzella_game::image_settings::ImageSettingsState>,
     definition: Option<Res<PuzzleDefinition>>,
     original: Option<Res<OriginalPuzzleImage>>,
     image: Option<Res<PuzzleImage>>,
@@ -73,6 +75,7 @@ pub fn draw_save_dialogs(
             &mut dialogs,
             &mut state,
             &service,
+            image_limits.decode_limits(&image_settings.current),
             &mut thumbnails,
             &i18n,
         );
@@ -103,11 +106,12 @@ pub fn draw_save_dialogs(
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
                                 if let (Some(image), Some(texture)) = (image.as_ref(), texture) {
-                                    let scale = (72.0 / image.size.x).min(72.0 / image.size.y);
+                                    let size = image.logical_size.as_vec2();
+                                    let scale = (72.0 / size.x).min(72.0 / size.y);
                                     ui.add(
                                         egui::Image::new((
                                             texture,
-                                            egui::vec2(image.size.x * scale, image.size.y * scale),
+                                            egui::vec2(size.x * scale, size.y * scale),
                                         ))
                                         .corner_radius(6),
                                     );
@@ -206,11 +210,13 @@ pub fn draw_save_dialogs(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_load_dialog(
     ctx: &egui::Context,
     dialogs: &mut SaveDialogs,
     state: &mut PersistenceState,
     service: &PersistenceService,
+    image_limits: ImageDecodeLimits,
     thumbnails: &mut SaveThumbnails,
     i18n: &Localization,
 ) {
@@ -360,7 +366,7 @@ fn paint_load_dialog(
                     service.delete(state, id);
                 } else {
                     dialogs.loading_save = Some(id);
-                    service.load(state, id);
+                    service.load(state, id, image_limits);
                 }
             }
             status_with_label(

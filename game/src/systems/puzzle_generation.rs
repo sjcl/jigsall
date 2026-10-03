@@ -73,7 +73,7 @@ pub fn spawn_grid_reference(mut commands: Commands, image: Res<PuzzleImage>) {
     commands.spawn((
         Sprite {
             image: image.handle.clone(),
-            custom_size: Some(image.size),
+            custom_size: Some(image.logical_size.as_vec2()),
             color: Color::WHITE.with_alpha(0.3),
             ..default()
         },

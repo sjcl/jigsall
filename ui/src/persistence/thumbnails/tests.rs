@@ -84,7 +84,17 @@ fn input_frame(
         // Feed the same per-frame scroll input consumed by ScrollArea.
         ui.ctx()
             .input_mut(|input| input.smooth_scroll_delta.y = scroll);
-        paint_load_dialog(ui.ctx(), dialogs, state, service, thumbnails, &english());
+        paint_load_dialog(
+            ui.ctx(),
+            dialogs,
+            state,
+            service,
+            puzzella_game::resources::ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
+            thumbnails,
+            &english(),
+        );
     })
 }
 
@@ -137,7 +147,17 @@ fn load_cards_show_autosave_next_to_the_timestamp_only_for_autosaves() {
                     ..Default::default()
                 },
                 |ui| {
-                    paint_load_dialog(ui.ctx(), dialogs, saves, &service, thumbnails, &i18n);
+                    paint_load_dialog(
+                        ui.ctx(),
+                        dialogs,
+                        saves,
+                        &service,
+                        puzzella_game::resources::ImageDecodeLimits {
+                            max_texture_dimension: 8192,
+                        },
+                        thumbnails,
+                        &i18n,
+                    );
                 },
             )
         };
@@ -974,6 +994,9 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
                         &mut dialogs,
                         &mut state,
                         &service,
+                        puzzella_game::resources::ImageDecodeLimits {
+                            max_texture_dimension: 8192,
+                        },
                         &mut thumbnails,
                         &i18n,
                     );
@@ -992,6 +1015,9 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
                     &mut dialogs,
                     &mut state,
                     &service,
+                    puzzella_game::resources::ImageDecodeLimits {
+                        max_texture_dimension: 8192,
+                    },
                     &mut thumbnails,
                     &i18n,
                 );

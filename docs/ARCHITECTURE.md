@@ -86,7 +86,11 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 [CPU benchmark](../game/examples/initialization_bench.rs)と[CSV](../benchmarks/dense-initialization.csv)は4096²画像寸法・seed 42・releaseで各サイズ5回です。100万件の中央値はworker生成6.4783 ms、main側の所有権受け取り0.0024 ms、初回upload準備を含む`app.update` 0.0810 msでした。schedule overheadを含み、実GPU upload・GPU準備待ち・worker threadの起動時間は含みません。生成・受け取り・初回upload・共有解放後の編集で同じallocationを使うこともassertしています。論理allocationの削減であり、OS RSSのピークは未測定です。
 
-画像workerはデコード結果を`into_rgba8`で消費し、既にRGBA8ならpixel領域を再利用します。画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.19.1のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldにはImageの寸法などのmetadataとhandle、PuzzleImageのopaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
+画像workerは元画像からdevice非依存のlogical size（最大辺16384 px、整数比率・最近傍の寸法丸め）を計算し、次にその端末のGPU辺上限と画像メモリ予算へ収まるtexture sizeを計算します。workerでLanczos3によりtexture sizeへ一度だけresizeし、`into_rgba8`で消費してからmain threadへ渡します。縮小不要で既にRGBA8ならpixel領域を再利用します。`PuzzleImage.logical_size`がゲーム定義・生成・カメラ・背景Sprite・UIの座標系で、`texture_size`は描画用の端末別解像度です。寸法を毎frame textureから上書きする経路はありません。main / point / rectangleは同じ縮小textureと正規化UVを共有し、shaderにdevice寸法を持ち込みません。
+
+Startupで使用中のRenderDevice / RenderAdapterから`PuzzleImageLimits`を取得し、画像選択と保存loadのrequestには予算から算出した上限値だけをコピーします。workerはGPU resourcesへアクセスしません。予算は既定でGPU容量の20%を使う自動モードで、割合・手動予算をSettingsから変更できます。取得経路、fallback、設定の適用時期は[SETTINGS.md](SETTINGS.md)を参照してください。元encoded bytes / SHA-256は縮小と独立して保持します。encoded入力は512 MiB、decoderのallocation limitは4 GiBです。後者はresize等も含むCPUピーク全体の上限ではありません。
+
+画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.19.1のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldには寸法metadataとhandle、opaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
 
 永続連結の追加後もdense stateの受け取り・初回uploadはcopy不要ですが、`initialize_dense`は新しい8-byte / pieceのDSU領域をO(N)で初期化します。上記0.0024 msはDSU導入前の受け取り測定で、現在の初期化コストは[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)のmetadata計測を参照してください。通常idle / pointerにこの処理はありません。
 

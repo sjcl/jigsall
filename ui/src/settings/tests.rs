@@ -1,6 +1,111 @@
 use super::*;
 
 #[test]
+fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut settings = ImageSettingsState::load(Some(path.clone()));
+    let limits = PuzzleImageLimits {
+        device_max_dimension: 16384,
+        gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+    };
+    let ctx = egui::Context::default();
+    let render = |settings: &mut ImageSettingsState, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(640.0, 900.0),
+                )),
+                events,
+                ..default()
+            },
+            |ui| {
+                paint_image_settings(ui, settings, &limits, &english());
+            },
+        )
+    };
+    for _ in 0..3 {
+        render(&mut settings, vec![]).drop_without_applying_deltas();
+    }
+    let click = |settings: &mut ImageSettingsState, label: &str| {
+        let output = render(settings, vec![]);
+        let pos = text_position(&output, label);
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            render(
+                settings,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+    click(&mut settings, "Automatic (based on GPU memory capacity)");
+    assert_eq!(
+        settings.current.texture_budget,
+        TextureBudget::Manual { mib: 1638 }
+    );
+    click(&mut settings, "1638 MiB");
+    render(
+        &mut settings,
+        vec![
+            egui::Event::Text("4096".into()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            },
+        ],
+    )
+    .drop_without_applying_deltas();
+    assert_eq!(
+        settings.current.texture_budget,
+        TextureBudget::Manual { mib: 4096 }
+    );
+    click(&mut settings, "Automatic (based on GPU memory capacity)");
+    click(&mut settings, "20 %");
+    render(
+        &mut settings,
+        vec![
+            egui::Event::Text("10".into()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            },
+        ],
+    )
+    .drop_without_applying_deltas();
+    assert_eq!(
+        settings.current.texture_budget,
+        TextureBudget::Auto { percent: 10 }
+    );
+    crate::preferences::wait_for_save(|| {
+        settings.poll_save();
+        settings.is_save_pending()
+    });
+    assert_eq!(
+        ImageSettingsState::load(Some(path)).current,
+        settings.current
+    );
+    let output = render(&mut settings, vec![]);
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("next image selection or save load"))));
+    output.drop_without_applying_deltas();
+}
+
+#[test]
 fn autosave_widgets_persist_disable_enable_interval_and_limit_edits() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
@@ -175,6 +280,11 @@ fn frame_with_state(
                 &mut english(),
                 &mut UiPreferences::load(None),
                 &mut AutosaveSettingsState::load(None),
+                &mut ImageSettingsState::load(None),
+                &PuzzleImageLimits {
+                    device_max_dimension: 8192,
+                    gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+                },
                 &mut KeyBindingsState::load(None),
                 &CaptureInput {
                     keys: &ButtonInput::default(),
@@ -472,6 +582,11 @@ fn localized_frame(
                 i18n,
                 preferences,
                 &mut AutosaveSettingsState::load(None),
+                &mut ImageSettingsState::load(None),
+                &PuzzleImageLimits {
+                    device_max_dimension: 8192,
+                    gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+                },
                 &mut KeyBindingsState::load(None),
                 &CaptureInput {
                     keys: &ButtonInput::default(),
@@ -599,6 +714,11 @@ fn key_frame(
                 &mut english(),
                 &mut UiPreferences::load(None),
                 &mut AutosaveSettingsState::load(None),
+                &mut ImageSettingsState::load(None),
+                &PuzzleImageLimits {
+                    device_max_dimension: 8192,
+                    gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+                },
                 key_state,
                 &CaptureInput {
                     keys: &ButtonInput::default(),
@@ -922,6 +1042,128 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
 }
 
 /// Render the real game menus and save screenshots without touching user settings.
+#[test]
+#[ignore = "requires a native window and GPU"]
+fn native_image_budget_ui_probe() {
+    use bevy::{
+        render::view::screenshot::{save_to_disk, Screenshot},
+        winit::{WinitPlugin, WinitSettings},
+    };
+    use std::time::{Duration, Instant};
+    let started = std::time::SystemTime::now();
+    #[derive(Resource)]
+    struct Probe {
+        start: Instant,
+        phase: usize,
+    }
+    fn paint(
+        mut contexts: EguiContexts,
+        mut settings: ResMut<ImageSettingsState>,
+        limits: Res<PuzzleImageLimits>,
+        i18n: Res<Localization>,
+    ) {
+        let Ok(ctx) = contexts.ctx_mut() else { return };
+        theme::prepare(ctx);
+        egui::Modal::new("image_budget_probe".into())
+            .frame(theme::frame())
+            .show(ctx, |ui| {
+                ui.set_width(520.0);
+                theme::card().show(ui, |ui| {
+                    paint_image_settings(ui, &mut settings, &limits, &i18n)
+                });
+            });
+    }
+    fn advance(
+        mut commands: Commands,
+        mut probe: ResMut<Probe>,
+        mut settings: ResMut<ImageSettingsState>,
+        limits: Res<PuzzleImageLimits>,
+        mut i18n: ResMut<Localization>,
+        mut exit: MessageWriter<AppExit>,
+    ) {
+        if probe.start.elapsed() < Duration::from_secs(2 * (probe.phase as u64 + 1)) {
+            return;
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target");
+        std::fs::create_dir_all(&root).unwrap();
+        match probe.phase {
+            0 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(root.join("image-budget-auto-en.png")));
+            }
+            1 => {
+                settings.current.texture_budget = TextureBudget::Manual {
+                    mib: limits.max_budget_mib(),
+                };
+                i18n.set_preference(LanguagePreference::Locale(Locale::JA));
+            }
+            2 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(root.join("image-budget-manual-ja.png")));
+            }
+            _ => {
+                exit.write(AppExit::Success);
+            }
+        }
+        probe.phase += 1;
+    }
+    let mut preferences = UiPreferences::load(None);
+    preferences.language = LanguagePreference::Locale(Locale::EN_US);
+    let (service, _storage) =
+        puzzella_game::persistence::runtime::PersistenceService::with_storage_requests();
+    App::new()
+        .add_plugins(
+            DefaultPlugins
+                .set(WinitPlugin {
+                    run_on_any_thread: true,
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Image budget UI probe".into(),
+                        resolution: (800, 900).into(),
+                        visible: false,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
+        .insert_resource(DisplaySettingsState::load(None))
+        .insert_resource(preferences)
+        .insert_resource(ImageSettingsState::load(None))
+        .insert_resource(AutosaveSettingsState::load(None))
+        .insert_resource(service)
+        .insert_resource(KeyBindingsState::load(None))
+        .insert_resource(english())
+        .insert_resource(WinitSettings::continuous())
+        .add_plugins((
+            crate::GameUiPlugin,
+            puzzella_game::asset_reader::DirectFileAssetPlugin,
+            puzzella_game::GamePlugin,
+        ))
+        .insert_resource(Probe {
+            start: Instant::now(),
+            phase: 0,
+        })
+        .add_systems(
+            bevy_egui::EguiPrimaryContextPass,
+            paint.after(draw_settings_ui),
+        )
+        .add_systems(Update, advance)
+        .run();
+    for name in ["image-budget-auto-en.png", "image-budget-manual-ja.png"] {
+        let metadata = std::fs::metadata(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../target")
+                .join(name),
+        )
+        .unwrap();
+        assert!(metadata.len() > 0);
+        assert!(metadata.modified().unwrap() >= started);
+    }
+}
+
 #[test]
 #[ignore = "requires a native window and GPU"]
 fn native_settings_ui_probe() {

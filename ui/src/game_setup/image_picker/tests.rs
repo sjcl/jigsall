@@ -47,6 +47,11 @@ fn app() -> App {
         .init_resource::<ImagePicker>()
         .init_resource::<ExternalFileRegistry>()
         .init_resource::<Frames>()
+        .insert_resource(PuzzleImageLimits {
+            device_max_dimension: 8192,
+            gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+        })
+        .insert_resource(ImageSettingsState::load(None))
         .insert_resource(ImageLoadSender { tx_results })
         .insert_resource(ImageLoadChannels { rx_results })
         .insert_resource(PuzzleConfig {
@@ -55,7 +60,8 @@ fn app() -> App {
         })
         .insert_resource(PuzzleImage {
             handle: Handle::default(),
-            size: Vec2::new(100.0, 80.0),
+            logical_size: UVec2::new(100, 80),
+            texture_size: UVec2::new(100, 80),
             opaque: true,
         })
         .insert_resource(OriginalPuzzleImage {
@@ -97,8 +103,8 @@ fn assert_previous_image(app: &App) {
         "previous.png"
     );
     assert_eq!(
-        app.world().resource::<PuzzleImage>().size,
-        Vec2::new(100.0, 80.0)
+        app.world().resource::<PuzzleImage>().logical_size,
+        UVec2::new(100, 80)
     );
     assert_eq!(
         app.world().resource::<OriginalPuzzleImage>().hash,
@@ -178,7 +184,7 @@ fn selected_file_uses_existing_decode_and_original_image_pipeline() {
         .recv_timeout(Duration::from_secs(5))
         .unwrap();
     assert_eq!(&result.virtual_key, key);
-    assert_eq!(result.image.unwrap().size(), UVec2::new(2, 3));
+    assert_eq!(result.image.unwrap().image.size(), UVec2::new(2, 3));
     let original = result.original.unwrap();
     assert_eq!(
         original.hash,
@@ -232,7 +238,7 @@ fn replacing_image_releases_previous_path_and_keeps_worker_results() {
     let loaded: std::collections::HashMap<_, _> = (0..2)
         .map(|_| {
             let result = results.recv_timeout(Duration::from_secs(5)).unwrap();
-            (result.virtual_key, result.image.unwrap().size())
+            (result.virtual_key, result.image.unwrap().image.size())
         })
         .collect();
     assert_eq!(loaded.get(&first_key), Some(&UVec2::new(2, 3)));

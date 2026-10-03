@@ -77,7 +77,7 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 
 `PUZIMG\0\0`（8 bytes）、PUZIMG_FORMAT_VERSION（u16）、payload length（u64）、ImageHash（32 bytes）、original encoded payload の順です。ImageHash は **SHA-256(original encoded image bytes)**。PNG/JPEG 等を再エンコードせず、その bytes を bit-identical に格納します。元 path / directory / filename は保存しません。encoded payload の上限は 512 MiB です。
 
-読み取り時に magic/version、exact length、payload の SHA-256、header hash、logical storage key hash を照合します。検証済み payload だけを共通 `decode_image_bytes()` に渡し、中間 PNG/JPEG ファイルへ展開しません。
+読み取り時に magic/version、exact length、payload の SHA-256、header hash、logical storage key hash を照合します。検証済み payload だけを共通 `decode_image_bytes()` に渡し、中間 PNG/JPEG ファイルへ展開しません。workerは元画像の寸法から共通の整数演算でlogical size（最大辺16384 px）を求め、保存definitionのimage_sizeと照合します。texture寸法との照合は行わず、その端末のGPU辺上限・画像予算へ縮小したtextureをAssetsへ登録します。異なる端末の予算でも保存された座標系は変わりません。definitionの0寸法・16384超過はsave / snapshot共通validationで拒否します。以前の16384超過definitionを含む保存の自動移行は行いません。
 
 ## 保存先と atomic write
 

@@ -18,7 +18,29 @@ pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
 /// Version 5 retains the v4 fillets and decodes distinct macro shape classes.
 pub const GENERATOR_VERSION: u16 = 5;
 
-/// Frozen at game start. Image dimensions also participate in reconstruction.
+/// Device-independent upper bound for the puzzle's coordinate system.
+pub const MAX_PUZZLE_IMAGE_DIMENSION: u32 = 16_384;
+
+/// Fit within a maximum edge without upscaling. Round the shorter edge to the
+/// nearest pixel (ties up), retaining at least one pixel for very thin images.
+/// u64 intermediates make this identical for all u32 source dimensions.
+pub fn fit_image_size(size: UVec2, max_dimension: u32) -> UVec2 {
+    if size.x == 0 || size.y == 0 || max_dimension == 0 {
+        return UVec2::ZERO;
+    }
+    let longest = size.max_element();
+    if longest <= max_dimension {
+        return size;
+    }
+    let scale = |edge: u32| {
+        ((u64::from(edge) * u64::from(max_dimension) + u64::from(longest) / 2) / u64::from(longest))
+            .max(1) as u32
+    };
+    UVec2::new(scale(size.x), scale(size.y))
+}
+
+/// Frozen at game start. Logical image dimensions participate in reconstruction;
+/// local GPU texture dimensions never affect these coordinates.
 #[derive(Resource, Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PuzzleDefinition {
     pub generator_version: u16,
@@ -41,6 +63,9 @@ impl PuzzleDefinition {
         }
         if self.image_size.x == 0 || self.image_size.y == 0 {
             return Err("Image dimensions must be positive");
+        }
+        if self.image_size.max_element() > MAX_PUZZLE_IMAGE_DIMENSION {
+            return Err("Image dimensions exceed the puzzle limit");
         }
         if !self.snap_distance.is_finite() || self.snap_distance <= 0.0 {
             return Err("Snap distance must be finite and positive");
@@ -240,6 +265,55 @@ pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_fit_rounds_consistently_without_upscaling_or_overflow() {
+        for (source, limit, expected) in [
+            (UVec2::new(24000, 16000), 16384, UVec2::new(16384, 10923)),
+            (UVec2::new(20000, 12000), 16384, UVec2::new(16384, 9830)),
+            (UVec2::new(16384, 9830), 8192, UVec2::new(8192, 4915)),
+            (UVec2::new(100, 200), 16384, UVec2::new(100, 200)),
+            (
+                UVec2::splat(u32::MAX),
+                u32::MAX - 1,
+                UVec2::splat(u32::MAX - 1),
+            ),
+            (UVec2::new(u32::MAX, 1), 16384, UVec2::new(16384, 1)),
+            (UVec2::new(4, 1), 2, UVec2::new(2, 1)),
+            (UVec2::ZERO, 16384, UVec2::ZERO),
+            (UVec2::new(100, 0), 16384, UVec2::ZERO),
+            (UVec2::ONE, 0, UVec2::ZERO),
+        ] {
+            assert_eq!(fit_image_size(source, limit), expected);
+            assert_eq!(
+                fit_image_size(UVec2::new(source.y, source.x), limit),
+                UVec2::new(expected.y, expected.x)
+            );
+        }
+    }
+
+    #[test]
+    fn definition_rejects_zero_and_oversized_logical_image_dimensions() {
+        let mut definition = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::ONE,
+            image_size: UVec2::splat(MAX_PUZZLE_IMAGE_DIMENSION),
+            snap_distance: 5.0,
+        };
+        assert!(definition.validate().is_ok());
+        for image_size in [
+            UVec2::ZERO,
+            UVec2::new(1, 0),
+            UVec2::new(0, 1),
+            UVec2::new(MAX_PUZZLE_IMAGE_DIMENSION + 1, 1),
+            UVec2::new(1, MAX_PUZZLE_IMAGE_DIMENSION + 1),
+            UVec2::splat(u32::MAX),
+        ] {
+            definition.image_size = image_size;
+            assert!(definition.validate().is_err(), "{image_size:?}");
+        }
+    }
+
     #[test]
     fn precomputed_coordinates_exactly_match_generator_arithmetic() {
         for (grid_size, image_size) in [

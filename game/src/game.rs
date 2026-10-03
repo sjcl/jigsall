@@ -1,4 +1,3 @@
-use crate::systems::image_loading::update_puzzle_image_size;
 use crate::{components::*, resources::*, systems::*};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
@@ -16,10 +15,14 @@ impl Plugin for GamePlugin {
         app.add_plugins(crate::settings::DisplaySettingsPlugin);
         app.add_plugins(crate::selection::PuzzleSelectionPlugin)
             .init_resource::<crate::keybindings::KeyBindingsState>()
+            .init_resource::<crate::image_settings::ImageSettingsState>()
             .init_resource::<crate::keybindings::KeyPresses>()
             .add_systems(
                 Update,
                 (
+                    |mut state: ResMut<crate::image_settings::ImageSettingsState>| {
+                        state.poll_save()
+                    },
                     |mut state: ResMut<crate::keybindings::KeyBindingsState>| state.poll_save(),
                     |mut state: ResMut<crate::persistence::autosave::AutosaveSettingsState>| {
                         state.poll_save()
@@ -75,9 +78,7 @@ impl Plugin for GamePlugin {
             .add_systems(OnEnter(GameCompleteSubState::Paused), release_local_drag)
             .add_systems(
                 Update,
-                (handle_image_load_results, update_puzzle_image_size)
-                    .chain()
-                    .run_if(in_state(AppState::GameSetup)),
+                handle_image_load_results.run_if(in_state(AppState::GameSetup)),
             )
             .add_systems(
                 Update,
@@ -205,7 +206,7 @@ fn initialize_game(
         generator_version: GENERATOR_VERSION,
         seed: config.seed,
         grid_size: UVec2::new(config.grid_size.0 as u32, config.grid_size.1 as u32),
-        image_size: image.size.as_uvec2(),
+        image_size: image.logical_size,
         snap_distance: config.snap_distance,
     };
     if let Err(error) = definition.validate() {
@@ -376,6 +377,9 @@ mod tests {
             "fixture.png".into(),
             path.clone(),
             app.world().resource::<ImageLoadSender>().tx_results.clone(),
+            ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
@@ -475,7 +479,13 @@ mod tests {
             app.insert_resource(crate::render::RenderReady::waiting_for_test());
             app.world_mut()
                 .resource_scope(|world, service: Mut<PersistenceService>| {
-                    service.load(&mut world.resource_mut::<PersistenceState>(), metadata.id);
+                    service.load(
+                        &mut world.resource_mut::<PersistenceState>(),
+                        metadata.id,
+                        ImageDecodeLimits {
+                            max_texture_dimension: 8192,
+                        },
+                    );
                 });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while *app.world().resource::<State<AppState>>().get() == AppState::Menu {
@@ -704,7 +714,8 @@ mod tests {
                 .add(Image::default());
             app.world_mut().insert_resource(PuzzleImage {
                 handle,
-                size: Vec2::splat(200.0),
+                logical_size: UVec2::splat(200),
+                texture_size: UVec2::ONE,
                 opaque: true,
             });
             let mut config = app.world_mut().resource_mut::<PuzzleConfig>();
@@ -887,7 +898,8 @@ mod local_identity_tests {
                 .init_resource::<PieceDataStore>()
                 .insert_resource(PuzzleImage {
                     handle: default(),
-                    size: Vec2::new(40.0, 20.0),
+                    logical_size: UVec2::new(40, 20),
+                    texture_size: UVec2::new(40, 20),
                     opaque: true,
                 });
             app.world_mut().run_system_once(initialize_game).unwrap();
@@ -970,7 +982,8 @@ mod local_identity_tests {
         );
         app.insert_resource(PuzzleImage {
             handle: default(),
-            size: Vec2::new(40.0, 20.0),
+            logical_size: UVec2::new(40, 20),
+            texture_size: UVec2::new(40, 20),
             opaque: true,
         });
         app.world_mut().run_system_once(initialize_game).unwrap();

@@ -35,7 +35,17 @@ hkdf = "=0.13.0"
 sha2_channel = { package = "sha2", version = "=0.11.0" }
 
 [target.'cfg(windows)'.dependencies]
-wgpu-hal.workspace = true
+wgpu-hal = { workspace = true, features = ["vulkan", "dx12"] }
+ash.workspace = true
+wgpu-types.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu-hal = { workspace = true, features = ["vulkan"] }
+ash.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu-hal = { workspace = true, features = ["metal"] }
+objc2-metal.workspace = true
 
 [features]
 default = []

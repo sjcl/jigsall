@@ -949,7 +949,7 @@ fn dense_million_piece_remote_context_retains_mask_and_scalar_presentation() {
         generator_version: GENERATOR_VERSION,
         seed: 42,
         grid_size: UVec2::splat(1000),
-        image_size: UVec2::splat(20000),
+        image_size: UVec2::splat(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION),
         snap_distance: 5.0,
     };
     let mut s = Simulation::with_definition(d, &vec![Vec2::splat(1000.0); count], &[]);

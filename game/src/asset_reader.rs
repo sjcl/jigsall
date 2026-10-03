@@ -1,4 +1,6 @@
+use crate::resources::ImageDecodeLimits;
 use bevy::prelude::*;
+use puzzella_core::{fit_image_size, MAX_PUZZLE_IMAGE_DIMENSION};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -104,8 +106,15 @@ impl Plugin for DirectFileAssetPlugin {
 /// A decoded image and its original bytes, identified by the selection's virtual key.
 pub struct ImageLoadResult {
     pub virtual_key: String,
-    pub image: Result<Image, String>,
+    pub image: Result<DecodedPuzzleImage, String>,
     pub original: Option<crate::persistence::runtime::OriginalPuzzleImage>,
+}
+
+#[derive(Debug)]
+pub struct DecodedPuzzleImage {
+    pub image: Image,
+    pub source_size: UVec2,
+    pub logical_size: UVec2,
 }
 
 /// Restrict puzzle inputs even if another dependency enables additional image codecs.
@@ -125,36 +134,70 @@ pub(crate) fn decode_puzzle_image_bytes(encoded: &[u8]) -> image::ImageResult<im
             ImageFormatHint::Exact(format).into(),
         ));
     }
-    image::load_from_memory_with_format(encoded, format)
+    // Large source images are reduced before GPU upload, but decoding still
+    // needs the original pixels. Permit the documented 24k x 16k inputs while
+    // retaining a separate finite decoder allocation bound (not a VRAM budget).
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(encoded), format);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(4 * 1024 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode()
 }
 
-/// Decode only; both selected source files and verified .puzimg payloads use this.
-pub fn decode_image_bytes(encoded: &[u8]) -> Result<Image, String> {
+/// Decode and resize on the worker, before any Bevy asset can be uploaded.
+/// Selected source files and verified .puzimg payloads use the same size policy.
+pub fn decode_image_bytes(
+    encoded: &[u8],
+    limits: ImageDecodeLimits,
+) -> Result<DecodedPuzzleImage, String> {
+    if limits.max_texture_dimension == 0 {
+        return Err("Puzzle texture dimension limit must be positive".into());
+    }
     let decoded = decode_puzzle_image_bytes(encoded).map_err(|e| e.to_string())?;
+    let source_size = UVec2::new(decoded.width(), decoded.height());
+    let logical_size = fit_image_size(source_size, MAX_PUZZLE_IMAGE_DIMENSION);
+    if logical_size == UVec2::ZERO {
+        return Err("Image dimensions must be positive".into());
+    }
+    let texture_size = fit_image_size(logical_size, limits.max_texture_dimension);
+    let decoded = if texture_size != source_size {
+        decoded.resize_exact(
+            texture_size.x,
+            texture_size.y,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        decoded
+    };
     let rgba = decoded.into_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(Image::new(
+    let image = Image::new(
         bevy::render::render_resource::Extent3d {
-            width,
-            height,
+            width: texture_size.x,
+            height: texture_size.y,
             depth_or_array_layers: 1,
         },
         bevy::render::render_resource::TextureDimension::D2,
         rgba.into_raw(),
         bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
         bevy::asset::RenderAssetUsages::RENDER_WORLD,
-    ))
+    );
+    Ok(DecodedPuzzleImage {
+        image,
+        source_size,
+        logical_size,
+    })
 }
 
 pub fn start_thread_image_load(
     virtual_key: String,
     file_path: PathBuf,
     sender: crossbeam::channel::Sender<ImageLoadResult>,
+    limits: ImageDecodeLimits,
 ) {
     std::thread::spawn(move || {
         use std::io::Read;
         let result =
-            (|| -> Result<(Image, crate::persistence::runtime::OriginalPuzzleImage), String> {
+            (|| -> Result<(DecodedPuzzleImage, crate::persistence::runtime::OriginalPuzzleImage), String> {
                 let file = std::fs::File::open(file_path).map_err(|e| e.to_string())?;
                 let limit = 512 * 1024 * 1024;
                 let mut bytes = Vec::new();
@@ -164,7 +207,7 @@ pub fn start_thread_image_load(
                 if bytes.len() as u64 > limit {
                     return Err("Image is too large".into());
                 }
-                let image = decode_image_bytes(&bytes)?;
+                let image = decode_image_bytes(&bytes, limits)?;
                 let original = crate::persistence::runtime::OriginalPuzzleImage {
                     hash: crate::persistence::image_hash(&bytes),
                     encoded: Some(bytes.into()),
@@ -190,6 +233,87 @@ mod tests {
         asset::RenderAssetUsages,
         render::{render_asset::RenderAsset, texture::GpuImage},
     };
+
+    #[test]
+    fn oversized_source_has_common_logical_size_and_local_texture_sizes() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            24000,
+            16,
+            image::Rgba([30, 60, 90, 255]),
+        ))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+        let hash = crate::persistence::image_hash(bytes.get_ref());
+        for (cap, expected) in [
+            (16384, UVec2::new(16384, 11)),
+            (8192, UVec2::new(8192, 6)),
+            (128, UVec2::new(128, 1)),
+        ] {
+            let decoded = decode_image_bytes(
+                bytes.get_ref(),
+                ImageDecodeLimits {
+                    max_texture_dimension: cap,
+                },
+            )
+            .unwrap();
+            assert_eq!(decoded.source_size, UVec2::new(24000, 16));
+            assert_eq!(decoded.logical_size, UVec2::new(16384, 11));
+            assert_eq!(decoded.image.size(), expected);
+            assert_eq!(
+                decoded.image.data.as_ref().unwrap().len(),
+                expected.x as usize * expected.y as usize * 4
+            );
+            assert!(crate::resources::images::image_is_opaque(&decoded.image));
+            assert_eq!(decoded.image.asset_usage, RenderAssetUsages::RENDER_WORLD);
+            assert_eq!(crate::persistence::image_hash(bytes.get_ref()), hash);
+        }
+        assert!(decode_image_bytes(
+            bytes.get_ref(),
+            ImageDecodeLimits {
+                max_texture_dimension: 0
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resized_rgba_preserves_transparency_and_small_images_are_not_upscaled() {
+        for alpha in [0, 128, 255] {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+                8,
+                4,
+                image::Rgba([30, 60, 90, alpha]),
+            ))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+            for cap in [2, 16384] {
+                let decoded = decode_image_bytes(
+                    bytes.get_ref(),
+                    ImageDecodeLimits {
+                        max_texture_dimension: cap,
+                    },
+                )
+                .unwrap();
+                assert_eq!(decoded.logical_size, UVec2::new(8, 4));
+                assert_eq!(
+                    decoded.image.size(),
+                    if cap == 2 {
+                        UVec2::new(2, 1)
+                    } else {
+                        UVec2::new(8, 4)
+                    }
+                );
+                assert!(decoded
+                    .image
+                    .data
+                    .unwrap()
+                    .chunks_exact(4)
+                    .all(|pixel| pixel[3] == alpha));
+            }
+        }
+    }
 
     #[test]
     fn unused_image_formats_have_no_decoder() {
@@ -241,7 +365,13 @@ mod tests {
                 panic!("{format:?} reached a decoder");
             };
             assert_eq!(error.format_hint(), ImageFormatHint::Exact(format));
-            assert!(decode_image_bytes(header).is_err());
+            assert!(decode_image_bytes(
+                header,
+                ImageDecodeLimits {
+                    max_texture_dimension: 8192
+                }
+            )
+            .is_err());
         }
     }
 
@@ -362,7 +492,14 @@ mod tests {
             .unwrap();
         let original_bytes = std::fs::read(&path).unwrap();
         let (tx, rx) = crossbeam::channel::bounded(1);
-        start_thread_image_load("fixture.jpg".into(), path.clone(), tx);
+        start_thread_image_load(
+            "fixture.jpg".into(),
+            path.clone(),
+            tx,
+            ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
+        );
         let loaded = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
         assert!(loaded.image.is_ok());
         std::fs::remove_file(path).unwrap();
@@ -392,10 +529,17 @@ mod tests {
             .save(&path)
             .unwrap();
         let (tx, rx) = crossbeam::channel::bounded(1);
-        start_thread_image_load("fixture.png".into(), path.clone(), tx);
+        start_thread_image_load(
+            "fixture.png".into(),
+            path.clone(),
+            tx,
+            ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
+        );
         let result = rx.recv_timeout(std::time::Duration::from_secs(10));
         std::fs::remove_file(path).unwrap();
-        let mut image = result.unwrap().image.unwrap();
+        let mut image = result.unwrap().image.unwrap().image;
         assert_eq!(image.asset_usage, RenderAssetUsages::RENDER_WORLD);
         assert!(!crate::resources::images::image_is_opaque(&image));
         let allocation = image.data.as_ref().unwrap().as_ptr();

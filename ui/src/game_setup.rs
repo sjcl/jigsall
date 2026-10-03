@@ -34,7 +34,7 @@ pub fn draw_game_setup_ui(
     let image_loaded = image_error.is_none()
         && puzzle_image
             .as_ref()
-            .is_some_and(|image| image.size.x > 10.0 && image.size.y > 10.0);
+            .is_some_and(|image| image.logical_size.min_element() > 10);
     let mut select_image = false;
     egui::Area::new("new_game_screen".into())
         .enabled(!image_picker.is_open())
@@ -163,11 +163,10 @@ fn image_section(
     );
     if let (Some(image), Some(texture)) = (image, texture) {
         let available = rect.shrink(12.0).size();
-        let scale = (available.x / image.size.x).min(available.y / image.size.y);
-        let image_rect = egui::Rect::from_center_size(
-            rect.center(),
-            egui::vec2(image.size.x * scale, image.size.y * scale),
-        );
+        let size = image.logical_size.as_vec2();
+        let scale = (available.x / size.x).min(available.y / size.y);
+        let image_rect =
+            egui::Rect::from_center_size(rect.center(), egui::vec2(size.x * scale, size.y * scale));
         ui.painter().image(
             texture,
             image_rect,
@@ -215,8 +214,8 @@ fn image_section(
                 i18n.format(
                     "setup-image-pixels",
                     &[
-                        ("width", format!("{:.0}", image.size.x).as_str().into()),
-                        ("height", format!("{:.0}", image.size.y).as_str().into()),
+                        ("width", image.logical_size.x.into()),
+                        ("height", image.logical_size.y.into()),
                     ],
                 ),
             );

@@ -1,5 +1,5 @@
 use super::*;
-use crate::asset_reader::{decode_image_bytes, ImageLoadResult};
+use crate::asset_reader::{decode_image_bytes, DecodedPuzzleImage, ImageLoadResult};
 use crate::persistence::runtime::{OriginalPuzzleImage, PersistenceService, PersistenceState};
 
 fn app() -> (App, crossbeam::channel::Sender<ImageLoadResult>) {
@@ -82,13 +82,20 @@ fn image_failure_paths_require_debug_logging() {
 #[test]
 fn current_failure_keeps_reason_and_discards_previous_image() {
     for reason in [
-        decode_image_bytes(b"corrupt image").unwrap_err(),
+        decode_image_bytes(
+            b"corrupt image",
+            ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
+        )
+        .unwrap_err(),
         "Image is too large".into(),
     ] {
         let (mut app, sender) = app();
         app.insert_resource(PuzzleImage {
             handle: Handle::default(),
-            size: Vec2::splat(100.0),
+            logical_size: UVec2::splat(100),
+            texture_size: UVec2::splat(100),
             opaque: true,
         })
         .insert_resource(OriginalPuzzleImage {
@@ -120,8 +127,12 @@ fn successful_retry_clears_failure_and_sets_preview() {
         virtual_key: "current.png".into(),
         reason: "previous failure".into(),
     });
-    let image = Image::default();
-    let expected_size = image.size().as_vec2();
+    let image = DecodedPuzzleImage {
+        image: Image::default(),
+        source_size: UVec2::splat(20000),
+        logical_size: UVec2::splat(16384),
+    };
+    let expected_texture_size = image.image.size();
     sender
         .send(ImageLoadResult {
             virtual_key: "current.png".into(),
@@ -140,11 +151,17 @@ fn successful_retry_clears_failure_and_sets_preview() {
 
     assert!(!app.world().contains_resource::<ImageLoadError>());
     let preview = app.world().resource::<PuzzleImage>();
-    assert_eq!(preview.size, expected_size);
+    assert_eq!(preview.logical_size, UVec2::splat(16384));
+    assert_eq!(preview.texture_size, expected_texture_size);
     assert!(app
         .world()
         .resource::<Assets<Image>>()
         .contains(&preview.handle));
+    app.update();
+    assert_eq!(
+        app.world().resource::<PuzzleImage>().logical_size,
+        UVec2::splat(16384)
+    );
 }
 
 #[test]
@@ -154,7 +171,14 @@ fn stale_results_cannot_replace_current_failure() {
         virtual_key: "current.png".into(),
         reason: "current failure".into(),
     });
-    for image in [Err("stale failure".into()), Ok(Image::default())] {
+    for image in [
+        Err("stale failure".into()),
+        Ok(DecodedPuzzleImage {
+            image: Image::default(),
+            source_size: UVec2::ONE,
+            logical_size: UVec2::ONE,
+        }),
+    ] {
         sender
             .send(ImageLoadResult {
                 virtual_key: "old.png".into(),

@@ -294,7 +294,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
 fn drag_rotation_upload_is_exact_even_for_fragmented_members_and_pointer_frames_reuse_membership() {
     let (mut d, mut store, _) = fixture();
     d.grid_size = UVec2::new(1000, 1);
-    d.image_size = UVec2::new(20000, 30);
+    d.image_size = UVec2::new(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION, 30);
     store.initialize(
         (0..1000)
             .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(1000.))

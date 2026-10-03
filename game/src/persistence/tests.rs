@@ -118,10 +118,14 @@ fn image_original_supported_payloads_are_bit_identical() {
         let container = PuzImage::encode(&bytes).unwrap();
         assert_eq!(PuzImage::decode(&container, hash).unwrap(), bytes);
         assert_eq!(&container[18..50], &hash.0);
-        let decoded =
-            crate::asset_reader::decode_image_bytes(PuzImage::decode(&container, hash).unwrap())
-                .unwrap();
-        assert_eq!(decoded.size(), UVec2::splat(2), "{format:?}");
+        let decoded = crate::asset_reader::decode_image_bytes(
+            PuzImage::decode(&container, hash).unwrap(),
+            crate::resources::ImageDecodeLimits {
+                max_texture_dimension: 8192,
+            },
+        )
+        .unwrap();
+        assert_eq!(decoded.image.size(), UVec2::splat(2), "{format:?}");
     }
     // Known SHA-256 vector, independent of our codec.
     assert_eq!(

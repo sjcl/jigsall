@@ -7,8 +7,10 @@ use crate::{
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
+use puzzella_game::image_settings::{ImageSettingsError, ImageSettingsState, TextureBudget};
 use puzzella_game::keybindings::KeyBindingsState;
 use puzzella_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettingsState};
+use puzzella_game::resources::PuzzleImageLimits;
 use puzzella_game::settings::*;
 
 #[derive(Resource, Default)]
@@ -65,6 +67,8 @@ pub fn draw_settings_ui(
     mut actions: MessageWriter<DisplaySettingsAction>,
     mut key_state: ResMut<KeyBindingsState>,
     mut autosave: ResMut<AutosaveSettingsState>,
+    mut image_settings: ResMut<ImageSettingsState>,
+    image_limits: Res<PuzzleImageLimits>,
     keys: Res<ButtonInput<KeyCode>>,
     mut events: MessageReader<KeyboardInput>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
@@ -84,6 +88,8 @@ pub fn draw_settings_ui(
         &mut i18n,
         &mut preferences,
         &mut autosave,
+        &mut image_settings,
+        &image_limits,
         &mut key_state,
         &CaptureInput {
             keys: &keys,
@@ -116,6 +122,8 @@ fn paint_settings(
     i18n: &mut Localization,
     preferences: &mut UiPreferences,
     autosave: &mut AutosaveSettingsState,
+    image_settings: &mut ImageSettingsState,
+    image_limits: &PuzzleImageLimits,
     key_state: &mut KeyBindingsState,
     key_input: &CaptureInput<'_>,
 ) -> Option<DisplaySettingsAction> {
@@ -358,6 +366,9 @@ fn paint_settings(
                             };
                         });
                         theme::card().show(ui, |ui| {
+                            paint_image_settings(ui, image_settings, image_limits, i18n);
+                        });
+                        theme::card().show(ui, |ui| {
                             paint_autosave_settings(ui, autosave, i18n);
                         });
                     });
@@ -412,6 +423,104 @@ fn paint_settings(
         action = Some(dialog.close());
     }
     action
+}
+
+fn paint_image_settings(
+    ui: &mut egui::Ui,
+    settings: &mut ImageSettingsState,
+    limits: &PuzzleImageLimits,
+    i18n: &Localization,
+) {
+    ui.set_width(ui.available_width());
+    ui.label(i18n.text("settings-texture-budget"));
+    if let Some(bytes) = limits.gpu_memory_bytes {
+        theme::hint(
+            ui,
+            i18n.format(
+                "settings-texture-gpu-memory",
+                &[("mib", (bytes / (1024 * 1024)).to_string().as_str().into())],
+            ),
+        );
+    } else {
+        theme::hint(ui, i18n.text("settings-texture-gpu-unknown"));
+    }
+    let mut budget = settings.current.texture_budget;
+    let mut automatic = matches!(budget, TextureBudget::Auto { .. });
+    if ui
+        .checkbox(&mut automatic, i18n.text("settings-texture-auto"))
+        .changed()
+    {
+        budget = if automatic {
+            TextureBudget::Auto { percent: 20 }
+        } else {
+            TextureBudget::Manual {
+                mib: settings.current.budget_mib(limits),
+            }
+        };
+    }
+    match &mut budget {
+        TextureBudget::Auto { percent } => {
+            ui.label(i18n.text("settings-texture-percent"));
+            ui.add_enabled(
+                limits.gpu_memory_bytes.is_some(),
+                egui::DragValue::new(percent).range(1..=100).suffix(" %"),
+            );
+        }
+        TextureBudget::Manual { mib } => {
+            *mib = (*mib).clamp(1, limits.max_budget_mib());
+            ui.add(
+                egui::DragValue::new(mib)
+                    .range(1..=limits.max_budget_mib())
+                    .speed(16.0)
+                    .suffix(" MiB"),
+            );
+            theme::hint(
+                ui,
+                i18n.format(
+                    "settings-texture-manual-range",
+                    &[("mib", limits.max_budget_mib().to_string().as_str().into())],
+                ),
+            );
+        }
+    }
+    if budget != settings.current.texture_budget {
+        settings.set_budget(budget);
+    }
+    theme::hint(
+        ui,
+        i18n.format(
+            "settings-texture-resolved-budget",
+            &[(
+                "mib",
+                settings
+                    .current
+                    .budget_mib(limits)
+                    .to_string()
+                    .as_str()
+                    .into(),
+            )],
+        ),
+    );
+    let max_edge = limits
+        .decode_limits(&settings.current)
+        .max_texture_dimension;
+    theme::hint(
+        ui,
+        i18n.format("settings-texture-limit", &[("edge", max_edge.into())]),
+    );
+    theme::hint(ui, i18n.text("settings-texture-budget-hint"));
+    theme::hint(ui, i18n.text("settings-texture-budget-scope"));
+    theme::hint(ui, i18n.text("settings-texture-budget-next-load"));
+    if let Some(error) = &settings.error {
+        let (key, reason) = match error {
+            ImageSettingsError::Read(reason) => ("settings-texture-read-failed", reason),
+            ImageSettingsError::Save(reason) => ("settings-texture-save-failed", reason),
+        };
+        ui.colored_label(
+            theme::DANGER,
+            i18n.format(key, &[("reason", reason.as_str().into())]),
+        );
+    }
 }
 
 fn paint_autosave_settings(

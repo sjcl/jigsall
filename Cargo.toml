@@ -45,6 +45,9 @@ rstar = "0.12"
 # wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
 # Keep the compatible patch until upstream aligns these dependencies.
 wgpu-hal = "=29.0.3"
+ash = { version = "0.38", default-features = false, features = ["std"] }
+wgpu-types = "29.0.3"
+objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLDevice"] }
 
 [package]
 name = "puzzella"

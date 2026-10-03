@@ -96,7 +96,8 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
     let image = app.world_mut().resource_mut::<Assets<Image>>().add(image);
     app.world_mut().insert_resource(PuzzleImage {
         handle: image,
-        size: Vec2::splat(128.0),
+        logical_size: UVec2::splat(128),
+        texture_size: UVec2::ONE,
         opaque: true,
     });
     (app, camera, target)
@@ -844,6 +845,102 @@ fn gpu_raster_selection() {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_resized_texture_uses_logical_coordinates_and_shared_alpha_picking() {
+    use crate::resources::{ImageDecodeLimits, PuzzleImageLimits};
+    use bevy::ecs::system::RunSystemOnce;
+    let (mut app, _, target) = gpu_app(128);
+    app.world_mut()
+        .run_system_once(crate::systems::image_loading::setup_image_load_system)
+        .unwrap();
+    let limits = *app.world().resource::<PuzzleImageLimits>();
+    assert!(limits.device_max_dimension > 0);
+    assert!(limits.gpu_memory_bytes.is_none_or(|bytes| bytes > 0));
+    println!(
+        "Active GPU: {:?}; image limits: {limits:?}",
+        app.world()
+            .resource::<bevy::render::renderer::RenderAdapter>()
+            .get_info()
+    );
+    let source = image::RgbaImage::from_fn(128, 128, |x, y| {
+        if (32..96).contains(&x) && (32..96).contains(&y) {
+            image::Rgba([0, 0, 0, 0])
+        } else if x < 64 {
+            image::Rgba([255, 0, 0, 255])
+        } else {
+            image::Rgba([0, 0, 255, 255])
+        }
+    });
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(source)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    let definition = definition(UVec2::ONE, 128, 42);
+    app.world_mut().insert_resource(definition.clone());
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .initialize(vec![Vec2::ZERO]);
+    for cap in [32, 16] {
+        let decoded = crate::asset_reader::decode_image_bytes(
+            bytes.get_ref(),
+            ImageDecodeLimits {
+                max_texture_dimension: cap,
+            },
+        )
+        .unwrap();
+        assert_eq!(decoded.logical_size, definition.image_size);
+        let texture_size = decoded.image.size();
+        // Keep the transparent sample beyond Lanczos3's support at both caps.
+        let center = (texture_size.y / 2 * texture_size.x + texture_size.x / 2) as usize;
+        assert_eq!(decoded.image.data.as_ref().unwrap()[center * 4 + 3], 0);
+        let opaque = crate::resources::images::image_is_opaque(&decoded.image);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(decoded.image);
+        app.world_mut().insert_resource(PuzzleImage {
+            handle,
+            logical_size: decoded.logical_size,
+            texture_size,
+            opaque,
+        });
+        wait_ready(&mut app);
+        for _ in 0..4 {
+            update_gpu(&mut app);
+        }
+        let pixels = rendered_pixels(&mut app, target.clone());
+        for (x, expected) in [
+            (8, [255, 0, 0, 255]),
+            (120, [0, 0, 255, 255]),
+            (64, [0, 0, 0, 255]),
+        ] {
+            let pixel = (64 * 128 + x) * 4;
+            // Resampling and sRGB conversion may round an RGB channel by one.
+            for channel in 0..3 {
+                assert!(pixels[pixel + channel].abs_diff(expected[channel]) <= 1);
+            }
+            assert_eq!(pixels[pixel + 3], expected[3]);
+            let rect = Rect::new(x as f32, 64.0, x as f32 + 1.0, 65.0);
+            for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+                assert_eq!(
+                    pick(&mut app, rect, mode),
+                    if x == 64 { vec![] } else { vec![PieceId(0)] },
+                    "cap={cap}, x={x}, mode={mode:?}"
+                );
+            }
+        }
+        assert_eq!(
+            app.world().resource::<PuzzleImage>().logical_size,
+            UVec2::splat(128)
+        );
+        assert_eq!(
+            app.world().resource::<PuzzleImage>().texture_size,
+            UVec2::splat(cap)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_transparency_and_visibility() {
     let (mut app, camera, target) = gpu_app(128);
     let mut def = definition(UVec2::new(2, 1), 128, 43);
@@ -1133,7 +1230,8 @@ fn procedural_gpu_benchmark() {
     let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
     app.world_mut().insert_resource(PuzzleImage {
         handle,
-        size: Vec2::splat(side as f32),
+        logical_size: UVec2::splat(side),
+        texture_size: UVec2::splat(side),
         opaque: true,
     });
     let mut csv=String::from("pieces,view,visible,placement_ms,state_ms,initial_upload_prep_ms,dirty_prep_us,frame_ms,cull_gpu_ms,draw_gpu_ms,point_gpu_ms,rectangle_gpu_ms,cpu_state_bytes,gpu_state_bytes,visible_bytes,selectable_bytes,cpu_image_bytes,gpu_image_bytes,pick_visible_bytes,sort_gpu_ms,selection_and_staging_bytes,meshes,piece_entities,draw_calls,sort_workgroups,sort_dispatches,sort_scratch_bytes\n");

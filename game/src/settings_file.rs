@@ -14,6 +14,7 @@ pub enum SettingsSection {
     Display,
     KeyBindings,
     Autosave,
+    Image,
     Preferences,
 }
 
@@ -23,6 +24,7 @@ impl SettingsSection {
             Self::Display => "display",
             Self::KeyBindings => "keybindings",
             Self::Autosave => "autosave",
+            Self::Image => "image",
             Self::Preferences => "preferences",
         }
     }

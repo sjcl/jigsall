@@ -1,9 +1,14 @@
 use crate::resources::*;
-use bevy::log::{debug, debug_once, error_once, warn, warn_once};
+use bevy::log::{debug, warn};
 use bevy::prelude::*;
+use bevy::render::renderer::{RenderAdapter, RenderDevice};
 
 /// 画像読み込みシステムをセットアップ
-pub fn setup_image_load_system(mut commands: Commands) {
+pub fn setup_image_load_system(
+    mut commands: Commands,
+    device: Option<Res<RenderDevice>>,
+    adapter: Option<Res<RenderAdapter>>,
+) {
     // crossbeam unboundedチャネルを作成
     let (tx_results, rx_results) = crossbeam::channel::unbounded();
 
@@ -11,6 +16,15 @@ pub fn setup_image_load_system(mut commands: Commands) {
     commands.insert_resource(ImageLoadChannels { rx_results });
 
     commands.insert_resource(ImageLoadSender { tx_results });
+    // Headless CPU fixtures have no renderer and cannot upload textures.
+    if let Some(device) = device {
+        commands.insert_resource(PuzzleImageLimits {
+            device_max_dimension: device.limits().max_texture_dimension_2d,
+            gpu_memory_bytes: adapter
+                .as_deref()
+                .and_then(|adapter| crate::gpu_memory::capacity_bytes(adapter, &device)),
+        });
+    }
 }
 
 /// 画像読み込み結果を処理（crossbeam-channel受信）
@@ -29,7 +43,7 @@ pub fn handle_image_load_results(
             continue;
         }
         match result.image {
-            Ok(image) => {
+            Ok(decoded) => {
                 commands.remove_resource::<ImageLoadError>();
                 if let Some(original) = result.original {
                     if let Some(bytes) = &original.encoded {
@@ -37,22 +51,22 @@ pub fn handle_image_load_results(
                     }
                     commands.insert_resource(original);
                 }
-                // 画像のサイズを取得
-                let image_size = image.size();
-                let size_vec2 = Vec2::new(image_size.x as f32, image_size.y as f32);
+                let texture_size = decoded.image.size();
+                let logical_size = decoded.logical_size;
 
                 // Imageアセットとして登録
-                let opaque = crate::resources::images::image_is_opaque(&image);
-                let handle = images.add(image);
+                let opaque = crate::resources::images::image_is_opaque(&decoded.image);
+                let handle = images.add(decoded.image);
 
                 // PuzzleImageリソースを作成
                 commands.insert_resource(PuzzleImage {
                     handle: handle.clone(),
-                    size: size_vec2,
+                    logical_size,
+                    texture_size,
                     opaque,
                 });
 
-                debug!(size = ?size_vec2, "Loaded puzzle image");
+                debug!(source_size = ?decoded.source_size, ?logical_size, ?texture_size, "Loaded puzzle image");
             }
             Err(e) => {
                 warn!("Image loading failed");
@@ -74,66 +88,3 @@ pub fn handle_image_load_results(
 
 #[cfg(test)]
 mod tests;
-
-pub fn update_puzzle_image_size(
-    puzzle_image: Option<ResMut<PuzzleImage>>,
-    images: Res<Assets<Image>>,
-    asset_server: Res<AssetServer>,
-    puzzle_config: Res<PuzzleConfig>,
-    file_registry: Res<crate::asset_reader::ExternalFileRegistry>,
-) {
-    let _span = info_span!("update_puzzle_image_size").entered();
-    if let Some(mut puzzle_image) = puzzle_image {
-        // 外部ファイルかどうかチェック
-        let is_external = file_registry.is_external_image_path(&puzzle_config.image_path);
-
-        if is_external {
-            // 外部ファイルの場合：AssetServerの状態チェックをスキップして直接Imageをチェック
-            if let Some(image) = images.get(&puzzle_image.handle) {
-                let actual_size = image.size();
-                let new_size = Vec2::new(actual_size.x as f32, actual_size.y as f32);
-
-                // サイズが変更された場合のみ更新
-                if puzzle_image.size != new_size {
-                    debug!(
-                        old_size = ?puzzle_image.size,
-                        ?new_size,
-                        "Updated external image size"
-                    );
-                    puzzle_image.size = new_size;
-                }
-            }
-        } else {
-            // 通常のアセットファイルの場合：従来のAssetServer状態チェック
-            let load_state = asset_server.load_state(&puzzle_image.handle);
-
-            match load_state {
-                bevy::asset::LoadState::Loaded => {
-                    if let Some(image) = images.get(&puzzle_image.handle) {
-                        // Bevy 0.16では image.size() メソッドを使用
-                        let actual_size = image.size();
-                        let new_size = Vec2::new(actual_size.x as f32, actual_size.y as f32);
-
-                        // サイズが変更された場合のみ更新
-                        if puzzle_image.size != new_size {
-                            debug!(
-                                old_size = ?puzzle_image.size,
-                                ?new_size,
-                                "Updated asset image size"
-                            );
-                            puzzle_image.size = new_size;
-                        }
-                    } else {
-                        warn_once!("Loaded puzzle image asset is missing from Assets<Image>");
-                    }
-                }
-                bevy::asset::LoadState::Loading => {}
-                bevy::asset::LoadState::Failed(error) => {
-                    error_once!("Failed to load puzzle image asset");
-                    debug_once!(?error, "Puzzle image asset loading failure details");
-                }
-                bevy::asset::LoadState::NotLoaded => {}
-            }
-        }
-    }
-}

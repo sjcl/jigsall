@@ -17,7 +17,10 @@ pub use app::{
 pub use collision::{PieceCollisionData, PieceCollisionSystem};
 pub use config::{PieceMode, PuzzleConfig};
 pub use generation::{GenerationError, GenerationPhase, PieceGenerationProgress};
-pub use images::{ImageLoadChannels, ImageLoadError, ImageLoadSender, PuzzleImage};
+pub use images::{
+    ImageDecodeLimits, ImageLoadChannels, ImageLoadError, ImageLoadSender, PuzzleImage,
+    PuzzleImageLimits,
+};
 pub use input::{GameUiPointerCapture, InputState};
 pub use performance::{PerformanceDebugLevel, PerformanceMonitor, SystemTiming};
 pub use pieces::{DensePieceStates, GpuPieceState, PieceDataStore, PieceUpload};

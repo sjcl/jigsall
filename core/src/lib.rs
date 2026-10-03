@@ -20,6 +20,7 @@ pub use snapping::{
 pub mod session;
 pub use commands::ClientCommand;
 pub use gameplay::{
-    apply_piece_command, snap_piece, CommandOutcome, PieceCommand, PieceId, PieceState, PlayerId,
-    PuzzleDefinition, PuzzleGeometry, PuzzlePiece, GENERATOR_VERSION, LOCAL_PLAYER,
+    apply_piece_command, fit_image_size, snap_piece, CommandOutcome, PieceCommand, PieceId,
+    PieceState, PlayerId, PuzzleDefinition, PuzzleGeometry, PuzzlePiece, GENERATOR_VERSION,
+    LOCAL_PLAYER, MAX_PUZZLE_IMAGE_DIMENSION,
 };

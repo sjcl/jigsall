@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 use bevy::tasks::{block_on, poll_once, IoTaskPool, Task};
 use puzzella_game::asset_reader::{start_thread_image_load, ExternalFileRegistry};
+use puzzella_game::image_settings::ImageSettingsState;
 use puzzella_game::persistence::runtime::OriginalPuzzleImage;
-use puzzella_game::resources::{ImageLoadError, ImageLoadSender, PuzzleConfig, PuzzleImage};
+use puzzella_game::resources::{
+    ImageLoadError, ImageLoadSender, PuzzleConfig, PuzzleImage, PuzzleImageLimits,
+};
 use std::{future::Future, path::PathBuf};
 
 #[derive(Resource, Default)]
@@ -57,13 +60,20 @@ pub(crate) fn finish_image_selection(
     mut config: ResMut<PuzzleConfig>,
     registry: Res<ExternalFileRegistry>,
     sender: Res<ImageLoadSender>,
+    limits: Res<PuzzleImageLimits>,
+    settings: Res<ImageSettingsState>,
     mut commands: Commands,
 ) {
     if let Some(path) = picker.take_result() {
         let key = registry.register_file(&path);
         registry.unregister_file(&config.image_path);
         config.image_path = key.clone();
-        start_thread_image_load(key, path, sender.tx_results.clone());
+        start_thread_image_load(
+            key,
+            path,
+            sender.tx_results.clone(),
+            limits.decode_limits(&settings.current),
+        );
         commands.remove_resource::<PuzzleImage>();
         commands.remove_resource::<OriginalPuzzleImage>();
         commands.remove_resource::<ImageLoadError>();

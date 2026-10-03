@@ -62,10 +62,11 @@ fn camera_zoom_settings(
             max_scale: 10.0,
         });
     };
-    if !image.size.is_finite() || image.size.min_element() <= 0.0 {
+    if image.logical_size.min_element() == 0 {
         return None;
     }
-    let resolution_factor = image.size.element_product() / (1920.0 * 1080.0);
+    let image_size = image.logical_size.as_vec2();
+    let resolution_factor = image_size.element_product() / (1920.0 * 1080.0);
     let (margin, min_scale, max_scale): (f32, f32, f32) = if resolution_factor > 4.0 {
         (1.5, 0.05, 15.0)
     } else if resolution_factor > 2.0 {
@@ -78,7 +79,7 @@ fn camera_zoom_settings(
         (1.1, 0.3, 8.0)
     };
 
-    let mut framing_size = image.size;
+    let mut framing_size = image_size;
     if let Some(definition) =
         definition.filter(|definition| !completed && definition.validate().is_ok())
     {
@@ -386,7 +387,8 @@ mod tests {
         let (mut app, window, camera) = zoom_app();
         app.insert_resource(PuzzleImage {
             handle: default(),
-            size: image_size.as_vec2(),
+            logical_size: image_size,
+            texture_size: image_size,
             opaque: true,
         })
         .insert_resource(PuzzleDefinition {
@@ -407,6 +409,22 @@ mod tests {
             .run_system_once(auto_adjust_camera_zoom)
             .unwrap();
         (app, window, camera)
+    }
+
+    #[test]
+    fn camera_framing_ignores_local_texture_resolution() {
+        let logical_size = UVec2::new(6000, 4000);
+        let (mut app, _, camera) =
+            framed_app(logical_size, UVec2::new(40, 25), UVec2::new(1280, 720));
+        let expected = *app.world().get::<Transform>(camera).unwrap();
+        for cap in [1024, 256] {
+            app.world_mut().resource_mut::<PuzzleImage>().texture_size =
+                puzzella_core::fit_image_size(logical_size, cap);
+            app.world_mut()
+                .run_system_once(auto_adjust_camera_zoom)
+                .unwrap();
+            assert_eq!(*app.world().get::<Transform>(camera).unwrap(), expected);
+        }
     }
 
     #[test]
