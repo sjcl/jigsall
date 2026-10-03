@@ -58,3 +58,16 @@ cpu-picking-debug = ["puzzella-game/cpu-picking-debug"]
 tracy = ["bevy/trace_tracy"]
 # Chrome Tracingを使用する場合（ブラウザでの分析）
 chrome = ["bevy/trace_chrome"]
+
+# Keep workspace rebuilds fast while improving development runtime performance.
+[profile.dev]
+opt-level = 1
+
+# Fully optimize dependencies, which change less often than workspace crates.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Trade longer release builds for additional whole-program optimization.
+[profile.release]
+lto = "thin"
+codegen-units = 1
