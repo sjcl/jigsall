@@ -11,9 +11,13 @@ fn fixture(grid: UVec2) -> (PuzzleDefinition, PieceDataStore) {
         generator_version: GENERATOR_VERSION,
         seed: 42,
         grid_size: grid,
-        image_size: grid * UVec2::new(20, 30),
+        image_size: puzzella_core::fit_image_size(
+            grid * UVec2::new(20, 30),
+            puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+        ),
         snap_distance: 5.0,
     };
+    definition.validate().unwrap();
     let mut store = PieceDataStore::default();
     store.initialize(
         (0..definition.piece_count() as u32)
