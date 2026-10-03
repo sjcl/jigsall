@@ -99,7 +99,7 @@ pub fn host_with_transport<T: DirectIpTransport + 'static>(
             .is_some_and(|progress| progress.is_generating || progress.receiver.is_some())
         || world
             .get_resource::<PuzzleImage>()
-            .is_some_and(|image| image.size.as_uvec2() != definition.image_size)
+            .is_some_and(|image| image.logical_size != definition.image_size)
         || menu_pending(world)
     {
         return Err(RuntimeStartError::InvalidWorld);
@@ -140,7 +140,17 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     if menu_pending(world) {
         return Err(RuntimeStartError::InvalidWorld);
     }
-    let runtime = Runtime::client(backend, options)?;
+    let limits = world
+        .get_resource::<PuzzleImageLimits>()
+        .ok_or(RuntimeStartError::InvalidWorld)?;
+    let settings = world
+        .get_resource::<crate::image_settings::ImageSettingsState>()
+        .ok_or(RuntimeStartError::InvalidWorld)?;
+    let image_limits = limits.decode_limits(&settings.current);
+    if image_limits.max_texture_dimension == 0 {
+        return Err(RuntimeStartError::InvalidWorld);
+    }
+    let runtime = Runtime::client(backend, options, image_limits)?;
     world.init_resource::<PieceDataStore>();
     world.init_resource::<PieceInteraction>();
     world.init_resource::<LocalPlayerId>();
@@ -386,18 +396,19 @@ impl<T: DirectIpTransport> Runtime<T> {
         }
         if let Some(decoded) = self.decoded.take() {
             if let Some(definition) = &self.definition {
-                if decoded.image.size() != definition.image_size {
+                if decoded.logical_size != definition.image_size {
                     self.fail("image dimensions differ from session definition");
                     return;
                 }
             }
             let opaque = crate::resources::images::image_is_opaque(&decoded.image);
             if let Some(mut assets) = world.get_resource_mut::<Assets<Image>>() {
-                let size = decoded.image.size().as_vec2();
+                let texture_size = decoded.image.size();
                 let handle = assets.add(decoded.image);
                 world.insert_resource(PuzzleImage {
                     handle,
-                    size,
+                    logical_size: decoded.logical_size,
+                    texture_size,
                     opaque,
                 });
                 world.insert_resource(OriginalPuzzleImage {
@@ -422,7 +433,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 && self.baseline_installed
             {
                 let definition = self.definition.as_ref().unwrap();
-                if world.resource::<PuzzleImage>().size.as_uvec2() != definition.image_size {
+                if world.resource::<PuzzleImage>().logical_size != definition.image_size {
                     self.fail("image dimensions differ from session definition");
                     return;
                 }

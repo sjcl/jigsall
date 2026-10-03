@@ -31,7 +31,7 @@ use crate::{
         protocol::{HostCommandOutcome, ProtocolDragContexts},
         replication::PeerReplicationState,
     },
-    resources::PieceDataStore,
+    resources::{ImageDecodeLimits, PieceDataStore},
 };
 use bevy::prelude::*;
 use bridge::CommandBridge;
@@ -143,6 +143,7 @@ struct ClientState {
     sync: Option<ClientSyncRouter>,
     replica: PeerReplicationState,
     cached_image: Option<Arc<[u8]>>,
+    image_limits: ImageDecodeLimits,
 }
 enum Role {
     Host(Box<HostState>),
@@ -150,6 +151,7 @@ enum Role {
 }
 struct DecodedImage {
     image: Image,
+    logical_size: UVec2,
     encoded: Arc<[u8]>,
 }
 struct Runtime<T> {
@@ -235,7 +237,11 @@ impl<T: DirectIpTransport> Runtime<T> {
             },
         })
     }
-    fn client(backend: T, options: JoinOptions) -> Result<Self, RuntimeStartError> {
+    fn client(
+        backend: T,
+        options: JoinOptions,
+        image_limits: ImageDecodeLimits,
+    ) -> Result<Self, RuntimeStartError> {
         let mut transport = SecureTransport::new(backend);
         let connection = transport
             .connect(options.address)
@@ -250,6 +256,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 sync: None,
                 replica: Default::default(),
                 cached_image: options.cached_image,
+                image_limits,
             })),
             session: None,
             definition: None,
@@ -274,13 +281,22 @@ impl<T: DirectIpTransport> Runtime<T> {
         self.active = false;
     }
     fn start_decode(&mut self, bytes: impl FnOnce() -> Result<Arc<[u8]>, String> + Send + 'static) {
+        let Role::Client(client) = &self.role else {
+            unreachable!()
+        };
+        let limits = client.image_limits;
         let (tx, rx) = crossbeam::channel::bounded(1);
         self.decode = Some(rx);
         self.status.image = ImageReadiness::Decoding;
         std::thread::spawn(move || {
             let result = bytes().and_then(|encoded| {
-                crate::asset_reader::decode_image_bytes(&encoded)
-                    .map(|image| DecodedImage { image, encoded })
+                crate::asset_reader::decode_image_bytes(&encoded, limits).map(|decoded| {
+                    DecodedImage {
+                        image: decoded.image,
+                        logical_size: decoded.logical_size,
+                        encoded,
+                    }
+                })
             });
             let _ = tx.send(result);
         });

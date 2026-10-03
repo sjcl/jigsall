@@ -15,6 +15,8 @@ ephemeral port). `start_join(&mut World, JoinOptions)` starts a connection and
 advances through scheduled frames. `stop_session(&mut World)` closes the session
 and requests Menu. `host_with_transport` / `join_with_transport` support an
 injected `DirectIpTransport` without GNS, including headless World tests.
+Joining requires `PuzzleImageLimits` and `ImageSettingsState`; headless callers
+must supply explicit limits and settings before connecting.
 
 Host options supply address, immutable `SessionDefinition`, host `PlayerId`, and
 `SessionPassword`. Join options supply endpoint, password, and optional encoded
@@ -94,7 +96,12 @@ identity into `LocalPlayerId` / `SessionHostId`; neither side assumes zero is lo
 
 Verified image Bulk completion is moved to a bounded worker channel. Flattening
 and the shared `decode_image_bytes` codec run on that worker, which never accesses
-World or GPU resources. Decoded images enter `Assets<Image>` on the main thread
+World or GPU resources. The join captures this client's GPU/settings cap on the
+main thread. The worker preserves the common logical dimensions while resizing
+the local texture before asset registration; cached and transferred originals
+use the same policy. Host and client compare logical dimensions with the session
+definition and retain the original encoded bytes/hash, independently of texture
+resolution. Decoded images enter `Assets<Image>` on the main thread
 and use the existing procedural renderer upload/RenderReady lifecycle. Protocol
 Ready and image/GPU readiness remain distinct. The client enters InGame only
 after Ready, baseline installation and decoded image availability. Initialization

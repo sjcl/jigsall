@@ -147,6 +147,11 @@ fn app() -> App {
         .init_resource::<InputState>()
         .init_resource::<crate::selection::PuzzleSelection>()
         .init_resource::<Assets<Image>>()
+        .insert_resource(PuzzleImageLimits {
+            device_max_dimension: 8192,
+            gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+        })
+        .insert_resource(crate::image_settings::ImageSettingsState::load(None))
         .add_plugins(NetworkRuntimePlugin)
         .add_systems(
             PostUpdate,
@@ -256,9 +261,16 @@ struct Pair {
 }
 impl Pair {
     fn new() -> Self {
+        Self::with_image_options(8192, None)
+    }
+    fn with_image_options(cap: u32, cached_image: Option<Arc<[u8]>>) -> Self {
         let bus = Arc::new(Mutex::new(Bus::default()));
         let mut host = app();
         let mut client = app();
+        client
+            .world_mut()
+            .resource_mut::<PuzzleImageLimits>()
+            .device_max_dimension = cap;
         let session = host_world(&mut host);
         host_with_transport(
             host.world_mut(),
@@ -283,7 +295,7 @@ impl Pair {
             JoinOptions {
                 address: "127.0.0.1:10000".parse().unwrap(),
                 password: password(),
-                cached_image: None,
+                cached_image,
             },
         )
         .unwrap();
@@ -315,6 +327,77 @@ impl Pair {
             self.frame();
         }
     }
+}
+
+#[test]
+fn joined_image_uses_client_limit_and_preserves_logical_dimensions_and_original_bytes() {
+    for cached in [false, true] {
+        let mut pair = Pair::with_image_options(2, cached.then(encoded));
+        // Like file selection and save restore, a join captures its decode cap.
+        pair.client
+            .world_mut()
+            .resource_mut::<PuzzleImageLimits>()
+            .device_max_dimension = 8192;
+        pair.ready();
+        let world = pair.client.world();
+        let image = world.resource::<PuzzleImage>();
+        assert_eq!(image.logical_size, definition().image_size);
+        assert_eq!(image.texture_size, UVec2::splat(2));
+        assert_eq!(
+            world
+                .resource::<Assets<Image>>()
+                .get(&image.handle)
+                .unwrap()
+                .size(),
+            image.texture_size
+        );
+        assert_eq!(world.resource::<PuzzleDefinition>(), &definition());
+        let original = world.resource::<OriginalPuzzleImage>();
+        assert_eq!(original.hash, crate::persistence::image_hash(&encoded()));
+        assert_eq!(original.encoded.as_deref().unwrap(), encoded().as_ref());
+    }
+}
+
+#[test]
+fn hosting_uses_logical_dimensions_when_local_texture_is_smaller() {
+    let mut host = app();
+    let session = host_world(&mut host);
+    let decoded = crate::asset_reader::decode_image_bytes(
+        &encoded(),
+        ImageDecodeLimits {
+            max_texture_dimension: 2,
+        },
+    )
+    .unwrap();
+    let texture_size = decoded.image.size();
+    let handle = host
+        .world_mut()
+        .resource_mut::<Assets<Image>>()
+        .add(decoded.image);
+    host.world_mut().insert_resource(PuzzleImage {
+        handle,
+        logical_size: decoded.logical_size,
+        texture_size,
+        opaque: true,
+    });
+    host_with_transport(
+        host.world_mut(),
+        Fake {
+            id: 0,
+            bus: Arc::new(Mutex::new(Bus::default())),
+        },
+        HostOptions {
+            address: "127.0.0.1:0".parse().unwrap(),
+            session,
+            host: PlayerId(0),
+            password: password(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        host.world().resource::<NetworkStatus>().phase,
+        RuntimePhase::Hosting
+    );
 }
 
 #[test]
@@ -1161,6 +1244,11 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         .init_resource::<Assets<ColorMaterial>>()
         .init_resource::<Assets<Image>>()
         .insert_resource(crate::render::RenderReady::waiting_for_test())
+        .insert_resource(PuzzleImageLimits {
+            device_max_dimension: 8192,
+            gpu_memory_bytes: Some(8 * 1024 * 1024 * 1024),
+        })
+        .insert_resource(crate::image_settings::ImageSettingsState::load(None))
         .init_resource::<bevy_egui::EguiUserTextures>();
     client.update();
     let old_reference = client
