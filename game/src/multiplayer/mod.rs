@@ -1,11 +1,17 @@
 //! Opt-in multiplayer foundation. No systems are added to the single-player schedule.
 pub mod baseline;
+pub mod catch_up;
 pub mod protocol;
 mod release;
 pub mod replication;
 pub mod snapshot;
 pub use baseline::{
     BaselineDrag, JoinBaseline, JoinBaselineError, JOIN_BASELINE_SCHEMA_VERSION, MAX_BASELINE_DRAGS,
+};
+pub use catch_up::{
+    CatchUpError, CatchUpLimits, CatchUpRestartReason, JoinCatchUpCoordinator, JoinCatchUpPhase,
+    JoinCatchUpStart, JoinCatchUpStatus, MAX_CATCH_UP_EVENTS, MAX_CATCH_UP_RETAINED_BYTES,
+    MAX_PENDING_JOIN_SYNCS,
 };
 pub use snapshot::{
     GameSnapshot, SnapshotError, SnapshotExpectation, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
