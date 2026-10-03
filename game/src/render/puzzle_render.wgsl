@@ -1,3 +1,4 @@
+#import puzzella::presentation::presentation_position
 #import puzzella::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
@@ -27,6 +28,9 @@ fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
 @group(0) @binding(4) var<storage,read> preview:array<u32>;
 @group(0) @binding(5) var<storage,read> selected:array<u32>;
 @group(0) @binding(6) var<storage,read> component_roots:array<u32>;
+@group(0) @binding(7) var<storage,read> remote_slots:array<u32>;
+struct RemoteDeltas { entries:array<vec4<f32>,32> };
+@group(0) @binding(8) var<uniform> remote_deltas:RemoteDeltas;
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -40,10 +44,11 @@ struct VertexOutput {
 @vertex fn vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
     let corners=array<vec2<f32>,4>(vec2(-1.0,-1.0),vec2(1.0,-1.0),vec2(-1.0,1.0),vec2(1.0,1.0));
     let id=visible[instance];let state=states[id];let cell=vec2(id%config.grid.x,id/config.grid.x);
-    var position=state.position;
-    if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
-        position+=config.drag_delta;
-    }
+    let local_member=config.drag_active!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u;
+    let slot=remote_slots[id];
+    let packed=remote_deltas.entries[(max(slot,1u)-1u)/2u];
+    let remote_delta=select(packed.xy,packed.zw,slot!=0u && ((slot-1u)&1u)!=0u);
+    let position=presentation_position(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta);
     var out:VertexOutput;
     let rotation=decode_rotation(state.flags);
     if config.far_zoom!=0u {

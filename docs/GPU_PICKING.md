@@ -53,6 +53,14 @@ release時のreadbackはcomponent maskではなくdirect hit maskの4 * ceil(N/3
 
 ## Multi-drag
 
+Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_position`をmain / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
+
+2026-10-04、Windows / RTX 5090 / Vulkan（NVIDIA 610.88）でremote presentationを検証しました。canonical位置が画面外にある2つのheld pieceを異なるslot deltaで画面内へ移し、normal / farの描画とculling、point / rectangleのHELD除外を確認しました。scalar更新はcanonical state upload / remote mapping uploadが0 bytes、delta uniformが512 bytes、idleでは両remote uploadが0 bytesです。Release相当のmapping clearと同epochのsession reset後にoffsetが残らないことも確認しました。100万pieceのfar zoom回帰テストではremote mapping bufferが4,000,000 bytes、delta bufferが512 bytesで、camera / idleのremote uploadが0 bytesです。
+
+```sh
+cargo test -p puzzella-game --release --locked --all-features gpu_remote_presentation -- --ignored --nocapture --test-threads=1
+```
+
 開始時に選択可能な対象maskを固定し、1つのGrabGroupをauthorityへ渡します。authorityは所有権を再検証し、受理した対象の相対Z順を保ってGrabします。CPUのper-piece offset mapはありません。対象を示すbitsetを一度GPUへuploadし、移動中はworld-spaceのdrag_deltaだけをuniformへ渡します。main vertexとvisibility computeが同じ一時移動を適用するため、CPU正本が画面外にあるピースもdragで画面内へ入れます。heldの除外とZ順は維持します。
 
 移動frameのCPU処理は選択数に対してO(1)、Move命令・state upload・membership uploadは0です。release時はmaskとdeltaを持つ1つのReleaseGroupで、位置のcommit・所有権解放・各pieceのsnap・placed_count更新まで処理します。pieceごとのcommand / Messageは不要です。pause / focus lossも最後に表示したdeltaを一度反映して解放します。確定選択・releaseは引き続きO(選択数)の処理を含み、Grabは相対Zを保つ一時sortも行います。

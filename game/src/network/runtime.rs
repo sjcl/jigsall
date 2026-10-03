@@ -1,6 +1,7 @@
 //! One owner for Direct-IP bootstrap, sync, gameplay, and connection teardown.
 //! The CPU store is borrowed from the game World; no parallel gameplay state exists.
 mod bridge;
+mod presentation;
 mod world;
 pub use bridge::BridgeError;
 pub(crate) use world::offline as world_offline;
@@ -166,6 +167,7 @@ struct Runtime<T> {
     decode: Option<crossbeam::channel::Receiver<Result<DecodedImage, String>>>,
     decoded: Option<DecodedImage>,
     bridge: CommandBridge,
+    presentation: presentation::RemotePresentationBridge,
     status: NetworkStatus,
     baseline_installed: bool,
     render_installed: bool,
@@ -223,6 +225,7 @@ impl<T: DirectIpTransport> Runtime<T> {
             decode: None,
             decoded: None,
             bridge: Default::default(),
+            presentation: Default::default(),
             baseline_installed: true,
             render_installed: true,
             active: true,
@@ -264,6 +267,7 @@ impl<T: DirectIpTransport> Runtime<T> {
             decode: None,
             decoded: None,
             bridge: Default::default(),
+            presentation: Default::default(),
             baseline_installed: false,
             render_installed: false,
             active: true,
@@ -307,6 +311,21 @@ impl<T: DirectIpTransport> Runtime<T> {
         outcome: &HostCommandOutcome,
         store: &mut PieceDataStore,
     ) -> Result<(), String> {
+        if let Some(event) = &outcome.authority_event {
+            let Role::Host(host) = &self.role else {
+                unreachable!()
+            };
+            let drag = host.contexts.active_drag(
+                self.session.as_ref().unwrap(),
+                store,
+                presentation::event_player(&event.event),
+            );
+            self.presentation
+                .event(self.status.local_player.unwrap(), &event.event, drag, store);
+        }
+        if let Some(update) = &outcome.drag_update {
+            self.presentation.delta(update.player, update.delta);
+        }
         let failures = {
             let Role::Host(host) = &mut self.role else {
                 unreachable!()
@@ -361,6 +380,12 @@ impl<T: DirectIpTransport> Runtime<T> {
                             .cancel_replicated(session, store, player)
                             .map_err(|e| format!("{e:?}"))?
                         {
+                            self.presentation.event(
+                                self.status.local_player.unwrap(),
+                                &cancel.authority_event.event,
+                                None,
+                                store,
+                            );
                             // Retention errors cannot suppress ordinary publication.
                             if let Err(e) = host.sync.record_authority_event(
                                 session,
@@ -408,6 +433,9 @@ impl<T: DirectIpTransport> Runtime<T> {
         interaction: &mut PieceInteraction,
         now: Instant,
     ) -> Result<(), String> {
+        if let Some(session) = &self.session {
+            self.presentation.synchronize(session, store);
+        }
         let mut events = Vec::new();
         self.transport
             .poll(&mut events)
@@ -597,13 +625,20 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 self.status.local_player = client.bootstrap.assigned_player();
                                 self.status.host = Some(self.session.as_ref().unwrap().host());
                                 self.status.phase = RuntimePhase::Ready;
+                                let session = self.session.as_ref().unwrap();
+                                self.presentation.initialize(
+                                    self.status.local_player.unwrap(),
+                                    session,
+                                    store,
+                                    client.replica.remote_drags(session, store),
+                                );
                                 client.sync = None;
                             }
                             _ => {}
                         }
                     } else if outcome == BootstrapOutcome::Gameplay {
                         let player = self.status.local_player.ok_or("missing Ready identity")?;
-                        ClientRouter {
+                        let routed = ClientRouter {
                             local_player: player,
                             host_connection: client.bootstrap.host_connection(),
                             connections: &self.connections,
@@ -615,13 +650,41 @@ impl<T: DirectIpTransport> Runtime<T> {
                         .route(&event)
                         .map_err(|e| format!("{e:?}"))?;
                         if let TransportEvent::Message { class, payload, .. } = &event {
-                            if let WireMessage::AuthorityEvent(envelope) =
-                                wire::decode_for_class(payload, *class)
-                                    .map_err(|e| format!("{e:?}"))?
+                            match wire::decode_for_class(payload, *class)
+                                .map_err(|e| format!("{e:?}"))?
                             {
-                                self.bridge
-                                    .reconcile(player, &envelope.event, interaction, store)
-                                    .map_err(|e| format!("{e:?}"))?;
+                                WireMessage::AuthorityEvent(envelope) => {
+                                    let drag = client.replica.remote_drag(
+                                        self.session.as_ref().unwrap(),
+                                        store,
+                                        presentation::event_player(&envelope.event),
+                                    );
+                                    self.presentation
+                                        .event(player, &envelope.event, drag, store);
+                                    self.bridge
+                                        .reconcile(player, &envelope.event, interaction, store)
+                                        .map_err(|e| format!("{e:?}"))?;
+                                }
+                                WireMessage::DragUpdate(update)
+                                    if matches!(
+                                        routed,
+                                        super::client::ClientRouteOutcome::Drag(_)
+                                    ) =>
+                                {
+                                    self.presentation.delta(
+                                        update.player,
+                                        client
+                                            .replica
+                                            .remote_drag(
+                                                self.session.as_ref().unwrap(),
+                                                store,
+                                                update.player,
+                                            )
+                                            .unwrap()
+                                            .delta,
+                                    );
+                                }
+                                _ => {}
                             }
                         }
                     } else if client.bootstrap.state().is_some() {
@@ -734,6 +797,9 @@ impl<T: DirectIpTransport> Runtime<T> {
         interaction: &mut PieceInteraction,
         pointer: Option<Vec2>,
     ) -> Result<(), String> {
+        if let Some(session) = &self.session {
+            self.presentation.synchronize(session, store);
+        }
         let Some(player) = self.status.local_player else {
             return Ok(());
         };

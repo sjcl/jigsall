@@ -1,7 +1,10 @@
 //! One procedural indirect draw; GPU visibility and picking share buffers and shape.
 use crate::{
     components::MainCamera,
-    resources::{PieceUpload, PuzzleImage},
+    resources::{
+        remote_drag::{prepare_remote_drag_upload, RemoteDragPresentation, RemoteDragUpload},
+        PieceUpload, PuzzleImage,
+    },
     selection::{api::*, coordinates::*, RawResult},
 };
 use bevy::{
@@ -81,6 +84,9 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
         ..default()
     };
     app.insert_resource(ready.clone());
+    app.init_resource::<RemoteDragPresentation>()
+        .init_resource::<RemoteDragUpload>()
+        .add_systems(Last, prepare_remote_drag_upload);
     if !enabled {
         return;
     }
@@ -88,6 +94,10 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
     let shape = shaders.add(Shader::from_wgsl(
         include_str!("puzzle_shape.wgsl"),
         "puzzle_shape.wgsl",
+    ));
+    let presentation = shaders.add(Shader::from_wgsl(
+        include_str!("presentation.wgsl"),
+        "presentation.wgsl",
     ));
     let draw = shaders.add(Shader::from_wgsl(
         include_str!("puzzle_render.wgsl"),
@@ -120,6 +130,7 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
             radix_sort,
             component_preview,
         ))
+        .insert_resource(PresentationShader(presentation))
         .init_resource::<ExtractedPuzzle>()
         .add_systems(ExtractSchedule, extract_puzzle)
         .add_systems(
@@ -189,9 +200,12 @@ struct SortUniform {
     groups: u32,
     pad: u32,
 }
+#[derive(Resource)]
+struct PresentationShader(#[allow(dead_code)] Handle<Shader>);
 #[derive(Resource, Default)]
 struct ExtractedPuzzle {
     upload: PieceUpload,
+    remote: RemoteDragUpload,
     image: Option<AssetId<Image>>,
     config: PuzzleUniform,
     camera: Option<Entity>,
@@ -204,11 +218,13 @@ struct ExtractedPuzzle {
 fn extract_puzzle(
     mut out: ResMut<ExtractedPuzzle>,
     upload: Extract<Option<Res<PieceUpload>>>,
+    remote: Extract<Res<RemoteDragUpload>>,
     image: Extract<Option<Res<PuzzleImage>>>,
     overlay: Extract<Option<Res<SelectionOverlay>>>,
     selection: Extract<Res<PuzzleSelection>>,
     cameras: Extract<Query<(&Camera, &GlobalTransform, &RenderEntity), With<MainCamera>>>,
 ) {
+    out.remote = remote.clone();
     out.camera = None;
     out.image = None;
     out.request = selection.latest;
@@ -294,6 +310,10 @@ struct StateBuffers {
     dummy_selection: Buffer,
     drag_members: Buffer,
     current_drag: Arc<[u32]>,
+    remote_slots: Buffer,
+    remote_deltas: Buffer,
+    remote_revision: u64,
+    remote_delta_revision: u64,
     selected: Buffer,
     current_selected: Arc<[u32]>,
     preview: Buffer,
@@ -402,6 +422,9 @@ struct GpuRenderer {
     upload_bytes: u64,
     upload_calls: usize,
     drag_upload_bytes: u64,
+    remote_mapping_upload_bytes: u64,
+    remote_mapping_upload_calls: usize,
+    remote_delta_upload_bytes: u64,
     selection_upload_bytes: u64,
     root_upload_bytes: u64,
     root_upload_calls: usize,
@@ -447,6 +470,9 @@ impl GpuRenderer {
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None)
+                            .visibility(ShaderStages::VERTEX),
+                        uniform_buffer_sized(false, None).visibility(ShaderStages::VERTEX),
                     ),
                 ),
             ),
@@ -462,6 +488,8 @@ impl GpuRenderer {
                         storage_buffer_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        uniform_buffer_sized(false, None),
                     ),
                 ),
             ),
@@ -519,6 +547,8 @@ impl GpuRenderer {
                         storage_buffer_sized(false, None),
                         storage_buffer_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        uniform_buffer_sized(false, None),
                     ),
                 ),
             ),
@@ -549,6 +579,9 @@ impl GpuRenderer {
             upload_bytes: 0,
             upload_calls: 0,
             drag_upload_bytes: 0,
+            remote_mapping_upload_bytes: 0,
+            remote_mapping_upload_calls: 0,
+            remote_delta_upload_bytes: 0,
             selection_upload_bytes: 0,
             root_upload_bytes: 0,
             root_upload_calls: 0,
@@ -725,6 +758,9 @@ fn prepare_buffers(
     gpu.upload_bytes = 0;
     gpu.upload_calls = 0;
     gpu.drag_upload_bytes = 0;
+    gpu.remote_mapping_upload_bytes = 0;
+    gpu.remote_mapping_upload_calls = 0;
+    gpu.remote_delta_upload_bytes = 0;
     gpu.selection_upload_bytes = 0;
     gpu.root_upload_bytes = 0;
     gpu.root_upload_calls = 0;
@@ -816,6 +852,20 @@ fn prepare_buffers(
                 BufferUsages::STORAGE | BufferUsages::COPY_DST,
             ),
             current_drag: Arc::default(),
+            remote_slots: buffer(
+                &device,
+                "remote piece slots",
+                u64::from(count) * 4,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            ),
+            remote_deltas: buffer(
+                &device,
+                "remote drag deltas",
+                512,
+                BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            ),
+            remote_revision: u64::MAX,
+            remote_delta_revision: u64::MAX,
             selected: buffer(
                 &device,
                 "committed selection bitset",
@@ -891,6 +941,42 @@ fn prepare_buffers(
     gpu.upload_calls += calls;
     gpu.root_upload_bytes += root_bytes;
     gpu.root_upload_calls += root_calls;
+    let mut remote_bytes = 0;
+    let mut remote_calls = 0;
+    let mut delta_bytes = 0;
+    let buffers = gpu.buffers.as_mut().unwrap();
+    if frame.remote.epoch == buffers.epoch {
+        if buffers.remote_revision != frame.remote.revision {
+            if let Some(initial) = &frame.remote.initial {
+                queue.write_buffer(&buffers.remote_slots, 0, bytemuck::cast_slice(initial));
+                remote_bytes = initial.len() as u64 * 4;
+                remote_calls = 1;
+            } else {
+                for range in frame.remote.ranges.iter() {
+                    queue.write_buffer(
+                        &buffers.remote_slots,
+                        u64::from(range.start) * 4,
+                        bytemuck::cast_slice(&range.slots),
+                    );
+                    remote_bytes += range.slots.len() as u64 * 4;
+                    remote_calls += 1;
+                }
+            }
+            buffers.remote_revision = frame.remote.revision;
+        }
+        if buffers.remote_delta_revision != frame.remote.delta_revision {
+            queue.write_buffer(
+                &buffers.remote_deltas,
+                0,
+                bytemuck::cast_slice(&frame.remote.deltas),
+            );
+            buffers.remote_delta_revision = frame.remote.delta_revision;
+            delta_bytes = 512;
+        }
+    }
+    gpu.remote_mapping_upload_bytes = remote_bytes;
+    gpu.remote_mapping_upload_calls = remote_calls;
+    gpu.remote_delta_upload_bytes = delta_bytes;
     let buffers = gpu.buffers.as_mut().unwrap();
     if !Arc::ptr_eq(&buffers.current_selected, &frame.upload.selected) {
         if !frame.upload.selected.is_empty() {
@@ -1032,6 +1118,12 @@ fn puzzle_node(
     ) else {
         return;
     };
+    if frame.remote.epoch != buffers.epoch
+        || buffers.remote_revision != frame.remote.revision
+        || buffers.remote_delta_revision != frame.remote.delta_revision
+    {
+        return;
+    }
     if !opaque && !gpu.sort_ready(&cache) {
         return;
     }
@@ -1047,6 +1139,8 @@ fn puzzle_node(
         .clone();
     let dummy_selection = buffers.dummy_selection.clone();
     let drag_members = buffers.drag_members.clone();
+    let remote_slots = buffers.remote_slots.clone();
+    let remote_deltas = buffers.remote_deltas.clone();
     let preview = buffers.preview.clone();
     let selected = buffers.selected.clone();
     let component_roots = buffers.component_roots.clone();
@@ -1070,6 +1164,8 @@ fn puzzle_node(
             selectable.as_entire_buffer_binding(),
             drag_members.as_entire_buffer_binding(),
             sort_counts.as_entire_buffer_binding(),
+            remote_slots.as_entire_buffer_binding(),
+            remote_deltas.as_entire_buffer_binding(),
         )),
     );
     let draw_group = device.create_bind_group(
@@ -1083,6 +1179,8 @@ fn puzzle_node(
             preview.as_entire_buffer_binding(),
             selected.as_entire_buffer_binding(),
             component_roots.as_entire_buffer_binding(),
+            remote_slots.as_entire_buffer_binding(),
+            remote_deltas.as_entire_buffer_binding(),
         )),
     );
     let image_group = device.create_bind_group(
@@ -1383,6 +1481,8 @@ fn draw_selection(
             pick_ids.as_entire_buffer_binding(),
             pick_args.as_entire_buffer_binding(),
             buffers.drag_members.as_entire_buffer_binding(),
+            buffers.remote_slots.as_entire_buffer_binding(),
+            buffers.remote_deltas.as_entire_buffer_binding(),
         )),
     );
     let cull_span = diagnostics.time_span(encoder, "puzzle_pick_visibility");
@@ -1404,6 +1504,8 @@ fn draw_selection(
             buffers.dummy_selection.as_entire_buffer_binding(),
             buffers.selected.as_entire_buffer_binding(),
             buffers.component_roots.as_entire_buffer_binding(),
+            buffers.remote_slots.as_entire_buffer_binding(),
+            buffers.remote_deltas.as_entire_buffer_binding(),
         )),
     );
     let bitset = if point {

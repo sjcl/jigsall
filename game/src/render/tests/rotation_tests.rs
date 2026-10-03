@@ -77,6 +77,7 @@ fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_compon
     }
     app.insert_resource(def)
         .insert_resource(LocalPlayerId(puzzella_core::PlayerId(42)))
+        .insert_resource(crate::keybindings::KeyBindingsState::load(None))
         .init_resource::<PieceInteraction>()
         .init_resource::<InputState>()
         .init_resource::<GameUiPointerCapture>()

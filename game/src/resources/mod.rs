@@ -8,6 +8,7 @@ pub mod images;
 pub mod input;
 pub mod performance;
 pub mod pieces;
+pub mod remote_drag;
 
 pub use app::{
     AppState, GameCompleteSubState, GameData, GameSubState, LocalPlayerId, PlayerInfo,

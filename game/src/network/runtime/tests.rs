@@ -1,4 +1,5 @@
 use super::*;
+mod presentation_tests;
 use crate::{persistence::runtime::OriginalPuzzleImage, resources::*};
 use bevy::state::app::StatesPlugin;
 use puzzella_core::{PieceBitSet, PieceCommand, PieceId, GENERATOR_VERSION};
@@ -1272,6 +1273,52 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
     let player = client.world().resource::<LocalPlayerId>().0;
     assert_ne!(player, PlayerId(0));
     send(&mut client, PieceCommand::GrabGroup { members: members() });
+    loop {
+        host.update();
+        client.update();
+        if client
+            .world()
+            .resource::<PieceDataStore>()
+            .held_by
+            .get(&PieceId(0))
+            == Some(&player)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "runtime GNS Grab timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let canonical = host.world().resource::<PieceDataStore>().states.clone();
+    {
+        let mut store = client.world_mut().resource_mut::<PieceDataStore>();
+        store.drag.members = members().words().clone();
+        store.drag.delta = Vec2::new(14.0, 23.0);
+    }
+    loop {
+        host.update();
+        client.update();
+        if host
+            .world()
+            .resource::<remote_drag::RemoteDragPresentation>()
+            .offset(PieceId(0))
+            == Vec2::new(14.0, 23.0)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "runtime GNS remote presentation timed out"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(host.world().resource::<PieceDataStore>().states, canonical);
+    assert_eq!(
+        client
+            .world()
+            .resource::<remote_drag::RemoteDragPresentation>()
+            .offset(PieceId(0)),
+        Vec2::ZERO
+    );
     send(
         &mut client,
         PieceCommand::ReleaseGroup {
@@ -1301,6 +1348,12 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
     assert_eq!(
         host.world().resource::<PieceDataStore>().states,
         client.world().resource::<PieceDataStore>().states
+    );
+    assert_eq!(
+        host.world()
+            .resource::<remote_drag::RemoteDragPresentation>()
+            .offset(PieceId(0)),
+        Vec2::ZERO
     );
     stop_session(client.world_mut());
     stop_session(host.world_mut());

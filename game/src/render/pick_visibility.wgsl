@@ -1,3 +1,4 @@
+#import puzzella::presentation::presentation_position
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
@@ -18,6 +19,9 @@ struct PickArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
 @group(0) @binding(4) var<storage,read_write> pick_ids:array<u32>;
 @group(0) @binding(5) var<storage,read_write> pick_args:PickArgs;
 @group(0) @binding(6) var<storage,read> drag_members:array<u32>;
+@group(0) @binding(7) var<storage,read> remote_slots:array<u32>;
+struct RemoteDeltas { entries:array<vec4<f32>,32> };
+@group(0) @binding(8) var<uniform> remote_deltas:RemoteDeltas;
 @compute @workgroup_size(256) fn cull_pick(@builtin(global_invocation_id) invocation:vec3<u32>) {
     let index=invocation.x;if index>=main_args.instance_count {return;}
     let id=main_ids[index];let state=states[id];
@@ -32,10 +36,11 @@ struct PickArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,fi
         let splat_half=max(piece_size_px,vec2(config.splat_min_px))*config.pixel_world_size*0.5;
         half=max(half,splat_half)+config.pixel_world_size*0.5;
     }
-    var position=state.position;
-    if config.drag_active!=0u && (state.flags&8u)!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u {
-        position+=config.drag_delta;
-    }
+    let local_member=config.drag_active!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u;
+    let slot=remote_slots[id];
+    let packed=remote_deltas.entries[(max(slot,1u)-1u)/2u];
+    let remote_delta=select(packed.xy,packed.zw,slot!=0u && ((slot-1u)&1u)!=0u);
+    let position=presentation_position(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta);
     if all(position+half>=config.view_min) && all(position-half<=config.view_max) {
         let dst=atomicAdd(&pick_args.instance_count,1u);pick_ids[dst]=id;
     }

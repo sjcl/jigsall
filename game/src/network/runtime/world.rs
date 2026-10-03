@@ -22,7 +22,7 @@ impl NetworkSession {
     pub fn authority(&self) -> Option<&AuthoritySession> {
         self.driver.as_ref()?.authority()
     }
-    /// Read-only remote presentation for the future renderer integration.
+    /// Read-only replicated contexts. Rendering uses RemoteDragPresentation.
     pub fn replica(&self) -> Option<&PeerReplicationState> {
         self.driver.as_ref()?.replica()
     }
@@ -35,6 +35,7 @@ pub struct NetworkRuntimePlugin;
 impl Plugin for NetworkRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStatus>()
+            .init_resource::<remote_drag::RemoteDragPresentation>()
             .add_systems(PreUpdate, poll_network.run_if(network_active))
             .add_systems(
                 PostUpdate,
@@ -67,6 +68,13 @@ fn menu_pending(world: &World) -> bool {
         })
 }
 fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, runtime: Runtime<T>) {
+    let mut presentation = world
+        .remove_resource::<remote_drag::RemoteDragPresentation>()
+        .unwrap_or_default();
+    if let Some(store) = world.get_resource::<PieceDataStore>() {
+        presentation.reset(store.epoch, store.len());
+    }
+    world.insert_resource(presentation);
     world.insert_resource(runtime.status.clone());
     let reader = world
         .get_resource::<Messages<ClientCommand>>()
@@ -316,6 +324,9 @@ fn network_commands(world: &mut World) {
 }
 impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
     fn poll(&mut self, world: &mut World) {
+        self.presentation.state = world
+            .remove_resource::<remote_drag::RemoteDragPresentation>()
+            .unwrap_or_default();
         let mut store = world
             .remove_resource::<PieceDataStore>()
             .unwrap_or_default();
@@ -330,9 +341,13 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
         if self.active {
             self.install_world(world);
         }
+        world.insert_resource(std::mem::take(&mut self.presentation.state));
         world.insert_resource(self.status.clone());
     }
     fn commands(&mut self, world: &mut World, commands: Vec<ClientCommand>) {
+        self.presentation.state = world
+            .remove_resource::<remote_drag::RemoteDragPresentation>()
+            .unwrap_or_default();
         let mut store = world
             .remove_resource::<PieceDataStore>()
             .unwrap_or_default();
@@ -347,12 +362,18 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
         }
         world.insert_resource(store);
         world.insert_resource(interaction);
+        world.insert_resource(std::mem::take(&mut self.presentation.state));
         world.insert_resource(self.status.clone());
     }
     fn teardown(&mut self, world: &mut World) {
+        let mut presentation = world
+            .remove_resource::<remote_drag::RemoteDragPresentation>()
+            .unwrap_or_default();
         if let Some(mut store) = world.get_resource_mut::<PieceDataStore>() {
             self.teardown(&mut store);
+            presentation.reset(store.epoch, store.len());
         }
+        world.insert_resource(presentation);
     }
     fn active(&self) -> bool {
         self.active

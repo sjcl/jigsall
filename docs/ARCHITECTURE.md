@@ -99,6 +99,22 @@ Startupで使用中のRenderDevice / RenderAdapterから`PuzzleImageLimits`を�
 
 ## GPU presentation
 
+### Remote drag presentation
+
+Direct-IP hostとclientは、game-layerの`network/runtime/presentation.rs`で検証済みcontextを`RemoteDragPresentation`へ変換します。hostは`ProtocolDragContexts` / `HostCommandOutcome`、clientは`PeerReplicationState`と成功したauthority / Transient routeを使用します。rendererはnetwork runtime型に依存せず、offlineでも同じ空のresourceを使います。
+
+`PieceDataStore`がcanonical position・ownership・rotation・Z・connectivityの正本です。`RemoteDragUpdate`はcanonical position、`GpuPieceState`、snapshot、save、progress、snapを変更しません。表示位置だけをcanonical position + transient deltaとして計算します。localは従来の`store.drag.members` / GPU bitset / `PuzzleUniform.drag_delta`を使用し、local playerはremote slotへ登録しません。HELDによる選択除外とcanonical Zを維持します。
+
+remoteは`u32 piece_slots[N]`（0=無し、1..64=slot）と512-byte固定delta uniformです。uniformは2つのVec2を1つのvec4にpackします。GPU追加常駐は4N + 512 bytes、100万pieceで4,000,512 bytes（約3.815 MiB）。CPU cacheは4N-byte mapping、dirty bitset（100万で125,000 bytes）、最大64のmembership bitsetとdeltaです。Dense accepted targetのbitsetはArc共有し、SparseはGrab境界でだけbitsetへ展開します。Sparseの新規bitsetは1 slotあたり最大125,000 bytes、全64 slotで最大8,000,000 bytesです。upload snapshot / rangesのpayloadは別途保持し、dense時は最大4N bytesです。PlayerIdはgame-layerの最大64件のslot lookupだけにあり、GPUはPlayerIdを検索しません。
+
+Reliable `GrabAccepted`でauthorityのexact accepted membershipを割り当てます。partial acceptanceも要求targetではなく受理済みcontextを参照します。最初の空slotを再利用し、Release / Cancelでは保存した正確なbitsetを使ってmappingを0にしてからslotを解放します。ReleaseのsnapでDSUが結合しても、旧membershipは変わりません。`DragRotationCommitted`ではmembershipを維持し、Reliable rebase後のcontext deltaを使用します。旧basis、release後のTransientは既存benign-drop contractで落とし、presentation更新へ渡しません。
+
+通常Transientはplayer→slot lookupとscalar delta更新だけでO(1)です。piece / membership走査、canonical state更新、mapping再構築はありません。Lastでdirty mappingだけを連続rangeにまとめ、最大128 spansを超えたらenclosing rangeを1回uploadします。delta更新はmappingとは別の512-byte tableをuploadし、idleでは両方のuploadが0 bytesです。membershipのO(N)処理はReliable control / initialization境界に限ります。piece Entity / Meshは追加しません。
+
+client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipとdeltaを構築します。初回Transientを待たず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・deltaをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
+
+`presentation.wgsl::presentation_position`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v8、`GpuPieceState` 16 bytes、snapshot schema 4、join baseline schema 1は変更しません。
+
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 4のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 
 rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root bufferは4 bytes / piece、CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootをrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、preview_active == 0ならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
