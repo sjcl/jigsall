@@ -121,7 +121,7 @@ mod tests {
             generator_version: GENERATOR_VERSION,
             seed: 42,
             grid_size: UVec2::ONE,
-            image_size: UVec2::splat(20),
+            image_size: UVec2::splat(128),
             snap_distance: 0.01,
         };
         let mut store = PieceDataStore::default();
