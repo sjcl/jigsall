@@ -37,18 +37,26 @@ fn image_failure_paths_require_debug_logging() {
         }
     }
 
+    // Keep both dispatches alive: tracing's single-dispatch fast path can cache
+    // Interest::never when another test first registers a callsite without our
+    // scoped subscriber. With two dispatches, registration consults both filters.
+    let captures = [Level::INFO, Level::DEBUG].map(|level| {
+        let output = LogOutput::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(level)
+            .without_time()
+            .with_ansi(false)
+            .with_writer(output.clone())
+            .finish();
+        (level, output, tracing::Dispatch::new(subscriber))
+    });
+
     for path in [
         r"C:\Users\private-user\Pictures\private-puzzle.png",
         "/home/private-user/Pictures/private-puzzle.png",
     ] {
-        for level in [Level::INFO, Level::DEBUG] {
-            let output = LogOutput::default();
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(level)
-                .without_time()
-                .with_ansi(false)
-                .with_writer(output.clone())
-                .finish();
+        for (level, output, dispatch) in &captures {
+            output.0.lock().unwrap().clear();
             let (mut app, sender) = app();
             app.world_mut().resource_mut::<PuzzleConfig>().image_path = path.into();
             let reason = format!("Could not read {path}");
@@ -60,18 +68,35 @@ fn image_failure_paths_require_debug_logging() {
                 })
                 .unwrap();
 
-            tracing::subscriber::with_default(subscriber, || {
+            tracing::dispatcher::with_default(dispatch, || {
+                // Register the same log callsites from a thread without a subscriber,
+                // as other image-loading tests can do when the suite runs in parallel.
+                std::thread::spawn(|| {
+                    let (mut app, sender) = self::app();
+                    sender
+                        .send(ImageLoadResult {
+                            virtual_key: "current.png".into(),
+                            image: Err("unrelated failure".into()),
+                            original: None,
+                        })
+                        .unwrap();
+                    app.world_mut()
+                        .run_system_once(handle_image_load_results)
+                        .unwrap();
+                })
+                .join()
+                .unwrap();
                 app.world_mut()
                     .run_system_once(handle_image_load_results)
                     .unwrap();
             });
 
             let output = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
-            assert!(output.contains("Image loading failed"));
-            assert_eq!(output.contains(path), level == Level::DEBUG, "{output}");
+            assert!(output.contains("Image loading failed"), "{level}: {output}");
+            assert_eq!(output.contains(path), *level == Level::DEBUG, "{output}");
             assert_eq!(
                 output.contains("Image loading failure details"),
-                level == Level::DEBUG,
+                *level == Level::DEBUG,
                 "{output}"
             );
             assert_eq!(app.world().resource::<ImageLoadError>().reason, reason);
