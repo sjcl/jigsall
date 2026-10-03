@@ -4,9 +4,9 @@ The multiplayer CPU layer provides `JoinBaseline` schema 1 for same-epoch join:
 GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId order.
 Its transactional install can continue existing authority events without a new
 Grab. The opt-in Syncing runtime connects image preparation, generation-bound
-Bulk baseline transfer and Reliable catch-up. Final active-drag reconciliation
-and Ready handoff remain pending. Transport version and golden frames now use
-wire v7 with a dedicated SyncControl kind; generic Bulk framing, SecureTransport, GNS
+Bulk baseline transfer, Reliable catch-up, full authoritative active-drag
+reconciliation and the final ACK/Ready commit handoff. Wire v8 adds finalization
+and Ready control variants; generic Bulk framing, SecureTransport, GNS
 and rate limiting retain their existing designs. Migration uses snapshot only
 plus a new epoch; save/load use checkpoint only; both discard
 drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v7 and snapshot schema 4. `core` has no transport/native dependency.
+wire v8 and snapshot schema 4. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
@@ -126,8 +126,9 @@ Authenticated -> explicit begin_sync() -> Syncing
   AwaitingBaselineSlot (host FIFO, two concurrent baseline slots)
   begin_join() -> generation-bound JoinBaseline offer/accept + Bulk
   baseline install ACK -> Reliable catch-up + ACK
-  Finalizing -> future full active-drag reconciliation -> final barrier/ACK
-  future SyncReadyPermit -> promote_ready() -> Ready -> assign_player()
+  Finalizing -> full authoritative active-drag reconciliation -> FinalizeAck
+  host checks candidate is still current -> SyncReadyPermit -> promote_ready()
+  host sends ReadyCommit -> client promote_ready() -> Ready gameplay
 ```
 
 PAKE success != gameplay Ready. Authentication alone leaves both endpoint gameplay
@@ -136,9 +137,11 @@ the independently assigned local PlayerId stays in bootstrap state. Metadata can
 be authenticated without owning a snapshot: SessionDefinition (SessionId/ImageHash),
 AuthorityCursor and host PlayerId. SecureChannelReady confirms channel possession
 only. The Syncing protocol verifies image identity and the offered baseline/catch-up
-cursor. It deliberately stops at Finalizing; Reliable catch-up alone cannot mint
-the private-construction Ready permit. The future barrier must also reconcile the
-authority's current full active-drag scalar set and verify the final ACK.
+cursor. **ReliableComplete != Ready**: Transient has no authority cursor, so
+the client must reconcile the authority's entire active-drag scalar set, and the
+host must verify that candidate again when its final ACK arrives. Only that
+successful barrier (and matching host commit on the client) can mint the private
+Ready capability. See the [final barrier contract](JOIN_IN_PROGRESS.md#authoritative-final-reconciliation-and-barrier).
 
 The isolated `network::auth` adapter uses pinned `pakery-spake2` / `pakery-crypto`
 0.6.0, the RFC 9382 P256-SHA256-HKDF-HMAC suite (not the crate's Ristretto suite).
@@ -402,7 +405,7 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v7
+## Wire v8
 
 Each inner Puzzella frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
@@ -410,7 +413,7 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 7 |
+| 4..6 | u16 wire version, little-endian, currently 8 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -423,7 +426,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v7 Postcard field order and enum representation are part of the wire contract.
+The v8 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -437,14 +440,20 @@ RemoteDragUpdate basis sequence. Version 6 replaces kind 5's opaque bytes with
 typed Start/Chunk/Finish/Abort. Gameplay payload layouts remain unchanged; only
 their version header advances. Version 7 adds SyncControl kind 7 on Reliable Control,
 including generation-bound baseline offers, catch-up events and ACKs. Bulk fields
-and gameplay layouts remain unchanged. Only version 7 is decoded; pre-release versions
-1 through 6 and future versions are rejected without a compatibility decoder.
+and gameplay layouts remain unchanged. Version 8 appends SyncControl indices
+11 Finalize, 12 FinalizeAck and 13 ReadyCommit. All three carry SyncFinalization
+(generation u64, AuthorityCursor, revision u64); Finalize additionally carries a
+bounded FinalDragSet (Vec of player, grab_sequence, basis_sequence, Option last_tick,
+Vec2 delta), in canonical PlayerId order, capped at 64. No targets are repeated.
+Only version 8 is decoded; pre-release versions 1 through 7 and future versions
+are rejected without a compatibility decoder.
 WIRE_VERSION also binds PAKE context, HKDF application keys and secure record AAD
-to v7. No cryptographic design change is made.
-Fixed v7 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+to v8. No cryptographic design change is made.
+Fixed v8 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
-AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl. Each checks encoding
+AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl, including
+empty/active Finalize, FinalizeAck and ReadyCommit. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
@@ -616,6 +625,19 @@ apply -> immediate catch-up record -> ordinary Ready publication. Retention fail
 remains separate from the already-applied outcome; Ready publication still proceeds.
 See [join runtime contract](JOIN_IN_PROGRESS.md#application-syncing-routing-and-generations).
 
+Both start APIs explicitly `begin_sync`. Authenticated rejects SyncControl/Bulk;
+authentication states accept authentication messages only; Syncing accepts sync
+traffic only; Ready rejects SyncControl/Bulk and admits gameplay. Sync routing
+borrows mutable bootstrap and SessionConnections to perform the commit handoff.
+Host final ACK validation rechecks current scope, Reliable cursor and the directly
+captured scalar set. Reliable changes return to catch-up; Transient changes retry
+only finalization. Old generation/revision ACKs cannot promote a fresh attempt.
+The host registers Ready before queuing commit, preventing client gameplay from
+overtaking its host mapping. Client stays Syncing until that exact commit. Route
+errors close/remove mappings and join state; process remote disconnects normally.
+Successful commit removes host retention/transfer/restart/candidate state. Client
+reports Ready and releases sync data; stop pumping/destroy its sync router.
+
 Ready routers return `DroppedTransient(TransientDrop)` for decoded Transient
 MissingDragContext, WrongDragContext, DuplicateUpdate and StaleUpdate. These include
 updates before GrabAccepted/RotateDrag commit and after ReleaseCommitted/DragCancelled.
@@ -719,7 +741,9 @@ clients, checks ciphertext immediately below the wrapper on actual UDP sends, an
 PlayerIds and unassigned gameplay mappings, and explicitly promotes through
 Syncing to Ready with test-only completion permits before Grab/Drag/Release. A
 dedicated localhost join test exercises image and baseline transfer/catch-up through
-the actual secure lanes and stops at Finalizing without gameplay registration.
+the actual secure lanes, completes full-set reconciliation/ACK/Ready commit on
+both ends, verifies cleanup/identity mapping, then submits and replicates a regular
+Grab over encrypted Control using the production Ready capability.
 A separate actual-socket wrong-password
 test verifies rejection, close, no channel installation, no registration and no
 gameplay mutation. An actual-socket ciphertext-tampered Grab test verifies
@@ -771,8 +795,8 @@ still belongs to bootstrap, and SessionConnections registration waits for Ready.
 Wrap the future Steamworks Transport in SecureTransport<T> and apply its outer
 record limit before native copies. The existing wire codec, host/client routers
 and authority/replication adapters remain the integration points. The same Syncing
-protocol and generic Bulk substrate use this secured Transport; the future final
-barrier coordinates Ready promotion on both ends. Steam P2P/SDR selection belongs to that future
+protocol, generic Bulk substrate and final barrier use this secured Transport
+and coordinate Ready promotion on both ends. Steam P2P/SDR selection belongs to that future
 backend. `SteamLobbyBackend`, if added, separately chooses session members and
 the lobby owner/host identity; it does not send gameplay messages. No lobby or
 Steamworks placeholder dependency/module is added in this change.

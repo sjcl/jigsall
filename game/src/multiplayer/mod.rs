@@ -1,6 +1,7 @@
 //! Opt-in multiplayer foundation. No systems are added to the single-player schedule.
 pub mod baseline;
 pub mod catch_up;
+pub mod finalization;
 pub mod protocol;
 mod release;
 pub mod replication;

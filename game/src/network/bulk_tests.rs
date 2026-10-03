@@ -757,7 +757,9 @@ fn max_chunk_fits_wire_margin_and_max_plus_one_rejects_encode_and_decode() {
         } else {
             assert!(postcard::from_bytes::<BulkTransferMessage>(&payload).is_err());
             assert_eq!(wire::encode(&framed), Err(WireError::Oversized));
-            let mut frame = b"PZLA\x07\x00\x05\x00".to_vec();
+            let mut frame = b"PZLA".to_vec();
+            frame.extend_from_slice(&wire::WIRE_VERSION.to_le_bytes());
+            frame.extend_from_slice(&[5, 0]);
             frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             frame.extend_from_slice(&payload);
             assert_eq!(wire::decode(&frame), Err(WireError::MalformedPayload));
@@ -785,7 +787,9 @@ fn huge_truncated_and_malformed_postcard_length_prefixes_reject() {
             payload.extend(postcard::to_allocvec(&count).unwrap());
             payload.extend_from_slice(tail);
             assert!(postcard::from_bytes::<BulkTransferMessage>(&payload).is_err());
-            let mut frame = b"PZLA\x07\x00\x05\x00".to_vec();
+            let mut frame = b"PZLA".to_vec();
+            frame.extend_from_slice(&wire::WIRE_VERSION.to_le_bytes());
+            frame.extend_from_slice(&[5, 0]);
             frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             frame.extend_from_slice(&payload);
             assert_eq!(wire::decode(&frame), Err(WireError::MalformedPayload));

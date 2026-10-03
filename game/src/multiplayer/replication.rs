@@ -40,6 +40,45 @@ pub struct PeerReplicationState {
 }
 
 impl PeerReplicationState {
+    /// Transactional full-set comparison, followed by authoritative scalar reset.
+    /// This deliberately permits tick/delta rollback; normal Transient monotonic
+    /// semantics remain in apply_drag_update. Never invent or replace a target.
+    pub fn reconcile_final_drags(
+        &mut self,
+        session: &AuthoritySession,
+        store: &PieceDataStore,
+        drags: &super::finalization::FinalDragSet,
+    ) -> Result<(), super::finalization::FinalDragError> {
+        use super::finalization::FinalDragError as Error;
+        drags.validate()?;
+        if !session.is_active() || self.diverged || self.scope != Some(Self::scope(session, store))
+        {
+            return Err(Error::InvalidScope);
+        }
+        if self.remote_drags.len() != drags.entries.len() {
+            return Err(Error::ContextMismatch);
+        }
+        for scalar in &drags.entries {
+            let Some(drag) = self.remote_drags.get(&scalar.player) else {
+                return Err(Error::ContextMismatch);
+            };
+            if drag.grab_sequence != scalar.grab_sequence
+                || drag.basis_sequence != scalar.basis_sequence
+            {
+                return Err(Error::ContextMismatch);
+            }
+        }
+        for scalar in &drags.entries {
+            let drag = self
+                .remote_drags
+                .get_mut(&scalar.player)
+                .expect("preflighted context");
+            drag.last_tick = scalar.last_tick;
+            drag.delta = scalar.delta;
+        }
+        Ok(())
+    }
+
     fn scope(
         session: &AuthoritySession,
         store: &PieceDataStore,

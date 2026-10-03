@@ -1,14 +1,17 @@
 //! Opt-in runtime foundation for authenticated host-to-client joins.
 //! A connection owns one offered transfer; no completed-payload queue exists.
-//! Reliable completion enters Finalizing. Only a future authoritative drag-set
+//! Reliable completion enters Finalizing. Only the authoritative drag-set
 //! reconciliation/barrier may issue a Ready permit.
+use super::session::SessionConnections;
 use super::{
     bootstrap::{BootstrapError, ClientBootstrap, ConnectionState, HostBootstrap},
     bulk::*,
     secure::SecureTransport,
     session_control::SessionMetadata,
-    sync_control::{SyncControlMessage as Control, SyncTransferBinding},
-    transport::{ConnectionId, MessageClass, Transport, TransportError, TransportEvent},
+    sync_control::{SyncControlMessage as Control, SyncFinalization, SyncTransferBinding},
+    transport::{
+        ConnectionId, DisconnectReason, MessageClass, Transport, TransportError, TransportEvent,
+    },
     wire::{self, WireError, WireMessage},
 };
 use crate::{
@@ -16,6 +19,7 @@ use crate::{
         catch_up::{
             CatchUpError, JoinCatchUpCoordinator, JoinCatchUpPhase, MAX_PENDING_JOIN_SYNCS,
         },
+        finalization::{FinalDragError, FinalDragSet},
         protocol::{HostCommandOutcome, ProtocolDragContexts},
         replication::{PeerReplicationState, ReplicationError},
         JoinBaseline, JoinBaselineError, SnapshotExpectation,
@@ -46,9 +50,9 @@ pub enum SyncPhase {
     AwaitingBaselineSlot,
     BaselineTransfer,
     CatchingUp,
-    /// Reliable stream is current; full authoritative active-drag reconciliation,
-    /// final barrier and final ACK still have to be implemented.
+    /// Reliable stream is current; final full-set reconciliation/ACK is pending.
     Finalizing,
+    Ready,
     RestartRequired,
 }
 
@@ -84,6 +88,9 @@ pub enum SyncError {
     WrongPhase,
     WrongIdentity,
     WrongGeneration,
+    WrongFinalization,
+    FinalizationExhausted,
+    FinalDrag(FinalDragError),
     UnofferedTransfer,
     TransferMismatch,
     ImageHashMismatch,
@@ -96,9 +103,8 @@ pub enum SyncError {
     Transport(TransportError),
 }
 
-/// Private construction is deliberate: no foundation phase can certify the
-/// future full active-drag reconciliation and final ACK. Bootstrap requires this
-/// capability, bound to the authenticated identity, for promotion.
+/// Private construction: only a validated final barrier or its host commit can
+/// certify readiness. Bound to the original authenticated connection identity.
 pub struct SyncReadyPermit {
     connection: ConnectionId,
     metadata: SessionMetadata,
@@ -133,6 +139,12 @@ pub struct SyncAuthority<'a> {
     pub store: &'a PieceDataStore,
     pub contexts: &'a ProtocolDragContexts,
     pub definition: &'a PuzzleDefinition,
+}
+
+/// Mutably borrow both routing gates throughout final validation/commit.
+pub struct SyncHost<'a> {
+    pub bootstrap: &'a mut HostBootstrap,
+    pub connections: &'a mut SessionConnections,
 }
 impl SyncAuthority<'_> {
     fn metadata(&self) -> SessionMetadata {
@@ -197,7 +209,15 @@ struct HostSyncPeer {
     transfer_finished: bool,
     sent_cursor: Option<AuthorityCursor>,
     obsolete: Option<(u64, Option<TransferId>)>,
+    final_revision: u64,
+    candidate: Option<FinalizationCandidate>,
     timing: SyncTiming,
+}
+
+struct FinalizationCandidate {
+    token: SyncFinalization,
+    drags: FinalDragSet,
+    store_epoch: u64,
 }
 
 /// One coordinator for the authority, with state only for joining connections.
@@ -279,6 +299,8 @@ impl HostSyncCoordinator {
                 transfer_finished: false,
                 sent_cursor: None,
                 obsolete: None,
+                final_revision: 0,
+                candidate: None,
                 timing: SyncTiming::new(now),
             },
         );
@@ -308,6 +330,7 @@ impl HostSyncCoordinator {
             for peer in self.peers.values_mut() {
                 if peer.phase == SyncPhase::Finalizing {
                     peer.phase = SyncPhase::CatchingUp;
+                    peer.candidate = None;
                 }
             }
         }
@@ -325,6 +348,7 @@ impl HostSyncCoordinator {
         for peer in self.peers.values_mut() {
             if peer.phase == SyncPhase::Finalizing {
                 peer.phase = SyncPhase::CatchingUp;
+                peer.candidate = None;
             }
         }
         result
@@ -366,6 +390,7 @@ impl HostSyncCoordinator {
                     peer.transfer_finished = false;
                     peer.baseline_cursor = None;
                     peer.sent_cursor = None;
+                    peer.candidate = None;
                     peer.timing.transfer_progress = None;
                     peer.phase = SyncPhase::RestartRequired;
                 }
@@ -386,13 +411,41 @@ impl HostSyncCoordinator {
     /// session content, supplied only when an image is actually missing.
     pub fn route<T: Transport>(
         &mut self,
-        bootstrap: &HostBootstrap,
+        host: &mut SyncHost<'_>,
         event: &TransportEvent,
         transport: &mut SecureTransport<T>,
         authority: &SyncAuthority<'_>,
         image: Option<Arc<[u8]>>,
         now: Instant,
     ) -> Result<(), SyncError> {
+        let result = self.route_inner(host, event, transport, authority, image, now);
+        if result.is_err() {
+            if let TransportEvent::Message { connection, .. } = event {
+                self.disconnect(*connection);
+                let _ = host.bootstrap.reject(
+                    *connection,
+                    DisconnectReason::ProtocolViolation,
+                    transport,
+                    host.connections,
+                );
+            }
+        }
+        result
+    }
+
+    fn route_inner<T: Transport>(
+        &mut self,
+        host: &mut SyncHost<'_>,
+        event: &TransportEvent,
+        transport: &mut SecureTransport<T>,
+        authority: &SyncAuthority<'_>,
+        image: Option<Arc<[u8]>>,
+        now: Instant,
+    ) -> Result<(), SyncError> {
+        let SyncHost {
+            bootstrap,
+            connections,
+        } = host;
         let (connection, message) = sync_message(event)?;
         if bootstrap.state(connection) != Some(ConnectionState::Syncing)
             || !transport.has_channel(connection)
@@ -511,6 +564,65 @@ impl HostSyncCoordinator {
                 self.catch_up
                     .acknowledge_through(peer.player, generation, cursor)
                     .map_err(SyncError::CatchUp)?;
+            }
+            Control::FinalizeAck { token } => {
+                if obsolete_ack(peer, token.generation)? {
+                    return Ok(());
+                }
+                // ACKs can outlive a Reliable fallback or a Transient retry.
+                if token.revision < peer.final_revision
+                    || (token.revision == peer.final_revision && peer.candidate.is_none())
+                {
+                    return Ok(());
+                }
+                let candidate = peer
+                    .candidate
+                    .as_ref()
+                    .ok_or(SyncError::WrongFinalization)?;
+                if peer.phase != SyncPhase::Finalizing || candidate.token != token {
+                    return Err(SyncError::WrongFinalization);
+                }
+                if !peer.image_ready
+                    || candidate.store_epoch != authority.store.epoch
+                    || !authority.session.is_active()
+                {
+                    return Err(SyncError::WrongIdentity);
+                }
+                let current = self
+                    .catch_up
+                    .is_reliable_caught_up(
+                        peer.player,
+                        token.generation,
+                        authority.session,
+                        authority.store,
+                    )
+                    .map_err(SyncError::CatchUp)?;
+                if !current || token.cursor != authority.session.cursor() {
+                    peer.candidate = None;
+                    peer.phase = SyncPhase::CatchingUp;
+                    return Ok(());
+                }
+                let drags =
+                    FinalDragSet::capture(authority.contexts, authority.session, authority.store)
+                        .map_err(SyncError::FinalDrag)?;
+                if drags != candidate.drags {
+                    peer.candidate = None;
+                    // No Reliable replay is needed. The next pump sends a fresh revision.
+                    return Ok(());
+                }
+                let permit = SyncReadyPermit {
+                    connection,
+                    metadata: peer.authenticated,
+                    player: peer.player,
+                };
+                // Register before the client can receive commit and send on another lane.
+                // The public route's failure path rolls registration back if send fails.
+                bootstrap
+                    .promote_ready(connection, connections, &permit)
+                    .map_err(SyncError::Bootstrap)?;
+                send(transport, connection, Control::ReadyCommit { token })?;
+                self.disconnect(connection);
+                return Ok(());
             }
             _ => return Err(SyncError::WrongDirection),
         }
@@ -740,6 +852,43 @@ impl HostSyncCoordinator {
                     peer.timing.last_progress = now;
                 }
             }
+        } else if peer.phase == SyncPhase::Finalizing && peer.candidate.is_none() {
+            let generation = peer.generation.ok_or(SyncError::WrongGeneration)?;
+            if !self
+                .catch_up
+                .is_reliable_caught_up(peer.player, generation, authority.session, authority.store)
+                .map_err(SyncError::CatchUp)?
+            {
+                peer.phase = SyncPhase::CatchingUp;
+                return Ok(());
+            }
+            let revision = peer
+                .final_revision
+                .checked_add(1)
+                .ok_or(SyncError::FinalizationExhausted)?;
+            let token = SyncFinalization {
+                generation,
+                cursor: authority.session.cursor(),
+                revision,
+            };
+            let drags =
+                FinalDragSet::capture(authority.contexts, authority.session, authority.store)
+                    .map_err(SyncError::FinalDrag)?;
+            send(
+                transport,
+                connection,
+                Control::Finalize {
+                    token,
+                    drags: drags.clone(),
+                },
+            )?;
+            peer.final_revision = revision;
+            peer.candidate = Some(FinalizationCandidate {
+                token,
+                drags,
+                store_epoch: authority.store.epoch,
+            });
+            peer.timing.last_progress = now;
         }
         Ok(())
     }
@@ -777,6 +926,8 @@ pub enum ClientSyncOutcome {
     BaselineInstalled,
     CatchUpApplied,
     FinalizationPending,
+    Finalized,
+    Ready,
 }
 
 pub struct ClientSyncRouter {
@@ -792,6 +943,8 @@ pub struct ClientSyncRouter {
     last_offered_id: Option<TransferId>,
     receiving: Option<ReceivingTransfer>,
     bulk: BulkTransferReceiver,
+    final_revision: u64,
+    candidate: Option<FinalizationCandidate>,
     timing: SyncTiming,
 }
 /// The existing replica/store/session are borrowed only while routing sync work.
@@ -827,6 +980,8 @@ impl ClientSyncRouter {
             last_offered_id: None,
             receiving: None,
             bulk: BulkTransferReceiver::default(),
+            final_revision: 0,
+            candidate: None,
             timing: SyncTiming::new(now),
         })
     }
@@ -851,7 +1006,25 @@ impl ClientSyncRouter {
 
     pub fn route<T: Transport>(
         &mut self,
-        bootstrap: &ClientBootstrap,
+        bootstrap: &mut ClientBootstrap,
+        connections: &mut SessionConnections,
+        event: &TransportEvent,
+        transport: &mut SecureTransport<T>,
+        state: &mut SyncReplica<'_>,
+        now: Instant,
+    ) -> Result<ClientSyncOutcome, SyncError> {
+        let result = self.route_inner(bootstrap, connections, event, transport, state, now);
+        if result.is_err() {
+            self.invalidate();
+            let _ = bootstrap.reject(DisconnectReason::ProtocolViolation, transport, connections);
+        }
+        result
+    }
+
+    fn route_inner<T: Transport>(
+        &mut self,
+        bootstrap: &mut ClientBootstrap,
+        connections: &mut SessionConnections,
         event: &TransportEvent,
         transport: &mut SecureTransport<T>,
         state: &mut SyncReplica<'_>,
@@ -1020,6 +1193,7 @@ impl ClientSyncRouter {
                         },
                     )?;
                     self.phase = SyncPhase::CatchingUp;
+                    self.candidate = None;
                     ClientSyncOutcome::CatchUpApplied
                 }
                 Control::ReliableComplete { generation, cursor } => {
@@ -1033,6 +1207,70 @@ impl ClientSyncRouter {
                     }
                     self.phase = SyncPhase::Finalizing;
                     ClientSyncOutcome::FinalizationPending
+                }
+                Control::Finalize { token, drags } => {
+                    if self.stale_generation(token.generation)?
+                        || self.phase == SyncPhase::RestartRequired
+                        || token.revision <= self.final_revision
+                    {
+                        return Ok(ClientSyncOutcome::Obsolete);
+                    }
+                    if self.phase != SyncPhase::Finalizing
+                        || !self.image_ready
+                        || self.baseline_cursor.is_none()
+                        || token.cursor != session.cursor()
+                    {
+                        return Err(SyncError::WrongFinalization);
+                    }
+                    replica
+                        .reconcile_final_drags(session, store, &drags)
+                        .map_err(SyncError::FinalDrag)?;
+                    send(transport, connection, Control::FinalizeAck { token })?;
+                    self.final_revision = token.revision;
+                    self.candidate = Some(FinalizationCandidate {
+                        token,
+                        drags,
+                        store_epoch: store.epoch,
+                    });
+                    ClientSyncOutcome::Finalized
+                }
+                Control::ReadyCommit { token } => {
+                    if self.stale_generation(token.generation)?
+                        || token.revision < self.final_revision
+                        || self.phase == SyncPhase::RestartRequired
+                    {
+                        return Ok(ClientSyncOutcome::Obsolete);
+                    }
+                    let candidate = self
+                        .candidate
+                        .as_ref()
+                        .ok_or(SyncError::WrongFinalization)?;
+                    if self.phase != SyncPhase::Finalizing
+                        || candidate.token != token
+                        || token.cursor != session.cursor()
+                        || candidate.store_epoch != store.epoch
+                    {
+                        return Err(SyncError::WrongFinalization);
+                    }
+                    replica
+                        .reconcile_final_drags(session, store, &candidate.drags)
+                        .map_err(SyncError::FinalDrag)?;
+                    let permit = SyncReadyPermit {
+                        connection,
+                        metadata: self.authenticated,
+                        player: self.player,
+                    };
+                    bootstrap
+                        .promote_ready(connections, &permit)
+                        .map_err(SyncError::Bootstrap)?;
+                    self.invalidate();
+                    self.definition = None;
+                    self.generation = None;
+                    self.last_offered_id = None;
+                    self.bulk = BulkTransferReceiver::default();
+                    self.final_revision = 0;
+                    self.phase = SyncPhase::Ready;
+                    ClientSyncOutcome::Ready
                 }
                 _ => return Err(SyncError::WrongDirection),
             },
@@ -1057,6 +1295,7 @@ impl ClientSyncRouter {
         self.receiving = None;
         self.baseline_cursor = None;
         self.store_epoch = None;
+        self.candidate = None;
         self.phase = SyncPhase::RestartRequired;
         self.timing.transfer_progress = None;
     }

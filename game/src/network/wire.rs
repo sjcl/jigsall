@@ -8,7 +8,7 @@ use puzzella_core::protocol::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 7;
+pub const WIRE_VERSION: u16 = 8;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_SESSION_CONTROL_PAYLOAD: usize = 4096;
@@ -88,7 +88,13 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
         WireMessage::AuthorityEvent(v) => binary(v)?,
         WireMessage::DragUpdate(v) => binary(v)?,
         WireMessage::SessionControl(v) => binary(v)?,
-        WireMessage::SyncControl(v) => binary(v)?,
+        WireMessage::SyncControl(v) => {
+            if matches!(v, SyncControlMessage::Finalize { drags, .. } if drags.entries.len() > crate::multiplayer::MAX_BASELINE_DRAGS)
+            {
+                return Err(WireError::Oversized);
+            }
+            binary(v)?
+        }
         WireMessage::BulkTransfer(v) => {
             if matches!(v, BulkTransferMessage::Chunk { data, .. } if data.len() > MAX_BULK_DATA_BYTES)
             {

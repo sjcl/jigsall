@@ -214,6 +214,44 @@ fn correct_password_mutual_confirmation_and_explicit_ready_registration() {
 }
 
 #[test]
+fn authenticated_sync_frames_require_explicit_begin_sync_on_both_sides() {
+    for message in [
+        bulk_chunk(vec![0]),
+        WireMessage::SyncControl(crate::network::sync_control::SyncControlMessage::Restart {
+            generation: 0,
+        }),
+    ] {
+        for host_side in [true, false] {
+            let mut p = Pair::new("correct password");
+            p.authenticate();
+            let result = if host_side {
+                p.host.process(
+                    &message_event(HA, &message),
+                    &mut p.ht,
+                    &mut p.host_connections,
+                    p.now,
+                )
+            } else {
+                p.client.process(
+                    &message_event(CLIENT_HOST, &message),
+                    &mut p.ct,
+                    &mut p.client_connections,
+                    p.now,
+                )
+            };
+            assert_eq!(
+                result,
+                Err(BootstrapError::Rejected(
+                    DisconnectReason::ProtocolViolation
+                ))
+            );
+            assert_eq!(p.host_connections.player(HA), None);
+            assert_eq!(p.client_connections.player(CLIENT_HOST), None);
+        }
+    }
+}
+
+#[test]
 fn sync_bulk_and_control_are_separate_from_ready_gameplay() {
     for message in [
         bulk_chunk(vec![0]),

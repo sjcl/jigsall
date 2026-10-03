@@ -3,12 +3,21 @@ use super::{
     bulk::{BulkTransferKind, TransferId},
     session_control::SessionMetadata,
 };
+use crate::multiplayer::finalization::FinalDragSet;
 use puzzella_core::{
     protocol::ProtocolAuthorityEventEnvelope,
     session::{AuthorityCursor, ImageHash},
     PuzzleDefinition,
 };
 use serde::{Deserialize, Serialize};
+
+/// A revision is never reused within a secure join lifetime, including restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncFinalization {
+    pub generation: u64,
+    pub cursor: AuthorityCursor,
+    pub revision: u64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncTransferBinding {
@@ -62,5 +71,15 @@ pub enum SyncControlMessage {
     /// Obsoletes all baseline state/ACKs for this generation, even if Bulk is late.
     Restart {
         generation: u64,
+    },
+    Finalize {
+        token: SyncFinalization,
+        drags: FinalDragSet,
+    },
+    FinalizeAck {
+        token: SyncFinalization,
+    },
+    ReadyCommit {
+        token: SyncFinalization,
     },
 }
