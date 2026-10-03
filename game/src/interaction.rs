@@ -202,6 +202,48 @@ impl PieceInteraction {
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })
     }
+    /// Runtime ACK reconciliation at a control boundary. A released/replaced
+    /// gesture must not be resurrected by a delayed authority result.
+    pub(crate) fn reconcile_network_grab(
+        &mut self,
+        requested: &PieceBitSet,
+        accepted: PieceBitSet,
+        store: &mut PieceDataStore,
+    ) {
+        if let Gesture::Dragging { members, .. } = &mut self.gesture {
+            if members == requested {
+                if accepted.is_empty() {
+                    self.gesture = Gesture::Idle;
+                    store.drag = default();
+                } else {
+                    store.drag.members = accepted.words().clone();
+                    store.selected_pieces = accepted.clone();
+                    store.highlights_dirty = true;
+                    *members = accepted;
+                }
+            }
+        }
+    }
+    /// Rebase only after an accepted authority commit, at the submitted pointer.
+    /// Movement made while waiting for the ACK remains a presentation residual.
+    pub(crate) fn rebase_network_drag(
+        &mut self,
+        members: &PieceBitSet,
+        pointer: Option<Vec2>,
+        delta: Vec2,
+        store: &mut PieceDataStore,
+    ) {
+        if let Gesture::Dragging {
+            members: current,
+            anchor,
+        } = &mut self.gesture
+        {
+            if current == members {
+                *anchor = pointer.filter(|p| p.is_finite()).unwrap_or(*anchor + delta);
+                store.drag.delta -= delta;
+            }
+        }
+    }
     #[cfg(test)]
     pub fn selection_rect(&self) -> Option<Rect> {
         if let Gesture::BoxSelecting {
