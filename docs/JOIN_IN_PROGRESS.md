@@ -240,6 +240,12 @@ it. Tick guards survive reliable ACK pruning. GrabAccepted clears any old latest
 value, DragRotationCommitted clears the old basis presentation and updates its
 scalar guard, and ReleaseCommitted/DragCancelled remove the player's latest value
 and guard. RotationCommitted leaves protocol drag presentation unchanged.
+Before updating or removing a guard, DragRotationCommitted, ReleaseCommitted and
+DragCancelled require the player's guard to exist with the same grab_sequence.
+A missing or mismatched guard marks only that joining peer
+`RestartRequired(InconsistentDragContext)` and discards its retained history and
+transients. This detects damaged coordinator metadata even when the global cursor
+is contiguous; the already-applied host event and other joining peers continue.
 
 Overflow of event count, byte budget or active-player bounds sets only the affected
 peer to `RestartRequired(reason)`, drops its queue **and backing allocation**,

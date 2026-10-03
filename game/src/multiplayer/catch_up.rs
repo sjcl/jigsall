@@ -46,6 +46,7 @@ pub enum CatchUpRestartReason {
     EventCountLimit,
     RetainedByteLimit,
     TooManyActiveDrags,
+    InconsistentDragContext,
     MissedAuthorityEvent,
     ScopeChanged,
     AuthorityFrozen,
@@ -200,6 +201,28 @@ impl PendingJoin {
         }
     }
     fn update_drag_basis(&mut self, event: &ProtocolAuthorityEvent) {
+        let context = match event {
+            ProtocolAuthorityEvent::DragRotationCommitted(commit) => {
+                Some((commit.player, commit.grab_sequence))
+            }
+            ProtocolAuthorityEvent::ReleaseCommitted(commit) => {
+                Some((commit.player, commit.grab_sequence))
+            }
+            ProtocolAuthorityEvent::DragCancelled(cancel) => {
+                Some((cancel.player, cancel.grab_sequence))
+            }
+            _ => None,
+        };
+        if let Some((player, grab_sequence)) = context {
+            if !self
+                .drag_bases
+                .get(&player.0)
+                .is_some_and(|basis| basis.grab_sequence == grab_sequence)
+            {
+                self.restart_required(CatchUpRestartReason::InconsistentDragContext);
+                return;
+            }
+        }
         match event {
             ProtocolAuthorityEvent::GrabAccepted(ack) => {
                 self.latest_updates.remove(&ack.player.0);
@@ -224,10 +247,12 @@ impl PendingJoin {
             }
             ProtocolAuthorityEvent::DragRotationCommitted(commit) => {
                 self.latest_updates.remove(&commit.player.0);
-                if let Some(basis) = self.drag_bases.get_mut(&commit.player.0) {
-                    basis.basis_sequence = commit.basis_sequence;
-                    basis.last_tick = commit.through_tick;
-                }
+                let basis = self
+                    .drag_bases
+                    .get_mut(&commit.player.0)
+                    .expect("validated lifecycle drag context");
+                basis.basis_sequence = commit.basis_sequence;
+                basis.last_tick = commit.through_tick;
             }
             ProtocolAuthorityEvent::ReleaseCommitted(commit) => {
                 self.latest_updates.remove(&commit.player.0);

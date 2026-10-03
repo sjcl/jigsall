@@ -1209,3 +1209,85 @@ fn failed_begin_capture_and_empty_outcome_do_not_change_existing_sync() {
     host.record(&mut coordinator, &outcome).unwrap();
     assert_eq!(coordinator.status(JOINER).unwrap(), before);
 }
+
+#[test]
+fn lifecycle_events_invalidate_only_the_peer_with_a_missing_or_mismatched_drag_context() {
+    for event_kind in 0..3 {
+        for missing in [false, true] {
+            for baseline_pending in [false, true] {
+                let mut host = Host::new(64);
+                host.grab(HOST, 40, [0]);
+                let mut coordinator = JoinCatchUpCoordinator::default();
+                let healthy = host.begin(&mut coordinator, JOINER).unwrap();
+                let damaged = host.begin(&mut coordinator, J2).unwrap();
+                let mut peer = Peer::install(&host, &healthy, &mut coordinator);
+                if !baseline_pending {
+                    coordinator
+                        .mark_baseline_installed(J2, 0, damaged.baseline.snapshot.cursor)
+                        .unwrap();
+                }
+                let outcome = host.update(HOST, 40, 100);
+                host.record(&mut coordinator, &outcome).unwrap();
+                let outcome = host.rotate_idle(0);
+                host.record(&mut coordinator, &outcome).unwrap();
+                let before = coordinator.status(JOINER).unwrap();
+                let damaged_peer = coordinator.peers.get_mut(&J2.0).unwrap();
+                assert_eq!(damaged_peer.events.len(), 1);
+                assert_eq!(damaged_peer.latest_updates.len(), 1);
+                if missing {
+                    damaged_peer.drag_bases.remove(&HOST.0);
+                } else {
+                    damaged_peer
+                        .drag_bases
+                        .get_mut(&HOST.0)
+                        .unwrap()
+                        .grab_sequence = 41;
+                }
+
+                // Generate a real, already-applied lifecycle event. Only one peer's
+                // private coordinator metadata is corrupted, not host gameplay.
+                let event = match event_kind {
+                    0 => host.rotate_drag().authority_event.unwrap(),
+                    1 => host.release(HOST, 41, 40).authority_event.unwrap(),
+                    _ => {
+                        host.contexts
+                            .cancel_replicated(&mut host.session, &mut host.store, HOST)
+                            .unwrap()
+                            .unwrap()
+                            .authority_event
+                    }
+                };
+                let states = host.store.states.clone();
+                let cursor = host.session.cursor();
+                host.record_event(&mut coordinator, &event).unwrap();
+                assert_eq!(host.store.states, states);
+                assert_eq!(host.session.cursor(), cursor);
+                assert_discarded(
+                    &coordinator,
+                    J2,
+                    CatchUpRestartReason::InconsistentDragContext,
+                );
+                assert_eq!(coordinator.status(J2).unwrap().generation, 0);
+                let healthy_status = coordinator.status(JOINER).unwrap();
+                assert_eq!(healthy_status.phase, JoinCatchUpPhase::CatchingUp);
+                assert_eq!(healthy_status.retained_events, before.retained_events + 1);
+                assert_eq!(
+                    healthy_status.retained_bytes,
+                    before.retained_bytes + logical_retained_bytes(&event)
+                );
+                peer.catch_up(&host, &mut coordinator, 0);
+                peer.assert_matches(&host);
+                assert_eq!(host.caught_up(&mut coordinator, 0), Ok(true));
+
+                let outcome = host.rotate_idle(1);
+                host.record(&mut coordinator, &outcome).unwrap();
+                assert_eq!(coordinator.status(JOINER).unwrap().retained_events, 1);
+                assert_discarded(
+                    &coordinator,
+                    J2,
+                    CatchUpRestartReason::InconsistentDragContext,
+                );
+            }
+        }
+    }
+}
