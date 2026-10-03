@@ -15,7 +15,8 @@ cargo build --locked --release
 .\target\release\puzzella.exe
 ```
 
-タイトルの「New Game」から画像とパズルサイズ・seedを設定してください。通信のHost / Joinは未実装です。
+タイトルの「New Game」から画像とパズルサイズ・seedを設定してください。通信のHost / Join画面は未実装です。
+game layerのprogrammatic APIは[Direct-IP runtime](DIRECT_IP_RUNTIME.md)を参照してください。
 
 ## 開発チェック
 
@@ -68,6 +69,14 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 ```
 
 ユーザー設定は元リポジトリとworktreeの両方に適用されます。`GNS_VCPKG_BUILDTREES_ROOT` は共通の短い作業パスに固定してください。Rustの共有中間ビルドキャッシュ設定は維持し、ロック待ちになったコマンドは先行ビルドの終了までそのまま待ってください。
+
+MSVCのmulti-config generatorでは、依存の最適化設定によりGNSが
+`RelWithDebInfo`へ生成されても、GNS 0.3.0のbuild scriptが`Debug`を検索し、
+`GameNetworkingSockets_s.lib`のLNK1181が起こる場合があります。
+CIはsingle-configのNinjaを使い、libraryを`build/src`直下へ生成します。
+既に生成済みのMSVC buildを使う場合、linker出力にあるGNSの`out` directory内の
+`lib`をそのコマンドだけ`LIB`検索先へ追加できます。これはRustのtarget/build
+directoryやvcpkg作業パスの切り替えではありません。
 
 GNSの依存関係とテストの詳細は[NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md)を参照してください。
 
