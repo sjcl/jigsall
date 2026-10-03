@@ -12,7 +12,10 @@ save/load still use canonical checkpoint state and discard drags. See
 
 This is an opt-in, transport-independent CPU protocol boundary. It adds no systems
 to local play and implements no packet send/receive, sockets, Steamworks, lobby,
-host election, encryption, image transfer, or join-in-progress.
+host election, encryption, image transfer, or join-in-progress itself. Direct-IP
+transport and join coordination live in [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md)
+and [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md); the scheduled game lifecycle is
+documented in [DIRECT_IP_RUNTIME.md](DIRECT_IP_RUNTIME.md).
 
 `PlayerId` identifies a player within the session. The independent
 `LocalPlayerId` Bevy resource identifies the player controlled by this process;
@@ -20,8 +23,9 @@ host election, encryption, image transfer, or join-in-progress.
 (`ProtocolDragContexts`) and peer replay (`PeerReplicationState::apply_event`)
 receive the current local ID explicitly for selection/drag presentation. It is
 not puzzle state and is never serialized. Menu teardown resets it; snapshot
-installation does not. Future joins will update it from the assigned PlayerId in
-`JoinAccepted`, independently of SteamID (see [network identity](NETWORK_TRANSPORT.md#identity-and-establishment)).
+installation does not. Direct-IP runtime updates it at ReadyCommit from the
+authenticated assigned PlayerId, independently of SteamID (see
+[network identity](NETWORK_TRANSPORT.md#identity-and-establishment)).
 
 ## Layers
 
@@ -381,9 +385,11 @@ without a post-baseline Grab context requests resync rather than guessing member
 
 `cancel_player` remains unreplicated emergency cleanup with existing component-wide
 hold cleanup without translation or snap. Normal disconnect/timeout decisions use
-authority `cancel_replicated` and Reliable DragCancelled replay on peers. No timeout
-scheduler is added. Snapshot request messages, source authentication,
-retention/catch-up policy and runtime coordination remain future transport work.
+authority `cancel_replicated` and Reliable DragCancelled replay on peers. This CPU
+layer adds no scheduler. The [Direct-IP runtime](DIRECT_IP_RUNTIME.md) coordinates
+authenticated connections, bounded join catch-up, Syncing timeouts, and Ready
+disconnect cancellation. Arbitrary in-session snapshot resync requests and host
+migration orchestration remain follow-ups.
 
 ## Best-effort DragUpdate and presentation
 

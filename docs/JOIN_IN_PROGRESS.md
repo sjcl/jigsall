@@ -112,7 +112,7 @@ without advancing store epoch. Other players' active contexts remain intact.
 
 CPU tests feed the generated continuation directly, covering sparse/dense targets,
 simultaneous drags and rotation/rebase before cancellation. The catch-up coordinator
-below retains post-capture events. Future disconnect callers must retain the assigned
+below retains post-capture events. The game runtime retains the assigned
 PlayerId before removing its SessionConnections mapping, cancel once, and publish
 or retain the resulting envelope even if an individual send fails.
 
@@ -398,9 +398,10 @@ The client also rejects and invalidates changed local session/epoch/host/store s
 `pump` sends at most one Bulk message or Reliable catch-up event per call; one
 outstanding catch-up event is ACKed before the next is sent. Only sent cursors may
 be ACKed. `SyncTiming` exposes overall start, last progress and transfer progress,
-with an explicit-clock timeout predicate. Callers can enforce Syncing/progress
-timeouts and close/remove stalled connections; no timeout policy is scheduled
-automatically. A legal Start without chunks therefore remains visible to policy.
+with an explicit-clock timeout predicate. The game runtime enforces a 300-second
+overall Syncing timeout and 30-second transfer-progress timeout and removes stalled
+connections. The foundation itself schedules no timeout policy. A legal Start
+without chunks therefore remains visible to policy.
 
 ### Authoritative final reconciliation and barrier
 
@@ -523,6 +524,8 @@ post-completion contiguous allocation and reports reservation failure as Result.
 Syncing routers authorize/reassemble current host-to-client transfers; gameplay
 routers reject them. Baseline capture/install/catch-up CPU semantics, image import's
 local 512 MiB policy and persistence are unchanged. No persistent cache, file
-streaming, compression, Steamworks or automatically scheduled Bevy systems are added.
+streaming, compression or Steamworks is added. Bevy scheduling, worker image decode,
+World installation and disconnect ownership now live in the
+[game runtime](DIRECT_IP_RUNTIME.md).
 See [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md#bounded-bulk-transfer-foundation)
 for the generic framing, receiver error semantics and fixed v8 golden contract.

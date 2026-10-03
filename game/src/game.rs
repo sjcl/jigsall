@@ -13,6 +13,7 @@ pub struct GamePlugin;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::settings::DisplaySettingsPlugin);
+        app.add_plugins(crate::network::runtime::NetworkRuntimePlugin);
         app.add_plugins(crate::selection::PuzzleSelectionPlugin)
             .init_resource::<crate::keybindings::KeyBindingsState>()
             .init_resource::<crate::image_settings::ImageSettingsState>()
@@ -113,8 +114,9 @@ impl Plugin for GamePlugin {
             .add_systems(
                 PostUpdate,
                 (
-                    apply_piece_commands,
-                    check_piece_placement_event_driven,
+                    apply_piece_commands.run_if(crate::network::runtime::world_offline),
+                    check_piece_placement_event_driven
+                        .run_if(crate::network::runtime::world_offline),
                     update_game_state_event_driven,
                     render_selection_box,
                 )
@@ -173,7 +175,13 @@ fn initialize_game(
     mut store: ResMut<PieceDataStore>,
     pending: Option<ResMut<PendingRestore>>,
     mut persistence: ResMut<PersistenceState>,
+    network: Option<NonSend<crate::network::runtime::NetworkSession>>,
 ) {
+    // A join already installed the canonical store and definition. Continue
+    // UploadingGpu without regenerating either resource.
+    if network.is_some() {
+        return;
+    }
     *game = GameData {
         players: vec![PlayerInfo {
             id: local_player.0,
@@ -220,7 +228,7 @@ fn initialize_game(
 /// Runs when leaving a session for Menu, including the completed puzzle viewer.
 // ECS dependencies and query filters are explicit to keep Bevy access visible.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn cleanup_game(
+pub(crate) fn cleanup_game(
     mut commands: Commands,
     entities: Query<Entity, Or<(With<GridReference>, With<SelectionBox>)>>,
     mut store: ResMut<PieceDataStore>,

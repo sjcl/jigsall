@@ -988,6 +988,10 @@ impl ClientSyncRouter {
     pub fn phase(&self) -> SyncPhase {
         self.phase
     }
+    /// Negotiated definition, available before baseline installation and Ready.
+    pub fn definition(&self) -> Option<&PuzzleDefinition> {
+        self.definition.as_ref()
+    }
     pub fn timing(&self) -> SyncTiming {
         self.timing
     }

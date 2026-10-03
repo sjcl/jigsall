@@ -45,6 +45,9 @@ enum Gesture {
 pub struct PieceInteraction {
     gesture: Gesture,
     pending_rotation: Option<PendingRotation>,
+    // Stable only for this gesture; delayed network ACKs cannot affect a new
+    // gesture even when it selects the exact same mask.
+    network_gesture: std::sync::Arc<()>,
 }
 
 #[derive(Clone, Copy)]
@@ -202,6 +205,56 @@ impl PieceInteraction {
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })
     }
+    /// Runtime ACK reconciliation at a control boundary. A released/replaced
+    /// gesture must not be resurrected by a delayed authority result.
+    pub(crate) fn reconcile_network_grab(
+        &mut self,
+        token: &std::sync::Arc<()>,
+        requested: &PieceBitSet,
+        accepted: PieceBitSet,
+        store: &mut PieceDataStore,
+    ) {
+        if !std::sync::Arc::ptr_eq(token, &self.network_gesture) {
+            return;
+        }
+        if let Gesture::Dragging { members, .. } = &mut self.gesture {
+            if members == requested {
+                if accepted.is_empty() {
+                    self.gesture = Gesture::Idle;
+                    store.drag = default();
+                } else {
+                    store.drag.members = accepted.words().clone();
+                    store.selected_pieces = accepted.clone();
+                    store.highlights_dirty = true;
+                    *members = accepted;
+                }
+            }
+        }
+    }
+    /// Rebase only after an accepted authority commit, at the submitted pointer.
+    /// Movement made while waiting for the ACK remains a presentation residual.
+    pub(crate) fn rebase_network_drag(
+        &mut self,
+        token: &std::sync::Arc<()>,
+        members: &PieceBitSet,
+        pointer: Option<Vec2>,
+        delta: Vec2,
+        store: &mut PieceDataStore,
+    ) {
+        if !std::sync::Arc::ptr_eq(token, &self.network_gesture) {
+            return;
+        }
+        if let Gesture::Dragging {
+            members: current,
+            anchor,
+        } = &mut self.gesture
+        {
+            if current == members {
+                *anchor = pointer.filter(|p| p.is_finite()).unwrap_or(*anchor + delta);
+                store.drag.delta -= delta;
+            }
+        }
+    }
     #[cfg(test)]
     pub fn selection_rect(&self) -> Option<Rect> {
         if let Gesture::BoxSelecting {
@@ -215,6 +268,9 @@ impl PieceInteraction {
         } else {
             None
         }
+    }
+    pub(crate) fn network_gesture_token(&self) -> std::sync::Arc<()> {
+        self.network_gesture.clone()
     }
 
     pub fn screen_selection_rect(&self) -> Option<Rect> {
@@ -337,6 +393,7 @@ impl PieceInteraction {
                         commands.push(PieceCommand::GrabGroup {
                             members: members.clone(),
                         });
+                        self.network_gesture = std::sync::Arc::new(());
                         if *released {
                             finish_drag(members, store, &mut commands);
                             self.gesture = Gesture::Idle;
