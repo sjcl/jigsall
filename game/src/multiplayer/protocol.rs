@@ -202,6 +202,20 @@ impl ProtocolDragContexts {
         }
     }
 
+    /// Read-only join capture at a complete command boundary. Old session,
+    /// authority epoch or store-generation contexts are never exposed.
+    pub(crate) fn active_drags<'a>(
+        &'a self,
+        session: &AuthoritySession,
+        store: &PieceDataStore,
+    ) -> impl Iterator<Item = (PlayerId, &'a ActiveDrag)> {
+        let visible = session.is_active() && self.scope == Some(Self::scope(session, store));
+        self.players
+            .iter()
+            .filter(move |_| visible)
+            .map(|(&player, drag)| (player, drag))
+    }
+
     /// Explicit cancel/disconnect: release holds without translating or snapping.
     /// Call this when ownership is cleared externally, before reusing a player.
     pub fn cancel_player(&mut self, store: &mut PieceDataStore, player: PlayerId) {

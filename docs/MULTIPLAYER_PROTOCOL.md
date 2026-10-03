@@ -1,5 +1,14 @@
 # Multiplayer command protocol
 
+Same-epoch join now has a separate `JoinBaseline` CPU API: canonical GameSnapshot
+plus ephemeral active drag contexts at one command boundary. Schema 1 permits at
+most 64 drags, captured in ascending PlayerId order with bounded deserialization.
+Transactional peer installation restores HELD/owners and remote contexts without
+replaying Grab, so existing Update/Release/RotateDrag streams can continue.
+Migration/recovery still use snapshot only with a new epoch and discard drags;
+save/load still use canonical checkpoint state and discard drags. See
+[JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for validation, memory and API details.
+
 This is an opt-in, transport-independent CPU protocol boundary. It adds no systems
 to local play and implements no packet send/receive, sockets, Steamworks, lobby,
 host election, encryption, image transfer, or join-in-progress.

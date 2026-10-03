@@ -1,5 +1,14 @@
 # Network transport
 
+The multiplayer CPU layer provides `JoinBaseline` schema 1 for same-epoch join:
+GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId order.
+Its transactional install can continue existing authority events without a new
+Grab. This foundation is not connected to WireMessage, BulkChunk, image transfer,
+catch-up queues/drag refresh or Authenticated/Syncing/Ready yet. Transport versions,
+golden frames, SecureTransport, GNS and rate limiting are unchanged. Migration
+uses snapshot only plus a new epoch; save/load use checkpoint only; both discard
+drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
+
 Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 snapshot/image transfer, interpolation, prediction, or migration orchestration.

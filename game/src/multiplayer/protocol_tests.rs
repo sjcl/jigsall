@@ -15,6 +15,47 @@ const SESSION: SessionDefinition = SessionDefinition {
     image_hash: ImageHash([7; 32]),
 };
 
+#[test]
+fn join_capture_checks_authority_context_scalar_membership_and_overlap_invariants() {
+    use crate::multiplayer::{JoinBaseline, JoinBaselineError};
+    let mut fixture = Fixture::new(6);
+    let definition = PuzzleDefinition {
+        generator_version: GENERATOR_VERSION,
+        seed: 42,
+        grid_size: UVec2::new(6, 1),
+        image_size: UVec2::new(600, 100),
+        snap_distance: 5.,
+    };
+    fixture.grab(0, fixture.target(&[0]));
+    let capture =
+        |f: &Fixture| JoinBaseline::capture(&f.session, &f.store, &f.contexts, &definition);
+    let original = fixture.contexts.players[&A].clone();
+    fixture.contexts.players.get_mut(&A).unwrap().delta.x = f32::INFINITY;
+    assert_eq!(capture(&fixture), Err(JoinBaselineError::InvalidDelta(A)));
+    fixture.contexts.players.insert(A, original.clone());
+    fixture.contexts.players.get_mut(&A).unwrap().grab_sequence = 1;
+    assert_eq!(
+        capture(&fixture),
+        Err(JoinBaselineError::InvalidSequence(A))
+    );
+    fixture.contexts.players.insert(A, original.clone());
+    fixture.contexts.players.get_mut(&A).unwrap().target = ActiveDragTarget::Sparse(vec![]);
+    assert_eq!(capture(&fixture), Err(JoinBaselineError::EmptyTarget(A)));
+    fixture.contexts.players.insert(A, original.clone());
+    fixture.contexts.players.insert(B, original);
+    assert_eq!(
+        capture(&fixture),
+        Err(JoinBaselineError::OverlappingTarget(PieceId(0)))
+    );
+    fixture.contexts.players.remove(&B);
+    fixture.store.states[0].flags |= PLACED;
+    fixture.store.states[0].position = definition.correct_position(PieceId(0));
+    assert_eq!(
+        capture(&fixture),
+        Err(JoinBaselineError::PlacedTarget(PieceId(0)))
+    );
+}
+
 struct Fixture {
     store: PieceDataStore,
     session: AuthoritySession,
