@@ -530,6 +530,10 @@ fn failed_filesystem_replace_preserves_previous_file_and_temp_is_not_listed() {
             .unwrap();
         assert!(storage.write(key, b"new data".to_vec()).is_err());
         assert_eq!(storage.read(key).unwrap(), b"old data");
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            1
+        );
         drop(locked);
     }
     #[cfg(not(windows))]

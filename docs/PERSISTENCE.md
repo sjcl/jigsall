@@ -88,6 +88,8 @@ storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と 
 
 書き込みは同じ directory の `.puzzella-*.tmp` に write → flush → sync_all → atomic overwrite。`tempfile::persist` による Windows MoveFileExW / Unix rename を使い、旧 target の delete は行いません。Unix では directory も sync します。rename/replace の失敗で旧 file を失わず、temp は一覧に入りません。電源断時の durability は OS/filesystem の保証に依存します。
 
+プロセスの異常終了で残った一時ファイルは、起動時に persistence worker 上で1回掃除します。`saves` / `images` の直下にある `.puzzella-*.tmp` の通常ファイルだけを対象とし、最終更新から24時間以上経過したものを削除します。最近のファイル・未来の更新時刻を持つファイル・directory・symlink・保存データは対象外です。掃除は main thread をブロックせず、保存 request の処理前に完了します。directory が存在しない場合は何も作成せず、読み取り・削除の失敗は警告ログに残して他のファイルの掃除と保存処理を続けます。
+
 新規画像の import で元 bytes の hash と既存画像 container の完全性を検証し、その後に save を publish します。import 済み画像を使う通常 Save は存在確認だけを行い、`.puzimg` の再読込・再 hash は行いません。実際の load では画像全体を検証するため、import 後の外部破損はそこで検出します。同じ ImageHash は複数 save で共有します。途中 failure は高々 orphan image を残します。save の削除では共有画像を削除しません。orphan GC は未実装です。
 
 ## Worker と restore lifecycle

@@ -99,8 +99,8 @@ pub struct PersistenceService {
 }
 impl Default for PersistenceService {
     fn default() -> Self {
-        // Resolve the directory inside the worker; never perform filesystem I/O here.
-        Self::spawn(FilesystemStorage::for_user)
+        // Resolve and clean up the directory on the worker, never on the main thread.
+        Self::spawn_filesystem(FilesystemStorage::for_user)
     }
 }
 impl PersistenceService {
@@ -114,6 +114,15 @@ impl PersistenceService {
     pub fn with_storage_requests() -> (Self, executor::StorageRequests) {
         let (proxy, requests) = executor::storage_channel();
         (Self::new(proxy), requests)
+    }
+    fn spawn_filesystem(
+        storage: impl FnOnce() -> Result<FilesystemStorage, StorageError> + Send + 'static,
+    ) -> Self {
+        Self::spawn(move || {
+            let storage = storage()?;
+            storage.cleanup_stale_temp_files();
+            Ok(storage)
+        })
     }
     fn spawn<S: SaveStorage>(
         storage: impl FnOnce() -> Result<S, StorageError> + Send + 'static,
@@ -253,7 +262,7 @@ impl PersistenceService {
     }
     #[cfg(test)]
     pub(crate) fn for_test(root: std::path::PathBuf) -> Self {
-        Self::new(FilesystemStorage::new(root))
+        Self::spawn_filesystem(move || Ok(FilesystemStorage::new(root)))
     }
 }
 
@@ -478,6 +487,51 @@ mod tests {
     use super::*;
     use executor::{StorageOperation, StorageValue};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn filesystem_startup_cleans_stale_temps_on_worker_before_requests() {
+        use std::{fs, time::SystemTime};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut stale_paths = Vec::new();
+        let mut recent_paths = Vec::new();
+        for namespace in ["saves", "images"] {
+            let directory = dir.path().join(namespace);
+            fs::create_dir(&directory).unwrap();
+            let stale = directory.join(".puzzella-stale.tmp");
+            fs::write(&stale, b"partial").unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&stale)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new()
+                        .set_modified(SystemTime::now() - Duration::from_secs(48 * 60 * 60)),
+                )
+                .unwrap();
+            stale_paths.push(stale);
+            let recent = directory.join(".puzzella-recent.tmp");
+            fs::write(&recent, b"partial").unwrap();
+            recent_paths.push(recent);
+        }
+        let root = dir.path().to_path_buf();
+        let (initialized, worker_id) = crossbeam::channel::bounded(1);
+        let service = PersistenceService::spawn_filesystem(move || {
+            initialized.send(std::thread::current().id()).unwrap();
+            Ok(FilesystemStorage::new(root))
+        });
+        assert_ne!(
+            worker_id.recv_timeout(Duration::from_secs(10)).unwrap(),
+            std::thread::current().id()
+        );
+        service.tx.send((0, Request::List)).unwrap();
+        assert!(matches!(
+            service.rx.recv_timeout(Duration::from_secs(10)).unwrap(),
+            (0, Reply::Listed(Ok(entries))) if entries.is_empty()
+        ));
+        assert!(stale_paths.iter().all(|path| !path.exists()));
+        assert!(recent_paths.iter().all(|path| path.exists()));
+    }
 
     fn save_app(root: std::path::PathBuf) -> App {
         let mut bytes = std::io::Cursor::new(Vec::new());
