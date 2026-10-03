@@ -547,8 +547,10 @@ that same identity before claiming availability; trusting a Start hash is insuff
 HostSyncCoordinator/ClientSyncRouter now own authorization and phase routing.
 Host-to-client transfers require an exact Reliable Control offer and acceptance
 before Start: TransferId/kind/size/hash, plus generation/cursor for JoinBaseline.
-Restart retires the old association, sends Bulk Abort and Control Restart, and
-preserves monotonic ID high-water marks. Cross-lane reordering cannot rebind old
+Restart retires the old association and sends Control Restart. Bulk Abort is sent
+only for a transfer the host knows was accepted (also after send completion), so
+Abort cannot overtake an unseen offer. Unaccepted offers have no Bulk to cancel.
+Monotonic ID high-water marks are preserved. Cross-lane reordering cannot rebind old
 completion to the new generation. The client immediately validates/installs a
 baseline or hands verified image chunks to the caller, with no completion queue.
 Client-to-host Bulk is rejected in every current phase. Ready routers and Ready

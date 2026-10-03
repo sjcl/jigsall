@@ -339,8 +339,11 @@ Bulk framing still contains only its generic transfer fields, without generation
 authority cursor or PlayerId. IDs are monotonically issued for the secure connection.
 
 `RestartRequired` immediately drops host outbound baseline state and pending ACK
-associations. The host sends existing Bulk Abort plus a Control Restart before
-offering the next capture. The client drops receiver content/declared budget and
+associations. The host sends Bulk Abort only after receiving `TransferAccepted`
+(including transfers already sent/finished), proving the client has seen the offer.
+For an unaccepted offer it sends only Control Restart: no Bulk could have started,
+and Abort itself must not overtake an unseen offer. Control Restart precedes the
+next capture's offer. The client drops receiver content/declared budget and
 the baseline association, retaining only generation/TransferId scalar high-water
 marks. Old accepted IDs can never be offered again. Late old Start/Chunk/Finish/
 Abort are obsolete drops, including when new-generation Control overtakes old

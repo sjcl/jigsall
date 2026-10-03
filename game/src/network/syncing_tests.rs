@@ -301,6 +301,127 @@ fn verified_cache_skips_image_and_records_reliable_events_immediately_after_begi
 }
 
 #[test]
+fn restart_before_offer_delivery_cannot_send_abort_ahead_of_control() {
+    let mut h = Harness::new(
+        true,
+        CatchUpLimits {
+            max_events: 0,
+            ..CatchUpLimits::default()
+        },
+    );
+    h.host_to_client().unwrap();
+    h.client_to_host().unwrap();
+    // begin_join queued G0's offer, but the client has not seen it or sent an ACK.
+    assert_eq!(h.host.phase(HA), Some(SyncPhase::BaselineTransfer));
+    assert_eq!(h.client.generation(), None);
+    assert_eq!(h.client.baseline_cursor(), None);
+    assert_eq!(h.client.declared_in_flight_bytes(), 0);
+    h.apply_grab();
+    assert_eq!(h.host.phase(HA), Some(SyncPhase::RestartRequired));
+    h.host
+        .restart(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap();
+    // Preserve Reliable order inside each lane, but let any Bulk Abort overtake
+    // the still-undelivered G0 offer, Restart and G1 offer on Control.
+    h.p.ht.backend_mut().sent.sort_by_key(|event| {
+        !matches!(
+            event,
+            TransportEvent::Message {
+                class: MessageClass::Bulk,
+                ..
+            }
+        )
+    });
+    let only_control = h.p.ht.backend_mut().sent.iter().all(|event| {
+        matches!(
+            event,
+            TransportEvent::Message {
+                class: MessageClass::Control,
+                ..
+            }
+        )
+    });
+    h.host_to_client().unwrap();
+    assert!(
+        only_control,
+        "unaccepted transfers have no Bulk packets to cancel"
+    );
+    assert_eq!(h.client.generation(), Some(1));
+    assert_eq!(h.client.baseline_cursor(), Some(AuthorityCursor::new(3, 1)));
+    assert_eq!(h.client.declared_in_flight_bytes(), 0);
+    // The late T0 acceptance cannot accept T1 or start obsolete Bulk.
+    h.client_to_host().unwrap();
+    h.reach(SyncPhase::Finalizing);
+    assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
+    assert_eq!(h.s.peers[0].store.states, h.s.host.store.states);
+}
+
+#[test]
+fn restart_aborts_accepted_offers_before_start_and_after_finish() {
+    for finished in [false, true] {
+        let mut h = Harness::new(
+            true,
+            CatchUpLimits {
+                max_events: 0,
+                ..CatchUpLimits::default()
+            },
+        );
+        h.host_to_client().unwrap();
+        h.client_to_host().unwrap();
+        h.host_to_client().unwrap();
+        h.client_to_host().unwrap();
+        // TransferAccepted has reached the host, but no Bulk has been generated.
+        assert_eq!(h.client.generation(), Some(0));
+        assert!(h.p.ht.backend_mut().sent.is_empty());
+        if finished {
+            // This small baseline fits one chunk. Queue Start/Chunk/Finish without
+            // delivery: sending is now gone, but the install ACK is still pending.
+            for _ in 0..3 {
+                h.host
+                    .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+                    .unwrap();
+            }
+        }
+        h.apply_grab();
+        h.host
+            .restart(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+            .unwrap();
+        assert_eq!(
+            h.p.ht
+                .backend_mut()
+                .sent
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    TransportEvent::Message {
+                        class: MessageClass::Bulk,
+                        ..
+                    }
+                ))
+                .count(),
+            if finished { 4 } else { 1 },
+            "accepted transfers still receive Abort"
+        );
+        h.p.ht.backend_mut().sent.sort_by_key(|event| {
+            !matches!(
+                event,
+                TransportEvent::Message {
+                    class: MessageClass::Bulk,
+                    ..
+                }
+            )
+        });
+        h.host_to_client().unwrap();
+        assert_eq!(h.client.generation(), Some(1));
+        assert_eq!(h.client.declared_in_flight_bytes(), 0);
+        h.client_to_host().unwrap();
+        h.reach(SyncPhase::Finalizing);
+        assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
+        assert_eq!(h.s.peers[0].store.states, h.s.host.store.states);
+    }
+}
+
+#[test]
 fn restart_obsoletes_partial_bulk_old_acks_and_late_completion_across_lanes() {
     let mut h = Harness::new(
         true,

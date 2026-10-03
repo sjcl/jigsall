@@ -330,9 +330,20 @@ impl HostSyncCoordinator {
             }
             if let Ok(status) = self.catch_up.status(peer.player) {
                 if matches!(status.phase, JoinCatchUpPhase::RestartRequired(_)) {
+                    // Only acceptance proves the client has seen the Control
+                    // offer. Otherwise Bulk Abort could overtake that offer.
+                    // Finish removes `sending`, but was also gated on acceptance.
+                    let abort_known_transfer = peer.transfer_finished
+                        || peer
+                            .sending
+                            .as_ref()
+                            .is_some_and(|sending| sending.accepted);
                     peer.obsolete = Some((
                         status.generation,
-                        peer.binding.take().map(|b| b.transfer_id),
+                        peer.binding
+                            .take()
+                            .filter(|_| abort_known_transfer)
+                            .map(|b| b.transfer_id),
                     ));
                     peer.sending = None;
                     peer.transfer_finished = false;
