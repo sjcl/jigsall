@@ -300,6 +300,341 @@ fn verified_cache_skips_image_and_records_reliable_events_immediately_after_begi
     assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
 }
 
+/// Independent authenticated channels share one authority-wide slot scheduler.
+struct BaselineSlots {
+    host: HostSyncCoordinator,
+    s: Scenario,
+    pairs: Vec<Pair>,
+}
+impl BaselineSlots {
+    fn new(count: usize, limits: CatchUpLimits) -> Self {
+        let s = Scenario::new();
+        let mut host = HostSyncCoordinator::new(JoinCatchUpCoordinator::new(limits));
+        let mut pairs = Vec::new();
+        for index in 0..count {
+            let mut p = Pair::new("correct password");
+            p.host_connection = ConnectionId::new(1000 + index as u64);
+            let player = 100 + index as u64;
+            p.host = HostBootstrap::new(
+                password("correct password"),
+                metadata(),
+                (0..player).map(PlayerId),
+                p.now,
+            );
+            p.authenticate();
+            assert_eq!(
+                p.host.assigned_player(p.host_connection),
+                Some(PlayerId(player))
+            );
+            let admission = host.start(
+                &mut p.host,
+                p.host_connection,
+                &mut p.ht,
+                &authority(&s),
+                p.now,
+            );
+            if index < MAX_PENDING_JOIN_SYNCS {
+                admission.unwrap();
+            } else {
+                assert_eq!(admission, Err(SyncError::TooManyJoins));
+            }
+            // Host-side scheduling tests drive validated image availability/ACKs
+            // through the real encrypted channel; client installation is covered
+            // by the full join harness above.
+            pairs.push(p);
+        }
+        Self { host, s, pairs }
+    }
+    fn id(&self, index: usize) -> ConnectionId {
+        self.pairs[index].host_connection
+    }
+    fn player(&self, index: usize) -> PlayerId {
+        self.pairs[index]
+            .host
+            .assigned_player(self.id(index))
+            .unwrap()
+    }
+    fn control(&mut self, index: usize, control: Control) -> Result<(), SyncError> {
+        let p = &mut self.pairs[index];
+        let message = WireMessage::SyncControl(control);
+        p.ct.send(
+            CLIENT_HOST,
+            message.class(),
+            &wire::encode(&message).unwrap(),
+        )
+        .unwrap();
+        let packets = std::mem::take(&mut p.ct.backend_mut().sent);
+        p.ht.backend_mut()
+            .inbox
+            .extend(packets.into_iter().map(|e| remap(e, p.host_connection)));
+        let mut events = Vec::new();
+        p.ht.poll(&mut events).unwrap();
+        for event in events {
+            assert_eq!(
+                p.host
+                    .process(&event, &mut p.ht, &mut p.host_connections, p.now)
+                    .unwrap(),
+                BootstrapOutcome::Syncing
+            );
+            self.host
+                .route(&p.host, &event, &mut p.ht, &authority(&self.s), None, p.now)?;
+        }
+        Ok(())
+    }
+    fn ready(&mut self, index: usize) {
+        self.control(
+            index,
+            Control::ImageAvailability {
+                image_hash: SESSION.image_hash,
+                available: true,
+            },
+        )
+        .unwrap();
+        self.control(
+            index,
+            Control::ImageReady {
+                image_hash: SESSION.image_hash,
+            },
+        )
+        .unwrap();
+    }
+    fn pump(&mut self, index: usize) -> Result<(), SyncError> {
+        let p = &mut self.pairs[index];
+        self.host.pump(
+            &p.host,
+            p.host_connection,
+            &mut p.ht,
+            &authority(&self.s),
+            p.now,
+        )
+    }
+    fn finish(&mut self, index: usize) {
+        let transfer_id = self
+            .host
+            .transfer_binding(self.id(index))
+            .unwrap()
+            .transfer_id;
+        self.control(index, Control::TransferAccepted { transfer_id })
+            .unwrap();
+        // The two-piece baseline fits one chunk.
+        for _ in 0..3 {
+            self.pump(index).unwrap();
+        }
+    }
+    fn installed(&mut self, index: usize) {
+        let status = self.host.catch_up().status(self.player(index)).unwrap();
+        let transfer_id = self
+            .host
+            .transfer_binding(self.id(index))
+            .unwrap()
+            .transfer_id;
+        self.control(
+            index,
+            Control::BaselineInstalled {
+                generation: status.generation,
+                cursor: status.baseline_cursor,
+                transfer_id,
+            },
+        )
+        .unwrap();
+    }
+    fn restart(&mut self, index: usize) {
+        let p = &mut self.pairs[index];
+        self.host
+            .restart(
+                &p.host,
+                p.host_connection,
+                &mut p.ht,
+                &authority(&self.s),
+                p.now,
+            )
+            .unwrap();
+    }
+    fn apply_grab(&mut self) {
+        let mut request = grab();
+        request.player = B;
+        let outcome = self
+            .s
+            .contexts
+            .apply_replicated(
+                &mut self.s.host.session,
+                &mut self.s.host.store,
+                B,
+                &request,
+                Some(&self.s.definition),
+                HOST,
+            )
+            .unwrap();
+        self.host
+            .record_command_outcome(&self.s.host.session, &self.s.host.store, &outcome)
+            .unwrap();
+    }
+}
+
+#[test]
+fn sixty_four_syncing_peers_capture_only_two_baselines_and_wait_without_history() {
+    let mut h = BaselineSlots::new(MAX_PENDING_JOIN_SYNCS + 1, CatchUpLimits::default());
+    // The fixture also verifies that the 65th authenticated admission is rejected.
+    for index in 0..MAX_PENDING_JOIN_SYNCS {
+        h.ready(index);
+    }
+    assert_eq!(
+        h.host.active_baseline_transfers(),
+        MAX_CONCURRENT_BASELINE_TRANSFERS
+    );
+    for index in MAX_CONCURRENT_BASELINE_TRANSFERS..MAX_PENDING_JOIN_SYNCS {
+        assert_eq!(
+            h.host.phase(h.id(index)),
+            Some(SyncPhase::AwaitingBaselineSlot)
+        );
+        assert!(h.host.transfer_binding(h.id(index)).is_none());
+        assert_eq!(
+            h.host.catch_up().status(h.player(index)),
+            Err(CatchUpError::NotJoining)
+        );
+        assert!(h
+            .host
+            .timing(h.id(index))
+            .unwrap()
+            .transfer_progress
+            .is_none());
+    }
+    h.apply_grab();
+    for index in MAX_CONCURRENT_BASELINE_TRANSFERS..MAX_PENDING_JOIN_SYNCS {
+        h.pump(index).unwrap();
+        assert_eq!(
+            h.host.catch_up().status(h.player(index)),
+            Err(CatchUpError::NotJoining)
+        );
+    }
+    // Finish releases host bytes, but the slot stays occupied until install ACK.
+    h.finish(0);
+    h.pump(2).unwrap();
+    assert_eq!(h.host.phase(h.id(2)), Some(SyncPhase::AwaitingBaselineSlot));
+    h.installed(0);
+    // Pumping a later waiter first must not let it bypass FIFO.
+    h.pump(3).unwrap();
+    assert_eq!(h.host.phase(h.id(3)), Some(SyncPhase::AwaitingBaselineSlot));
+    h.pump(2).unwrap();
+    let status = h.host.catch_up().status(h.player(2)).unwrap();
+    assert_eq!(status.baseline_cursor, h.s.host.session.cursor());
+    assert_eq!(status.retained_events, 0);
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+    // Disconnecting both a queued head and an active sender reuses the slot.
+    h.host.disconnect(h.id(3));
+    h.host.disconnect(h.id(1));
+    h.pump(4).unwrap();
+    assert_eq!(h.host.phase(h.id(4)), Some(SyncPhase::BaselineTransfer));
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+}
+
+#[test]
+fn restarted_baselines_requeue_without_retention_or_bypassing_waiters() {
+    let mut h = BaselineSlots::new(
+        4,
+        CatchUpLimits {
+            max_events: 0,
+            ..CatchUpLimits::default()
+        },
+    );
+    for index in 0..4 {
+        h.ready(index);
+    }
+    let old = h.host.transfer_binding(h.id(0)).unwrap().transfer_id;
+    h.apply_grab();
+    assert_eq!(h.host.active_baseline_transfers(), 0);
+    h.restart(0);
+    assert_eq!(h.host.phase(h.id(0)), Some(SyncPhase::AwaitingBaselineSlot));
+    let status = h.host.catch_up().status(h.player(0)).unwrap();
+    assert!(matches!(status.phase, JoinCatchUpPhase::RestartRequired(_)));
+    assert_eq!(status.retained_events, 0);
+    assert_eq!(status.retained_bytes, 0);
+    h.control(0, Control::TransferAccepted { transfer_id: old })
+        .unwrap();
+    h.control(
+        0,
+        Control::BaselineInstalled {
+            generation: 0,
+            cursor: AuthorityCursor::new(3, 0),
+            transfer_id: old,
+        },
+    )
+    .unwrap();
+    h.pump(0).unwrap();
+    assert!(h.host.transfer_binding(h.id(0)).is_none());
+    h.pump(2).unwrap();
+    h.pump(3).unwrap();
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+    h.finish(2);
+    h.installed(2);
+    h.pump(0).unwrap();
+    let status = h.host.catch_up().status(h.player(0)).unwrap();
+    assert_eq!(status.generation, 1);
+    assert_eq!(status.baseline_cursor, h.s.host.session.cursor());
+    assert!(h.host.transfer_binding(h.id(0)).unwrap().transfer_id > old);
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+}
+
+#[test]
+fn waiting_baseline_rechecks_scope_and_frozen_authority_before_capture() {
+    let mut h = BaselineSlots::new(3, CatchUpLimits::default());
+    for index in 0..3 {
+        h.ready(index);
+    }
+    h.host.disconnect(h.id(0));
+    h.s.host.session.begin_graceful(B).unwrap();
+    assert_eq!(h.pump(2), Err(SyncError::WrongPhase));
+    assert_eq!(
+        h.host.catch_up().status(h.player(2)),
+        Err(CatchUpError::NotJoining)
+    );
+    assert!(h.host.transfer_binding(h.id(2)).is_none());
+    assert_eq!(h.host.phase(h.id(2)), Some(SyncPhase::AwaitingBaselineSlot));
+
+    let mut h = BaselineSlots::new(3, CatchUpLimits::default());
+    for index in 0..3 {
+        h.ready(index);
+    }
+    h.host.disconnect(h.id(0));
+    h.s.host.session = AuthoritySession::new(
+        SessionDefinition {
+            id: SessionId(999),
+            ..SESSION
+        },
+        HOST,
+        AuthorityCursor::new(3, 0),
+    );
+    assert_eq!(h.pump(2), Err(SyncError::WrongIdentity));
+    assert_eq!(
+        h.host.catch_up().status(h.player(2)),
+        Err(CatchUpError::NotJoining)
+    );
+    assert!(h.host.transfer_binding(h.id(2)).is_none());
+}
+
+#[test]
+fn baseline_offer_failure_keeps_its_slot_bounded_until_teardown() {
+    let mut h = BaselineSlots::new(4, CatchUpLimits::default());
+    for index in 0..4 {
+        h.ready(index);
+    }
+    h.host.disconnect(h.id(0));
+    let id = h.id(2);
+    h.pairs[2].ht.backend_mut().fail = Some(id);
+    assert!(matches!(h.pump(2), Err(SyncError::Transport(_))));
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+    h.pump(3).unwrap();
+    assert_eq!(h.host.phase(h.id(3)), Some(SyncPhase::AwaitingBaselineSlot));
+    h.host.disconnect(id);
+    assert_eq!(
+        h.host.catch_up().status(h.player(2)),
+        Err(CatchUpError::NotJoining)
+    );
+    h.pump(3).unwrap();
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+    assert_eq!(h.host.phase(h.id(3)), Some(SyncPhase::BaselineTransfer));
+}
+
 #[test]
 fn restart_before_offer_delivery_cannot_send_abort_ahead_of_control() {
     let mut h = Harness::new(

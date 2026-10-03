@@ -30,6 +30,7 @@ fn remap(mut event: TransportEvent, id: ConnectionId) -> TransportEvent {
     event
 }
 struct Pair {
+    host_connection: ConnectionId,
     host: HostBootstrap,
     client: ClientBootstrap,
     host_connections: SessionConnections,
@@ -43,6 +44,7 @@ impl Pair {
     fn new(client_password: &str) -> Self {
         let now = Instant::now();
         Self {
+            host_connection: HA,
             host: HostBootstrap::new(password("correct password"), metadata(), [], now),
             client: ClientBootstrap::new(password(client_password), CLIENT_HOST),
             host_connections: SessionConnections::default(),
@@ -55,7 +57,9 @@ impl Pair {
     fn connect(&mut self) {
         self.host
             .process(
-                &TransportEvent::Connected { connection: HA },
+                &TransportEvent::Connected {
+                    connection: self.host_connection,
+                },
                 &mut self.ht,
                 &mut self.host_connections,
                 self.now,
@@ -77,7 +81,10 @@ impl Pair {
         self.client
             .process(&event, &mut self.ct, &mut self.client_connections, self.now)
             .unwrap();
-        remap(self.ct.backend_mut().sent.pop().unwrap(), HA)
+        remap(
+            self.ct.backend_mut().sent.pop().unwrap(),
+            self.host_connection,
+        )
     }
     fn authenticate(&mut self) {
         self.connect();
@@ -85,10 +92,13 @@ impl Pair {
         self.host
             .process(&event, &mut self.ht, &mut self.host_connections, self.now)
             .unwrap();
-        assert_eq!(self.host.state(HA), Some(ConnectionState::Securing));
-        assert!(self.ht.has_channel(HA));
-        assert_eq!(self.host.assigned_player(HA), None);
-        assert!(self.host.begin_sync(HA).is_err());
+        assert_eq!(
+            self.host.state(self.host_connection),
+            Some(ConnectionState::Securing)
+        );
+        assert!(self.ht.has_channel(self.host_connection));
+        assert_eq!(self.host.assigned_player(self.host_connection), None);
+        assert!(self.host.begin_sync(self.host_connection).is_err());
         assert_eq!(self.client.state(), Some(ConnectionState::Authenticating));
         assert_eq!(self.client.assigned_player(), None);
         let event = remap(self.ht.backend_mut().sent.pop().unwrap(), CLIENT_HOST);
@@ -106,7 +116,10 @@ impl Pair {
             .unwrap();
         assert!(self.ct.has_channel(CLIENT_HOST));
         assert!(!self.client.retains_password());
-        let event = remap(self.ct.backend_mut().sent.pop().unwrap(), HA);
+        let event = remap(
+            self.ct.backend_mut().sent.pop().unwrap(),
+            self.host_connection,
+        );
         let TransportEvent::Message { payload, .. } = &event else {
             unreachable!()
         };

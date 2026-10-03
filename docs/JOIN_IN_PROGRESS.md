@@ -300,6 +300,7 @@ Authenticated
 → optional PuzzleImage offer/accept + Bulk (host gameplay continues)
 → SHA-256 == authenticated SessionDefinition.image_hash
 → ImageReady (Reliable Control)
+→ AwaitingBaselineSlot: acquire one of two authority-wide baseline slots
 → JoinCatchUpCoordinator::begin_join: baseline generation G at cursor C
 → generation-bound JoinBaseline offer/accept + Bulk TransferId T
 → transactional baseline install, ACK(G, C, T)
@@ -312,6 +313,8 @@ Authenticated
 
 Image transfer happens before any retention entry exists, so a 512 MiB image
 cannot consume the coordinator's 4,096-event / 16 MiB catch-up window.
+Initial baseline-slot waiting also happens before `begin_join()`, so it retains
+no history and captures no snapshot. Gameplay continues while peers wait.
 `ClientSyncRouter::start` verifies optional caller-owned cache bytes by SHA-256;
 an incorrect cache is treated as missing. Transferred content uses the Bulk
 receiver's actual verified digest, separately compared with PAKE-authenticated
@@ -329,6 +332,24 @@ Bulk receiver. No client-to-host Bulk receiver exists. ACKs/status use Control.
 Ready HostRouter/ClientRouter reject all current Bulk and SyncControl messages.
 Bootstrap returns `Consumed`, `Syncing`, or `Gameplay`; only the matching router
 may receive each routed outcome. Gameplay remains forbidden before Ready.
+
+`MAX_CONCURRENT_BASELINE_TRANSFERS` is **2** across the host coordinator, independently
+of the 64 authenticated/Syncing admissions. Image-ready peers enter the host-only
+`AwaitingBaselineSlot` FIFO, which stores only connection IDs. The front waiter
+acquires a slot before `begin_join()`/`restart_join()`, capture and serialization;
+the baseline cursor is the authority's current cursor when the slot becomes free.
+At most two baseline payloads are retained, rather than one per waiting peer.
+Each retains the existing 64 MiB transfer cap (128 MiB serialized payload total;
+capture/encoding scratch and transport buffers are additional bounded storage).
+Slots stay occupied through installation ACK, including after Finish releases
+host payload bytes. Restart invalidation and disconnect release slots; restart
+attempts rejoin the FIFO behind existing waiters, with their old coordinator
+entry still RestartRequired and retaining no history. Failed capture/offer work
+keeps its reserved slot until runtime error handling removes the connection.
+Call `pump` for waiting peers too: it admits the front waiter when capacity is free,
+rechecking authenticated identity and active authority before capture. Disconnect
+also removes queued IDs. Overall Syncing timeout includes queue waiting, while
+transfer-progress timing starts only when an offer exists.
 
 `SyncTransferBinding` contains TransferId, kind, size and hash. `BaselineOffer`
 associates that binding with the coordinator's generation and baseline cursor.

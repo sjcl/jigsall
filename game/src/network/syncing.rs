@@ -29,16 +29,21 @@ use puzzella_core::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
+
+/// Authority-wide capture/transfer cap, separate from the 64 joining connections.
+pub const MAX_CONCURRENT_BASELINE_TRANSFERS: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncPhase {
     ImageNegotiation,
     ImageTransfer,
     AwaitingImageReady,
+    /// Host-only FIFO wait: verified image, no baseline payload or new retention.
+    AwaitingBaselineSlot,
     BaselineTransfer,
     CatchingUp,
     /// Reliable stream is current; full authoritative active-drag reconciliation,
@@ -201,12 +206,14 @@ struct HostSyncPeer {
 pub struct HostSyncCoordinator {
     catch_up: JoinCatchUpCoordinator,
     peers: BTreeMap<ConnectionId, HostSyncPeer>,
+    baseline_waiters: VecDeque<ConnectionId>,
 }
 impl HostSyncCoordinator {
     pub fn new(catch_up: JoinCatchUpCoordinator) -> Self {
         Self {
             catch_up,
             peers: BTreeMap::new(),
+            baseline_waiters: VecDeque::new(),
         }
     }
     pub fn catch_up(&self) -> &JoinCatchUpCoordinator {
@@ -220,6 +227,14 @@ impl HostSyncCoordinator {
     }
     pub fn timing(&self, connection: ConnectionId) -> Option<SyncTiming> {
         self.peers.get(&connection).map(|p| p.timing)
+    }
+    /// Slots remain occupied through the baseline installation ACK, even after
+    /// Finish has released the host's serialized payload.
+    pub fn active_baseline_transfers(&self) -> usize {
+        self.peers
+            .values()
+            .filter(|peer| peer.phase == SyncPhase::BaselineTransfer)
+            .count()
     }
 
     pub fn start<T: Transport>(
@@ -325,7 +340,9 @@ impl HostSyncCoordinator {
     }
     fn invalidate_restarts(&mut self) {
         for peer in self.peers.values_mut() {
-            if peer.phase == SyncPhase::RestartRequired {
+            if peer.phase == SyncPhase::RestartRequired
+                || peer.phase == SyncPhase::AwaitingBaselineSlot
+            {
                 continue;
             }
             if let Ok(status) = self.catch_up.status(peer.player) {
@@ -356,6 +373,7 @@ impl HostSyncCoordinator {
         }
     }
     pub fn disconnect(&mut self, connection: ConnectionId) {
+        self.baseline_waiters.retain(|&id| id != connection);
         if let Some(peer) = self.peers.remove(&connection) {
             if let Some(generation) = peer.generation {
                 let _ = self.catch_up.remove_join(peer.player, generation);
@@ -421,7 +439,9 @@ impl HostSyncCoordinator {
                 }
             }
             Control::TransferAccepted { transfer_id } => {
-                if peer.phase == SyncPhase::RestartRequired {
+                if peer.phase == SyncPhase::RestartRequired
+                    || (peer.phase == SyncPhase::AwaitingBaselineSlot && peer.generation.is_some())
+                {
                     return Ok(());
                 }
                 let sending = peer.sending.as_mut().ok_or(SyncError::WrongPhase)?;
@@ -447,20 +467,10 @@ impl HostSyncCoordinator {
                 }
                 peer.image_ready = true;
                 peer.binding = None;
+                peer.transfer_finished = false;
                 peer.timing.transfer_progress = None;
-                // This is the ONLY initial begin_join call. No image transfer can
-                // consume any authority retention budget before this point.
-                let start = self
-                    .catch_up
-                    .begin_join(
-                        peer.player,
-                        authority.session,
-                        authority.store,
-                        authority.contexts,
-                        authority.definition,
-                    )
-                    .map_err(SyncError::CatchUp)?;
-                Self::offer_baseline(peer, connection, transport, start, now)?;
+                peer.phase = SyncPhase::AwaitingBaselineSlot;
+                self.baseline_waiters.push_back(connection);
             }
             Control::BaselineInstalled {
                 generation,
@@ -506,7 +516,51 @@ impl HostSyncCoordinator {
         }
         peer.timing.last_progress = now;
         self.invalidate_restarts();
+        self.try_start_baseline(connection, transport, authority, now)?;
         Ok(())
+    }
+
+    fn try_start_baseline<T: Transport>(
+        &mut self,
+        connection: ConnectionId,
+        transport: &mut SecureTransport<T>,
+        authority: &SyncAuthority<'_>,
+        now: Instant,
+    ) -> Result<(), SyncError> {
+        if self.baseline_waiters.front() != Some(&connection)
+            || self.active_baseline_transfers() >= MAX_CONCURRENT_BASELINE_TRANSFERS
+        {
+            return Ok(());
+        }
+        let peer = self.peers.get_mut(&connection).expect("queued sync peer");
+        require_identity(peer.authenticated, authority.metadata())?;
+        if !authority.session.is_active() {
+            return Err(SyncError::WrongPhase);
+        }
+        // Reserve before capture/encoding. Even a failed send keeps its slot
+        // until runtime teardown, rather than leaving uncapped retained state.
+        self.baseline_waiters.pop_front();
+        peer.phase = SyncPhase::BaselineTransfer;
+        let start = if peer.generation.is_some() {
+            self.catch_up.restart_join(
+                peer.player,
+                authority.session,
+                authority.store,
+                authority.contexts,
+                authority.definition,
+            )
+        } else {
+            // The ONLY initial begin_join call: both image and slot are ready.
+            self.catch_up.begin_join(
+                peer.player,
+                authority.session,
+                authority.store,
+                authority.contexts,
+                authority.definition,
+            )
+        }
+        .map_err(SyncError::CatchUp)?;
+        Self::offer_baseline(peer, connection, transport, start, now)
     }
 
     fn offer_baseline<T: Transport>(
@@ -590,17 +644,10 @@ impl HostSyncCoordinator {
         // it changes. A same-session store restore can reuse the verified image.
         require_identity(peer.authenticated, authority.metadata())?;
         Self::flush_obsolete(peer, connection, transport)?;
-        let start = self
-            .catch_up
-            .restart_join(
-                peer.player,
-                authority.session,
-                authority.store,
-                authority.contexts,
-                authority.definition,
-            )
-            .map_err(SyncError::CatchUp)?;
-        Self::offer_baseline(peer, connection, transport, start, now)
+        peer.phase = SyncPhase::AwaitingBaselineSlot;
+        peer.timing.last_progress = now;
+        self.baseline_waiters.push_back(connection);
+        self.try_start_baseline(connection, transport, authority, now)
     }
 
     /// Bounded frame work: at most one Bulk or catch-up event per call. A transfer
@@ -620,6 +667,7 @@ impl HostSyncCoordinator {
             return Err(SyncError::NotSyncing);
         }
         let _ = self.observe_host_state(authority.session, authority.store);
+        self.try_start_baseline(connection, transport, authority, now)?;
         let peer = self
             .peers
             .get_mut(&connection)
@@ -702,7 +750,9 @@ fn obsolete_ack(peer: &HostSyncPeer, generation: u64) -> Result<bool, SyncError>
     if generation > current {
         return Err(SyncError::WrongGeneration);
     }
-    Ok(generation < current || peer.phase == SyncPhase::RestartRequired)
+    Ok(generation < current
+        || peer.phase == SyncPhase::RestartRequired
+        || peer.phase == SyncPhase::AwaitingBaselineSlot)
 }
 
 #[derive(Clone, Copy)]

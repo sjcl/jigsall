@@ -123,6 +123,7 @@ GNS Connected / TransportConnected
 Authenticated -> explicit begin_sync() -> Syncing
   session/image identity -> image availability negotiation
   optional PuzzleImage offer/accept + Bulk -> hash verification -> ImageReady
+  AwaitingBaselineSlot (host FIFO, two concurrent baseline slots)
   begin_join() -> generation-bound JoinBaseline offer/accept + Bulk
   baseline install ACK -> Reliable catch-up + ACK
   Finalizing -> future full active-drag reconciliation -> final barrier/ACK
@@ -547,6 +548,15 @@ that same identity before claiming availability; trusting a Start hash is insuff
 HostSyncCoordinator/ClientSyncRouter now own authorization and phase routing.
 Host-to-client transfers require an exact Reliable Control offer and acceptance
 before Start: TransferId/kind/size/hash, plus generation/cursor for JoinBaseline.
+The host admits at most 64 joining connections but captures/transfers at most
+`MAX_CONCURRENT_BASELINE_TRANSFERS` (**2**) baselines at once. Image-ready peers
+wait in `AwaitingBaselineSlot` before `begin_join()`; waiting stores only connection
+IDs, with no baseline allocation or catch-up retention. Slots are held until
+baseline install ACK, or released by restart invalidation/disconnect. Restart
+attempts also use the FIFO and keep old history invalidated while waiting.
+`pump` admits the front waiter from current authority state when capacity is free;
+callers must pump waiting peers and include the wait in their overall Syncing
+timeout. A failed capture/offer keeps its slot reserved until connection teardown.
 Restart retires the old association and sends Control Restart. Bulk Abort is sent
 only for a transfer the host knows was accepted (also after send completion), so
 Abort cannot overtake an unseen offer. Unaccepted offers have no Bulk to cancel.
