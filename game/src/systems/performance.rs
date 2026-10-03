@@ -1,3 +1,4 @@
+use crate::keybindings::{KeyAction, KeyBindingsState, KeyPresses};
 use crate::resources::*;
 use bevy::prelude::*;
 
@@ -18,11 +19,19 @@ pub fn sample_performance_frame(
     perf_monitor.frame_count += 1;
 }
 
-pub fn f3_just_pressed(keyboard_input: Res<ButtonInput<KeyCode>>) -> bool {
-    keyboard_input.just_pressed(KeyCode::F3)
+pub fn performance_key_just_pressed(
+    keyboard_input: Res<ButtonInput<KeyCode>>,
+    bindings: Res<KeyBindingsState>,
+    presses: Option<Res<KeyPresses>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    egui_input: Option<Res<bevy_egui::input::EguiWantsInput>>,
+) -> bool {
+    windows.iter().all(|window| window.focused)
+        && egui_input.is_none_or(|input| !input.wants_any_keyboard_input())
+        && bindings.just_pressed(KeyAction::Performance, &keyboard_input, presses.as_deref())
 }
 
-/// F3: FPSのみ → 詳細表示 → 非表示。
+/// FPSのみ → 詳細表示 → 非表示。
 pub fn toggle_performance_debug(mut perf_monitor: ResMut<PerformanceMonitor>) {
     perf_monitor.toggle_debug_level();
 }
@@ -66,8 +75,12 @@ mod tests {
     fn f3_cycles_once_per_press_and_f12_does_nothing() {
         let mut app = App::new();
         app.init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(KeyBindingsState::load(None))
             .init_resource::<PerformanceMonitor>()
-            .add_systems(Update, toggle_performance_debug.run_if(f3_just_pressed));
+            .add_systems(
+                Update,
+                toggle_performance_debug.run_if(performance_key_just_pressed),
+            );
 
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()

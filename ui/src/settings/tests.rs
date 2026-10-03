@@ -56,6 +56,12 @@ fn frame_with_state(
                 capabilities,
                 &mut english(),
                 &mut UiPreferences::load(None),
+                &mut KeyBindingsState::load(None),
+                &CaptureInput {
+                    keys: &ButtonInput::default(),
+                    events: &[],
+                    focused: true,
+                },
             );
         },
     );
@@ -346,6 +352,12 @@ fn localized_frame(
                 &capabilities(),
                 i18n,
                 preferences,
+                &mut KeyBindingsState::load(None),
+                &CaptureInput {
+                    keys: &ButtonInput::default(),
+                    events: &[],
+                    focused: true,
+                },
             );
         },
     )
@@ -440,6 +452,238 @@ fn japanese_settings_fit_small_windows_with_actions_visible() {
     }
 }
 
+fn key_frame(
+    ctx: &egui::Context,
+    dialog: &mut SettingsDialog,
+    key_state: &mut KeyBindingsState,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
+    keyboard: &[KeyboardInput],
+) -> egui::FullOutput {
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..default()
+        },
+        |ui| {
+            let _ = paint_settings(
+                ui.ctx(),
+                dialog,
+                &DisplaySettingsState::load(None),
+                &capabilities(),
+                &mut english(),
+                &mut UiPreferences::load(None),
+                key_state,
+                &CaptureInput {
+                    keys: &ButtonInput::default(),
+                    events: keyboard,
+                    focused: true,
+                },
+            );
+        },
+    )
+}
+
+fn key_click(
+    ctx: &egui::Context,
+    dialog: &mut SettingsDialog,
+    state: &mut KeyBindingsState,
+    label: &str,
+) {
+    let size = egui::vec2(1280.0, 1100.0);
+    for _ in 0..3 {
+        key_frame(ctx, dialog, state, size, vec![], &[]).drop_without_applying_deltas();
+    }
+    let output = key_frame(ctx, dialog, state, size, vec![], &[]);
+    let pos = text_position(&output, label);
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        key_frame(
+            ctx,
+            dialog,
+            state,
+            size,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+            &[],
+        )
+        .drop_without_applying_deltas();
+    }
+}
+
+fn keyboard_event(key_code: KeyCode, state: bevy::input::ButtonState) -> KeyboardInput {
+    KeyboardInput {
+        key_code,
+        state,
+        logical_key: bevy::input::keyboard::Key::Unidentified(
+            bevy::input::keyboard::NativeKey::Unidentified,
+        ),
+        text: None,
+        repeat: false,
+        window: Entity::PLACEHOLDER,
+    }
+}
+
+#[test]
+fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
+    use bevy::input::ButtonState::{Pressed, Released};
+    use puzzella_game::keybindings::{KeyAction, KeyBindings};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("controls.json");
+    let mut state = KeyBindingsState::load(Some(path.clone()));
+    let ctx = egui::Context::default();
+    let mut dialog = SettingsDialog::default();
+    dialog.open(&DisplaySettingsState::load(None));
+    let size = egui::vec2(1280.0, 1100.0);
+    key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
+    key_click(&ctx, &mut dialog, &mut state, "Q");
+    assert!(dialog.keys.is_capturing());
+    key_frame(
+        &ctx,
+        &mut dialog,
+        &mut state,
+        size,
+        vec![],
+        &[
+            keyboard_event(KeyCode::ShiftRight, Pressed),
+            keyboard_event(KeyCode::KeyR, Pressed),
+            keyboard_event(KeyCode::KeyR, Released),
+            keyboard_event(KeyCode::ShiftRight, Released),
+        ],
+    )
+    .drop_without_applying_deltas();
+    assert!(!dialog.keys.is_capturing());
+    assert_eq!(state.current, KeyBindings::default(), "Edits require Apply");
+    key_click(&ctx, &mut dialog, &mut state, "Unassigned");
+    key_frame(
+        &ctx,
+        &mut dialog,
+        &mut state,
+        size,
+        vec![],
+        &[
+            keyboard_event(KeyCode::KeyT, Pressed),
+            keyboard_event(KeyCode::KeyT, Released),
+        ],
+    )
+    .drop_without_applying_deltas();
+    key_click(&ctx, &mut dialog, &mut state, "Apply");
+    assert!(state.error.is_none());
+    assert_eq!(
+        state.current.binding(KeyAction::RotateLeft).label(),
+        "Shift + R / T"
+    );
+    assert_eq!(
+        KeyBindingsState::load(Some(path.clone())).current,
+        state.current
+    );
+    assert!(!dialog.keys.changed(&state));
+    key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
+    assert!(dialog.keys.changed(&state));
+    key_click(&ctx, &mut dialog, &mut state, "Back to Title");
+    assert!(!dialog.open);
+    assert_eq!(
+        state.current.binding(KeyAction::RotateLeft).label(),
+        "Shift + R / T"
+    );
+    dialog.open(&DisplaySettingsState::load(None));
+    key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
+    key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
+    key_click(&ctx, &mut dialog, &mut state, "Apply");
+    assert_eq!(
+        KeyBindingsState::load(Some(path)).current,
+        KeyBindings::default()
+    );
+}
+
+#[test]
+fn key_capture_consumes_escape_tab_and_enter_without_activating_settings_widgets() {
+    use bevy::input::ButtonState::{Pressed, Released};
+    use puzzella_game::keybindings::KeyBindings;
+    let mut state = KeyBindingsState::load(None);
+    let ctx = egui::Context::default();
+    let mut dialog = SettingsDialog::default();
+    dialog.open(&DisplaySettingsState::load(None));
+    let size = egui::vec2(1280.0, 1100.0);
+    key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
+    for (key, egui_key) in [
+        (KeyCode::Escape, egui::Key::Escape),
+        (KeyCode::Tab, egui::Key::Tab),
+        (KeyCode::Enter, egui::Key::Enter),
+    ] {
+        key_click(&ctx, &mut dialog, &mut state, "Q");
+        assert!(dialog.keys.is_capturing());
+        key_frame(
+            &ctx,
+            &mut dialog,
+            &mut state,
+            size,
+            vec![egui::Event::Key {
+                key: egui_key,
+                physical_key: Some(egui_key),
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            }],
+            &[keyboard_event(key, Pressed), keyboard_event(key, Released)],
+        )
+        .drop_without_applying_deltas();
+        assert!(dialog.open);
+        assert!(!dialog.keys.is_capturing());
+        assert_eq!(state.current, KeyBindings::default());
+        key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
+    }
+}
+
+#[test]
+fn key_configuration_fits_small_windows_in_both_languages() {
+    for preference in [Locale::EN_US, Locale::JA] {
+        let ctx = egui::Context::default();
+        let mut dialog = SettingsDialog::default();
+        dialog.open(&DisplaySettingsState::load(None));
+        dialog.key_tab = true;
+        let mut i18n = english();
+        let mut preferences = UiPreferences::load(None);
+        preferences.set_language(LanguagePreference::Locale(preference), &mut i18n);
+        for size in [
+            egui::vec2(1280.0, 720.0),
+            egui::vec2(640.0, 360.0),
+            egui::vec2(320.0, 360.0),
+        ] {
+            for _ in 0..4 {
+                localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![])
+                    .drop_without_applying_deltas();
+            }
+            let output =
+                localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![]);
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let panel = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.corner_radius.nw == 16 => Some(rect.rect),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                viewport.contains_rect(panel),
+                "Key panel exceeds viewport: {panel:?}"
+            );
+            assert!(viewport.contains(text_position(&output, &i18n.text("settings-apply"))));
+            assert!(viewport.contains(text_position(&output, &i18n.text("common-back-title"))));
+            output.drop_without_applying_deltas();
+        }
+    }
+}
+
 /// Render the real game menus and save screenshots without touching user settings.
 #[test]
 #[ignore = "requires a native window and GPU"]
@@ -520,28 +764,35 @@ fn native_settings_ui_probe() {
                     .observe(save_to_disk(screenshot_path("settings-ui-ja.png")));
             }
             10 => {
+                dialog.key_tab = true;
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("settings-ui-keys-ja.png")));
+            }
+            11 => {
+                dialog.key_tab = false;
                 actions.write(DisplaySettingsAction::Apply(DisplaySettings {
                     resolution: UVec2::new(640, 360),
                     ..default()
                 }));
             }
-            11 => {
+            12 => {
                 commands
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path(
                         "settings-ui-confirm-ja-small.png",
                     )));
             }
-            12 => {
+            13 => {
                 actions.write(DisplaySettingsAction::Revert);
                 next_app.set(puzzella_game::resources::AppState::GameSetup);
             }
-            13 => {
+            14 => {
                 commands
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path("setup-ui-ja.png")));
             }
-            14 => {
+            15 => {
                 exit.write(AppExit::Success);
             }
             _ => {}
@@ -555,6 +806,7 @@ fn native_settings_ui_probe() {
         }))
         .insert_resource(DisplaySettingsState::load(None))
         .insert_resource(UiPreferences::load(None))
+        .insert_resource(KeyBindingsState::load(None))
         .insert_resource(crate::localization::tests::english())
         .insert_resource(WinitSettings::continuous())
         .add_plugins((
@@ -574,6 +826,7 @@ fn native_settings_ui_probe() {
         "settings-ui-borderless.png",
         "title-ui-ja.png",
         "settings-ui-ja.png",
+        "settings-ui-keys-ja.png",
         "settings-ui-confirm-ja-small.png",
         "setup-ui-ja.png",
     ] {

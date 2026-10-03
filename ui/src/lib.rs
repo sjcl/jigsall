@@ -4,6 +4,7 @@ mod fonts;
 mod game_play;
 mod game_setup;
 mod grid;
+mod key_config;
 pub mod localization;
 mod menu;
 mod messages;
@@ -45,7 +46,7 @@ impl Plugin for GameUiPlugin {
                     game_play::draw_game_ui.run_if(in_state(AppState::InGame)),
                     performance::draw_performance_overlay.run_if(in_state(AppState::InGame)),
                     game_play::draw_players_overlay
-                        .run_if(in_state(AppState::InGame).and_then(tab_pressed)),
+                        .run_if(in_state(AppState::InGame).and_then(players_key_pressed)),
                     overlays::draw_in_game_menu_ui.run_if(
                         in_state(GameSubState::Paused)
                             .or_else(in_state(GameCompleteSubState::Paused)),
@@ -60,6 +61,15 @@ impl Plugin for GameUiPlugin {
             );
     }
 }
-fn tab_pressed(keys: Res<ButtonInput<KeyCode>>) -> bool {
-    keys.pressed(KeyCode::Tab)
+fn players_key_pressed(
+    keys: Res<ButtonInput<KeyCode>>,
+    bindings: Res<puzzella_game::keybindings::KeyBindingsState>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    egui_input: Option<Res<bevy_egui::input::EguiWantsInput>>,
+) -> bool {
+    windows.iter().all(|window| window.focused)
+        && egui_input.is_none_or(|input| !input.wants_any_keyboard_input())
+        && bindings
+            .current
+            .pressed(puzzella_game::keybindings::KeyAction::ShowPlayers, &keys)
 }

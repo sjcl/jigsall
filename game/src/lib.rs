@@ -4,6 +4,7 @@ pub mod checkpoint;
 mod components;
 mod game;
 mod interaction;
+pub mod keybindings;
 pub mod multiplayer;
 pub mod network;
 pub mod persistence;

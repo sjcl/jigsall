@@ -31,6 +31,7 @@ fn app(connected: bool) -> App {
         .init_resource::<PerformanceMonitor>()
         .init_resource::<ButtonInput<MouseButton>>()
         .init_resource::<ButtonInput<KeyCode>>()
+        .insert_resource(crate::keybindings::KeyBindingsState::load(None))
         .init_resource::<bevy_egui::EguiUserTextures>()
         .init_resource::<pieces::PieceUpload>()
         .add_message::<ClientCommand>()
@@ -74,6 +75,44 @@ fn complete(app: &mut App, hit: Option<PieceId>) {
         payload: SelectionPayload::Point(hit),
         error: None,
     });
+}
+
+#[test]
+fn remapped_chord_and_secondary_rotate_through_the_real_input_adapter() {
+    use crate::keybindings::{KeyAction, KeyChord};
+    let mut app = app(false);
+    {
+        let mut bindings = app
+            .world_mut()
+            .resource_mut::<crate::keybindings::KeyBindingsState>();
+        let binding = bindings.current.binding_mut(KeyAction::RotateLeft);
+        binding.primary = Some(KeyChord::new(KeyCode::ShiftLeft, Some(KeyCode::KeyR)).unwrap());
+        binding.secondary = Some(KeyChord::new(KeyCode::KeyT, None).unwrap());
+    }
+    frame(&mut app, Some(KeyCode::KeyQ));
+    assert!(app.world().resource::<PuzzleSelection>().latest.is_none());
+    frame(&mut app, Some(KeyCode::KeyR));
+    assert!(app.world().resource::<PuzzleSelection>().latest.is_none());
+    {
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        *keys = default();
+        keys.press(KeyCode::ShiftRight);
+        keys.press(KeyCode::KeyR);
+    }
+    app.update();
+    complete(&mut app, Some(PieceId(1)));
+    frame(&mut app, None);
+    assert_eq!(
+        decode_rotation(app.world().resource::<PieceDataStore>().states[1].flags),
+        1
+    );
+    frame(&mut app, Some(KeyCode::KeyT));
+    complete(&mut app, Some(PieceId(1)));
+    frame(&mut app, None);
+    assert_eq!(
+        decode_rotation(app.world().resource::<PieceDataStore>().states[1].flags),
+        2
+    );
 }
 
 #[test]

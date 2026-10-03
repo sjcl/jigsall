@@ -47,6 +47,7 @@ fn app() -> App {
         .init_resource::<PerformanceMonitor>()
         .init_resource::<ButtonInput<MouseButton>>()
         .init_resource::<ButtonInput<KeyCode>>()
+        .insert_resource(crate::keybindings::KeyBindingsState::load(None))
         .init_resource::<bevy_egui::EguiUserTextures>()
         .init_resource::<pieces::PieceUpload>()
         .add_message::<ClientCommand>()

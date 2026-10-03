@@ -1,6 +1,7 @@
 use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
+use puzzella_game::keybindings::{KeyAction, KeyBindingsState};
 use puzzella_game::resources::*;
 
 /// インゲームUI（プレイ中のUI）
@@ -8,6 +9,7 @@ pub fn draw_game_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     game_state: Res<GameData>,
+    bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
 ) {
     let _span = info_span!("draw_game_ui").entered();
@@ -43,9 +45,32 @@ pub fn draw_game_ui(
             ));
 
             ui.separator();
-            ui.label(i18n.text("game-drag-hint"));
+            let binding_label = |action| {
+                let label = bindings.current.binding(action).label();
+                if label.is_empty() {
+                    i18n.text("keys-unassigned")
+                } else {
+                    label
+                }
+            };
+            ui.label(i18n.format(
+                "game-drag-hint",
+                &[
+                    ("left", binding_label(KeyAction::RotateLeft).as_str().into()),
+                    (
+                        "right",
+                        binding_label(KeyAction::RotateRight).as_str().into(),
+                    ),
+                ],
+            ));
             ui.separator();
-            ui.label(i18n.text("game-tab-hint"));
+            ui.label(i18n.format(
+                "game-tab-hint",
+                &[(
+                    "keys",
+                    binding_label(KeyAction::ShowPlayers).as_str().into(),
+                )],
+            ));
         });
     });
     capture.over_hud = ctx
@@ -53,7 +78,7 @@ pub fn draw_game_ui(
         .is_some_and(|point| panel.response.rect.contains(point));
 }
 
-/// プレイヤー一覧オーバーレイ（Tabキーで表示）
+/// プレイヤー一覧オーバーレイ（割り当てキーを押している間表示）
 pub fn draw_players_overlay(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,

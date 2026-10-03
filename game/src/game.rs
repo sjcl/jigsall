@@ -15,6 +15,12 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::settings::DisplaySettingsPlugin);
         app.add_plugins(crate::selection::PuzzleSelectionPlugin)
+            .init_resource::<crate::keybindings::KeyBindingsState>()
+            .init_resource::<crate::keybindings::KeyPresses>()
+            .add_systems(
+                PreUpdate,
+                crate::keybindings::sample_key_presses.after(bevy::input::InputSystems),
+            )
             .add_message::<ClientCommand>()
             .add_message::<PieceMoveCompleted>()
             .add_message::<PiecePlacedEvent>()
@@ -114,7 +120,7 @@ impl Plugin for GamePlugin {
                 (
                     toggle_game_menu.run_if(escape_just_pressed),
                     (
-                        toggle_performance_debug.run_if(f3_just_pressed),
+                        toggle_performance_debug.run_if(performance_key_just_pressed),
                         sample_performance_frame.run_if(performance_monitoring_enabled),
                     )
                         .chain(),

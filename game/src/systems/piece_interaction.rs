@@ -1,3 +1,4 @@
+use crate::keybindings::{KeyAction, KeyBindingsState, KeyPresses};
 use crate::{components::*, resources::*};
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
@@ -10,6 +11,8 @@ pub fn handle_piece_input(
     local_player: Res<LocalPlayerId>,
     mouse: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    bindings: Res<KeyBindingsState>,
+    presses: Option<Res<KeyPresses>>,
     input: Res<InputState>,
     ui_capture: Res<GameUiPointerCapture>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
@@ -32,7 +35,7 @@ pub fn handle_piece_input(
         screen_position: input.cursor_screen_position,
         pressed: mouse.pressed(MouseButton::Left),
         just_pressed: mouse.just_pressed(MouseButton::Left),
-        ctrl: keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight),
+        ctrl: !keyboard_captured && bindings.current.pressed(KeyAction::MultiSelect, &keys),
         over_ui,
         focused: input.window_focused,
     };
@@ -47,9 +50,13 @@ pub fn handle_piece_input(
         });
     }
     if input.window_focused && !over_ui && !keyboard_captured && !released {
-        // Q is counterclockwise, E is clockwise in world coordinates.
         let turns =
-            i8::from(keys.just_pressed(KeyCode::KeyQ)) - i8::from(keys.just_pressed(KeyCode::KeyE));
+            i8::from(bindings.just_pressed(KeyAction::RotateLeft, &keys, presses.as_deref()))
+                - i8::from(bindings.just_pressed(
+                    KeyAction::RotateRight,
+                    &keys,
+                    presses.as_deref(),
+                ));
         if !interaction.is_dragging() || input.mouse_position.is_some_and(|point| point.is_finite())
         {
             if let Some(command) = interaction.update_rotation(
@@ -213,6 +220,7 @@ mod tests {
             .init_resource::<PerformanceMonitor>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ButtonInput<KeyCode>>()
+            .insert_resource(KeyBindingsState::load(None))
             .init_resource::<bevy_egui::EguiUserTextures>()
             .add_message::<ClientCommand>()
             .add_message::<PieceMoveCompleted>()

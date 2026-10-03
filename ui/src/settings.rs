@@ -1,10 +1,13 @@
+use crate::key_config::{CaptureInput, KeyConfigEditor};
 use crate::theme;
 use crate::{
     localization::{LanguagePreference, Locale, Localization},
     preferences::{PreferenceError, UiPreferences},
 };
+use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
+use puzzella_game::keybindings::KeyBindingsState;
 use puzzella_game::settings::*;
 
 #[derive(Resource, Default)]
@@ -14,10 +17,14 @@ pub struct SettingsDialog {
     last_applied: DisplaySettings,
     limited_fps: u32,
     confirming: bool,
+    key_tab: bool,
+    keys: KeyConfigEditor,
 }
 
 impl SettingsDialog {
     pub fn open(&mut self, state: &DisplaySettingsState) {
+        self.key_tab = false;
+        self.keys = default();
         self.open = true;
         self.sync(state);
     }
@@ -46,6 +53,7 @@ pub fn reset_dialog(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_settings_ui(
     mut i18n: ResMut<Localization>,
     mut preferences: ResMut<UiPreferences>,
@@ -54,7 +62,12 @@ pub fn draw_settings_ui(
     state: Res<DisplaySettingsState>,
     capabilities: Res<DisplayCapabilities>,
     mut actions: MessageWriter<DisplaySettingsAction>,
+    mut key_state: ResMut<KeyBindingsState>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut events: MessageReader<KeyboardInput>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
+    let events: Vec<_> = events.read().cloned().collect();
     if !dialog.open {
         return;
     }
@@ -68,6 +81,12 @@ pub fn draw_settings_ui(
         &capabilities,
         &mut i18n,
         &mut preferences,
+        &mut key_state,
+        &CaptureInput {
+            keys: &keys,
+            events: &events,
+            focused: windows.single().is_ok_and(|window| window.focused),
+        },
     ) {
         actions.write(action);
     }
@@ -85,6 +104,7 @@ fn resolution_label(size: UVec2) -> String {
     format!("{} x {}", size.x, size.y)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_settings(
     ctx: &egui::Context,
     dialog: &mut SettingsDialog,
@@ -92,6 +112,8 @@ fn paint_settings(
     capabilities: &DisplayCapabilities,
     i18n: &mut Localization,
     preferences: &mut UiPreferences,
+    key_state: &mut KeyBindingsState,
+    key_input: &CaptureInput<'_>,
 ) -> Option<DisplaySettingsAction> {
     theme::prepare(ctx);
     let screen = ctx.content_rect();
@@ -100,14 +122,43 @@ fn paint_settings(
         dialog.sync(state);
     }
     dialog.confirming = seconds.is_some();
+    let was_capturing = dialog.keys.is_capturing();
+    let capture_cancelled = dialog.keys.capture_input(key_input);
+    if was_capturing {
+        ctx.input_mut(|input| {
+            // Tab, Space and Enter must be bindable without navigating or activating widgets.
+            input
+                .events
+                .retain(|event| !matches!(event, egui::Event::Key { .. } | egui::Event::Text(_)));
+        });
+    }
     let mut action = None;
     let response = egui::Modal::new("display_settings".into())
         .backdrop_color(egui::Color32::from_black_alpha(185))
         .frame(theme::frame())
         .show(ctx, |ui| {
-            ui.set_width((screen.width() - 96.0).clamp(160.0, 520.0));
+            ui.set_width(
+                (screen.width() - 96.0).clamp(160.0, if dialog.key_tab { 840.0 } else { 520.0 }),
+            );
             theme::heading(ui, i18n.text("settings-title"));
             ui.separator();
+            ui.add_enabled_ui(seconds.is_none(), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .selectable_label(!dialog.key_tab, i18n.text("settings-general"))
+                        .clicked()
+                    {
+                        dialog.key_tab = false;
+                        dialog.keys.cancel_capture();
+                    }
+                    if ui
+                        .selectable_label(dialog.key_tab, i18n.text("settings-keys"))
+                        .clicked()
+                    {
+                        dialog.key_tab = true;
+                    }
+                });
+            });
             if let Some(seconds) = seconds {
                 ui.colored_label(
                     theme::ACCENT,
@@ -117,9 +168,15 @@ fn paint_settings(
             }
             egui::ScrollArea::vertical()
                 .max_height(
-                    (screen.height() - if seconds.is_some() { 320.0 } else { 260.0 }).max(80.0),
+                    (screen.height() - if seconds.is_some() { 380.0 } else { 320.0 }).max(32.0),
                 )
                 .show(ui, |ui| {
+                    if dialog.key_tab {
+                        ui.add_enabled_ui(seconds.is_none(), |ui| {
+                            dialog.keys.paint(ui, key_state, i18n, key_input);
+                        });
+                        return;
+                    }
                     theme::card().show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(i18n.text("settings-language"));
@@ -313,18 +370,27 @@ fn paint_settings(
                         action = Some(dialog.close());
                     }
                     ui.add_enabled_ui(
-                        dialog.open && state.can_apply(&dialog.draft, capabilities),
+                        dialog.open
+                            && dialog.keys.can_apply()
+                            && (state.can_apply(&dialog.draft, capabilities)
+                                || dialog.keys.changed(key_state)),
                         |ui| {
                             if theme::button(ui, i18n.text("settings-apply"), width, true).clicked()
                             {
-                                action = Some(DisplaySettingsAction::Apply(dialog.draft.clone()));
+                                if dialog.keys.changed(key_state) {
+                                    dialog.keys.apply(key_state);
+                                }
+                                if state.can_apply(&dialog.draft, capabilities) {
+                                    action =
+                                        Some(DisplaySettingsAction::Apply(dialog.draft.clone()));
+                                }
                             }
                         },
                     );
                 }
             });
         });
-    if response.should_close() {
+    if response.should_close() && !capture_cancelled {
         action = Some(dialog.close());
     }
     action
