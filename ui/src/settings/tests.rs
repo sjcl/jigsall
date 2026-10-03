@@ -53,7 +53,8 @@ fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
         settings.current.texture_budget,
         TextureBudget::Manual { mib: 1638 }
     );
-    click(&mut settings, "1638 MiB");
+    // DragValue renders its numeric value and unit as separate text shapes.
+    click(&mut settings, "1638");
     render(
         &mut settings,
         vec![
@@ -73,7 +74,7 @@ fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
         TextureBudget::Manual { mib: 4096 }
     );
     click(&mut settings, "Automatic (based on GPU memory capacity)");
-    click(&mut settings, "20 %");
+    click(&mut settings, "20");
     render(
         &mut settings,
         vec![
@@ -309,7 +310,17 @@ fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
                 None
             }
         })
-        .unwrap_or_else(|| panic!("Missing label: {label}"))
+        .unwrap_or_else(|| {
+            let labels: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            panic!("Missing label: {label}; rendered labels: {labels:?}")
+        })
 }
 
 fn click(
