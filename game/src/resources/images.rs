@@ -7,6 +7,13 @@ pub struct PuzzleImage {
     pub opaque: bool,
 }
 
+/// A failed selection stays visible until the user selects another image.
+#[derive(Resource, Debug)]
+pub struct ImageLoadError {
+    pub virtual_key: String,
+    pub reason: String,
+}
+
 /// 画像読み込みチャネル（crossbeam-channel）
 #[derive(Resource)]
 pub struct ImageLoadChannels {

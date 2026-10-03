@@ -37,6 +37,7 @@ pub fn handle_image_load_results(
 
         match result.image {
             Ok(image) => {
+                commands.remove_resource::<ImageLoadError>();
                 if let Some(original) = result.original {
                     if let Some(bytes) = &original.encoded {
                         service.import(persistence.generation, original.hash, bytes.clone());
@@ -74,10 +75,19 @@ pub fn handle_image_load_results(
                     "❌ Thread-based image loading failed for {}: {}",
                     result.virtual_key, e
                 );
+                commands.remove_resource::<PuzzleImage>();
+                commands.remove_resource::<crate::persistence::runtime::OriginalPuzzleImage>();
+                commands.insert_resource(ImageLoadError {
+                    virtual_key: result.virtual_key,
+                    reason: e,
+                });
             }
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 pub fn update_puzzle_image_size(
     puzzle_image: Option<ResMut<PuzzleImage>>,

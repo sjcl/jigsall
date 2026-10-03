@@ -247,6 +247,7 @@ fn cleanup_game(
     commands.remove_resource::<OriginalPuzzleImage>();
     commands.remove_resource::<PendingRestore>();
     commands.remove_resource::<PuzzleImage>();
+    commands.remove_resource::<ImageLoadError>();
     commands.remove_resource::<PuzzleDefinition>();
 }
 
@@ -272,6 +273,49 @@ mod tests {
         asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
         transform::TransformPlugin,
     };
+
+    #[test]
+    fn returning_to_menu_clears_image_load_failure() {
+        let (service, _requests) = PersistenceService::with_storage_requests();
+        let mut app = App::new();
+        app.insert_resource(service)
+            .add_plugins((
+                MinimalPlugins,
+                StatesPlugin,
+                InputPlugin,
+                TransformPlugin,
+                AssetPlugin::default(),
+                crate::asset_reader::DirectFileAssetPlugin,
+                GamePlugin,
+            ))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<bevy_egui::EguiUserTextures>();
+        app.update();
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::GameSetup);
+        app.update();
+        app.world_mut().resource_mut::<PuzzleConfig>().image_path = "broken.png".into();
+        app.world()
+            .resource::<ImageLoadSender>()
+            .tx_results
+            .send(crate::asset_reader::ImageLoadResult {
+                virtual_key: "broken.png".into(),
+                image: Err("Image is too large".into()),
+                original: None,
+            })
+            .unwrap();
+        app.update();
+        assert!(app.world().contains_resource::<ImageLoadError>());
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::Menu);
+        app.update();
+        assert!(!app.world().contains_resource::<ImageLoadError>());
+        assert!(app.world().resource::<PuzzleConfig>().image_path.is_empty());
+    }
 
     #[test]
     fn selected_image_is_imported_and_encoded_ram_is_released_before_play() {

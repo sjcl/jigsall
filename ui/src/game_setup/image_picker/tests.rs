@@ -153,6 +153,10 @@ fn pending_dialog_keeps_frames_running_and_cancel_preserves_image() {
 #[test]
 fn selected_file_uses_existing_decode_and_original_image_pipeline() {
     let mut app = app();
+    app.insert_resource(ImageLoadError {
+        virtual_key: "previous.png".into(),
+        reason: "previous failure".into(),
+    });
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("selected.png");
     image::RgbImage::from_pixel(2, 3, image::Rgb([23, 45, 67]))
@@ -172,6 +176,7 @@ fn selected_file_uses_existing_decode_and_original_image_pipeline() {
     );
     assert!(!app.world().contains_resource::<PuzzleImage>());
     assert!(!app.world().contains_resource::<OriginalPuzzleImage>());
+    assert!(!app.world().contains_resource::<ImageLoadError>());
     let result = app
         .world()
         .resource::<ImageLoadChannels>()
@@ -186,6 +191,23 @@ fn selected_file_uses_existing_decode_and_original_image_pipeline() {
         puzzella_game::persistence::image_hash(&bytes)
     );
     assert_eq!(original.encoded.unwrap().as_ref(), bytes.as_slice());
+}
+
+#[test]
+fn cancelled_retry_preserves_image_load_error() {
+    let mut app = app();
+    app.insert_resource(ImageLoadError {
+        virtual_key: "previous.png".into(),
+        reason: "previous failure".into(),
+    });
+    let selection = begin_selection(&mut app);
+    complete(&selection, None);
+    finish(&mut app);
+
+    assert_previous_image(&app);
+    let error = app.world().resource::<ImageLoadError>();
+    assert_eq!(error.virtual_key, "previous.png");
+    assert_eq!(error.reason, "previous failure");
 }
 
 #[test]

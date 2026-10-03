@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use bevy::tasks::{block_on, poll_once, IoTaskPool, Task};
 use puzzella_game::asset_reader::{start_thread_image_load, ExternalFileRegistry};
 use puzzella_game::persistence::runtime::OriginalPuzzleImage;
-use puzzella_game::resources::{ImageLoadSender, PuzzleConfig, PuzzleImage};
+use puzzella_game::resources::{ImageLoadError, ImageLoadSender, PuzzleConfig, PuzzleImage};
 use std::{future::Future, path::PathBuf};
 
 #[derive(Resource, Default)]
@@ -65,6 +65,7 @@ pub(crate) fn finish_image_selection(
         start_thread_image_load(key, path, sender.tx_results.clone());
         commands.remove_resource::<PuzzleImage>();
         commands.remove_resource::<OriginalPuzzleImage>();
+        commands.remove_resource::<ImageLoadError>();
     }
 }
 

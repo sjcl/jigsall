@@ -7,15 +7,20 @@ use puzzella_game::resources::*;
 
 pub(crate) mod image_picker;
 
+#[allow(clippy::too_many_arguments)] // Explicit ECS resources include image load failures.
 pub fn draw_game_setup_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut config: ResMut<PuzzleConfig>,
     mut image_picker: ResMut<image_picker::ImagePicker>,
     puzzle_image: Option<Res<PuzzleImage>>,
+    image_error: Option<Res<ImageLoadError>>,
     file_registry: Res<ExternalFileRegistry>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    let image_error = image_error
+        .as_deref()
+        .filter(|error| error.virtual_key == config.image_path);
     let texture = puzzle_image
         .as_ref()
         .map(|image| contexts.add_image(EguiTextureHandle::Weak(image.handle.id())));
@@ -26,9 +31,10 @@ pub fn draw_game_setup_ui(
     let screen = ctx.content_rect();
     let width = (screen.width() - 96.0).clamp(160.0, 960.0);
     let wide = width >= 680.0;
-    let image_loaded = puzzle_image
-        .as_ref()
-        .is_some_and(|image| image.size.x > 10.0 && image.size.y > 10.0);
+    let image_loaded = image_error.is_none()
+        && puzzle_image
+            .as_ref()
+            .is_some_and(|image| image.size.x > 10.0 && image.size.y > 10.0);
     let mut select_image = false;
     egui::Area::new("new_game_screen".into())
         .enabled(!image_picker.is_open())
@@ -48,6 +54,7 @@ pub fn draw_game_setup_ui(
                                     &mut columns[0],
                                     &config,
                                     puzzle_image.as_deref(),
+                                    image_error,
                                     texture,
                                     &file_registry,
                                     &i18n,
@@ -59,6 +66,7 @@ pub fn draw_game_setup_ui(
                                 ui,
                                 &config,
                                 puzzle_image.as_deref(),
+                                image_error,
                                 texture,
                                 &file_registry,
                                 &i18n,
@@ -124,6 +132,7 @@ fn image_section(
     ui: &mut egui::Ui,
     config: &PuzzleConfig,
     image: Option<&PuzzleImage>,
+    error: Option<&ImageLoadError>,
     texture: Option<egui::TextureId>,
     registry: &ExternalFileRegistry,
     i18n: &Localization,
@@ -188,7 +197,19 @@ fn image_section(
     } else {
         ui.add(egui::Label::new(egui::RichText::new(&name).size(13.0)).truncate())
             .on_hover_text(&name);
-        if let Some(image) = image {
+        if let Some(error) = error {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(i18n.format(
+                        "setup-image-load-failed",
+                        &[("reason", error.reason.as_str().into())],
+                    ))
+                    .color(theme::DANGER),
+                )
+                .wrap(),
+            );
+            theme::hint(ui, i18n.text("setup-image-load-retry"));
+        } else if let Some(image) = image {
             theme::hint(
                 ui,
                 i18n.format(
@@ -208,6 +229,9 @@ fn image_section(
     }
     selected
 }
+
+#[cfg(test)]
+mod tests;
 
 fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localization) {
     ui.spacing_mut().item_spacing.y = 8.0;
