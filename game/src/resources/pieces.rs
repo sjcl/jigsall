@@ -64,6 +64,24 @@ impl GpuPieceState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DensePieceStates(Arc<[GpuPieceState]>);
 
+#[cfg(test)]
+thread_local! {
+    static FORBID_PIECE_STATE_ACCESS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Test guard for presentation paths that must never inspect canonical pieces.
+#[cfg(test)]
+pub(crate) fn without_piece_state_access<R>(f: impl FnOnce() -> R) -> R {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FORBID_PIECE_STATE_ACCESS.set(self.0);
+        }
+    }
+    let _reset = Reset(FORBID_PIECE_STATE_ACCESS.replace(true));
+    f()
+}
+
 impl DensePieceStates {
     /// Build the final 16-byte states directly in their worker-owned allocation.
     pub fn generate(definition: &PuzzleDefinition) -> Self {
@@ -94,6 +112,11 @@ impl DensePieceStates {
 impl Deref for DensePieceStates {
     type Target = [GpuPieceState];
     fn deref(&self) -> &Self::Target {
+        #[cfg(test)]
+        assert!(
+            !FORBID_PIECE_STATE_ACCESS.get(),
+            "pending frame accessed canonical pieces"
+        );
         &self.0
     }
 }
@@ -109,6 +132,11 @@ impl<'a> IntoIterator for &'a DensePieceStates {
 
 impl DerefMut for DensePieceStates {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        #[cfg(test)]
+        assert!(
+            !FORBID_PIECE_STATE_ACCESS.get(),
+            "pending frame mutated canonical pieces"
+        );
         Arc::make_mut(&mut self.0)
     }
 }

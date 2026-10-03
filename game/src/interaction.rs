@@ -50,6 +50,9 @@ pub struct PieceInteraction {
     // Stable only for this gesture; delayed network ACKs cannot affect a new
     // gesture even when it selects the exact same mask.
     network_gesture: std::sync::Arc<()>,
+    // The gesture has ended, but its Reliable Release still owns presentation.
+    // This gates piece gestures only; camera and UI systems remain independent.
+    pending_network_release: bool,
     play_area: Option<LogicalPlayArea>,
     drag_validation: Option<DragValidation>,
 }
@@ -102,6 +105,10 @@ impl PieceInteraction {
         screen_position: Option<Vec2>,
         quarter_turns: i8,
     ) -> Option<PieceCommand> {
+        if self.pending_network_release {
+            self.cancel_rotation_pick(selection);
+            return None;
+        }
         if quarter_turns == 0 && self.pending_rotation.is_none() {
             return None;
         }
@@ -192,6 +199,9 @@ impl PieceInteraction {
         store: &PieceDataStore,
         quarter_turns: i8,
     ) -> Option<PieceCommand> {
+        if self.pending_network_release {
+            return None;
+        }
         if let Gesture::Dragging { members, .. } = &self.gesture {
             return Some(PieceCommand::RotateDrag {
                 members: members.clone(),
@@ -239,6 +249,23 @@ impl PieceInteraction {
     pub fn is_dragging(&self) -> bool {
         matches!(self.gesture, Gesture::Dragging { .. })
     }
+    pub(crate) fn hold_network_release(&mut self, token: &std::sync::Arc<()>) -> bool {
+        if std::sync::Arc::ptr_eq(token, &self.network_gesture) {
+            self.pending_network_release = true;
+            return true;
+        }
+        false
+    }
+    pub(crate) fn clear_network_release(
+        &mut self,
+        token: &std::sync::Arc<()>,
+        store: &mut PieceDataStore,
+    ) {
+        if std::sync::Arc::ptr_eq(token, &self.network_gesture) {
+            self.pending_network_release = false;
+            store.drag = default();
+        }
+    }
     /// Runtime ACK reconciliation at a control boundary. A released/replaced
     /// gesture must not be resurrected by a delayed authority result.
     pub(crate) fn reconcile_network_grab(
@@ -253,6 +280,10 @@ impl PieceInteraction {
         }
         self.refresh_drag_validation(store, &accepted);
         store.drag.delta = self.clamp_drag_delta(store.drag.delta);
+        if self.pending_network_release {
+            store.selected_pieces = accepted.clone();
+            store.highlights_dirty = true;
+        }
         if let Gesture::Dragging { members, .. } = &mut self.gesture {
             if members == requested {
                 if accepted.is_empty() {
@@ -333,6 +364,9 @@ impl PieceInteraction {
         selection: &mut PuzzleSelection,
         local_player: PlayerId,
     ) -> Vec<PieceCommand> {
+        if self.pending_network_release {
+            return Vec::new();
+        }
         if !frame.focused {
             return self.cancel(store, selection, local_player);
         }
@@ -557,6 +591,10 @@ impl PieceInteraction {
         local_player: PlayerId,
     ) -> Vec<PieceCommand> {
         self.cancel_rotation_pick(selection);
+        if self.pending_network_release {
+            // Release was already submitted, including pause/focus loss paths.
+            return Vec::new();
+        }
         // Repeated unfocused idle frames must not allocate or scan an owner mask.
         if matches!(self.gesture, Gesture::Idle) && !store.held_by.has_player(local_player) {
             selection.cancel();

@@ -87,6 +87,58 @@ queued releases/rotations sampled in the previous basis are adjusted once.
 Rejected host controls retain the old pointer basis and consumed sequence history.
 Remote Reliable route errors follow the existing close/resync contract.
 
+### Local Release presentation while awaiting authority
+
+| State | Position used for presentation | Canonical position |
+| --- | --- | --- |
+| Local active drag | Accepted local COW membership plus current pointer delta | Last Reliable authority commit |
+| Local pending release | Same accepted membership plus frozen Release `final_delta` | Unchanged until `ReleaseCommitted` |
+| Remote transient drag | Existing piece-to-slot mapping plus remote Transient delta | Last Reliable authority commit |
+| Canonical authority position | CPU `PieceDataStore.states` | Used for snap, placement, connectivity, progress and snapshots |
+
+After sending Release, the client retains the final presentation, but canonical
+position does not change until Reliable `ReleaseCommitted`. `CommandBridge`
+retains one pending release delta/token and the GrabAccepted membership in its
+local context. `PieceDataStore.drag` shares that accepted COW bitset for the
+existing local renderer path, which keeps its priority over remote slots. The
+original Grab request is never restored as pending membership, including partial
+acceptance. A release queued before GrabAccepted waits for accepted membership;
+empty acceptance removes the pending presentation and makes Release a no-op.
+
+Pointer/camera movement cannot recompute a submitted Release delta. If Release
+waits behind RotateDrag, its queued delta and pending presentation are adjusted
+together at the rotation ACK; selecting the actual wire Release freezes the
+adjusted `final_delta`. Existing through-tick, basis sequence and pointer-anchor
+rebasing remain in use. No further DragUpdate is sent for a released context.
+
+The pointer gesture ends at release. While its result is outstanding,
+`PieceInteraction` suppresses new piece gestures and rotation picks; camera and
+normal UI remain available. A queued control cannot overwrite the pending token,
+delta or accepted mask. There is no speculative gesture queue. Pause/focus loss
+does not send another Release or erase an already-pending offset.
+
+For a local `ReleaseCommitted`, ClientRouter/PeerReplicationState first applies
+the canonical release and verifies its result. Only then does the bridge remove
+the pending local presentation, before Last/upload and renderer extraction. The
+old delta is never added to the committed position. Without authority snap, the
+handoff leaves the displayed position unchanged; authority snap remains visible
+only when committed. Remote players' releases use the existing remote slot path.
+
+Local DragCancelled, rejection, protocol/send failure, disconnect, session stop
+and Menu cleanup remove pending presentation without predicting canonical
+positions. New sessions, baseline/Ready installation and session/authority/store
+scope invalidation reset it; a store reinstall within the same authority scope
+preserves consumed Control sequence history. Late Transients cannot recreate the
+released/cancelled context. Pending offsets are excluded from checkpoints, saves,
+GameSnapshot and JoinBaseline canonical state. Host local Release applies
+synchronously and leaves no pending offset, including semantic rejection.
+Offline release continues to use immediate local authority without ACK state.
+
+Pending idle frames share the same 125,000-byte bitset for 1M members and update
+only scalar/Arc presentation state. They do not inspect canonical pieces, rebuild
+membership or request canonical uploads. Wire version 8, snapshot schema 4,
+JoinBaseline schema 1 and the 16-byte GpuPieceState are unchanged.
+
 ## Joining World and image lifecycle
 
 Authenticated metadata constructs the client's authority session. Negotiated
@@ -154,11 +206,36 @@ localhost host/join through runtime APIs, transfers/decodes an actual PNG, promo
 Ready, and runs Grab/Release through scheduled commands. It is selected by the
 existing serial GNS CI test filter.
 
+`runtime/tests/pending_release_tests.rs` delays encrypted host-to-client Control
+for several scheduled frames, with and without all Transients dropped. It covers
+continuous Release handoff before upload, frozen pointer movement, suppressed
+new gestures, partial acceptance, queued/rebased rotations, failure/teardown,
+host rejection and offline release. `runtime/bridge_tests.rs` checks local-only
+cancellation, scope/token invalidation and 1M-member pending frames: the same mask
+allocation is retained, a test guard forbids canonical piece-state access, and
+state/root upload revisions remain unchanged.
+
 The repository's GitHub Actions workflow covers fmt, Clippy, tests/doctests and
 builds on Windows/Linux with default and all features, plus serial localhost GNS
 tests. Local validation follows repository and task-specific instructions.
 No runtime FPS or cross-GPU/OS bit identity is claimed by these tests.
-Remote drag GPU rendering remains a follow-up.
+Remote drag GPU rendering uses the existing bounded slot presentation path; see
+[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation).
+
+2026-10-04 initial Windows validation for pending local Release: workspace default tests
+(691 including doctests), all-feature tests (692 including doctests, excluding
+the 14 serial GNS localhost tests), all 14 GNS localhost tests, default/all-feature
+Clippy with `-D warnings`, fmt and the 33 release-mode runtime tests passed.
+The 1M pending regression ran in release mode without canonical piece access,
+membership replacement or state/root upload changes. Existing real-GPU release
+tests `gpu_remote_presentation_normal_far_culling_picking_and_scalar_uploads` and
+`gpu_drag_transform_and_preview_without_readback` also passed.
+The all-feature native link used the command-local GNS `out/lib` search path
+described in [WINDOWS_BUILD.md](WINDOWS_BUILD.md), retaining shared Cargo/vcpkg
+directories. All-feature startup emitted a non-fatal Tracy `SymInitialize`
+diagnostic; this validation does not verify profiler symbol resolution.
+After integration with the bounded join lifecycle, the default workspace suite
+(711 including doctests), all-feature Clippy with `-D warnings` and fmt passed again.
 
 ## Join resource policy
 

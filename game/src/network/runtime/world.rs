@@ -68,10 +68,13 @@ fn menu_pending(world: &World) -> bool {
         })
 }
 fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, runtime: Runtime<T>) {
+    world.init_resource::<PieceInteraction>();
+    *world.resource_mut::<PieceInteraction>() = default();
     let mut presentation = world
         .remove_resource::<remote_drag::RemoteDragPresentation>()
         .unwrap_or_default();
-    if let Some(store) = world.get_resource::<PieceDataStore>() {
+    if let Some(mut store) = world.get_resource_mut::<PieceDataStore>() {
+        store.drag = default();
         presentation.reset(store.epoch, store.len());
     }
     world.insert_resource(presentation);

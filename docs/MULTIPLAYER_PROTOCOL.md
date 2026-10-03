@@ -17,6 +17,18 @@ transport and join coordination live in [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT
 and [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md); the scheduled game lifecycle is
 documented in [DIRECT_IP_RUNTIME.md](DIRECT_IP_RUNTIME.md).
 
+The runtime distinguishes local active drag (pointer delta), local pending
+release (frozen Reliable Release delta), remote transient drag (remote slot
+delta), and canonical authority position (CPU committed state). After sending
+Release, a client retains accepted local presentation membership and final delta
+until `ReleaseCommitted`, without changing canonical positions. Peer replication
+applies the commit before runtime clears that presentation. Pending offsets are
+session-local, are excluded from snapshots/saves and never participate in snap,
+placement or progress. New piece gestures wait for the result while camera/UI
+remain available. This adds no protocol messages or schema changes; see
+[local Release presentation](DIRECT_IP_RUNTIME.md#local-release-presentation-while-awaiting-authority)
+for queue/rotation basis handling and cleanup.
+
 `PlayerId` identifies a player within the session. The independent
 `LocalPlayerId` Bevy resource identifies the player controlled by this process;
 `LOCAL_PLAYER` / `PlayerId(0)` is only its offline default. Authority adapters

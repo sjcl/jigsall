@@ -67,6 +67,8 @@ Moveの最終座標を適用してからReleaseとsnapを処理します。bulk 
 
 `PieceInteraction`はIdle / Dragging / BoxSelectingを持ちます。point結果の受信前にreleaseした場合も最終座標を保持します。矩形previewとrelease時の確定要求を分け、古いGPU応答が確定選択を上書きしないようにします。
 
+Direct-IP clientのRelease待ちでは、gesture終了後も`CommandBridge`がaccepted membershipと送信したfinal_delta / tokenを保持し、既存`PieceDataStore.drag`のCOW maskとscalar deltaでlocal presentationを継続します。pointer/cameraから再計算せず、新しいpiece gestureだけを解決まで抑制します。RotateDrag待ちのqueued ReleaseはACKでbasis補正したdeltaを表示し、実送信値と一致させます。`PeerReplicationState`のReliable canonical commit後にpendingを解除し、Last / extraction前に整合させます。active local / pending local / remote Transient / canonicalの違いとfailure・scope・session cleanupは[DIRECT_IP_RUNTIME.md](DIRECT_IP_RUNTIME.md#local-release-presentation-while-awaiting-authority)を参照してください。pendingは保存・snap・進捗に使用しません。
+
 ## Dirty同期とZ順序
 
 Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変わった場合だけmaskをuploadします。selected outlineはfragmentで専用bitsetを参照し、dense stateのflagsとdirty rangeを変更しません。初回state uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。dirty bitsetのset bitsをID順にiterateして連続rangeへまとめ、ID Vecの展開・sortは不要です。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate / selected / membership uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。

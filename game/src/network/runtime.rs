@@ -445,6 +445,7 @@ impl<T: DirectIpTransport> Runtime<T> {
     ) -> Result<(), String> {
         if let Some(session) = &self.session {
             self.presentation.synchronize(session, store);
+            self.bridge.synchronize(session, interaction, store);
         }
         let mut events = Vec::new();
         self.transport
@@ -634,8 +635,16 @@ impl<T: DirectIpTransport> Runtime<T> {
                                     .map(Arc::from)
                                     .map_err(|e| format!("{e:?}"))
                             }),
-                            ClientSyncOutcome::BaselineInstalled => self.baseline_installed = true,
+                            ClientSyncOutcome::BaselineInstalled => {
+                                self.baseline_installed = true;
+                                self.bridge = default();
+                                *interaction = default();
+                                store.drag = default();
+                            }
                             ClientSyncOutcome::Ready => {
+                                self.bridge = default();
+                                *interaction = default();
+                                store.drag = default();
                                 self.status.local_player = client.bootstrap.assigned_player();
                                 self.status.host = Some(self.session.as_ref().unwrap().host());
                                 self.status.phase = RuntimePhase::Ready;
@@ -827,6 +836,7 @@ impl<T: DirectIpTransport> Runtime<T> {
     ) -> Result<(), String> {
         if let Some(session) = &self.session {
             self.presentation.synchronize(session, store);
+            self.bridge.synchronize(session, interaction, store);
         }
         let Some(player) = self.status.local_player else {
             return Ok(());
@@ -854,8 +864,10 @@ impl<T: DirectIpTransport> Runtime<T> {
             .next(self.session.as_ref().unwrap(), player, store)
             .map_err(|e| format!("{e:?}"))?
         {
+            self.bridge.present_release(interaction, store);
             self.send_local(command, store, interaction)?;
         }
+        self.bridge.present_release(interaction, store);
         if let Some(command) = self
             .bridge
             .drag_update(self.session.as_ref().unwrap(), player, store)

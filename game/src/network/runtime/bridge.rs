@@ -5,6 +5,10 @@ use puzzella_core::{protocol::*, session::*, PieceBitSet, PieceCommand, PlayerId
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "bridge_tests.rs"]
+mod pending_release_tests;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum BridgeError {
     Capacity,
@@ -77,6 +81,10 @@ struct PendingControl {
     pointer: Option<Vec2>,
     token: Arc<()>,
 }
+struct PendingRelease {
+    delta: Vec2,
+    token: Arc<()>,
+}
 #[derive(Default)]
 pub(super) struct CommandBridge {
     next_control: Option<u64>,
@@ -84,6 +92,8 @@ pub(super) struct CommandBridge {
     active: Option<LocalDrag>,
     pending: Option<PendingControl>,
     queue: VecDeque<(PieceCommand, Option<Vec2>, Arc<()>)>,
+    release: Option<PendingRelease>,
+    scope: Option<(SessionId, AuthorityEpoch, u64)>,
 }
 
 impl CommandBridge {
@@ -96,8 +106,75 @@ impl CommandBridge {
         if self.queue.len() == 64 {
             return Err(BridgeError::Capacity);
         }
+        if self.release.is_none() {
+            let delta = match &command {
+                PieceCommand::ReleaseGroup { delta, .. } => Some(*delta),
+                PieceCommand::Release(_) => self.active.as_ref().map(|drag| drag.scalar_delta),
+                _ => None,
+            };
+            if let Some(delta) = delta {
+                self.release = Some(PendingRelease {
+                    delta,
+                    token: token.clone(),
+                });
+            }
+        }
         self.queue.push_back((command, pointer, token));
         Ok(())
+    }
+    pub fn synchronize(
+        &mut self,
+        session: &AuthoritySession,
+        interaction: &mut PieceInteraction,
+        store: &mut PieceDataStore,
+    ) {
+        let scope = (session.session_id(), session.cursor().epoch, store.epoch);
+        if !session.is_active() {
+            self.clear_release(interaction, store);
+            self.active = None;
+            self.pending = None;
+            self.queue.clear();
+            *interaction = PieceInteraction::default();
+            store.drag = Default::default();
+        }
+        if let Some(old) = self.scope.filter(|old| *old != scope) {
+            // A store reinstall in the same authority scope must preserve the
+            // sender's consumed Control history, while discarding presentation.
+            let same_authority = (old.0, old.1) == (scope.0, scope.1);
+            *self = Self {
+                next_control: same_authority.then_some(self.next_control).flatten(),
+                started: same_authority && self.started,
+                ..Default::default()
+            };
+            *interaction = PieceInteraction::default();
+            store.drag = Default::default();
+        }
+        self.scope = Some(scope);
+    }
+    /// Shares the accepted COW mask; idle pending frames touch only scalars/Arcs.
+    pub fn present_release(
+        &mut self,
+        interaction: &mut PieceInteraction,
+        store: &mut PieceDataStore,
+    ) {
+        if self.active.is_none() && self.pending.is_none() && self.queue.is_empty() {
+            self.clear_release(interaction, store);
+        }
+        let Some(release) = &self.release else { return };
+        if !interaction.hold_network_release(&release.token) {
+            return;
+        }
+        if let Some(active) = &self.active {
+            if Arc::ptr_eq(&active.token, &release.token) {
+                store.drag.members = active.members.words().clone();
+                store.drag.delta = release.delta;
+            }
+        }
+    }
+    fn clear_release(&mut self, interaction: &mut PieceInteraction, store: &mut PieceDataStore) {
+        if let Some(release) = self.release.take() {
+            interaction.clear_network_release(&release.token, store);
+        }
     }
     fn envelope(
         session: &AuthoritySession,
@@ -198,6 +275,20 @@ impl CommandBridge {
                 ClientCommandSequence::Control(sequence),
                 command,
             );
+            if let ProtocolPieceCommand::Release { final_delta, .. } = &envelope.command {
+                // Freeze the actual wire input, after all queued basis adjustments.
+                if self.release.is_none() {
+                    self.release = Some(PendingRelease {
+                        delta: *final_delta,
+                        token: token.clone(),
+                    });
+                }
+                if let Some(release) = &mut self.release {
+                    if Arc::ptr_eq(&release.token, &token) {
+                        release.delta = *final_delta;
+                    }
+                }
+            }
             self.pending = Some(PendingControl {
                 envelope: envelope.clone(),
                 requested,
@@ -216,7 +307,7 @@ impl CommandBridge {
         player: PlayerId,
         store: &PieceDataStore,
     ) -> Result<Option<ProtocolCommandEnvelope>, BridgeError> {
-        if self.pending.is_some() || !self.queue.is_empty() {
+        if self.release.is_some() || self.pending.is_some() || !self.queue.is_empty() {
             return Ok(None);
         }
         let Some(active) = &mut self.active else {
@@ -247,11 +338,21 @@ impl CommandBridge {
         )))
     }
     pub fn reject(&mut self, interaction: &mut PieceInteraction, store: &mut PieceDataStore) {
-        if self.pending.take().is_some_and(|pending| {
-            matches!(pending.envelope.command, ProtocolPieceCommand::Grab { .. })
-        }) {
-            *interaction = PieceInteraction::default();
-            store.drag = Default::default();
+        if let Some(pending) = self.pending.take() {
+            match pending.envelope.command {
+                ProtocolPieceCommand::Grab { .. } => {
+                    self.clear_release(interaction, store);
+                    self.queue.clear();
+                    self.active = None;
+                    *interaction = PieceInteraction::default();
+                    store.drag = Default::default();
+                }
+                ProtocolPieceCommand::Release { .. } => {
+                    self.clear_release(interaction, store);
+                    self.active = None;
+                }
+                _ => {}
+            }
         }
         // A consumed rejection never rewinds Control history or the old basis.
     }
@@ -273,6 +374,7 @@ impl CommandBridge {
             return Ok(());
         }
         if matches!(event, ProtocolAuthorityEvent::DragCancelled(_)) {
+            self.clear_release(interaction, store);
             self.active = None;
             self.pending = None;
             self.queue.clear();
@@ -322,6 +424,9 @@ impl CommandBridge {
                     scalar_delta: Vec2::ZERO,
                     token: pending.token,
                 });
+                if self.active.is_none() {
+                    self.clear_release(interaction, store);
+                }
             }
             (
                 ProtocolAuthorityEvent::DragRotationCommitted(commit),
@@ -341,18 +446,25 @@ impl CommandBridge {
                 active.basis = sequence;
                 active.last_delta = None;
                 active.scalar_delta = Vec2::ZERO;
-                // This ACK can belong to a released gesture while interaction
-                // already tracks a new pick. Validate against the old members
-                // in their committed basis, never the current gesture's cache.
+                // Validate the accepted members in their committed basis,
+                // including when the gesture ended with a queued Release.
                 let validation = interaction.validation_for_members(store, &active.members);
                 // Controls sampled while waiting still carry the previous basis.
-                for (command, _, _) in &mut self.queue {
+                for (command, _, token) in &mut self.queue {
+                    let releasing = matches!(command, PieceCommand::ReleaseGroup { .. });
                     match command {
                         PieceCommand::ReleaseGroup { delta, .. }
                         | PieceCommand::RotateDrag { delta, .. } => {
                             let residual = *delta - commit.final_delta;
                             *delta =
                                 validation.map_or(residual, |v| v.pivots.clamp(v.area, residual));
+                            if releasing {
+                                if let Some(release) = &mut self.release {
+                                    if Arc::ptr_eq(&release.token, token) {
+                                        release.delta = *delta;
+                                    }
+                                }
+                            }
                         }
                         PieceCommand::Grab(_) | PieceCommand::GrabGroup { .. } => break,
                         _ => {}
@@ -362,11 +474,16 @@ impl CommandBridge {
             (
                 ProtocolAuthorityEvent::ReleaseCommitted(commit),
                 ProtocolPieceCommand::Release { grab_sequence, .. },
-            ) if commit.grab_sequence == *grab_sequence => self.active = None,
+            ) if commit.grab_sequence == *grab_sequence => {
+                // ClientRouter has already committed the canonical release.
+                self.clear_release(interaction, store);
+                self.active = None;
+            }
             (ProtocolAuthorityEvent::RotationCommitted(_), ProtocolPieceCommand::Rotate { .. }) => {
             }
             _ => return Err(BridgeError::UnexpectedAuthorityResult),
         }
+        self.present_release(interaction, store);
         Ok(())
     }
 }

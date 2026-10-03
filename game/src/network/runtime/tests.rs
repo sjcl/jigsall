@@ -1,4 +1,5 @@
 use super::*;
+mod pending_release_tests;
 mod presentation_tests;
 use crate::{persistence::runtime::OriginalPuzzleImage, resources::*};
 use bevy::state::app::StatesPlugin;
@@ -15,6 +16,8 @@ struct Bus {
     routes: BTreeMap<ConnectionId, (u64, ConnectionId)>,
     next: u64,
     drop_transient: bool,
+    hold_authority_control: bool,
+    delayed: Vec<(u64, TransportEvent)>,
     fail: BTreeSet<ConnectionId>,
     sent: Vec<(ConnectionId, MessageClass, Vec<u8>)>,
     closed: Vec<ConnectionId>,
@@ -158,14 +161,16 @@ impl Transport for Fake {
             *bus.bulk_sent.entry(connection).or_default() += payload.len() as u64;
         }
         if !(class == MessageClass::Transient && bus.drop_transient) {
-            bus.inbox
-                .entry(id)
-                .or_default()
-                .push_back(TransportEvent::Message {
-                    connection: peer,
-                    class,
-                    payload: payload.to_vec(),
-                });
+            let event = TransportEvent::Message {
+                connection: peer,
+                class,
+                payload: payload.to_vec(),
+            };
+            if self.id == 0 && class == MessageClass::Control && bus.hold_authority_control {
+                bus.delayed.push((id, event));
+            } else {
+                bus.inbox.entry(id).or_default().push_back(event);
+            }
         }
         Ok(())
     }
@@ -990,7 +995,7 @@ fn client_rotation_ack_rebases_pointer_and_release_queued_before_ack_uses_the_ne
 }
 
 #[test]
-fn old_rotation_ack_uses_its_members_bounds_after_a_new_gesture_starts() {
+fn old_rotation_ack_uses_its_members_bounds_and_new_gesture_waits_for_release() {
     let mut pair = Pair::new();
     let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&definition()).unwrap();
     pair.host
@@ -1014,8 +1019,20 @@ fn old_rotation_ack_uses_its_members_bounds_after_a_new_gesture_starts() {
     pair.client.update();
     pointer(&mut pair.client, Vec2::new(30.0, 40.0), false, false);
     pair.client.update();
-    // The old Release waits behind RotateDrag. A different near-edge component
-    // now owns interaction's cache before either authority response arrives.
+    // The old Release waits behind RotateDrag. A new press must preserve it.
+    pointer(&mut pair.client, Vec2::ZERO, true, true);
+    assert!(pair
+        .client
+        .world()
+        .resource::<crate::selection::PuzzleSelection>()
+        .latest
+        .is_none());
+    assert_eq!(
+        pair.client.world().resource::<PieceDataStore>().drag.delta,
+        Vec2::new(30.0, 40.0)
+    );
+    pair.converge();
+    // Once the old Release commits, a near-edge component can start a new drag.
     pointer(&mut pair.client, Vec2::ZERO, true, true);
     let request = pair
         .client
