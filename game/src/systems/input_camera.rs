@@ -364,7 +364,7 @@ mod tests {
             (MouseScrollUnit::Line, 1.0, 0.9),
             (MouseScrollUnit::Line, 3.0, 0.729),
             (MouseScrollUnit::Line, 0.5, 0.9486833),
-            (MouseScrollUnit::Line, -1.0, 1.1111111),
+            (MouseScrollUnit::Line, -1.0, 1.111_111),
             (MouseScrollUnit::Pixel, 100.0, 0.9),
             (MouseScrollUnit::Pixel, 1.0, 0.99894696),
             (MouseScrollUnit::Pixel, -1.0, 1.0010542),
