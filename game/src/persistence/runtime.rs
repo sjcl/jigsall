@@ -342,7 +342,7 @@ fn run_request<S: SaveStorage>(
             hash,
             repo().and_then(|r| {
                 let bytes = r.read_image(hash)?;
-                let decoded = image::load_from_memory(&bytes)
+                let decoded = crate::asset_reader::decode_puzzle_image_bytes(&bytes)
                     .map_err(|error| SaveError::Decode(error.to_string()))?;
                 let rgba = decoded
                     .thumbnail(THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE)
@@ -892,6 +892,20 @@ mod tests {
             Some(PersistenceError::DefinitionUnavailable)
         ));
         assert!(state.current_autosave.is_none());
+    }
+
+    #[test]
+    fn thumbnail_worker_rejects_unsupported_formats_in_verified_containers() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+        let bytes = b"P6\n1 1\n255\n\x49\x64\xb5";
+        let hash = image_hash(bytes);
+        repo.import_image(hash, bytes).unwrap();
+        assert!(matches!(
+            run_request(&Ok(repo), Request::Thumbnail(hash)),
+            Reply::Thumbnail(reply_hash, Err(SaveError::Decode(reason)))
+                if reply_hash == hash && reason == "The image format Pnm is not supported"
+        ));
     }
 
     #[test]

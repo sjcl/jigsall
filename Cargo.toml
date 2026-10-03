@@ -14,7 +14,15 @@ puzzella-core = { path = "core" }
 puzzella-puzzle = { path = "puzzle" }
 puzzella-game = { path = "game" }
 puzzella-ui = { path = "ui" }
-bevy = { version = "0.19.1", default-features = false, features = ["2d", "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace"] }
+# Expand Bevy's 2d bundle to avoid common_api enabling the HDR decoder.
+bevy = { version = "0.19.1", default-features = false, features = [
+    "default_app", "default_platform", "scene", "picking",
+    "bevy_animation", "bevy_camera", "bevy_color", "bevy_gizmos", "bevy_image",
+    "bevy_mesh", "bevy_shader", "bevy_material", "bevy_text", "bevy_window",
+    "bevy_sprite", "bevy_render", "bevy_core_pipeline", "bevy_post_process",
+    "bevy_sprite_render", "bevy_gizmos_render",
+    "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace",
+] }
 bevy_asset = "0.19.1"
 bevy_ecs = "0.19.1"
 bevy_log = "0.19.1"
@@ -22,7 +30,8 @@ bevy_math = { version = "0.19.1", features = ["serialize"] }
 bevy_mesh = "0.19.1"
 bevy_egui = "0.42"
 serde = { version = "1.0", features = ["derive"] }
-image = "0.25"
+# Keep content-based decoding limited to the formats offered by the image picker.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }
 rand = "0.10"
 rand_chacha = "0.10"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
