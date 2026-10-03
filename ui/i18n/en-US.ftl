@@ -25,6 +25,7 @@ settings-texture-budget-next-load = Saved automatically and used for the next im
 settings-texture-read-failed = Could not read image settings: { $reason }
 settings-texture-save-failed = Could not save image settings: { $reason }
 settings-general = General
+settings-graphics = Graphics
 settings-autosave-enabled = Enable autosave
 settings-autosave-interval = Autosave interval
 settings-autosave-minutes = min

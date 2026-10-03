@@ -24,6 +24,7 @@ settings-texture-budget-next-load = 自動で保存され、次の画像選択�
 settings-texture-read-failed = 画像設定を読み込めませんでした: { $reason }
 settings-texture-save-failed = 画像設定を保存できませんでした: { $reason }
 settings-general = 一般
+settings-graphics = グラフィック
 settings-autosave-enabled = オートセーブを有効にする
 settings-autosave-interval = オートセーブ間隔
 settings-autosave-minutes = 分

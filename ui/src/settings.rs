@@ -13,6 +13,14 @@ use puzzella_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettin
 use puzzella_game::resources::PuzzleImageLimits;
 use puzzella_game::settings::*;
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum SettingsTab {
+    #[default]
+    General,
+    Graphics,
+    Keys,
+}
+
 #[derive(Resource, Default)]
 pub struct SettingsDialog {
     pub open: bool,
@@ -20,13 +28,13 @@ pub struct SettingsDialog {
     last_applied: DisplaySettings,
     limited_fps: u32,
     confirming: bool,
-    key_tab: bool,
+    tab: SettingsTab,
     keys: KeyConfigEditor,
 }
 
 impl SettingsDialog {
     pub fn open(&mut self, state: &DisplaySettingsState) {
-        self.key_tab = false;
+        self.tab = SettingsTab::General;
         self.keys = default();
         self.open = true;
         self.sync(state);
@@ -153,25 +161,34 @@ fn paint_settings(
         .show(ctx, |ui| {
             // A cached area height must not restrict this frame's content measurement.
             ui.set_max_height(screen.height());
+            let preferred_width = if dialog.tab == SettingsTab::Keys {
+                KeyConfigEditor::preferred_width(ctx, i18n)
+            } else {
+                520.0
+            };
+            // Constrain tab wrapping without reserving the previous tab's minimum width.
+            ui.set_max_width((screen.width() - 96.0).clamp(160.0, preferred_width));
             theme::heading(ui, i18n.text("settings-title"));
             ui.add_enabled_ui(seconds.is_none(), |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .selectable_label(!dialog.key_tab, i18n.text("settings-general"))
-                        .clicked()
-                    {
-                        dialog.key_tab = false;
-                        dialog.keys.cancel_capture();
-                    }
-                    if ui
-                        .selectable_label(dialog.key_tab, i18n.text("settings-keys"))
-                        .clicked()
-                    {
-                        dialog.key_tab = true;
+                    for (tab, label) in [
+                        (SettingsTab::General, "settings-general"),
+                        (SettingsTab::Graphics, "settings-graphics"),
+                        (SettingsTab::Keys, "settings-keys"),
+                    ] {
+                        if ui
+                            .selectable_label(dialog.tab == tab, i18n.text(label))
+                            .clicked()
+                        {
+                            dialog.tab = tab;
+                            if tab != SettingsTab::Keys {
+                                dialog.keys.cancel_capture();
+                            }
+                        }
                     }
                 });
             });
-            let preferred_width = if dialog.key_tab {
+            let preferred_width = if dialog.tab == SettingsTab::Keys {
                 KeyConfigEditor::preferred_width(ctx, i18n)
             } else {
                 520.0
@@ -190,55 +207,63 @@ fn paint_settings(
                     (screen.height() - if seconds.is_some() { 380.0 } else { 320.0 }).max(32.0),
                 )
                 .show(ui, |ui| {
-                    if dialog.key_tab {
+                    if dialog.tab == SettingsTab::Keys {
                         ui.add_enabled_ui(seconds.is_none(), |ui| {
                             dialog.keys.paint(ui, key_state, i18n, key_input);
                         });
                         return;
                     }
-                    theme::card().show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(i18n.text("settings-language"));
-                        let mut language = preferences.language;
-                        egui::ComboBox::from_id_salt("language_preference")
-                            .width(ui.available_width())
-                            .selected_text(match language {
-                                LanguagePreference::Auto => i18n.text("settings-language-auto"),
-                                LanguagePreference::Locale(locale) => i18n.native_name(locale),
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut language,
-                                    LanguagePreference::Auto,
-                                    i18n.text("settings-language-auto"),
-                                );
-                                for locale in Locale::available() {
+                    if dialog.tab == SettingsTab::General {
+                        theme::card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(i18n.text("settings-language"));
+                            let mut language = preferences.language;
+                            egui::ComboBox::from_id_salt("language_preference")
+                                .width(ui.available_width())
+                                .selected_text(match language {
+                                    LanguagePreference::Auto => i18n.text("settings-language-auto"),
+                                    LanguagePreference::Locale(locale) => i18n.native_name(locale),
+                                })
+                                .show_ui(ui, |ui| {
                                     ui.selectable_value(
                                         &mut language,
-                                        LanguagePreference::Locale(locale),
-                                        i18n.native_name(locale),
+                                        LanguagePreference::Auto,
+                                        i18n.text("settings-language-auto"),
                                     );
-                                }
+                                    for locale in Locale::available() {
+                                        ui.selectable_value(
+                                            &mut language,
+                                            LanguagePreference::Locale(locale),
+                                            i18n.native_name(locale),
+                                        );
+                                    }
+                                });
+                            if language != preferences.language {
+                                preferences.set_language(language, i18n);
+                                ctx.request_repaint();
+                            }
+                            if let Some(error) = &preferences.error {
+                                let (key, reason) = match error {
+                                    PreferenceError::Read(reason) => {
+                                        ("settings-language-read-failed", reason)
+                                    }
+                                    PreferenceError::Save(reason) => {
+                                        ("settings-language-save-failed", reason)
+                                    }
+                                };
+                                ui.colored_label(
+                                    theme::DANGER,
+                                    i18n.format(key, &[("reason", reason.as_str().into())]),
+                                );
+                            }
+                        });
+                        ui.add_enabled_ui(seconds.is_none(), |ui| {
+                            theme::card().show(ui, |ui| {
+                                paint_autosave_settings(ui, autosave, i18n);
                             });
-                        if language != preferences.language {
-                            preferences.set_language(language, i18n);
-                            ctx.request_repaint();
-                        }
-                        if let Some(error) = &preferences.error {
-                            let (key, reason) = match error {
-                                PreferenceError::Read(reason) => {
-                                    ("settings-language-read-failed", reason)
-                                }
-                                PreferenceError::Save(reason) => {
-                                    ("settings-language-save-failed", reason)
-                                }
-                            };
-                            ui.colored_label(
-                                theme::DANGER,
-                                i18n.format(key, &[("reason", reason.as_str().into())]),
-                            );
-                        }
-                    });
+                        });
+                        return;
+                    }
                     ui.add_enabled_ui(seconds.is_none(), |ui| {
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
@@ -368,9 +393,6 @@ fn paint_settings(
                         theme::card().show(ui, |ui| {
                             paint_image_settings(ui, image_settings, image_limits, i18n);
                         });
-                        theme::card().show(ui, |ui| {
-                            paint_autosave_settings(ui, autosave, i18n);
-                        });
                     });
                     if let Some(error) = &state.error {
                         ui.colored_label(theme::DANGER, i18n.display_error(error));
@@ -382,7 +404,12 @@ fn paint_settings(
                 });
             ui.separator();
             ui.horizontal(|ui| {
-                let width = (ui.available_width() - 10.0) * 0.5;
+                let show_apply = dialog.tab != SettingsTab::General;
+                let width = if seconds.is_some() || show_apply {
+                    (ui.available_width() - 10.0) * 0.5
+                } else {
+                    ui.available_width()
+                };
                 if seconds.is_some() {
                     if theme::button(ui, i18n.text("settings-revert"), width, false).clicked() {
                         action = Some(DisplaySettingsAction::Revert);
@@ -394,24 +421,29 @@ fn paint_settings(
                     if theme::button(ui, i18n.text("common-back-title"), width, false).clicked() {
                         action = Some(dialog.close());
                     }
-                    ui.add_enabled_ui(
-                        dialog.open
-                            && dialog.keys.can_apply()
-                            && (state.can_apply(&dialog.draft, capabilities)
-                                || dialog.keys.changed(key_state)),
-                        |ui| {
+                    if show_apply {
+                        let can_apply = match dialog.tab {
+                            SettingsTab::General => false,
+                            SettingsTab::Graphics => state.can_apply(&dialog.draft, capabilities),
+                            SettingsTab::Keys => {
+                                dialog.keys.can_apply() && dialog.keys.changed(key_state)
+                            }
+                        };
+                        ui.add_enabled_ui(dialog.open && can_apply, |ui| {
                             if theme::button(ui, i18n.text("settings-apply"), width, true).clicked()
                             {
-                                if dialog.keys.changed(key_state) {
-                                    dialog.keys.apply(key_state);
-                                }
-                                if state.can_apply(&dialog.draft, capabilities) {
-                                    action =
-                                        Some(DisplaySettingsAction::Apply(dialog.draft.clone()));
+                                match dialog.tab {
+                                    SettingsTab::General => {}
+                                    SettingsTab::Graphics => {
+                                        action = Some(DisplaySettingsAction::Apply(
+                                            dialog.draft.clone(),
+                                        ));
+                                    }
+                                    SettingsTab::Keys => dialog.keys.apply(key_state),
                                 }
                             }
-                        },
-                    );
+                        });
+                    }
                 }
             });
         });

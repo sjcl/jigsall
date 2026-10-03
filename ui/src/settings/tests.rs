@@ -323,6 +323,12 @@ fn text_position(output: &egui::FullOutput, label: &str) -> egui::Pos2 {
         })
 }
 
+fn has_text(output: &egui::FullOutput, label: &str) -> bool {
+    output.shapes.iter().any(
+        |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label),
+    )
+}
+
 fn click(
     ctx: &egui::Context,
     dialog: &mut SettingsDialog,
@@ -383,6 +389,7 @@ fn settings_fit_small_window_and_apply_unlimited_through_real_widgets() {
     let ctx = egui::Context::default();
     let mut dialog = SettingsDialog::default();
     dialog.open(&DisplaySettingsState::load(None));
+    click(&ctx, &mut dialog, "Graphics");
     for size in [egui::vec2(1280.0, 720.0), egui::vec2(640.0, 360.0)] {
         for _ in 0..3 {
             frame(&ctx, &mut dialog, size, vec![])
@@ -418,6 +425,14 @@ fn settings_fit_small_window_and_apply_unlimited_through_real_widgets() {
             .drop_without_applying_deltas();
     }
     click(&ctx, &mut dialog, "Unlimited");
+    assert!(dialog.draft.max_fps.is_none());
+    click(&ctx, &mut dialog, "General");
+    let (output, _) = frame(&ctx, &mut dialog, egui::vec2(1280.0, 720.0), vec![]);
+    assert!(!has_text(&output, "Apply"));
+    assert!(has_text(&output, "Language"));
+    assert!(!has_text(&output, "Display mode"));
+    output.drop_without_applying_deltas();
+    click(&ctx, &mut dialog, "Graphics");
     assert!(dialog.draft.max_fps.is_none());
     let Some(DisplaySettingsAction::Apply(settings)) = click(&ctx, &mut dialog, "Apply") else {
         panic!("Apply must emit a settings request");
@@ -469,6 +484,7 @@ fn apply_requires_a_change_and_disables_again_after_applying() {
     let caps = capabilities();
     let mut dialog = SettingsDialog::default();
     dialog.open(state);
+    click_with_state(&ctx, &mut dialog, state, &caps, "Graphics");
     assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
     click_with_state(&ctx, &mut dialog, state, &caps, "Unlimited");
     click_with_state(&ctx, &mut dialog, state, &caps, "Unlimited");
@@ -498,6 +514,7 @@ fn apply_requires_a_change_and_disables_again_after_applying() {
     assert_eq!(state.current.max_fps, None);
     dialog.open(state);
     assert_eq!(dialog.draft.max_fps, None);
+    click_with_state(&ctx, &mut dialog, state, &caps, "Graphics");
     assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
 }
 
@@ -520,6 +537,7 @@ fn apply_is_disabled_for_unsupported_or_ineffective_display_changes() {
         let state = DisplaySettingsState::load(None);
         let mut dialog = SettingsDialog::default();
         dialog.open(&state);
+        dialog.tab = SettingsTab::Graphics;
         dialog.draft.mode = mode;
         dialog.draft.resolution = resolution;
         assert!(click_with_state(&ctx, &mut dialog, &state, &caps, "Apply").is_none());
@@ -529,6 +547,7 @@ fn apply_is_disabled_for_unsupported_or_ineffective_display_changes() {
     state.current.mode = ScreenMode::Borderless;
     let mut dialog = SettingsDialog::default();
     dialog.open(&state);
+    dialog.tab = SettingsTab::Graphics;
     dialog.draft.resolution = UVec2::new(1920, 1080);
     assert!(click_with_state(&ctx, &mut dialog, &state, &capabilities(), "Apply").is_none());
 }
@@ -658,7 +677,8 @@ fn language_widgets_persist_selection_and_update_next_frame_without_restart() {
     );
     let output = localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![]);
     text_position(&output, "設定");
-    text_position(&output, "適用");
+    text_position(&output, "グラフィック");
+    assert!(!has_text(&output, "適用"));
     assert!(!DisplaySettingsState::load(None).can_apply(&dialog.draft, &capabilities()));
     assert!(dialog.open);
     output.drop_without_applying_deltas();
@@ -672,33 +692,41 @@ fn japanese_settings_fit_small_windows_with_actions_visible() {
     let mut preferences = UiPreferences::load(None);
     let mut i18n = english();
     preferences.set_language(LanguagePreference::Locale(Locale::JA), &mut i18n);
-    for size in [
-        egui::vec2(1280.0, 720.0),
-        egui::vec2(640.0, 360.0),
-        egui::vec2(320.0, 360.0),
-    ] {
-        for _ in 0..3 {
-            localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![])
-                .drop_without_applying_deltas();
+    for tab in [SettingsTab::General, SettingsTab::Graphics] {
+        dialog.tab = tab;
+        for size in [
+            egui::vec2(1280.0, 720.0),
+            egui::vec2(640.0, 360.0),
+            egui::vec2(320.0, 360.0),
+        ] {
+            for _ in 0..3 {
+                localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![])
+                    .drop_without_applying_deltas();
+            }
+            let output =
+                localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![]);
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let panel = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(rect) if rect.corner_radius.nw == 16 => Some(rect.rect),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                viewport.contains_rect(panel),
+                "Japanese panel outside viewport {panel:?}"
+            );
+            for label in ["設定", "グラフィック", "タイトルへ戻る"] {
+                assert!(viewport.contains(text_position(&output, label)));
+            }
+            assert_eq!(has_text(&output, "適用"), tab == SettingsTab::Graphics);
+            if tab == SettingsTab::Graphics {
+                assert!(viewport.contains(text_position(&output, "適用")));
+            }
+            output.drop_without_applying_deltas();
         }
-        let output = localized_frame(&ctx, &mut dialog, &mut preferences, &mut i18n, size, vec![]);
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-        let panel = output
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Rect(rect) if rect.corner_radius.nw == 16 => Some(rect.rect),
-                _ => None,
-            })
-            .unwrap();
-        assert!(
-            viewport.contains_rect(panel),
-            "Japanese panel outside viewport {panel:?}"
-        );
-        for label in ["設定", "適用", "タイトルへ戻る"] {
-            assert!(viewport.contains(text_position(&output, label)));
-        }
-        output.drop_without_applying_deltas();
     }
 }
 
@@ -913,7 +941,7 @@ fn key_configuration_fits_small_windows_in_both_languages() {
         let ctx = egui::Context::default();
         let mut dialog = SettingsDialog::default();
         dialog.open(&DisplaySettingsState::load(None));
-        dialog.key_tab = true;
+        dialog.tab = SettingsTab::Keys;
         let mut i18n = english();
         let mut preferences = UiPreferences::load(None);
         preferences.set_language(LanguagePreference::Locale(preference), &mut i18n);
@@ -966,13 +994,21 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
             ctx.run_ui(egui::RawInput::default(), |ui| theme::prepare(ui.ctx()))
                 .drop_without_applying_deltas();
             dialog.open(&state);
-            for transition in ["open", "keys", "general", "keys again", "reopen"] {
+            for transition in [
+                "open",
+                "graphics",
+                "keys",
+                "general",
+                "keys again",
+                "graphics again",
+                "reopen",
+            ] {
                 let mut events = match transition {
-                    "keys" | "keys again" | "general" => {
-                        let label = i18n.text(if transition == "general" {
-                            "settings-general"
-                        } else {
-                            "settings-keys"
+                    "keys" | "keys again" | "general" | "graphics" | "graphics again" => {
+                        let label = i18n.text(match transition {
+                            "general" => "settings-general",
+                            "graphics" | "graphics again" => "settings-graphics",
+                            _ => "settings-keys",
                         });
                         let output = localized_frame(
                             &ctx,
@@ -1036,7 +1072,38 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
                         })
                         .expect("settings must be visible without a blank frame");
                     panels.push(panel);
-                    assert_eq!(dialog.key_tab, matches!(transition, "keys" | "keys again"));
+                    let tab = match transition {
+                        "keys" | "keys again" => SettingsTab::Keys,
+                        "graphics" | "graphics again" => SettingsTab::Graphics,
+                        _ => SettingsTab::General,
+                    };
+                    assert!(dialog.tab == tab);
+                    assert_eq!(
+                        has_text(&output, &i18n.text("settings-apply")),
+                        tab != SettingsTab::General
+                    );
+                    assert_eq!(
+                        has_text(&output, &i18n.text("settings-language")),
+                        tab == SettingsTab::General
+                    );
+                    assert_eq!(
+                        has_text(&output, &i18n.text("settings-display-mode")),
+                        tab == SettingsTab::Graphics
+                    );
+                    if size.y >= 720.0 {
+                        assert_eq!(
+                            has_text(&output, &i18n.text("settings-autosave-enabled")),
+                            tab == SettingsTab::General
+                        );
+                        assert_eq!(
+                            has_text(&output, &i18n.text("settings-max-fps")),
+                            tab == SettingsTab::Graphics
+                        );
+                        assert_eq!(
+                            has_text(&output, &i18n.text("settings-texture-budget")),
+                            tab == SettingsTab::Graphics
+                        );
+                    }
                     output.drop_without_applying_deltas();
                 }
                 let settled = *panels.last().expect("settings must become visible");
@@ -1216,6 +1283,7 @@ fn native_settings_ui_probe() {
                     .observe(save_to_disk(screenshot_path("settings-ui-default.png")));
             }
             2 => {
+                dialog.tab = SettingsTab::Graphics;
                 actions.write(DisplaySettingsAction::Apply(DisplaySettings {
                     resolution: UVec2::new(640, 360),
                     ..default()
@@ -1232,6 +1300,7 @@ fn native_settings_ui_probe() {
                 actions.write(DisplaySettingsAction::Revert);
             }
             5 => {
+                dialog.tab = SettingsTab::Graphics;
                 dialog.draft.mode = ScreenMode::Borderless;
                 dialog.draft.max_fps = None;
                 commands
@@ -1254,13 +1323,13 @@ fn native_settings_ui_probe() {
                     .observe(save_to_disk(screenshot_path("settings-ui-ja.png")));
             }
             10 => {
-                dialog.key_tab = true;
+                dialog.tab = SettingsTab::Keys;
                 commands
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path("settings-ui-keys-ja.png")));
             }
             11 => {
-                dialog.key_tab = false;
+                dialog.tab = SettingsTab::Graphics;
                 actions.write(DisplaySettingsAction::Apply(DisplaySettings {
                     resolution: UVec2::new(640, 360),
                     ..default()
@@ -1275,14 +1344,21 @@ fn native_settings_ui_probe() {
             }
             13 => {
                 actions.write(DisplaySettingsAction::Revert);
-                next_app.set(puzzella_game::resources::AppState::GameSetup);
             }
             14 => {
                 commands
                     .spawn(Screenshot::primary_window())
-                    .observe(save_to_disk(screenshot_path("setup-ui-ja.png")));
+                    .observe(save_to_disk(screenshot_path("settings-ui-graphics-ja.png")));
             }
             15 => {
+                next_app.set(puzzella_game::resources::AppState::GameSetup);
+            }
+            16 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("setup-ui-ja.png")));
+            }
+            17 => {
                 exit.write(AppExit::Success);
             }
             _ => {}
@@ -1318,6 +1394,7 @@ fn native_settings_ui_probe() {
         "settings-ui-ja.png",
         "settings-ui-keys-ja.png",
         "settings-ui-confirm-ja-small.png",
+        "settings-ui-graphics-ja.png",
         "setup-ui-ja.png",
     ] {
         let metadata = std::fs::metadata(screenshot_path(name)).expect("native screenshot saved");
