@@ -52,7 +52,19 @@ fn deserialize_chunk_data<'de, D: serde::Deserializer<'de>>(
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             write!(formatter, "at most {MAX_BULK_DATA_BYTES} chunk bytes")
         }
+        fn visit_bytes<E: serde::de::Error>(self, data: &[u8]) -> Result<Self::Value, E> {
+            // Postcard borrows the input after checking its length prefix. Check
+            // the chunk limit before allocating, then copy the whole slice once.
+            if data.len() > MAX_BULK_DATA_BYTES {
+                return Err(E::custom("bulk chunk exceeds data limit"));
+            }
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(data.len()).map_err(E::custom)?;
+            bytes.extend_from_slice(data);
+            Ok(bytes)
+        }
         fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            // Fallback for formats that expose bytes as a sequence (e.g. JSON).
             // Length prefixes/size_hint are untrusted. Reserve only for real bytes.
             let mut bytes = Vec::new();
             while bytes.len() < MAX_BULK_DATA_BYTES {
@@ -69,7 +81,7 @@ fn deserialize_chunk_data<'de, D: serde::Deserializer<'de>>(
             Ok(bytes)
         }
     }
-    deserializer.deserialize_seq(ChunkVisitor)
+    deserializer.deserialize_bytes(ChunkVisitor)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

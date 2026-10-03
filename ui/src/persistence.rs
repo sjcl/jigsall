@@ -396,8 +396,6 @@ fn paint_load_dialog(
     }
     if dialogs.load_open {
         thumbnails.request_visible(service, &visible, state.busy);
-    } else {
-        thumbnails.invalidate();
     }
 }
 

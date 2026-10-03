@@ -59,10 +59,22 @@ impl StorageRequests {
         self.0.try_recv()
     }
 }
+#[derive(Clone)]
 pub struct StorageProxy(Sender<StorageRequest>);
 pub fn storage_channel() -> (StorageProxy, StorageRequests) {
     let (tx, rx) = channel::unbounded();
     (StorageProxy(tx), StorageRequests(rx))
+}
+/// Keep a Send backend on one I/O thread without requiring Clone or Sync.
+pub(crate) fn spawn_storage<S: SaveStorage + Send + 'static>(storage: S) -> StorageProxy {
+    let (proxy, StorageRequests(requests)) = storage_channel();
+    std::thread::spawn(move || {
+        while let Ok(request) = requests.recv() {
+            // A stopped requester must not prevent the other worker from using storage.
+            let _ = request.execute(&storage);
+        }
+    });
+    proxy
 }
 fn stopped() -> StorageError {
     StorageError::Unavailable("Storage executor stopped".into())
@@ -79,7 +91,7 @@ impl StorageProxy {
                 reply: StorageReply(tx),
             })
             .map_err(|_| stopped())?;
-        // Only the repository worker waits. The owner thread continues pumping
+        // Only the requesting worker waits. The owner thread continues pumping
         // its API/event loop while an asynchronous operation is outstanding.
         rx.recv().map_err(|_| stopped())?
     }

@@ -730,6 +730,120 @@ fn load_dialog_fits_small_windows_and_shows_loading_placeholders() {
 }
 
 #[test]
+fn load_dialog_reuses_cached_textures_after_closing_and_changing_sessions() {
+    let ctx = egui::Context::default();
+    let (service, inbox) = PersistenceService::with_storage_requests();
+    let mut thumbnails = SaveThumbnails {
+        in_flight: Some(PendingThumbnail {
+            hash: hash(0),
+            generation: 0,
+            epoch: 0,
+        }),
+        ..Default::default()
+    };
+    thumbnails.complete(
+        &ctx,
+        ThumbnailReply {
+            generation: 0,
+            hash: hash(0),
+            result: Ok(ThumbnailImage {
+                size: [2, 1],
+                rgba: vec![255; 8],
+            }),
+        },
+    );
+    let Thumbnail::Ready(texture) = &thumbnails.cache[&hash(0)].thumbnail else {
+        panic!("Missing cached texture")
+    };
+    let texture_id = texture.id();
+    let mut dialogs = SaveDialogs {
+        load_open: true,
+        ..Default::default()
+    };
+    let mut state = state();
+    state.entries.truncate(1);
+    for (open, generation) in [(true, 0), (false, 0), (true, 0), (false, 1), (true, 1)] {
+        dialogs.load_open = open;
+        state.generation = generation;
+        frame(
+            &ctx,
+            &mut thumbnails,
+            &mut dialogs,
+            &mut state,
+            &service,
+            egui::vec2(1280.0, 720.0),
+            0.0,
+        )
+        .drop_without_applying_deltas();
+        let Thumbnail::Ready(texture) = &thumbnails.cache[&hash(0)].thumbnail else {
+            panic!("Closing the menu must preserve successful thumbnails")
+        };
+        assert_eq!(texture.id(), texture_id);
+        assert!(thumbnails.in_flight.is_none());
+        assert!(
+            inbox.try_recv().is_err(),
+            "Cached image was requested again"
+        );
+    }
+}
+
+#[test]
+fn pending_thumbnail_warms_closed_menu_but_old_session_replies_are_ignored() {
+    let ctx = egui::Context::default();
+    let (service, _inbox) = PersistenceService::with_storage_requests();
+    let mut thumbnails = SaveThumbnails::default();
+    thumbnails.begin_frame(&ctx, &service, 0, true);
+    thumbnails.in_flight = Some(PendingThumbnail {
+        hash: hash(0),
+        generation: 0,
+        epoch: thumbnails.epoch,
+    });
+    thumbnails.begin_frame(&ctx, &service, 0, false);
+    thumbnails.complete(
+        &ctx,
+        ThumbnailReply {
+            generation: 0,
+            hash: hash(0),
+            result: Ok(ThumbnailImage {
+                size: [2, 1],
+                rgba: vec![255; 8],
+            }),
+        },
+    );
+    assert!(matches!(
+        thumbnails.cache[&hash(0)].thumbnail,
+        Thumbnail::Ready(_)
+    ));
+    thumbnails.begin_frame(&ctx, &service, 0, true);
+    assert_eq!(thumbnails.next_visible(&[hash(0)], false), None);
+    thumbnails.in_flight = Some(PendingThumbnail {
+        hash: hash(1),
+        generation: 0,
+        epoch: thumbnails.epoch,
+    });
+    thumbnails.begin_frame(&ctx, &service, 1, false);
+    thumbnails.begin_frame(&ctx, &service, 1, true);
+    assert_eq!(thumbnails.next_visible(&[hash(1)], false), None);
+    thumbnails.complete(
+        &ctx,
+        ThumbnailReply {
+            generation: 0,
+            hash: hash(1),
+            result: Err(SaveError::MissingImage(hash(1))),
+        },
+    );
+    assert!(thumbnails.cache.contains_key(&hash(0)));
+    assert!(!thumbnails.cache.contains_key(&hash(1)));
+    assert!(thumbnails.in_flight.is_none());
+    assert_eq!(thumbnails.next_visible(&[hash(1)], false), Some(hash(1)));
+    thumbnails.insert(hash(1), Thumbnail::Failed(PersistenceError::WorkerStopped));
+    thumbnails.begin_frame(&ctx, &service, 1, false);
+    thumbnails.begin_frame(&ctx, &service, 1, true);
+    assert!(thumbnails.cache.contains_key(&hash(0)));
+    assert_eq!(thumbnails.next_visible(&[hash(1)], false), Some(hash(1)));
+}
+
+#[test]
 fn cache_reuses_images_limits_memory_and_ignores_obsolete_replies() {
     let ctx = egui::Context::default();
     let mut thumbnails = SaveThumbnails {

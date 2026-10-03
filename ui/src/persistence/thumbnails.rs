@@ -39,7 +39,7 @@ impl SaveThumbnails {
     pub fn invalidate(&mut self) {
         self.cache.clear();
         self.epoch = self.epoch.wrapping_add(1);
-        // Keep tracking the worker until it replies, so reopening/refreshing
+        // Keep tracking the worker until it replies, so session changes/refreshing
         // cannot queue an unbounded number of obsolete image decodes.
     }
 
@@ -50,8 +50,14 @@ impl SaveThumbnails {
         generation: u64,
         active: bool,
     ) {
-        if generation != self.generation || (self.active && !active) {
-            self.invalidate();
+        if generation != self.generation {
+            // Successful pixels are immutable and identified by their content hash.
+            // Keep them across sessions, but reject replies from the previous one.
+            self.epoch = self.epoch.wrapping_add(1);
+        }
+        if generation != self.generation || (!self.active && active) {
+            self.cache
+                .retain(|_, cached| matches!(cached.thumbnail, Thumbnail::Ready(_)));
         }
         self.generation = generation;
         self.active = active;
@@ -69,7 +75,7 @@ impl SaveThumbnails {
             return;
         }
         let pending = self.in_flight.take().unwrap();
-        if !self.active || pending.epoch != self.epoch || reply.generation != self.generation {
+        if pending.epoch != self.epoch || reply.generation != self.generation {
             return;
         }
         let thumbnail = match reply.result {

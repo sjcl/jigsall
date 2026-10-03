@@ -244,6 +244,12 @@ fn all_settings_round_trip_in_one_file_without_overwriting_other_sections() {
         assert!(preferences.error.is_none());
         autosave.set_interval(None);
         keys.apply(bindings.clone());
+        crate::preferences::wait_for_save(|| {
+            preferences.poll_save();
+            autosave.poll_save();
+            keys.poll_save();
+            preferences.is_save_pending() || autosave.is_save_pending() || keys.is_save_pending()
+        });
         assert!(autosave.error.is_none());
         assert!(keys.error.is_none());
         assert_eq!(UiPreferences::load(Some(path.clone())).language, language);
@@ -281,6 +287,10 @@ fn failed_preference_write_keeps_live_translation_and_existing_bytes() {
     let mut preferences = UiPreferences::load(Some(blocked.join("settings.json")));
     let mut i18n = english();
     preferences.set_language(LanguagePreference::Locale(Locale::JA), &mut i18n);
+    crate::preferences::wait_for_save(|| {
+        preferences.poll_save();
+        preferences.is_save_pending()
+    });
     assert!(preferences.error.is_some());
     assert_eq!(i18n.text("settings-title"), "設定");
     assert_eq!(std::fs::read(blocked).unwrap(), b"keep");

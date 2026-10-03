@@ -4,6 +4,8 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::EguiContexts;
+use puzzella_core::PuzzleDefinition;
+use puzzella_puzzle::{placement::placement_half_extents, procedural::MAX_TAB_DEPTH};
 
 pub fn update_input_state(
     mut input: ResMut<InputState>,
@@ -37,74 +39,100 @@ pub fn update_input_state(
         .filter(|point| point.is_finite());
 }
 
-/// ゲーム開始時にカメラズームを自動調整（解像度適応型・OnEnterで1回のみ実行）
+struct CameraZoomSettings {
+    initial_scale: f32,
+    min_scale: f32,
+    max_scale: f32,
+}
+
+/// Initial framing and wheel limits share the same placement and viewport bounds.
+fn camera_zoom_settings(
+    image: Option<&PuzzleImage>,
+    definition: Option<&PuzzleDefinition>,
+    completed: bool,
+    window_size: Vec2,
+) -> Option<CameraZoomSettings> {
+    if !window_size.is_finite() || window_size.min_element() <= 0.0 {
+        return None;
+    }
+    let Some(image) = image else {
+        return Some(CameraZoomSettings {
+            initial_scale: 1.0,
+            min_scale: 0.1,
+            max_scale: 10.0,
+        });
+    };
+    if !image.size.is_finite() || image.size.min_element() <= 0.0 {
+        return None;
+    }
+    let resolution_factor = image.size.element_product() / (1920.0 * 1080.0);
+    let (margin, min_scale, max_scale): (f32, f32, f32) = if resolution_factor > 4.0 {
+        (1.5, 0.05, 15.0)
+    } else if resolution_factor > 2.0 {
+        (1.4, 0.1, 12.0)
+    } else if resolution_factor > 1.0 {
+        (1.3, 0.2, 10.0)
+    } else if resolution_factor > 0.5 {
+        (1.2, 0.3, 8.0)
+    } else {
+        (1.1, 0.3, 8.0)
+    };
+
+    let mut framing_size = image.size;
+    if let Some(definition) =
+        definition.filter(|definition| !completed && definition.validate().is_ok())
+    {
+        let display_size = definition.image_size.as_vec2();
+        let piece_size = display_size / definition.grid_size.as_vec2();
+        let centers = placement_half_extents(definition.piece_count(), piece_size, display_size);
+        let piece_half = piece_size * 0.5 + Vec2::splat(piece_size.min_element() * MAX_TAB_DEPTH);
+        framing_size = framing_size.max((centers + piece_half) * 2.0);
+    }
+    let aspect_margin =
+        if (framing_size.x / framing_size.y - window_size.x / window_size.y).abs() < 0.1 {
+            1.0
+        } else {
+            1.1
+        };
+    let initial_scale =
+        ((framing_size / window_size).max_element() * margin * aspect_margin).max(0.1);
+    Some(CameraZoomSettings {
+        initial_scale,
+        // Small images must also be able to keep their initial framing.
+        min_scale: min_scale.min(initial_scale),
+        // Allow zooming out beyond the full scatter, even in a small window.
+        max_scale: max_scale.max(initial_scale * 2.0),
+    })
+}
+
+/// Frame the initial scatter, or the image alone after completion, once on entry.
 pub fn auto_adjust_camera_zoom(
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     puzzle_image: Option<Res<PuzzleImage>>,
-    windows: Query<&Window>,
+    definition: Option<Res<PuzzleDefinition>>,
+    game: Option<Res<GameData>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     let _span = info_span!("auto_adjust_camera_zoom").entered();
-    if let Some(puzzle_image) = puzzle_image.as_ref() {
-        if let Ok(window) = windows.single() {
-            for mut transform in camera_query.iter_mut() {
-                let window_width = window.width();
-                let window_height = window.height();
-                let image_width = puzzle_image.size.x;
-                let image_height = puzzle_image.size.y;
-
-                // 解像度に応じて適応的マージンを計算
-                let resolution_factor = (image_width * image_height) / (1920.0 * 1080.0);
-                let base_margin = 1.2; // 基本マージン
-                let raw_margin: f32 = if resolution_factor > 4.0 {
-                    // 4K以上の超高解像度
-                    base_margin + 0.3
-                } else if resolution_factor > 2.0 {
-                    // 2K-4K解像度
-                    base_margin + 0.2
-                } else if resolution_factor > 1.0 {
-                    // Full HD以上
-                    base_margin + 0.1
-                } else if resolution_factor > 0.5 {
-                    // HD
-                    base_margin
-                } else {
-                    // SD以下
-                    base_margin - 0.1
-                };
-                let adaptive_margin = raw_margin.clamp(1.05, 1.8);
-
-                // 画像とウィンドウのアスペクト比を考慮した最適スケール計算
-                let image_aspect = image_width / image_height;
-                let window_aspect = window_width / window_height;
-
-                let scale_x = image_width / window_width;
-                let scale_y = image_height / window_height;
-
-                // アスペクト比差を考慮してスケール調整
-                let optimal_scale = if (image_aspect - window_aspect).abs() < 0.1 {
-                    // アスペクト比が近い場合：均等スケール
-                    scale_x.max(scale_y)
-                } else if image_aspect > window_aspect {
-                    // 画像が横長：幅基準でスケール
-                    scale_x * 1.1 // 横長画像には少し余裕を持たせる
-                } else {
-                    // 画像が縦長：高さ基準でスケール
-                    scale_y * 1.1 // 縦長画像には少し余裕を持たせる
-                };
-
-                // 最終的なズーム値を計算（解像度適応マージン適用）
-                let final_scale = (optimal_scale * adaptive_margin).clamp(0.1, 15.0);
-
-                transform.scale = Vec3::new(final_scale, final_scale, 1.0);
-
-                // カメラを画像の中心に配置
-                transform.translation.x = 0.0;
-                transform.translation.y = 0.0;
-            }
-        }
+    let (Some(image), Ok(window)) = (puzzle_image.as_deref(), windows.single()) else {
+        return;
+    };
+    let Some(settings) = camera_zoom_settings(
+        Some(image),
+        definition.as_deref(),
+        game.as_ref().is_some_and(|game| game.puzzle_completed),
+        Vec2::new(window.width(), window.height()),
+    ) else {
+        return;
+    };
+    for mut transform in &mut camera_query {
+        transform.scale = Vec3::new(settings.initial_scale, settings.initial_scale, 1.0);
+        transform.translation.x = 0.0;
+        transform.translation.y = 0.0;
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Explicit camera, puzzle and UI system resources.
 pub fn handle_camera_zoom(
     mut scroll_evr: MessageReader<MouseWheel>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -112,6 +140,8 @@ pub fn handle_camera_zoom(
     ui_capture: Res<GameUiPointerCapture>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     puzzle_image: Option<Res<PuzzleImage>>,
+    definition: Option<Res<PuzzleDefinition>>,
+    game: Option<Res<GameData>>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
 ) {
     let _span = info_span!("handle_camera_zoom").entered();
@@ -121,11 +151,23 @@ pub fn handle_camera_zoom(
         || contexts
             .ctx_mut()
             .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
-    let focused = windows.single().is_ok_and(|window| window.focused);
+    let window = windows.single().ok();
+    let focused = window.is_some_and(|window| window.focused);
+    let settings = window.and_then(|window| {
+        camera_zoom_settings(
+            puzzle_image.as_deref(),
+            definition.as_deref(),
+            game.as_ref().is_some_and(|game| game.puzzle_completed),
+            Vec2::new(window.width(), window.height()),
+        )
+    });
     for ev in scroll_evr.read() {
         if !focused || over_ui || ev.y == 0.0 || !ev.y.is_finite() {
             continue;
         }
+        let Some(settings) = settings.as_ref() else {
+            continue;
+        };
         let scroll_lines = match ev.unit {
             MouseScrollUnit::Line => ev.y,
             MouseScrollUnit::Pixel => ev.y / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR,
@@ -134,37 +176,17 @@ pub fn handle_camera_zoom(
         // Exponentiation makes the result depend on distance, not event count.
         let zoom_factor = 0.9_f32.powf(scroll_lines);
         for mut transform in camera_query.iter_mut() {
-            // 解像度に応じた適応的ズーム制限
-            let (min_zoom, max_zoom) = if let Some(puzzle_image) = puzzle_image.as_ref() {
-                let resolution_factor =
-                    (puzzle_image.size.x * puzzle_image.size.y) / (1920.0 * 1080.0);
-
-                if resolution_factor > 4.0 {
-                    // 4K以上の高解像度画像
-                    (0.05, 15.0)
-                } else if resolution_factor > 2.0 {
-                    // 2K-4K画像
-                    (0.1, 12.0)
-                } else if resolution_factor > 1.0 {
-                    // Full HD以上
-                    (0.2, 10.0)
-                } else {
-                    // HD以下
-                    (0.3, 8.0)
-                }
-            } else {
-                // デフォルト値
-                (0.1, 10.0)
-            };
-
             let current_scale = transform.scale.x;
-            let new_scale = (current_scale * zoom_factor).clamp(min_zoom, max_zoom);
+            // Resizing can move the limits past an existing view. Approach the
+            // new range smoothly instead of snapping on the next wheel event.
+            let new_scale = (current_scale * zoom_factor).clamp(
+                settings.min_scale.min(current_scale),
+                settings.max_scale.max(current_scale),
+            );
 
             // Zoom changes XY only; scaling Z would shrink the visible depth
             // range and clip pieces/outlines after bringing them to the front.
             transform.scale = Vec3::new(new_scale, new_scale, 1.0);
-
-            // デバッグ出力（頻度制限）
         }
     }
 
@@ -309,8 +331,10 @@ pub fn handle_edge_scrolling(
 mod tests {
     use super::*;
     use bevy::camera::{ComputedCameraValues, RenderTargetInfo};
+    use bevy::ecs::system::RunSystemOnce;
+    use puzzella_core::GENERATOR_VERSION;
 
-    fn scroll_scale(unit: MouseScrollUnit, deltas: &[f32]) -> Vec3 {
+    fn zoom_app() -> (App, Entity, Entity) {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<GameUiPointerCapture>()
@@ -332,6 +356,10 @@ mod tests {
             .world_mut()
             .spawn((Transform::default(), MainCamera))
             .id();
+        (app, window, camera)
+    }
+
+    fn scroll(app: &mut App, window: Entity, unit: MouseScrollUnit, deltas: &[f32]) {
         for &y in deltas {
             app.world_mut().write_message(MouseWheel {
                 unit,
@@ -342,7 +370,177 @@ mod tests {
             });
         }
         app.update();
+    }
+
+    fn scroll_scale(unit: MouseScrollUnit, deltas: &[f32]) -> Vec3 {
+        let (mut app, window, camera) = zoom_app();
+        scroll(&mut app, window, unit, deltas);
         app.world().get::<Transform>(camera).unwrap().scale
+    }
+
+    fn framed_app(
+        image_size: UVec2,
+        grid_size: UVec2,
+        window_size: UVec2,
+    ) -> (App, Entity, Entity) {
+        let (mut app, window, camera) = zoom_app();
+        app.insert_resource(PuzzleImage {
+            handle: default(),
+            size: image_size.as_vec2(),
+            opaque: true,
+        })
+        .insert_resource(PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size,
+            image_size,
+            snap_distance: 5.0,
+        })
+        .init_resource::<GameData>();
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution = bevy::window::WindowResolution::new(window_size.x, window_size.y);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() =
+            Transform::from_xyz(45.0, -20.0, 500.0).with_scale(Vec3::splat(3.0));
+        app.world_mut()
+            .run_system_once(auto_adjust_camera_zoom)
+            .unwrap();
+        (app, window, camera)
+    }
+
+    #[test]
+    fn initial_camera_frames_generated_scatter_including_tabs() {
+        let image_size = UVec2::new(1920, 1080);
+        let window_size = UVec2::new(1280, 720);
+        for grid_size in [
+            UVec2::ONE,
+            UVec2::new(4, 4),
+            UVec2::new(40, 25),
+            UVec2::new(1000, 1),
+            UVec2::new(1, 1000),
+            UVec2::splat(1000),
+        ] {
+            let (app, _, camera) = framed_app(image_size, grid_size, window_size);
+            let transform = app.world().get::<Transform>(camera).unwrap();
+            assert_eq!(transform.translation, Vec3::new(0.0, 0.0, 500.0));
+            assert_eq!(transform.scale.y, transform.scale.x);
+            assert_eq!(transform.scale.z, 1.0);
+            let visible_half = window_size.as_vec2() * transform.scale.x * 0.5;
+            assert!((image_size.as_vec2() * 0.5).cmple(visible_half).all());
+            let piece_size = image_size.as_vec2() / grid_size.as_vec2();
+            let piece_half =
+                piece_size * 0.5 + Vec2::splat(piece_size.min_element() * MAX_TAB_DEPTH);
+            let positions = puzzella_puzzle::placement::generate_placement_grid(
+                grid_size.x as usize,
+                grid_size.y as usize,
+                piece_size.x,
+                piece_size.y,
+                image_size.x as f32,
+                image_size.y as f32,
+                42,
+            );
+            assert!(positions
+                .iter()
+                .all(|position| (position.abs() + piece_half).cmple(visible_half).all()));
+        }
+    }
+
+    #[test]
+    fn first_wheel_after_auto_framing_never_jumps_to_a_resolution_limit() {
+        for (image_size, grid_size, window_size) in [
+            (UVec2::splat(4096), UVec2::new(4, 4), UVec2::new(320, 200)),
+            (
+                UVec2::new(8000, 100),
+                UVec2::new(40, 1),
+                UVec2::new(800, 600),
+            ),
+            (
+                UVec2::new(100, 8000),
+                UVec2::new(1, 40),
+                UVec2::new(800, 600),
+            ),
+            (UVec2::new(40, 20), UVec2::new(4, 4), UVec2::new(1280, 720)),
+        ] {
+            for unit in [MouseScrollUnit::Line, MouseScrollUnit::Pixel] {
+                for delta in [1.0, -1.0] {
+                    let (mut app, window, camera) = framed_app(image_size, grid_size, window_size);
+                    let initial = *app.world().get::<Transform>(camera).unwrap();
+                    let lines = match unit {
+                        MouseScrollUnit::Line => delta,
+                        MouseScrollUnit::Pixel => {
+                            delta / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR
+                        }
+                    };
+                    let factor = 0.9_f32.powf(lines);
+                    scroll(&mut app, window, unit, &[delta]);
+                    let transform = app.world().get::<Transform>(camera).unwrap();
+                    let ratio = transform.scale.x / initial.scale.x;
+                    assert!(ratio >= factor.min(1.0) - 0.00001);
+                    assert!(ratio <= factor.max(1.0) + 0.00001);
+                    // Zoom-out has room past the initial frame; zoom-in may be
+                    // at the lower limit for a tiny image.
+                    if delta < 0.0 || initial.scale.x > 0.3 {
+                        assert!((ratio - factor).abs() < 0.00001);
+                    }
+                    assert_eq!(transform.translation, initial.translation);
+                    assert_eq!(transform.scale.y, transform.scale.x);
+                    assert_eq!(transform.scale.z, 1.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scatter_zoom_out_remains_bounded_beyond_the_old_upper_limit() {
+        let (mut app, window, camera) =
+            framed_app(UVec2::splat(4096), UVec2::new(4, 4), UVec2::new(320, 200));
+        let initial_scale = app.world().get::<Transform>(camera).unwrap().scale.x;
+        assert!(initial_scale > 15.0);
+        scroll(&mut app, window, MouseScrollUnit::Line, &[-f32::MAX; 2]);
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().scale,
+            Vec3::new(initial_scale * 2.0, initial_scale * 2.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn wheel_after_window_resize_approaches_new_limits_without_jumping() {
+        let (mut app, window, camera) =
+            framed_app(UVec2::splat(4096), UVec2::new(4, 4), UVec2::new(320, 200));
+        let initial = *app.world().get::<Transform>(camera).unwrap();
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .resolution = bevy::window::WindowResolution::new(1920, 1080);
+        scroll(&mut app, window, MouseScrollUnit::Line, &[1.0]);
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().scale,
+            Vec3::new(initial.scale.x * 0.9, initial.scale.x * 0.9, 1.0)
+        );
+    }
+
+    #[test]
+    fn completed_camera_frames_image_and_keeps_wheel_zoom_consistent() {
+        let (mut app, window, camera) = framed_app(
+            UVec2::new(1600, 900),
+            UVec2::new(4, 4),
+            UVec2::new(1280, 720),
+        );
+        assert!(app.world().get::<Transform>(camera).unwrap().scale.x > 1.5);
+        app.world_mut().resource_mut::<GameData>().puzzle_completed = true;
+        app.world_mut()
+            .run_system_once(auto_adjust_camera_zoom)
+            .unwrap();
+        assert_eq!(
+            app.world().get::<Transform>(camera).unwrap().scale,
+            Vec3::new(1.5, 1.5, 1.0)
+        );
+        scroll(&mut app, window, MouseScrollUnit::Line, &[-1.0]);
+        let scale = app.world().get::<Transform>(camera).unwrap().scale;
+        assert!((scale.x - 1.5 / 0.9).abs() < 0.00001);
+        assert_eq!(scale.y, scale.x);
+        assert_eq!(scale.z, 1.0);
     }
 
     #[test]

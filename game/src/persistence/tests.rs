@@ -104,18 +104,24 @@ fn keys_are_stable_id_based_and_cannot_contain_title_paths() {
     assert!(!key.filename().contains('/'));
 }
 #[test]
-fn image_original_png_and_jpeg_payloads_are_bit_identical() {
-    for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg] {
+fn image_original_supported_payloads_are_bit_identical() {
+    for format in [
+        image::ImageFormat::Png,
+        image::ImageFormat::Jpeg,
+        image::ImageFormat::Bmp,
+        image::ImageFormat::Gif,
+        image::ImageFormat::WebP,
+    ] {
         let bytes = encoded_image(format);
         let hash = image_hash(&bytes);
         assert_eq!(hash, image_hash(&bytes.clone()));
         let container = PuzImage::encode(&bytes).unwrap();
         assert_eq!(PuzImage::decode(&container, hash).unwrap(), bytes);
         assert_eq!(&container[18..50], &hash.0);
-        assert!(crate::asset_reader::decode_image_bytes(
-            PuzImage::decode(&container, hash).unwrap()
-        )
-        .is_ok());
+        let decoded =
+            crate::asset_reader::decode_image_bytes(PuzImage::decode(&container, hash).unwrap())
+                .unwrap();
+        assert_eq!(decoded.size(), UVec2::splat(2), "{format:?}");
     }
     // Known SHA-256 vector, independent of our codec.
     assert_eq!(

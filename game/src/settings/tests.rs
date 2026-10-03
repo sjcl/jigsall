@@ -41,6 +41,12 @@ fn test_app(path: Option<PathBuf>) -> App {
 fn action(app: &mut App, action: DisplaySettingsAction) {
     app.world_mut().write_message(action);
     app.update();
+    // Waiting is confined to the test fixture; runtime only polls once per frame.
+    crate::settings_file::wait_for_save(|| {
+        let mut state = app.world_mut().resource_mut::<DisplaySettingsState>();
+        state.poll_save();
+        state.is_save_pending()
+    });
 }
 
 #[test]
@@ -268,7 +274,7 @@ fn preview_is_not_persisted_until_confirmed_and_timeout_restores_previous() {
 }
 
 #[test]
-fn fps_only_changes_save_immediately_and_invalid_config_uses_defaults() {
+fn fps_only_changes_request_save_without_confirmation_and_invalid_config_uses_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     let mut app = test_app(Some(path.clone()));
@@ -319,7 +325,7 @@ fn saving_other_sections_during_display_preview_preserves_confirmed_settings() {
     // All resources load before any save, as they do at application startup.
     let mut autosave = AutosaveSettingsState::load(Some(path.clone()));
     let mut keys = KeyBindingsState::load(Some(path.clone()));
-    let file = SettingsFile::new(Some(path.clone()));
+    let mut file = SettingsFile::new(Some(path.clone()));
     let confirmed = DisplaySettings {
         max_fps: Some(144),
         ..default()
@@ -336,6 +342,12 @@ fn saving_other_sections_during_display_preview_preserves_confirmed_settings() {
     let mut bindings = keys.current.clone();
     bindings.binding_mut(KeyAction::Performance).primary = None;
     keys.apply(bindings.clone());
+    crate::settings_file::wait_for_save(|| {
+        autosave.poll_save();
+        keys.poll_save();
+        assert!(file.poll_save().is_none_or(|result| result.is_ok()));
+        autosave.is_save_pending() || keys.is_save_pending() || file.is_save_pending()
+    });
     assert!(autosave.error.is_none());
     assert!(keys.error.is_none());
     assert_eq!(
@@ -352,6 +364,10 @@ fn saving_other_sections_during_display_preview_preserves_confirmed_settings() {
     action(&mut app, DisplaySettingsAction::Keep);
     file.save(SettingsSection::Preferences, &json!({"language": "en-US"}))
         .unwrap();
+    crate::settings_file::wait_for_save(|| {
+        assert!(file.poll_save().is_none_or(|result| result.is_ok()));
+        file.is_save_pending()
+    });
     assert_eq!(
         DisplaySettingsState::load(Some(path.clone())).current,
         preview
@@ -401,6 +417,87 @@ fn failed_save_preserves_previous_config_and_allows_revert() {
         app.world().resource::<DisplaySettingsState>().current,
         DisplaySettings::default()
     );
+}
+
+#[test]
+fn confirmed_display_does_not_timeout_or_report_saved_while_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut app = test_app(None);
+    let (file, resume) = SettingsFile::paused(path.clone());
+    app.world_mut().resource_mut::<DisplaySettingsState>().file = file;
+    let confirmed = DisplaySettings {
+        resolution: UVec2::new(800, 600),
+        ..default()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(confirmed.clone()));
+    app.world_mut().write_message(DisplaySettingsAction::Keep);
+    app.update();
+    {
+        let mut state = app.world_mut().resource_mut::<DisplaySettingsState>();
+        assert!(state.is_save_pending());
+        assert!(state.notice.is_none());
+        assert!(state.confirmation_seconds().is_none());
+        state.saving_preview.as_mut().unwrap().deadline = Instant::now() - Duration::from_secs(1);
+    }
+    app.update();
+    assert_eq!(
+        app.world().resource::<DisplaySettingsState>().current,
+        confirmed
+    );
+    assert!(!path.exists());
+    resume.send(()).unwrap();
+    crate::settings_file::wait_for_save(|| {
+        app.update();
+        app.world()
+            .resource::<DisplaySettingsState>()
+            .is_save_pending()
+    });
+    assert_eq!(
+        app.world().resource::<DisplaySettingsState>().notice,
+        Some(DisplaySettingsNotice::Saved)
+    );
+    assert_eq!(DisplaySettingsState::load(Some(path)).current, confirmed);
+}
+
+#[test]
+fn dismissing_a_pending_display_save_suppresses_late_notices_and_confirmation() {
+    for fail in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let mut app = test_app(None);
+        let (file, resume) = SettingsFile::paused(path.clone());
+        app.world_mut().resource_mut::<DisplaySettingsState>().file = file;
+        let confirmed = DisplaySettings {
+            resolution: UVec2::new(800, 600),
+            ..default()
+        };
+        action(&mut app, DisplaySettingsAction::Apply(confirmed.clone()));
+        app.world_mut().write_message(DisplaySettingsAction::Keep);
+        app.update();
+        app.world_mut()
+            .write_message(DisplaySettingsAction::Dismiss);
+        app.update();
+        assert_eq!(
+            app.world().resource::<DisplaySettingsState>().current,
+            confirmed
+        );
+        if fail {
+            std::fs::write(&path, b"{broken").unwrap();
+        }
+        resume.send(()).unwrap();
+        crate::settings_file::wait_for_save(|| {
+            app.update();
+            app.world()
+                .resource::<DisplaySettingsState>()
+                .is_save_pending()
+        });
+        let state = app.world().resource::<DisplaySettingsState>();
+        assert!(state.notice.is_none());
+        assert!(state.confirmation_seconds().is_none());
+        assert_eq!(state.current, confirmed);
+        assert_eq!(state.error.is_some(), fail);
+    }
 }
 
 #[test]

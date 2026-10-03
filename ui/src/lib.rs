@@ -24,6 +24,7 @@ impl Plugin for GameUiPlugin {
         app.init_resource::<localization::Localization>()
             .init_resource::<preferences::UiPreferences>()
             .add_systems(Startup, preferences::initialize)
+            .add_systems(Update, preferences::poll_save)
             .init_resource::<persistence::SaveDialogs>()
             .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()

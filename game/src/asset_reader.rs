@@ -108,9 +108,29 @@ pub struct ImageLoadResult {
     pub original: Option<crate::persistence::runtime::OriginalPuzzleImage>,
 }
 
+/// Restrict puzzle inputs even if another dependency enables additional image codecs.
+pub(crate) fn decode_puzzle_image_bytes(encoded: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    use image::{error::ImageFormatHint, ImageError, ImageFormat};
+
+    let format = image::guess_format(encoded)?;
+    if !matches!(
+        format,
+        ImageFormat::Png
+            | ImageFormat::Jpeg
+            | ImageFormat::Bmp
+            | ImageFormat::Gif
+            | ImageFormat::WebP
+    ) {
+        return Err(ImageError::Unsupported(
+            ImageFormatHint::Exact(format).into(),
+        ));
+    }
+    image::load_from_memory_with_format(encoded, format)
+}
+
 /// Decode only; both selected source files and verified .puzimg payloads use this.
 pub fn decode_image_bytes(encoded: &[u8]) -> Result<Image, String> {
-    let decoded = image::load_from_memory(encoded).map_err(|e| e.to_string())?;
+    let decoded = decode_puzzle_image_bytes(encoded).map_err(|e| e.to_string())?;
     let rgba = decoded.into_rgba8();
     let (width, height) = rgba.dimensions();
     Ok(Image::new(
@@ -170,6 +190,60 @@ mod tests {
         asset::RenderAssetUsages,
         render::{render_asset::RenderAsset, texture::GpuImage},
     };
+
+    #[test]
+    fn unused_image_formats_have_no_decoder() {
+        use image::{error::ImageFormatHint, ImageError, ImageFormat};
+
+        // Exercise decoder construction: ImageFormat::can_read ignores Cargo features.
+        for format in ImageFormat::all().filter(|format| {
+            !matches!(
+                format,
+                ImageFormat::Png
+                    | ImageFormat::Jpeg
+                    | ImageFormat::Bmp
+                    | ImageFormat::Gif
+                    | ImageFormat::WebP
+            )
+        }) {
+            // arboard needs TIFF for native clipboard images on macOS.
+            #[cfg(target_os = "macos")]
+            if format == ImageFormat::Tiff {
+                continue;
+            }
+            let error = image::load_from_memory_with_format(&[], format).unwrap_err();
+            let ImageError::Unsupported(error) = error else {
+                panic!("{format:?} reached a decoder: {error}");
+            };
+            assert_eq!(error.format_hint(), ImageFormatHint::Exact(format));
+        }
+    }
+
+    #[test]
+    fn content_detection_cannot_reach_unused_image_decoders() {
+        use image::{error::ImageFormatHint, ImageError, ImageFormat};
+
+        for (header, format) in [
+            (b"II*\0".as_slice(), ImageFormat::Tiff),
+            (b"MM\0*".as_slice(), ImageFormat::Tiff),
+            (b"\x76\x2f\x31\x01".as_slice(), ImageFormat::OpenExr),
+            (b"#?RADIANCE".as_slice(), ImageFormat::Hdr),
+            (b"DDS ".as_slice(), ImageFormat::Dds),
+            (b"\0\0\x01\0".as_slice(), ImageFormat::Ico),
+            (b"P6\n1 1\n255\n\x49\x64\xb5".as_slice(), ImageFormat::Pnm),
+            (b"farbfeld".as_slice(), ImageFormat::Farbfeld),
+            (b"qoif".as_slice(), ImageFormat::Qoi),
+            (b"\0\0\0\0ftypavif".as_slice(), ImageFormat::Avif),
+        ] {
+            assert_eq!(image::guess_format(header).unwrap(), format);
+            let ImageError::Unsupported(error) = decode_puzzle_image_bytes(header).unwrap_err()
+            else {
+                panic!("{format:?} reached a decoder");
+            };
+            assert_eq!(error.format_hint(), ImageFormatHint::Exact(format));
+            assert!(decode_image_bytes(header).is_err());
+        }
+    }
 
     #[test]
     fn concurrent_registrations_keep_unique_keys_and_source_paths() {

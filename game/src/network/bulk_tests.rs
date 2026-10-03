@@ -3,8 +3,9 @@ use crate::network::{
     transport::MessageClass,
     wire::{self, WireError, WireMessage},
 };
+use postcard::de_flavors::{Flavor, Slice};
 use serde::de::{
-    value::{Error, SeqAccessDeserializer, U8Deserializer, UnitDeserializer},
+    value::{BytesDeserializer, Error, SeqAccessDeserializer, U8Deserializer, UnitDeserializer},
     DeserializeSeed,
 };
 
@@ -673,6 +674,73 @@ fn sender_validates_size_and_ids_never_wrap_or_reuse() {
     }
 }
 
+struct CountingSlice<'de> {
+    inner: Slice<'de>,
+    byte_reads: usize,
+    slice_reads: usize,
+}
+
+impl<'de> Flavor<'de> for CountingSlice<'de> {
+    type Source = &'de [u8];
+    type Remainder = (&'de [u8], usize, usize);
+
+    fn pop(&mut self) -> postcard::Result<u8> {
+        self.byte_reads += 1;
+        self.inner.pop()
+    }
+
+    fn try_take_n(&mut self, count: usize) -> postcard::Result<&'de [u8]> {
+        self.slice_reads += 1;
+        self.inner.try_take_n(count)
+    }
+
+    fn finalize(self) -> postcard::Result<Self::Remainder> {
+        Ok((self.inner.finalize()?, self.byte_reads, self.slice_reads))
+    }
+}
+
+#[test]
+fn postcard_chunk_decoding_reads_data_as_one_slice() {
+    for size in [0, 1, 127, 128, MAX_BULK_DATA_BYTES] {
+        let message = chunk(
+            u64::MAX,
+            u64::MAX,
+            (0..=u8::MAX).cycle().take(size).collect(),
+        );
+        let payload = postcard::to_allocvec(&message).unwrap();
+        let mut deserializer = postcard::Deserializer::from_flavor(CountingSlice {
+            inner: Slice::new(&payload),
+            byte_reads: 0,
+            slice_reads: 0,
+        });
+        assert_eq!(
+            BulkTransferMessage::deserialize(&mut deserializer).unwrap(),
+            message
+        );
+        let (rest, byte_reads, slice_reads) = deserializer.finalize().unwrap();
+        assert!(rest.is_empty());
+        // Only metadata/length varints use byte reads, independent of data size.
+        assert_eq!(byte_reads, payload.len() - size);
+        assert_eq!(slice_reads, 1);
+    }
+}
+
+#[test]
+fn non_borrowed_chunk_bytes_accept_up_to_limit_and_reject_excess() {
+    for size in [0, 1, MAX_BULK_DATA_BYTES, MAX_BULK_DATA_BYTES + 1] {
+        let data = vec![0xff; size];
+        let result = deserialize_chunk_data(BytesDeserializer::<Error>::new(&data));
+        if size <= MAX_BULK_DATA_BYTES {
+            assert_eq!(result.unwrap(), data);
+        } else {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "bulk chunk exceeds data limit"
+            );
+        }
+    }
+}
+
 struct RepeatedBytes<'a> {
     remaining: usize,
     hint: Option<usize>,
@@ -780,7 +848,7 @@ fn max_chunk_fits_wire_margin_and_max_plus_one_rejects_encode_and_decode() {
 
 #[test]
 fn huge_truncated_and_malformed_postcard_length_prefixes_reject() {
-    for count in [MAX_BULK_DATA_BYTES + 1, usize::MAX] {
+    for count in [4, MAX_BULK_DATA_BYTES, MAX_BULK_DATA_BYTES + 1, usize::MAX] {
         for tail in [&[][..], &[1, 2, 3][..]] {
             // Chunk=01, ID=01, offset=00, then untrusted Vec length varint.
             let mut payload = vec![1, 1, 0];

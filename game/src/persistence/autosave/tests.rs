@@ -94,6 +94,10 @@ fn settings_persist_interval_and_disable_and_reject_zero() {
     assert_eq!(settings.current.max_saves_per_game, NonZeroU32::MIN);
     settings.set_max_saves_per_game(NonZeroU32::new(3).unwrap());
     settings.set_interval(NonZeroU32::new(12));
+    crate::settings_file::wait_for_save(|| {
+        settings.poll_save();
+        settings.is_save_pending()
+    });
     assert!(settings.error.is_none());
     assert_eq!(
         AutosaveSettingsState::load(Some(path.clone()))
@@ -102,6 +106,10 @@ fn settings_persist_interval_and_disable_and_reject_zero() {
         NonZeroU32::new(12)
     );
     settings.set_interval(None);
+    crate::settings_file::wait_for_save(|| {
+        settings.poll_save();
+        settings.is_save_pending()
+    });
     assert_eq!(
         AutosaveSettingsState::load(Some(path.clone()))
             .current
@@ -121,6 +129,33 @@ fn settings_persist_interval_and_disable_and_reject_zero() {
         Some(AutosaveSettingsError::Read(_))
     ));
     assert_eq!(invalid.current, AutosaveSettings::default());
+}
+
+#[test]
+fn autosave_choices_apply_while_the_settings_writer_is_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let (file, resume) = SettingsFile::paused(path.clone());
+    let mut settings = AutosaveSettingsState::from_file(file);
+    settings.set_interval(None);
+    settings.set_max_saves_per_game(NonZeroU32::new(3).unwrap());
+    assert_eq!(settings.current.interval_minutes, None);
+    assert_eq!(
+        settings.current.max_saves_per_game,
+        NonZeroU32::new(3).unwrap()
+    );
+    assert!(settings.is_save_pending());
+    assert!(settings.error.is_none());
+    assert!(!path.exists());
+    resume.send(()).unwrap();
+    crate::settings_file::wait_for_save(|| {
+        settings.poll_save();
+        settings.is_save_pending()
+    });
+    assert_eq!(
+        AutosaveSettingsState::load(Some(path)).current,
+        settings.current
+    );
 }
 
 #[test]

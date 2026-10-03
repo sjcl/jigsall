@@ -214,10 +214,10 @@ impl PendingJoin {
             _ => None,
         };
         if let Some((player, grab_sequence)) = context {
-            if !self
+            if self
                 .drag_bases
                 .get(&player.0)
-                .is_some_and(|basis| basis.grab_sequence == grab_sequence)
+                .is_none_or(|basis| basis.grab_sequence != grab_sequence)
             {
                 self.restart_required(CatchUpRestartReason::InconsistentDragContext);
                 return;

@@ -69,9 +69,9 @@ fn receive_results(
         if !raw.request.readback {
             continue;
         }
-        if !selection
+        if selection
             .latest
-            .is_some_and(|r| r.request_id == raw.request.request_id)
+            .is_none_or(|r| r.request_id != raw.request.request_id)
         {
             continue;
         }

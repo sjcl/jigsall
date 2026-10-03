@@ -24,15 +24,16 @@ fn image_failure_paths_require_debug_logging() {
         ecs::system::RunSystemOnce,
         log::{tracing, tracing_subscriber, Level},
     };
-    #[derive(Clone)]
-    struct LogBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-    impl std::io::Write for LogBuffer {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+    use tracing_subscriber::fmt::{writer::MutexGuardWriter, MakeWriter};
+
+    #[derive(Clone, Default)]
+    struct LogOutput(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'writer> MakeWriter<'writer> for LogOutput {
+        type Writer = MutexGuardWriter<'writer, Vec<u8>>;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.0.make_writer()
         }
     }
 
@@ -41,13 +42,12 @@ fn image_failure_paths_require_debug_logging() {
         "/home/private-user/Pictures/private-puzzle.png",
     ] {
         for level in [Level::INFO, Level::DEBUG] {
-            let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-            let writer = LogBuffer(output.clone());
+            let output = LogOutput::default();
             let subscriber = tracing_subscriber::fmt()
                 .with_max_level(level)
                 .without_time()
                 .with_ansi(false)
-                .with_writer(move || writer.clone())
+                .with_writer(output.clone())
                 .finish();
             let (mut app, sender) = app();
             app.world_mut().resource_mut::<PuzzleConfig>().image_path = path.into();
@@ -66,7 +66,7 @@ fn image_failure_paths_require_debug_logging() {
                     .unwrap();
             });
 
-            let output = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+            let output = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
             assert!(output.contains("Image loading failed"));
             assert_eq!(output.contains(path), level == Level::DEBUG, "{output}");
             assert_eq!(
