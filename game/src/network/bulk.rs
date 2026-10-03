@@ -383,6 +383,40 @@ impl CompletedBulkTransfer {
 }
 
 /// Own one sender per secure connection/direction. Its IDs cannot wrap/reuse.
+/// Validated immutable session content. Arbitrary callers cannot supply a digest
+/// to the generic sender; construction verifies both bytes and session identity.
+#[derive(Clone)]
+pub struct VerifiedPuzzleImage {
+    bytes: Arc<[u8]>,
+    session: puzzella_core::session::SessionDefinition,
+}
+#[cfg(test)]
+thread_local! { static PAYLOAD_DIGESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+fn payload_digest(bytes: &[u8]) -> [u8; 32] {
+    #[cfg(test)]
+    PAYLOAD_DIGESTS.with(|n| n.set(n.get() + 1));
+    Sha256::digest(bytes).into()
+}
+impl VerifiedPuzzleImage {
+    pub fn verify(
+        bytes: Arc<[u8]>,
+        session: puzzella_core::session::SessionDefinition,
+    ) -> Result<Self, BulkTransferError> {
+        BulkTransferLimits::default()
+            .validate_size(BulkTransferKind::PuzzleImage, bytes.len() as u64)?;
+        if payload_digest(&bytes) != session.image_hash.0 {
+            return Err(BulkTransferError::HashMismatch);
+        }
+        Ok(Self { bytes, session })
+    }
+    pub fn session(&self) -> puzzella_core::session::SessionDefinition {
+        self.session
+    }
+    pub fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+}
+
 pub struct BulkTransferSender {
     limits: BulkTransferLimits,
     last_issued_id: u64,
@@ -408,11 +442,31 @@ impl BulkTransferSender {
         bytes: Arc<[u8]>,
     ) -> Result<OutboundBulkTransfer, BulkTransferError> {
         self.limits.validate_size(kind, bytes.len() as u64)?;
+        let sha256 = payload_digest(&bytes);
+        self.begin_hashed(kind, bytes, sha256)
+    }
+    pub fn begin_image(
+        &mut self,
+        image: &VerifiedPuzzleImage,
+    ) -> Result<OutboundBulkTransfer, BulkTransferError> {
+        self.limits
+            .validate_size(BulkTransferKind::PuzzleImage, image.size())?;
+        self.begin_hashed(
+            BulkTransferKind::PuzzleImage,
+            image.bytes.clone(),
+            image.session.image_hash.0,
+        )
+    }
+    fn begin_hashed(
+        &mut self,
+        kind: BulkTransferKind,
+        bytes: Arc<[u8]>,
+        sha256: [u8; 32],
+    ) -> Result<OutboundBulkTransfer, BulkTransferError> {
         let id = self
             .last_issued_id
             .checked_add(1)
             .ok_or(BulkTransferError::CounterExhausted)?;
-        let sha256 = Sha256::digest(&bytes).into();
         self.last_issued_id = id;
         Ok(OutboundBulkTransfer {
             transfer_id: TransferId(id),
@@ -439,6 +493,14 @@ pub struct OutboundBulkTransfer {
 }
 
 impl OutboundBulkTransfer {
+    pub(crate) fn next_message_max_bytes(&self) -> u64 {
+        // Serialization metadata only; no chunk allocation or sender advancement.
+        if self.started && self.position < self.bytes.len() {
+            ((self.bytes.len() - self.position).min(MAX_BULK_DATA_BYTES) + 64) as u64
+        } else {
+            96
+        }
+    }
     pub fn transfer_id(&self) -> TransferId {
         self.transfer_id
     }

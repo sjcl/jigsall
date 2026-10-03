@@ -305,6 +305,15 @@ impl RecordedGns {
     }
 }
 impl Transport for RecordedGns {
+    fn origin(&self, connection: ConnectionId) -> Option<Origin> {
+        self.inner.origin(connection)
+    }
+    fn reliable_egress(&self, connection: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        self.inner.reliable_egress(connection)
+    }
+    fn mark_ready(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
+        self.inner.mark_ready(connection)
+    }
     fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
         self.inner.activate_secure_channel(connection)
     }

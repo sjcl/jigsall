@@ -39,8 +39,9 @@ PreUpdate polls `SecureTransport` once and processes events in order through
 bootstrap. Only `BootstrapOutcome::Syncing` enters the sync router and only
 `Gameplay` enters the host/client gameplay router. A live-connection set suppresses
 messages after that connection's removal, including later messages in the same
-batch. Authentication expiry and Syncing timeouts are observed every frame. Only
-joining connections receive bounded `HostSyncCoordinator::pump` work; Ready peers
+batch. Backend Connecting expiry, bootstrap authentication/handoff expiry and
+coordinator Syncing expiry are observed every frame. Only
+joining connections receive bounded, rotating `HostSyncCoordinator::pump` work; Ready peers
 have no baseline/catch-up pumping.
 Bounded catch-up overflow schedules the existing restart/FIFO baseline path;
 it does not leave a RestartRequired join waiting until timeout.
@@ -124,7 +125,7 @@ Removing the live connection owns cleanup exactly once. An active replicated
 drag generates an already-applied `DragCancelled`; runtime records it in catch-up
 and publishes it to the remaining Ready peers. Duplicate closes do not advance
 the authority cursor again. Syncing disconnects remove the join, transfer,
-baseline waiter/slot and catch-up entry without a gameplay cancellation.
+image/baseline waiters and slots, outbound Arc, finalization candidate and catch-up entry without a gameplay cancellation.
 
 Publication attempts every Ready peer. Each failed secure send closes that
 connection and enters the same disconnect coordinator. Publication uses the
@@ -158,3 +159,35 @@ builds on Windows/Linux with default and all features, plus serial localhost GNS
 tests. Local validation follows repository and task-specific instructions.
 No runtime FPS or cross-GPU/OS bit identity is claimed by these tests.
 Remote drag GPU rendering remains a follow-up.
+
+## Join resource policy
+
+`network/lifecycle.rs` centralizes explicit-clock policy. Connections: 64 total,
+32 pending Ready, 16 Connecting; bootstrap authentication: 32 pending; joins: 12
+concurrent, separate from Ready capacity. Canonical-IP pending quota is 4. Connecting
+and authentication each expire after 10 s in their own owner. Authenticated has a
+fresh bootstrap-owned 5 s handoff; runtime starts sync in the same event handler.
+
+Host sync owns independent two-slot image and baseline FIFOs. Waiting peers retain
+no serialized payload/chunks or new catch-up history. Session/availability, offer
+acceptance, completion ACK, catch-up ACK and FinalizeAck wait at most 12 s; host slot
+waits use the global bound. Bulk preflight checks native pending + unacknowledged
+reliable bytes before generation. Bulk queue threshold is 240 KiB/connection,
+all reliable egress 512 KiB; host generation is 128 KiB/frame and 4 MiB/s, with
+rotating peer priority. The immutable session image digest is verified once and
+reused; generic Bulk retains content hashing.
+
+Transfer progress requires observed delivery, with 30 s idle/grace and a 128 KiB/s
+policy floor. Size-derived transfer budgets are credited once per kind on top of
+the 300 s sync start-clock limit; restarting never renews it. ACK waits start after
+native drain, not Finish-enqueue. Duplicate/obsolete messages and host sends do not
+renew deadlines. Join admission has global (12 burst, one/2 s) and origin (4 burst,
+one/5 s) guards independent of authentication. Three abusive failures trigger a
+30 s cooldown; histories have 256-entry capacity and 120 s TTL. Host-capacity expiry
+is distinguished and does not penalize the peer.
+
+Sync expiration releases channels/bootstrap/mappings, live/joining state, transfer
+Arcs, both FIFOs/slots, catch-up retention and candidates while host gameplay
+continues. Client failures invalidate receiver storage immediately. See the
+[complete ownership/resource table](NETWORK_TRANSPORT.md#bounded-connection-and-join-lifecycle)
+for release conditions and the meaning of progress.

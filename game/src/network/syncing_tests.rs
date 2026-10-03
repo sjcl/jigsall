@@ -1,5 +1,6 @@
 //! Runs the join foundation through bootstrap and encrypted Transport messages.
 use super::*;
+use crate::network::sync_control::SyncTransferBinding;
 use crate::{
     multiplayer::catch_up::*,
     network::{bulk::*, sync_control::SyncControlMessage as Control, syncing::*},
@@ -7,6 +8,567 @@ use crate::{
 use crate::{multiplayer::finalization::FinalDragSet, network::sync_control::SyncFinalization};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+
+fn expire_join(h: &mut Harness, now: Instant) -> Vec<(ConnectionId, SyncError)> {
+    h.host.expire(
+        &mut SyncHost {
+            bootstrap: &mut h.p.host,
+            connections: &mut h.p.host_connections,
+        },
+        &mut h.p.ht,
+        now,
+    )
+}
+fn assert_expired_join(h: &mut Harness, wait: ResponseWait) {
+    assert_eq!(h.host.timing(HA).unwrap().waiting_for(), Some(wait));
+    let player = h.p.host.assigned_player(HA).unwrap();
+    let now = h.p.now + Duration::from_secs(12);
+    assert!(expire_join(h, now - Duration::from_nanos(1)).is_empty());
+    assert_eq!(
+        expire_join(h, now),
+        vec![(HA, SyncError::PhaseTimeout(wait))]
+    );
+    assert_eq!(h.host.phase(HA), None);
+    assert_eq!(h.p.host.state(HA), None);
+    assert!(!h.p.ht.has_channel(HA));
+    assert_eq!(h.p.host_connections.peers().count(), 0);
+    assert_eq!(
+        h.host.catch_up().status(player),
+        Err(CatchUpError::NotJoining)
+    );
+    let resources = h.host.resources();
+    assert_eq!(
+        (
+            resources.peers,
+            resources.image_waiters,
+            resources.baseline_waiters,
+            resources.image_transfers,
+            resources.baseline_transfers
+        ),
+        (0, 0, 0, 0, 0)
+    );
+}
+
+#[test]
+fn configured_session_image_accepts_equal_content_from_a_fresh_arc() {
+    let mut h = Harness::new(false, Default::default());
+    h.host.set_image(
+        VerifiedPuzzleImage::verify(h.image.clone(), h.p.client.metadata().unwrap().definition)
+            .unwrap(),
+    );
+    let fresh: Arc<[u8]> = Arc::from(h.image.as_ref());
+    assert!(!Arc::ptr_eq(&h.image, &fresh));
+    h.image = fresh;
+    h.send_client(Control::ImageAvailability {
+        image_hash: h.p.client.metadata().unwrap().definition.image_hash,
+        available: false,
+    })
+    .unwrap();
+    assert_eq!(h.host.phase(HA), Some(SyncPhase::ImageTransfer));
+    h.host
+        .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap();
+    assert_eq!(h.host.phase(HA), Some(SyncPhase::ImageTransfer));
+    assert_eq!(h.host.resources().image_transfers, 1);
+}
+
+#[test]
+fn session_image_negotiation_and_offers_have_independent_short_deadlines() {
+    let mut h = Harness::new(true, Default::default());
+    assert_expired_join(&mut h, ResponseWait::ImageAvailability);
+    let mut h = Harness::new(true, Default::default());
+    h.send_client(Control::ImageAvailability {
+        image_hash: h.p.client.metadata().unwrap().definition.image_hash,
+        available: true,
+    })
+    .unwrap();
+    assert_expired_join(&mut h, ResponseWait::ImageReady);
+    let mut h = Harness::new(false, Default::default());
+    h.host_to_client().unwrap();
+    h.client_to_host().unwrap();
+    assert_expired_join(&mut h, ResponseWait::ImageAcceptance);
+    let mut h = Harness::new(true, Default::default());
+    h.host_to_client().unwrap();
+    h.client_to_host().unwrap();
+    assert_expired_join(&mut h, ResponseWait::BaselineAcceptance);
+}
+
+#[test]
+fn completed_transfers_wait_for_application_ack_with_a_short_deadline() {
+    for cached in [false, true] {
+        let mut h = Harness::new(cached, Default::default());
+        h.reach(if cached {
+            SyncPhase::BaselineTransfer
+        } else {
+            SyncPhase::ImageTransfer
+        });
+        h.client_to_host().unwrap();
+        // Transport reports real delivery, but no ImageReady/BaselineInstalled.
+        for _ in 0..4 {
+            h.host
+                .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+                .unwrap();
+        }
+        assert_expired_join(
+            &mut h,
+            if cached {
+                ResponseWait::BaselineInstalled
+            } else {
+                ResponseWait::ImageReady
+            },
+        );
+    }
+}
+
+#[test]
+fn every_active_sync_phase_disconnect_releases_payloads_retention_and_candidates() {
+    for (cached, phase) in [
+        (false, SyncPhase::ImageNegotiation),
+        (false, SyncPhase::ImageTransfer),
+        (true, SyncPhase::BaselineTransfer),
+        (true, SyncPhase::CatchingUp),
+        (true, SyncPhase::Finalizing),
+    ] {
+        let mut h = Harness::new(cached, Default::default());
+        let player = h.p.host.assigned_player(HA).unwrap();
+        h.reach(phase);
+        h.host.disconnect(HA);
+        h.p.host.reject(
+            HA,
+            DisconnectReason::RemoteClosed,
+            &mut h.p.ht,
+            &mut h.p.host_connections,
+        );
+        assert_eq!(h.host.phase(HA), None);
+        assert_eq!(h.host.transfer_binding(HA), None);
+        assert_eq!(
+            h.host.catch_up().status(player),
+            Err(CatchUpError::NotJoining)
+        );
+        let resources = h.host.resources();
+        assert_eq!(
+            (
+                resources.peers,
+                resources.image_waiters,
+                resources.baseline_waiters,
+                resources.image_transfers,
+                resources.baseline_transfers
+            ),
+            (0, 0, 0, 0, 0)
+        );
+        assert_eq!(
+            Arc::strong_count(&h.image),
+            if cached || phase == SyncPhase::ImageNegotiation {
+                1
+            } else {
+                2
+            }
+        );
+        assert!(!h.p.ht.has_channel(HA));
+    }
+}
+
+#[test]
+fn duplicate_catchup_and_obsolete_finalize_acks_cannot_extend_response_deadline() {
+    let mut h = Harness::new(true, Default::default());
+    h.reach(SyncPhase::CatchingUp);
+    let generation = h.client.generation().unwrap();
+    let acknowledged = h.s.peers[0].session.cursor();
+    h.apply_grab();
+    h.host
+        .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap();
+    let entered = h.p.now;
+    assert_eq!(
+        h.host.timing(HA).unwrap().waiting_for(),
+        Some(ResponseWait::CatchUpAck)
+    );
+    for second in [3, 7, 11] {
+        h.p.now = entered + Duration::from_secs(second);
+        h.send_client(Control::CatchUpAck {
+            generation,
+            cursor: acknowledged,
+        })
+        .unwrap();
+    }
+    h.p.now = entered;
+    assert_expired_join(&mut h, ResponseWait::CatchUpAck);
+
+    let mut h = Harness::new(true, Default::default());
+    h.reach(SyncPhase::Finalizing);
+    h.host
+        .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap();
+    let entered = h.p.now;
+    for second in [3, 7, 11] {
+        h.p.now = entered + Duration::from_secs(second);
+        h.send_client(Control::FinalizeAck {
+            token: final_token(&h, 0),
+        })
+        .unwrap();
+    }
+    h.p.now = entered;
+    assert_expired_join(&mut h, ResponseWait::FinalizeAck);
+}
+
+#[test]
+fn baseline_wait_is_host_capacity_and_stalled_slot_is_immediately_reusable() {
+    let mut h = BaselineSlots::new(4, Default::default());
+    for n in 0..4 {
+        h.ready(n);
+    }
+    let now = h.pairs[0].now + Duration::from_secs(12);
+    assert_eq!(h.host.timeout(h.id(2), now), None);
+    assert_eq!(h.host.timeout(h.id(3), now), None);
+    let id = h.id(0);
+    let player = h.player(0);
+    let p = &mut h.pairs[0];
+    assert_eq!(
+        h.host.expire_connection(
+            &mut SyncHost {
+                bootstrap: &mut p.host,
+                connections: &mut p.host_connections
+            },
+            id,
+            &mut p.ht,
+            now
+        ),
+        Some(SyncError::PhaseTimeout(ResponseWait::BaselineAcceptance))
+    );
+    assert_eq!(h.host.active_baseline_transfers(), 1);
+    assert_eq!(
+        h.host.catch_up().status(player),
+        Err(CatchUpError::NotJoining)
+    );
+    h.pump(3).unwrap();
+    assert_eq!(h.host.phase(h.id(3)), Some(SyncPhase::AwaitingBaselineSlot));
+    h.pump(2).unwrap();
+    assert_eq!(h.host.active_baseline_transfers(), 2);
+    assert_eq!(h.host.phase(h.id(2)), Some(SyncPhase::BaselineTransfer));
+}
+
+#[test]
+fn authenticated_origin_flood_and_reconnect_cannot_acquire_all_join_slots() {
+    let origin = Origin::Ip("192.0.2.17".parse().unwrap());
+    let mut h = BaselineSlots::with_origin(
+        crate::network::lifecycle::MAX_CONNECTIONS,
+        Default::default(),
+        Some(origin),
+    );
+    assert_eq!(
+        h.host.resources().peers,
+        crate::network::lifecycle::MAX_PENDING_PER_ORIGIN
+    );
+    assert_eq!(h.host.resources().retained_payload_bytes, 0);
+    for n in 0..4 {
+        h.host.disconnect(h.id(n));
+    }
+    let mut p = Pair::new("correct password");
+    p.host_connection = ConnectionId::new(9999);
+    p.ht.backend_mut().origin = Some(origin);
+    p.authenticate();
+    assert_eq!(
+        h.host.start(
+            &mut p.host,
+            p.host_connection,
+            &mut p.ht,
+            &authority(&h.s),
+            p.now
+        ),
+        Err(SyncError::Admission(DisconnectReason::RateLimited))
+    );
+    assert_eq!(h.host.resources().peers, 0);
+    // A distinct origin may use the remaining admission/connection capacity.
+    p.ht.backend_mut().origin = Some(Origin::Ip("192.0.2.18".parse().unwrap()));
+    h.host
+        .start(
+            &mut p.host,
+            p.host_connection,
+            &mut p.ht,
+            &authority(&h.s),
+            p.now,
+        )
+        .unwrap();
+    assert_eq!(h.host.resources().peers, 1);
+}
+
+#[test]
+fn repeated_sync_timeouts_keep_origin_cooldown_across_authenticated_reconnects() {
+    let origin = Origin::Ip("192.0.2.19".parse().unwrap());
+    let mut h = BaselineSlots::with_origin(3, Default::default(), Some(origin));
+    let expired_at = h.pairs.iter().map(|p| p.now).max().unwrap() + Duration::from_secs(12);
+    for n in 0..3 {
+        let id = h.id(n);
+        let p = &mut h.pairs[n];
+        assert_eq!(
+            h.host.expire_connection(
+                &mut SyncHost {
+                    bootstrap: &mut p.host,
+                    connections: &mut p.host_connections,
+                },
+                id,
+                &mut p.ht,
+                expired_at,
+            ),
+            Some(SyncError::PhaseTimeout(ResponseWait::ImageAvailability))
+        );
+    }
+    assert_eq!(h.host.resources().peers, 0);
+    let mut p = Pair::new("correct password");
+    p.now = expired_at + Duration::from_secs(20);
+    p.host_connection = ConnectionId::new(9998);
+    p.ht.backend_mut().origin = Some(origin);
+    p.authenticate();
+    // Tokens have refilled, but a fresh authenticated connection cannot bypass
+    // the retained 30-second cooldown from the preceding timed-out joins.
+    assert_eq!(
+        h.host.start(
+            &mut p.host,
+            p.host_connection,
+            &mut p.ht,
+            &authority(&h.s),
+            p.now,
+        ),
+        Err(SyncError::Admission(DisconnectReason::RateLimited))
+    );
+    assert_eq!(h.host.resources().retained_payload_bytes, 0);
+}
+
+#[test]
+fn client_stalled_host_releases_declared_bulk_budget_without_sleep() {
+    let mut h = Harness::new(false, Default::default());
+    h.host_to_client().unwrap();
+    let binding = SyncTransferBinding {
+        transfer_id: TransferId(1),
+        kind: BulkTransferKind::PuzzleImage,
+        total_size: MAX_PUZZLE_IMAGE_TRANSFER_BYTES,
+        sha256: h.p.client.metadata().unwrap().definition.image_hash.0,
+    };
+    h.send_host(WireMessage::SyncControl(Control::ImageOffer(binding)))
+        .unwrap();
+    h.send_host(WireMessage::BulkTransfer(BulkTransferMessage::Start {
+        transfer_id: binding.transfer_id,
+        kind: binding.kind,
+        total_size: binding.total_size,
+        sha256: binding.sha256,
+    }))
+    .unwrap();
+    assert_eq!(
+        h.client.declared_in_flight_bytes(),
+        MAX_PUZZLE_IMAGE_TRANSFER_BYTES
+    );
+    let peer = &mut h.s.peers[0];
+    assert!(matches!(
+        h.client.route(
+            &mut h.p.client,
+            &mut h.p.client_connections,
+            &TransportEvent::Message {
+                connection: CLIENT_HOST,
+                class: MessageClass::Bulk,
+                payload: Vec::new()
+            },
+            &mut h.p.ct,
+            &mut SyncReplica {
+                replica: &mut peer.replica,
+                session: &mut peer.session,
+                store: &mut peer.store
+            },
+            h.p.now + Duration::from_secs(30)
+        ),
+        Err(SyncError::BulkStalled)
+    ));
+    assert_eq!(h.client.declared_in_flight_bytes(), 0);
+    assert!(!h.p.ct.has_channel(CLIENT_HOST));
+}
+
+#[test]
+fn pump_observes_native_delivery_before_evaluating_bulk_idle_timeout() {
+    let mut h = Harness::new(false, Default::default());
+    h.reach(SyncPhase::ImageTransfer);
+    h.client_to_host().unwrap();
+    let now = h.p.now + Duration::from_secs(30);
+    assert_eq!(h.host.timeout(HA, now), Some(SyncError::BulkStalled));
+    // ACK/drain arrived since the last frame; the first current sample must win
+    // over stale timing, even when callers use pump without a separate sweep.
+    h.p.ht.backend_mut().egress = Some(ReliableEgress {
+        bulk_delivered_bytes: h.image.len() as u64,
+        ..Default::default()
+    });
+    h.host
+        .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), now)
+        .unwrap();
+    assert_eq!(h.host.timing(HA).unwrap().bulk_progress_at(), Some(now));
+}
+
+#[test]
+fn outbound_queue_blocks_before_chunk_allocation_and_enqueue_does_not_refresh_stall() {
+    use crate::network::lifecycle::MAX_BULK_QUEUE_BYTES;
+    let mut h = Harness::new(false, Default::default());
+    h.reach(SyncPhase::ImageTransfer);
+    h.client_to_host().unwrap();
+    let delivered = h.p.ht.backend_mut().bulk_sent;
+    let count = h.p.ht.backend_mut().sent.len();
+    h.p.ht.backend_mut().egress = Some(ReliableEgress {
+        queued_bytes: MAX_BULK_QUEUE_BYTES,
+        bulk_queued_bytes: MAX_BULK_QUEUE_BYTES,
+        bulk_delivered_bytes: delivered,
+    });
+    for second in 0..30 {
+        h.host
+            .pump(
+                &h.p.host,
+                HA,
+                &mut h.p.ht,
+                &authority(&h.s),
+                h.p.now + Duration::from_secs(second),
+            )
+            .unwrap();
+        assert_eq!(h.p.ht.backend_mut().sent.len(), count);
+        assert!(h.p.ht.has_channel(HA));
+    }
+    let now = h.p.now + Duration::from_secs(30);
+    assert_eq!(expire_join(&mut h, now), vec![(HA, SyncError::BulkStalled)]);
+}
+
+#[test]
+fn image_slots_are_fifo_and_share_one_payload_even_at_connection_capacity() {
+    let mut h = BaselineSlots::new(
+        crate::network::lifecycle::MAX_CONNECTIONS,
+        Default::default(),
+    );
+    let image: Arc<[u8]> = Arc::from(vec![17; 2 * 1024 * 1024]);
+    let session = SessionDefinition {
+        image_hash: ImageHash(Sha256::digest(&image).into()),
+        ..SESSION
+    };
+    // The fixture has 64 authenticated channels but only the first 12 were admitted.
+    // Reconstruct their immutable identity before sync using a matching fixture.
+    h.host = HostSyncCoordinator::default();
+    h.s.host.session = AuthoritySession::new(session, HOST, metadata().cursor);
+    for (n, p) in h.pairs.iter_mut().enumerate() {
+        p.host = HostBootstrap::new(
+            password("correct password"),
+            SessionMetadata {
+                definition: session,
+                ..metadata()
+            },
+            (0..100 + n as u64).map(PlayerId),
+            p.now,
+        );
+        p.client = ClientBootstrap::new(password("correct password"), CLIENT_HOST);
+        p.authenticate();
+        let result = h.host.start(
+            &mut p.host,
+            p.host_connection,
+            &mut p.ht,
+            &authority(&h.s),
+            p.now,
+        );
+        if n < MAX_PENDING_JOIN_SYNCS {
+            result.unwrap();
+        } else {
+            assert_eq!(result, Err(SyncError::TooManyJoins));
+        }
+    }
+    h.host
+        .set_image(VerifiedPuzzleImage::verify(image.clone(), session).unwrap());
+    for n in 0..MAX_PENDING_JOIN_SYNCS {
+        h.control(
+            n,
+            Control::ImageAvailability {
+                image_hash: session.image_hash,
+                available: n >= MAX_PENDING_JOIN_SYNCS - 2,
+            },
+        )
+        .unwrap();
+        if n >= MAX_PENDING_JOIN_SYNCS - 2 {
+            h.control(
+                n,
+                Control::ImageReady {
+                    image_hash: session.image_hash,
+                },
+            )
+            .unwrap();
+        }
+    }
+    let resources = h.host.resources();
+    assert_eq!(resources.image_transfers, 2);
+    assert_eq!(resources.image_waiters, MAX_PENDING_JOIN_SYNCS - 4);
+    assert_eq!(resources.baseline_transfers, 2);
+    let baseline_bytes: u64 = (MAX_PENDING_JOIN_SYNCS - 2..MAX_PENDING_JOIN_SYNCS)
+        .map(|n| h.host.transfer_binding(h.id(n)).unwrap().total_size)
+        .sum();
+    assert_eq!(
+        resources.retained_payload_bytes,
+        image.len() as u64 + baseline_bytes
+    );
+    assert_eq!(Arc::strong_count(&image), 4); // fixture + descriptor + two outbound Arc references.
+    for n in 2..MAX_PENDING_JOIN_SYNCS - 2 {
+        assert_eq!(h.host.phase(h.id(n)), Some(SyncPhase::AwaitingImageSlot));
+        assert_eq!(h.host.transfer_binding(h.id(n)), None);
+        assert_eq!(
+            h.host.catch_up().status(h.player(n)),
+            Err(CatchUpError::NotJoining)
+        );
+    }
+    h.host.disconnect(h.id(0));
+    h.pump(3).unwrap();
+    assert_eq!(h.host.phase(h.id(3)), Some(SyncPhase::AwaitingImageSlot));
+    h.pump(2).unwrap();
+    assert_eq!(h.host.active_image_transfers(), 2);
+    // Many pump calls at one frame/time cannot exceed the host-wide budget.
+    for n in [1, 2] {
+        h.control(
+            n,
+            Control::TransferAccepted {
+                transfer_id: h.host.transfer_binding(h.id(n)).unwrap().transfer_id,
+            },
+        )
+        .unwrap();
+    }
+    let now = h.pairs.iter().map(|p| p.now).max().unwrap();
+    for _ in 0..100 {
+        for n in [1, 2] {
+            let p = &mut h.pairs[n];
+            h.host
+                .pump(&p.host, p.host_connection, &mut p.ht, &authority(&h.s), now)
+                .unwrap();
+        }
+    }
+    let bytes: usize = [1, 2]
+        .iter()
+        .map(|&n| {
+            h.pairs[n]
+                .ht
+                .backend_mut()
+                .sent
+                .iter()
+                .filter_map(|e| match e {
+                    TransportEvent::Message {
+                        class: MessageClass::Bulk,
+                        payload,
+                        ..
+                    } => Some(payload.len()),
+                    _ => None,
+                })
+                .sum::<usize>()
+        })
+        .sum();
+    assert!(bytes as u64 <= crate::network::lifecycle::BULK_FRAME_BYTES);
+    // A wrong-phase status cannot keep a waiting peer alive.
+    h.control(
+        4,
+        Control::ImageReady {
+            image_hash: session.image_hash,
+        },
+    )
+    .unwrap_err();
+    for n in 0..MAX_PENDING_JOIN_SYNCS {
+        h.host.disconnect(h.id(n));
+    }
+    assert_eq!(h.host.resources().peers, 0);
+    assert_eq!(Arc::strong_count(&image), 2);
+}
 
 fn final_token(h: &Harness, revision: u64) -> SyncFinalization {
     SyncFinalization {
@@ -800,8 +1362,8 @@ fn missing_image_prepares_before_begin_join_then_installs_and_stops_at_finalizat
         h.host.catch_up().status(player),
         Err(CatchUpError::NotJoining)
     );
-    // Arbitrarily long image preparation retains zero authority events.
-    h.p.now += Duration::from_secs(60 * 60);
+    // Image preparation retains zero authority events within its finite deadline.
+    h.p.now += Duration::from_secs(2);
     for _ in 0..20 {
         h.host_to_client().unwrap();
         if h.client.phase() == SyncPhase::AwaitingImageReady {
@@ -889,12 +1451,16 @@ struct BaselineSlots {
 }
 impl BaselineSlots {
     fn new(count: usize, limits: CatchUpLimits) -> Self {
+        Self::with_origin(count, limits, None)
+    }
+    fn with_origin(count: usize, limits: CatchUpLimits, origin: Option<Origin>) -> Self {
         let s = Scenario::new();
         let mut host = HostSyncCoordinator::new(JoinCatchUpCoordinator::new(limits));
         let mut pairs = Vec::new();
         for index in 0..count {
             let mut p = Pair::new("correct password");
             p.host_connection = ConnectionId::new(1000 + index as u64);
+            p.ht.backend_mut().origin = origin;
             let player = 100 + index as u64;
             p.host = HostBootstrap::new(
                 password("correct password"),
@@ -914,10 +1480,23 @@ impl BaselineSlots {
                 &authority(&s),
                 p.now,
             );
-            if index < MAX_PENDING_JOIN_SYNCS {
+            if index
+                < if origin.is_some() {
+                    crate::network::lifecycle::MAX_PENDING_PER_ORIGIN
+                } else {
+                    MAX_PENDING_JOIN_SYNCS
+                }
+            {
                 admission.unwrap();
             } else {
-                assert_eq!(admission, Err(SyncError::TooManyJoins));
+                assert_eq!(
+                    admission,
+                    Err(if origin.is_some() {
+                        SyncError::Admission(DisconnectReason::JoinCapacity)
+                    } else {
+                        SyncError::TooManyJoins
+                    })
+                );
             }
             // Host-side scheduling tests drive validated image availability/ACKs
             // through the real encrypted channel; client installation is covered
@@ -1062,9 +1641,9 @@ impl BaselineSlots {
 }
 
 #[test]
-fn sixty_four_syncing_peers_capture_only_two_baselines_and_wait_without_history() {
+fn syncing_capacity_captures_only_two_baselines_and_waits_without_history() {
     let mut h = BaselineSlots::new(MAX_PENDING_JOIN_SYNCS + 1, CatchUpLimits::default());
-    // The fixture also verifies that the 65th authenticated admission is rejected.
+    // The fixture also verifies that the first excess authenticated admission is rejected.
     for index in 0..MAX_PENDING_JOIN_SYNCS {
         h.ready(index);
     }
@@ -1086,7 +1665,7 @@ fn sixty_four_syncing_peers_capture_only_two_baselines_and_wait_without_history(
             .host
             .timing(h.id(index))
             .unwrap()
-            .transfer_progress
+            .bulk_progress_at()
             .is_none());
     }
     h.apply_grab();
@@ -1135,6 +1714,12 @@ fn restarted_baselines_requeue_without_retention_or_bypassing_waiters() {
     assert_eq!(h.host.active_baseline_transfers(), 0);
     h.restart(0);
     assert_eq!(h.host.phase(h.id(0)), Some(SyncPhase::AwaitingBaselineSlot));
+    assert_eq!(h.host.timing(h.id(0)).unwrap().waiting_for(), None);
+    assert_eq!(
+        h.host
+            .timeout(h.id(0), h.pairs[0].now + Duration::from_secs(20)),
+        None
+    );
     let status = h.host.catch_up().status(h.player(0)).unwrap();
     assert!(matches!(status.phase, JoinCatchUpPhase::RestartRequired(_)));
     assert_eq!(status.retained_events, 0);
@@ -1522,16 +2107,20 @@ fn store_restore_and_authority_freeze_invalidate_sync_and_timeout_slots_are_visi
         .unwrap();
     h.host_to_client().unwrap();
     let timing = h.client.timing();
-    assert!(timing.timed_out(
-        h.p.now + Duration::from_secs(11),
-        Duration::from_secs(60),
-        Duration::from_secs(10)
-    ));
-    assert!(timing.timed_out(
-        h.p.now + Duration::from_secs(61),
-        Duration::from_secs(60),
-        Duration::from_secs(100)
-    ));
+    assert_eq!(
+        timing.timeout(
+            h.p.now + Duration::from_secs(11),
+            crate::network::lifecycle::SyncPolicy {
+                bulk_stall: Duration::from_secs(10),
+                ..Default::default()
+            }
+        ),
+        Some(SyncError::BulkStalled)
+    );
+    assert_eq!(
+        timing.timeout(h.p.now + Duration::from_secs(600), Default::default()),
+        Some(SyncError::LifetimeTimeout)
+    );
     h.s.host.store.epoch += 1;
     assert_eq!(
         h.host

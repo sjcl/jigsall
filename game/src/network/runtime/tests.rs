@@ -10,6 +10,7 @@ use std::{
 
 #[derive(Default)]
 struct Bus {
+    bulk_sent: BTreeMap<ConnectionId, u64>,
     inbox: BTreeMap<u64, VecDeque<TransportEvent>>,
     routes: BTreeMap<ConnectionId, (u64, ConnectionId)>,
     next: u64,
@@ -22,7 +23,103 @@ struct Fake {
     id: u64,
     bus: Arc<Mutex<Bus>>,
 }
+
+#[test]
+fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time() {
+    let now = Instant::now();
+    let bus = Arc::new(Mutex::new(Bus::default()));
+    let bytes = encoded();
+    let session = SessionDefinition {
+        id: SessionId(271),
+        image_hash: crate::persistence::image_hash(&bytes),
+    };
+    let mut host = Runtime::host(
+        Fake {
+            id: 0,
+            bus: bus.clone(),
+        },
+        HostOptions {
+            address: "127.0.0.1:0".parse().unwrap(),
+            session,
+            host: PlayerId(0),
+            password: password(),
+        },
+        definition(),
+        Some(bytes),
+        now,
+    )
+    .unwrap();
+    let mut client = Runtime::client(
+        Fake {
+            id: 1,
+            bus: bus.clone(),
+        },
+        JoinOptions {
+            address: "127.0.0.1:10000".parse().unwrap(),
+            password: password(),
+            cached_image: None,
+        },
+        ImageDecodeLimits {
+            max_texture_dimension: 8192,
+        },
+    )
+    .unwrap();
+    let mut store = PieceDataStore::default();
+    store.initialize(vec![Vec2::splat(100.0); 4]);
+    let mut client_store = PieceDataStore::default();
+    let mut interaction = PieceInteraction::default();
+    let mut client_interaction = PieceInteraction::default();
+    let id = loop {
+        host.poll(&mut store, &mut interaction, now).unwrap();
+        if let Role::Host(h) = &host.role {
+            if let Some(&id) = h.joining.first() {
+                assert_eq!(h.bootstrap.state(id), Some(ConnectionState::Syncing));
+                break id;
+            }
+        }
+        client
+            .poll(&mut client_store, &mut client_interaction, now)
+            .unwrap();
+    };
+    assert_eq!(host.connections.player(id), None);
+    host.poll(&mut store, &mut interaction, now + Duration::from_secs(12))
+        .unwrap();
+    let Role::Host(h) = &host.role else {
+        unreachable!()
+    };
+    assert!(h.joining.is_empty());
+    assert_eq!(h.bootstrap.state(id), None);
+    assert_eq!(h.sync.resources().peers, 0);
+    assert!(host.live.is_empty());
+    assert!(!host.transport.has_channel(id));
+    assert_eq!(host.connections.peers().count(), 0);
+    assert_eq!(
+        host.session.as_ref().unwrap().cursor(),
+        AuthorityCursor::new(0, 0)
+    );
+    assert!(host.active);
+    assert!(host
+        .status
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("ImageAvailability"));
+    assert!(bus.lock().unwrap().routes.is_empty());
+}
 impl Transport for Fake {
+    fn reliable_egress(&self, connection: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        Ok(ReliableEgress {
+            bulk_delivered_bytes: self
+                .bus
+                .lock()
+                .unwrap()
+                .bulk_sent
+                .get(&connection)
+                .copied()
+                .unwrap_or(0),
+            ..Default::default()
+        })
+    }
     fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
         if self.bus.lock().unwrap().routes.contains_key(&connection) {
             Ok(())
@@ -57,6 +154,9 @@ impl Transport for Fake {
             .get(&connection)
             .ok_or(TransportError::NotConnected)?;
         bus.sent.push((connection, class, payload.to_vec()));
+        if class == MessageClass::Bulk {
+            *bus.bulk_sent.entry(connection).or_default() += payload.len() as u64;
+        }
         if !(class == MessageClass::Transient && bus.drop_transient) {
             bus.inbox
                 .entry(id)

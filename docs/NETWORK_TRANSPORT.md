@@ -576,7 +576,7 @@ that same identity before claiming availability; trusting a Start hash is insuff
 HostSyncCoordinator/ClientSyncRouter now own authorization and phase routing.
 Host-to-client transfers require an exact Reliable Control offer and acceptance
 before Start: TransferId/kind/size/hash, plus generation/cursor for JoinBaseline.
-The host admits at most 64 joining connections but captures/transfers at most
+The host admits at most 12 joining connections but captures/transfers at most
 `MAX_CONCURRENT_BASELINE_TRANSFERS` (**2**) baselines at once. Image-ready peers
 wait in `AwaitingBaselineSlot` before `begin_join()`; waiting stores only connection
 IDs, with no baseline allocation or catch-up retention. Slots are held until
@@ -640,8 +640,8 @@ runtime schedule; inactive networking is gated off and idle work never scans pie
 Start the client sync router after authentication, passing optional cached bytes;
 start the host sync coordinator for that connection to advertise the authenticated
 identity and puzzle definition. Keep sync state only while a join exists. Schedule
-bounded `pump` calls for joining peers and enforce timeouts using exposed
-`SyncTiming` (overall start and transfer progress). On disconnect, remove sync state
+bounded `pump` calls for joining peers and enforce timeouts using
+`HostSyncCoordinator::expire` and the shared `SyncPolicy`. On disconnect, remove sync state
 and the catch-up entry. On scope/migration boundaries call `observe_host_state`;
 store changes restart, while changed PAKE-bound session/epoch/host needs reauthentication.
 Use `HostRouter::route_with_sync` for remote authority commands and explicit
@@ -835,3 +835,86 @@ and coordinate Ready promotion on both ends. Steam P2P/SDR selection belongs to 
 backend. `SteamLobbyBackend`, if added, separately chooses session members and
 the lobby owner/host identity; it does not send gameplay messages. No lobby or
 Steamworks placeholder dependency/module is added in this change.
+
+## Bounded connection and join lifecycle
+
+Policy lives in `network/lifecycle.rs`; clocks are explicit and maintenance runs
+on frames. Direct IP has 64 total native connections, including Ready peers,
+32 not-yet-Ready connections and at most 16 Connecting connections. HostBootstrap
+retains at most 32 pending authentications. Sync admission is a separate **12**-peer
+cap, enforced before allocating sync state or capturing a baseline; a compile-time
+invariant keeps it smaller than backend connection capacity.
+
+| Finite resource | Maximum / acquisition owner | Progress and mandatory release |
+| --- | --- | --- |
+| Native Connecting slot | 16, GNS backend before accept/connect | Connected within 10 s, or backend closes and removes native/socket maps |
+| Pending native connection | 32 globally, 4 per canonical IP; backend before accept | Ready commit releases pending occupancy; disconnect/phase/global deadlines close it |
+| Authentication state | 32, HostBootstrap at Connected | Fixed 10 s from Connected, never renewed by packets; keys and mapping destroyed on failure |
+| Authenticated handoff | Within pending capacity, bootstrap | Fresh 5 s clock at successful authentication; runtime starts Syncing in the same event handler |
+| Sync peer | 12, HostSyncCoordinator before start | Valid protocol milestones; phase, Bulk or fixed global lifetime expiry removes it |
+| Image transfer | 2 independent slots, FIFO coordinator | Acceptance within 12 s; delivery policy below; ImageReady within 12 s after drain; timeout/disconnect releases slot |
+| Baseline payload/slot | 2 slots, FIFO coordinator before capture | Acceptance within 12 s; delivery policy; BaselineInstalled within 12 s after drain; payload Arc drops at Finish, slot at ACK/teardown |
+| Catch-up retention | Existing bounded CPU catch-up limits, only after baseline slot | One outstanding event; matching advancing CatchUpAck within 12 s, or join removed |
+| Finalization candidate | One bounded scalar drag set per join | Matching FinalizeAck within 12 s, or join removed; host retries cannot extend outstanding wait |
+| Reliable outbound queue | 512 KiB/connection; new Bulk blocked above 240 KiB incl. reservation | Native pending + sent-unacknowledged backlog, not just enqueue success; close drops queued data |
+| Admission history | 256 origins per guard, 120 s TTL | Entries expire; full tables refuse unseen origins instead of evicting cooldowns |
+
+Session -> ImageAvailability and cached-image availability -> ImageReady also have
+12-second deadlines. Host-side AwaitingImageSlot/AwaitingBaselineSlot do not have
+peer-response deadlines or catch-up retention. Their global lifetime is finite;
+expiration is HostCapacityTimeout and does not penalize the origin for host load.
+Syncing is owned by the coordinator/runtime, never by bootstrap. Ready lifetime
+uses normal GNS transport disconnect/liveness.
+
+Connecting admission has an IP bucket (burst 8, one start/s). Authentication keeps
+its existing independent global start/failure buckets (burst 8, four/s). Successful
+authentication does not grant expensive join admission: joins have a global burst
+of 12 with one token per 2 s, and per-origin burst 4 with one token per 5 s.
+Closing/reconnecting never replenishes these guards. Three authentication, protocol
+or sync-stall failures cause a 30-second origin cooldown. Each guard uses bounded
+history with TTL. Canonical IP ignores port and normalizes mapped IPv4; it is an
+abuse-accounting key, not a PlayerId/authentication identity. Four pending users
+behind a NAT can join together; Ready peers no longer consume that pending quota.
+`Origin` can later gain stronger platform keys without changing gameplay identity.
+
+GNS 0.3.0 exposes GetConnectionRealTimeStatus. The backend reads both pending reliable
+and sent-unacknowledged bytes across all lanes for capacity, and the Bulk lane for
+a conservative monotonic delivery estimate. Native framing means this is not an
+exact content ACK counter; native delivery also does not certify application
+installation. ImageReady/BaselineInstalled remain the authoritative milestones.
+Moving bytes from pending to sent, or retransmitting, is not progress. Preflight
+runs before allocating a chunk or advancing its sender/AEAD counter. Native sends
+also enforce the queue cap; errors retain strict secure-channel failure semantics.
+
+Bulk delivery allows 30 s idle and a 30 s initial throughput allowance, then
+requires cumulative delivery of at least `(elapsed - grace) * 128 KiB/s`.
+Each transfer is bounded by `grace + ceil(size / 128 KiB/s)`. A 512 MiB image has
+about 69 minutes at the policy floor; it is not forcibly cut at 30 s or 300 s.
+Sync's fixed start-clock limit is 300 s plus transfer budget credited **once per
+kind**, without renewal by messages or baseline restarts. Finish-enqueue is still
+transfer time; the 12 s application response clock starts only after native Bulk
+drain. A bounded queue with no drain therefore expires even if pump keeps running.
+Host generation additionally reserves at most 128 KiB/frame and 4 MiB/s; round-robin
+runtime pumping avoids starving later peers. No transfer pre-generates its chunks.
+
+The immutable image uses one session Arc and a `VerifiedPuzzleImage` descriptor
+validated once before runtime opens a listener. Generic Bulk still hashes arbitrary
+payloads; `begin_image` can reuse only that validated descriptor. Waiting peers
+hold IDs/scalars. Even 64 authenticated attempts cannot create 64 image payloads:
+at most 12 sync peers, two image sender Arc references and two 64 MiB serialized
+baselines exist. Image bytes count once (512 MiB maximum), plus at most 128 MiB
+baseline bytes; bounded catch-up history, native buffers and capture scratch are
+additional. Baseline and image FIFOs are independent.
+
+Backend teardown owns native handles/maps; SecureTransport owns channel destruction;
+bootstrap owns peers and SessionConnections; sync owns both FIFOs, outbound Arcs,
+slots, generation retention and candidates; runtime owns live/joining registration.
+Every expiry uses these cleanup paths. Sync peers have no Ready gameplay mapping,
+so they do not generate drag cancellation. Ready disconnect cancellation remains
+replicated exactly once. Host status/errors distinguish authentication timeout,
+handoff timeout, phase + expected response, Bulk stall, join capacity, rate limit,
+host-capacity wait expiry and backend Connecting timeout. Logs contain no secrets.
+Delegating Transport implementations must forward origin, reliable_egress and
+mark_ready; unavailable egress telemetry fails closed for Bulk. The client shares
+the delivery policy and frees its receiver/declared budget on failure; waits for a
+host-side transfer slot use the global bound rather than a short response timer.

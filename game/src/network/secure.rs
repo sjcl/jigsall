@@ -223,6 +223,18 @@ impl<T: Transport> SecureTransport<T> {
     }
 }
 impl<T: Transport> Transport for SecureTransport<T> {
+    fn origin(&self, connection: ConnectionId) -> Option<super::transport::Origin> {
+        self.inner.origin(connection)
+    }
+    fn reliable_egress(
+        &self,
+        connection: ConnectionId,
+    ) -> Result<super::transport::ReliableEgress, TransportError> {
+        self.inner.reliable_egress(connection)
+    }
+    fn mark_ready(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
+        self.inner.mark_ready(connection)
+    }
     fn activate_secure_channel(&mut self, _connection: ConnectionId) -> Result<(), TransportError> {
         // Only install(), with an authenticated secret, may activate this wrapper.
         Err(TransportError::ProtocolViolation)

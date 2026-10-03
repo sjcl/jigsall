@@ -2,6 +2,7 @@
 //! here BEFORE routing; `Syncing` and `Gameplay` have separate routers.
 use super::{
     auth::{ClientHandshake, ServerHandshake, SessionPassword},
+    lifecycle::AUTHENTICATED_HANDOFF_TIMEOUT,
     secure::{ChannelRole, SecureTransport},
     session::{SessionConnectionError, SessionConnections},
     session_control::*,
@@ -82,6 +83,7 @@ struct HostPeer {
     state: ConnectionState,
     hello: ServerHello,
     started: Instant,
+    authenticated_at: Option<Instant>,
     handshake: Option<ServerHandshake>,
 }
 
@@ -230,6 +232,7 @@ impl HostBootstrap {
                         state: ConnectionState::TransportConnected,
                         hello,
                         started: now,
+                        authenticated_at: None,
                         handshake: Some(handshake),
                     },
                 );
@@ -320,6 +323,7 @@ impl HostBootstrap {
                         == WireMessage::SessionControl(SessionControlMessage::SecureChannelReady)
                 {
                     peer.state = ConnectionState::Authenticated;
+                    peer.authenticated_at = Some(now);
                     return Ok(BootstrapOutcome::Consumed);
                 }
                 let WireMessage::SessionControl(SessionControlMessage::ClientProof(proof)) =
@@ -392,27 +396,29 @@ impl HostBootstrap {
         let expired: Vec<_> = self
             .peers
             .iter()
-            .filter(|(_, p)| {
-                matches!(
+            .filter_map(|(&id, p)| {
+                if matches!(
                     p.state,
-                    ConnectionState::Authenticating | ConnectionState::Securing
+                    ConnectionState::TransportConnected
+                        | ConnectionState::Authenticating
+                        | ConnectionState::Securing
                 ) && now.saturating_duration_since(p.started) >= AUTH_TIMEOUT
+                {
+                    Some((id, DisconnectReason::AuthenticationTimeout))
+                } else if p.state == ConnectionState::Authenticated
+                    && p.authenticated_at.is_some_and(|at| {
+                        now.saturating_duration_since(at) >= AUTHENTICATED_HANDOFF_TIMEOUT
+                    })
+                {
+                    Some((id, DisconnectReason::AuthenticatedHandoffTimeout))
+                } else {
+                    None
+                }
             })
-            .map(|(&id, _)| id)
             .collect();
         expired
             .into_iter()
-            .map(|id| {
-                (
-                    id,
-                    self.reject(
-                        id,
-                        DisconnectReason::AuthenticationTimeout,
-                        transport,
-                        connections,
-                    ),
-                )
-            })
+            .map(|(id, reason)| (id, self.reject(id, reason, transport, connections)))
             .collect()
     }
     pub fn begin_sync(&mut self, connection: ConnectionId) -> Result<(), BootstrapError> {
@@ -716,6 +722,7 @@ impl ClientBootstrap {
                         self.password.take();
                         self.player = Some(player);
                         self.state = Some(ConnectionState::Authenticated);
+                        self.started = Some(now); // Fresh handoff clock, not the authentication start.
                         Ok(BootstrapOutcome::Consumed)
                     }
                     _ => Err(self.reject(
@@ -728,6 +735,11 @@ impl ClientBootstrap {
         }
     }
     fn timed_out(&self, now: Instant) -> bool {
+        if self.state == Some(ConnectionState::Authenticated) {
+            return self.started.is_some_and(|t| {
+                now.saturating_duration_since(t) >= AUTHENTICATED_HANDOFF_TIMEOUT
+            });
+        }
         matches!(
             self.state,
             Some(
@@ -747,7 +759,11 @@ impl ClientBootstrap {
     ) -> Result<(), BootstrapError> {
         if self.timed_out(now) {
             return Err(self.reject(
-                DisconnectReason::AuthenticationTimeout,
+                if self.state == Some(ConnectionState::Authenticated) {
+                    DisconnectReason::AuthenticatedHandoffTimeout
+                } else {
+                    DisconnectReason::AuthenticationTimeout
+                },
                 transport,
                 connections,
             ));

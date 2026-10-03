@@ -24,7 +24,7 @@ use std::{
 
 pub const MAX_CATCH_UP_EVENTS: usize = 4096;
 pub const MAX_CATCH_UP_RETAINED_BYTES: usize = 16 * 1024 * 1024;
-pub const MAX_PENDING_JOIN_SYNCS: usize = 64;
+pub const MAX_PENDING_JOIN_SYNCS: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CatchUpLimits {

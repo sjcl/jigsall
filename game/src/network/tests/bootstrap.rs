@@ -9,6 +9,54 @@ use std::time::{Duration, Instant};
 #[path = "../syncing_tests.rs"]
 mod syncing;
 
+#[test]
+fn authenticated_handoff_has_a_fresh_clock_and_sync_is_not_bootstrap_owned() {
+    use crate::network::lifecycle::AUTHENTICATED_HANDOFF_TIMEOUT as HANDOFF;
+    let mut p = Pair::new("correct password");
+    p.connect();
+    let event = p.client_proof();
+    p.now += AUTH_TIMEOUT - Duration::from_secs(1);
+    p.host
+        .process(&event, &mut p.ht, &mut p.host_connections, p.now)
+        .unwrap();
+    let accepted = remap(p.ht.backend_mut().sent.pop().unwrap(), CLIENT_HOST);
+    p.client
+        .process(&accepted, &mut p.ct, &mut p.client_connections, p.now)
+        .unwrap();
+    let ready = remap(p.ct.backend_mut().sent.pop().unwrap(), HA);
+    p.ht.backend_mut().inbox.push(ready);
+    let mut events = Vec::new();
+    p.ht.poll(&mut events).unwrap();
+    p.host
+        .process(&events[0], &mut p.ht, &mut p.host_connections, p.now)
+        .unwrap();
+    assert!(p
+        .host
+        .expire(
+            &mut p.ht,
+            &mut p.host_connections,
+            p.now + HANDOFF - Duration::from_nanos(1)
+        )
+        .is_empty());
+    assert_eq!(
+        p.host
+            .expire(&mut p.ht, &mut p.host_connections, p.now + HANDOFF),
+        vec![(
+            HA,
+            BootstrapError::Rejected(DisconnectReason::AuthenticatedHandoffTimeout)
+        )]
+    );
+    assert_eq!(
+        p.client
+            .expire(&mut p.ct, &mut p.client_connections, p.now + HANDOFF),
+        Err(BootstrapError::Rejected(
+            DisconnectReason::AuthenticatedHandoffTimeout
+        ))
+    );
+    assert!(!p.ht.has_channel(HA));
+    assert_eq!(p.host_connections.peers().count(), 0);
+}
+
 fn password(value: &str) -> SessionPassword {
     SessionPassword::new(value.to_owned()).unwrap()
 }
@@ -452,6 +500,8 @@ fn authentication_timeout_is_nonblocking_and_exact() {
     assert_eq!(p.host_connections.peers().count(), 0);
     let mut p = Pair::new("correct password");
     p.authenticate();
+    p.host.begin_sync(HA).unwrap();
+    p.client.begin_sync().unwrap();
     assert!(p
         .host
         .expire(&mut p.ht, &mut p.host_connections, p.now + AUTH_TIMEOUT)

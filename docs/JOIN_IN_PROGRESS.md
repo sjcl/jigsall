@@ -177,7 +177,7 @@ or its targets. The caller owns the returned snapshot during transfer.
 
 An initial join starts at generation **0** in `BaselinePending`. Events and
 post-capture transients are retained immediately, before installation is ACKed.
-Duplicate joins, the host's own PlayerId and a 65th pending join reject. Failed
+Duplicate joins, the host's own PlayerId and a 13th pending join reject. Failed
 begin capture inserts no join. RestartRequired entries count toward the pending
 cap until restarted or explicitly removed.
 
@@ -225,7 +225,7 @@ copy of a dense target, permanent per-piece catch-up metadata, serialization
 scratch or target/piece scan is added during recording.
 
 Production `CatchUpLimits::default()` allows **4,096 events** and **16 MiB logical
-retained bytes per peer**. `MAX_PENDING_JOIN_SYNCS` is **64**. Tests can inject
+retained bytes per peer**. `MAX_PENDING_JOIN_SYNCS` is **12**. Tests can inject
 smaller limits, including zero. Logical bytes use the envelope's `size_of` plus
 dynamic accepted Components refs, Dense words and GrabAccepted rejected refs:
 `len * size_of(element)`, with saturating arithmetic. ReleaseCommitted,
@@ -329,7 +329,7 @@ cache/PersistenceService integration remains future work.
 
 `SyncControlMessage` uses authenticated Reliable Control kind 7, separate from
 handshake SessionControl and normal Ready AuthorityEvent/ClientCommand traffic.
-`HostSyncCoordinator` owns the existing catch-up coordinator and at most 64 joining
+`HostSyncCoordinator` owns the existing catch-up coordinator and at most 12 joining
 connections. `ClientSyncRouter` owns one offered transfer and the existing bounded
 Bulk receiver. No client-to-host Bulk receiver exists. ACKs/status use Control.
 Ready HostRouter/ClientRouter reject all current Bulk and SyncControl messages.
@@ -346,7 +346,7 @@ route SyncControl/authorized Bulk; Ready accepts gameplay only. Wrong-phase fram
 are protocol violations, including SyncControl/Bulk after Ready.
 
 `MAX_CONCURRENT_BASELINE_TRANSFERS` is **2** across the host coordinator, independently
-of the 64 authenticated/Syncing admissions. Image-ready peers enter the host-only
+of the 12 Syncing admissions. Image-ready peers enter the host-only
 `AwaitingBaselineSlot` FIFO, which stores only connection IDs. The front waiter
 acquires a slot before `begin_join()`/`restart_join()`, capture and serialization;
 the baseline cursor is the authority's current cursor when the slot becomes free.
@@ -361,7 +361,9 @@ keeps its reserved slot until runtime error handling removes the connection.
 Call `pump` for waiting peers too: it admits the front waiter when capacity is free,
 rechecking authenticated identity and active authority before capture. Disconnect
 also removes queued IDs. Overall Syncing timeout includes queue waiting, while
-transfer-progress timing starts only when an offer exists.
+peer-response deadlines do not apply to host-side slot waits. Their finite global
+lifetime still applies; expiration is reported as HostCapacityTimeout without an
+origin penalty. Transfer progress starts after TransferAccepted, not at the offer.
 
 `SyncTransferBinding` contains TransferId, kind, size and hash. `BaselineOffer`
 associates that binding with the coordinator's generation and baseline cursor.
@@ -396,12 +398,34 @@ changed PAKE-bound session/host/authority epoch requires fresh authentication.
 The client also rejects and invalidates changed local session/epoch/host/store scope.
 
 `pump` sends at most one Bulk message or Reliable catch-up event per call; one
-outstanding catch-up event is ACKed before the next is sent. Only sent cursors may
-be ACKed. `SyncTiming` exposes overall start, last progress and transfer progress,
-with an explicit-clock timeout predicate. The game runtime enforces a 300-second
-overall Syncing timeout and 30-second transfer-progress timeout and removes stalled
-connections. The foundation itself schedules no timeout policy. A legal Start
-without chunks therefore remains visible to policy.
+outstanding catch-up event is ACKed before the next is sent. Only advancing ACKs
+of sent cursors count as peer progress. Image transfer has its own two-slot FIFO,
+`AwaitingImageSlot`, with no peer payload, chunk list or catch-up retention before
+slot acquisition. Cached-image peers use baseline slots independently.
+`VerifiedPuzzleImage` verifies immutable Arc content against the session once;
+`begin_image` reuses that verified digest while generic `begin` hashes its payload.
+
+`SyncTiming` distinguishes sync start, phase entry, last meaningful peer progress,
+outstanding response and observed Bulk delivery. `SyncPolicy` defaults to 12-second
+control responses, 30-second delivery stall, 30-second throughput grace and a
+128 KiB/s minimum delivery rate. Offer acceptance, image-ready, baseline-installed,
+catch-up ACK and finalization ACK all have separate response waits. Duplicate,
+obsolete and invalid traffic cannot renew them; local send/pump cannot renew them.
+
+Transfer lifetime is grace + ceil(size / minimum rate). Sync lifetime is 300 seconds
+plus that size budget once per transfer kind; same-kind restart never renews it.
+Thus a progressing large image may exceed 300 seconds, while a one-byte trickle
+cannot keep its slot indefinitely. After Finish, Bulk timing continues until
+native pending + unacknowledged bytes drain; only then does the short application
+ACK deadline begin. The host's `expire` owns Syncing timers and removes peers,
+slots, queues and retention even if no further packet arrives. Bootstrap owns
+only authentication and its separate 5-second Authenticated handoff. Clients use
+the same progress/lifetime policy and drop Bulk storage on failure.
+
+Bulk generation preflights native reliable backlog before advancing the sender or
+sealing a record. Host generation is bounded to 128 KiB/frame and 4 MiB/s including
+reserved framing; runtime rotates joining peers each frame. See the complete
+[resource and timeout policy](NETWORK_TRANSPORT.md#bounded-connection-and-join-lifecycle).
 
 ### Authoritative final reconciliation and barrier
 

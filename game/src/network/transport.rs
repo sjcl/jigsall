@@ -1,4 +1,22 @@
-use std::{fmt, net::SocketAddr};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+};
+
+/// Abuse-accounting key; independent of password/player authentication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Origin {
+    Ip(IpAddr),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReliableEgress {
+    /// Pending AND sent-unacknowledged bytes across all lanes.
+    pub queued_bytes: u64,
+    pub bulk_queued_bytes: u64,
+    /// Monotonic conservative delivery estimate for the Bulk lane only.
+    pub bulk_delivered_bytes: u64,
+}
 
 /// Backend-issued identity. The number is a Puzzella token, never a native handle.
 /// Backends must not reuse a token during their lifetime.
@@ -52,6 +70,13 @@ pub enum DisconnectReason {
     BackendFailure,
     AuthenticationFailed,
     AuthenticationTimeout,
+    AuthenticatedHandoffTimeout,
+    BackendConnectionTimeout,
+    JoinCapacity,
+    SyncPhaseTimeout,
+    SyncLifetime,
+    HostCapacityTimeout,
+    BulkStalled,
     ProtocolViolation,
 }
 
@@ -64,6 +89,8 @@ pub enum TransportError {
     Capacity,
     ProtocolViolation,
     Backend(String),
+    Backpressure,
+    EgressUnavailable,
 }
 
 impl fmt::Display for TransportError {
@@ -97,6 +124,17 @@ pub enum TransportEvent {
 /// Call once per Bevy frame. Each send is one message, preserving boundaries.
 /// An accepted reliable send is queued, not an application acknowledgement.
 pub trait Transport {
+    fn origin(&self, _connection: ConnectionId) -> Option<Origin> {
+        None
+    }
+    /// Missing telemetry fails closed for Bulk, rather than assuming delivery.
+    fn reliable_egress(&self, _connection: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        Err(TransportError::EgressUnavailable)
+    }
+    /// Release pre-Ready admission occupancy only after a valid Ready commit.
+    fn mark_ready(&mut self, _connection: ConnectionId) -> Result<(), TransportError> {
+        Ok(())
+    }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError>;
     /// Called by SecureTransport only after bootstrap verifies the peer, during
     /// channel installation. Native backends may then lift pre-auth receive

@@ -1,4 +1,40 @@
 use super::*;
+
+#[test]
+fn immutable_session_image_hash_is_verified_once_and_reused_without_peer_copies() {
+    use puzzella_core::session::{ImageHash, SessionDefinition, SessionId};
+    let bytes: Arc<[u8]> = Arc::from(vec![19; 2 * 1024 * 1024]);
+    let session = SessionDefinition {
+        id: SessionId(17),
+        image_hash: ImageHash(Sha256::digest(&bytes).into()),
+    };
+    let before = PAYLOAD_DIGESTS.with(|n| n.get());
+    let image = VerifiedPuzzleImage::verify(bytes.clone(), session).unwrap();
+    let mut transfers = Vec::new();
+    for _ in 0..64 {
+        let mut sender = BulkTransferSender::default();
+        let mut transfer = sender.begin_image(&image).unwrap();
+        assert!(Arc::ptr_eq(&transfer.bytes, &bytes));
+        assert!(
+            matches!(transfer.next_message().unwrap(), Some(BulkTransferMessage::Start { sha256, .. }) if sha256 == session.image_hash.0)
+        );
+        assert_eq!(transfer.position, 0);
+        transfers.push(transfer);
+    }
+    assert_eq!(PAYLOAD_DIGESTS.with(|n| n.get()), before + 1);
+    drop(transfers);
+    assert_eq!(Arc::strong_count(&bytes), 2);
+    assert!(matches!(
+        VerifiedPuzzleImage::verify(
+            bytes,
+            SessionDefinition {
+                image_hash: ImageHash([0; 32]),
+                ..session
+            }
+        ),
+        Err(BulkTransferError::HashMismatch)
+    ));
+}
 use crate::network::{
     transport::MessageClass,
     wire::{self, WireError, WireMessage},

@@ -37,12 +37,9 @@ use crate::{
 use bevy::prelude::*;
 use bridge::CommandBridge;
 use puzzella_core::{protocol::*, session::*, ClientCommand, PlayerId, PuzzleDefinition};
-use std::{
-    collections::BTreeSet,
-    net::SocketAddr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+#[cfg(test)]
+use std::time::Duration;
+use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Instant};
 
 pub struct HostOptions {
     pub address: SocketAddr,
@@ -138,6 +135,7 @@ struct HostState {
     sync: HostSyncCoordinator,
     contexts: ProtocolDragContexts,
     joining: BTreeSet<ConnectionId>,
+    next_pump: Option<ConnectionId>,
 }
 struct ClientState {
     bootstrap: ClientBootstrap,
@@ -182,10 +180,14 @@ impl<T: DirectIpTransport> Runtime<T> {
         image: Option<Arc<[u8]>>,
         now: Instant,
     ) -> Result<Self, RuntimeStartError> {
-        if image.as_ref().is_some_and(|bytes| {
-            crate::persistence::image_hash(bytes) != options.session.image_hash
-        }) {
-            return Err(RuntimeStartError::ImageHashMismatch);
+        let verified_image = image
+            .as_ref()
+            .map(|bytes| super::bulk::VerifiedPuzzleImage::verify(bytes.clone(), options.session))
+            .transpose()
+            .map_err(|_| RuntimeStartError::ImageHashMismatch)?;
+        let mut sync = HostSyncCoordinator::default();
+        if let Some(image) = verified_image {
+            sync.set_image(image);
         }
         let mut transport = SecureTransport::new(backend);
         let listener = transport
@@ -211,9 +213,10 @@ impl<T: DirectIpTransport> Runtime<T> {
             live: Default::default(),
             role: Role::Host(Box::new(HostState {
                 bootstrap: HostBootstrap::new(options.password, metadata, [], now),
-                sync: Default::default(),
+                sync,
                 contexts: Default::default(),
                 joining: Default::default(),
+                next_pump: None,
             })),
             session: Some(AuthoritySession::new(
                 options.session,
@@ -413,6 +416,13 @@ impl<T: DirectIpTransport> Runtime<T> {
                     }
                 }
                 Role::Client(client) => {
+                    if let Some(sync) = &mut client.sync {
+                        sync.invalidate();
+                    }
+                    client.sync = None;
+                    client.cached_image = None;
+                    self.decode = None;
+                    self.decoded = None;
                     let _ = client.bootstrap.process(
                         &event,
                         &mut self.transport,
@@ -453,6 +463,9 @@ impl<T: DirectIpTransport> Runtime<T> {
             if let TransportEvent::Disconnected { reason, .. }
             | TransportEvent::ConnectionFailed { reason, .. } = event
             {
+                if reason == DisconnectReason::BackendConnectionTimeout {
+                    self.status.error = Some(format!("{reason:?}"));
+                }
                 self.disconnect(connection, reason, None, store)?;
                 continue;
             }
@@ -526,13 +539,14 @@ impl<T: DirectIpTransport> Runtime<T> {
                         Ok(())
                     };
                     if let Err(error) = result {
+                        let reason = error.disconnect_reason();
                         self.status.error = Some(format!("{error:?}"));
-                        self.disconnect(
-                            connection,
-                            DisconnectReason::ProtocolViolation,
-                            retained,
-                            store,
-                        )?;
+                        if super::lifecycle::is_abuse(reason)
+                            && host.sync.phase(connection).is_some()
+                        {
+                            host.sync.penalize(self.transport.origin(connection), now);
+                        }
+                        self.disconnect(connection, reason, retained, store)?;
                         continue;
                     }
                     if host.bootstrap.state(connection) == Some(ConnectionState::Ready) {
@@ -707,24 +721,36 @@ impl<T: DirectIpTransport> Runtime<T> {
                     self.live.remove(&id);
                     self.status.error = Some(format!("{error:?}"));
                 }
-                let joining: Vec<_> = host.joining.iter().copied().collect();
+                for (id, error) in host.sync.expire(
+                    &mut SyncHost {
+                        bootstrap: &mut host.bootstrap,
+                        connections: &mut self.connections,
+                    },
+                    &mut self.transport,
+                    now,
+                ) {
+                    host.joining.remove(&id);
+                    self.live.remove(&id);
+                    self.status.error = Some(format!("{error:?}"));
+                }
+                let mut joining: Vec<_> = host.joining.iter().copied().collect();
+                if let Some(next) = host.next_pump {
+                    let pivot = joining.partition_point(|id| *id < next);
+                    joining.rotate_left(pivot);
+                }
+                host.next_pump = joining.get(1).copied().or_else(|| joining.first().copied());
                 for id in joining {
                     let Role::Host(host) = &mut self.role else {
                         unreachable!()
                     };
-                    let timeout = host.sync.timing(id).is_some_and(|t| {
-                        t.timed_out(now, Duration::from_secs(300), Duration::from_secs(30))
-                    });
-                    let result = if timeout {
-                        Err("sync timeout".into())
-                    } else {
+                    let result = {
                         let authority = SyncAuthority {
                             session: self.session.as_ref().unwrap(),
                             store,
                             contexts: &host.contexts,
                             definition: self.definition.as_ref().unwrap(),
                         };
-                        let result = if host.sync.phase(id) == Some(SyncPhase::RestartRequired) {
+                        if host.sync.phase(id) == Some(SyncPhase::RestartRequired) {
                             host.sync.restart(
                                 &host.bootstrap,
                                 id,
@@ -740,12 +766,15 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 &authority,
                                 now,
                             )
-                        };
-                        result.map_err(|e| format!("{e:?}"))
+                        }
                     };
                     if let Err(error) = result {
-                        self.status.error = Some(error);
-                        self.disconnect(id, DisconnectReason::ConnectionProblem, None, store)?;
+                        let reason = error.disconnect_reason();
+                        if super::lifecycle::is_abuse(reason) {
+                            host.sync.penalize(self.transport.origin(id), now);
+                        }
+                        self.status.error = Some(format!("{error:?}"));
+                        self.disconnect(id, reason, None, store)?;
                     }
                 }
                 let Role::Host(host) = &self.role else {
@@ -766,11 +795,10 @@ impl<T: DirectIpTransport> Runtime<T> {
                     .bootstrap
                     .expire(&mut self.transport, &mut self.connections, now)
                     .map_err(|e| format!("{e:?}"))?;
-                if client.sync.as_ref().is_some_and(|sync| {
-                    sync.timing()
-                        .timed_out(now, Duration::from_secs(300), Duration::from_secs(30))
-                }) {
-                    return Err("sync timeout".into());
+                if let Some(error) = client.sync.as_ref().and_then(|sync| sync.timeout(now)) {
+                    client.sync.as_mut().unwrap().invalidate();
+                    client.sync = None;
+                    return Err(format!("{error:?}"));
                 }
             }
         }

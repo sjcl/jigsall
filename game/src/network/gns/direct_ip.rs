@@ -1,12 +1,16 @@
 use crate::network::{
+    lifecycle::{
+        self, Admission, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING,
+        MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
+    },
     rate_limit::{
         InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY,
         PREAUTH_INBOUND_POLICY,
     },
     secure::record_limit,
     transport::{
-        ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Transport,
-        TransportError, TransportEvent,
+        ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Origin,
+        ReliableEgress, Transport, TransportError, TransportEvent,
     },
     wire,
 };
@@ -16,13 +20,14 @@ use ::gns::{
     ReceivedMessagesInto, SendFlags, ToSend,
 };
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     net::{SocketAddr, UdpSocket},
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
-pub const MAX_CONNECTIONS: usize = 64;
+pub use crate::network::lifecycle::MAX_CONNECTIONS;
 pub const MAX_LISTENERS: usize = 8;
 const RECEIVE_CHUNK: usize = 32;
 const MAX_RECEIVE_PER_POLL: usize = 512;
@@ -84,6 +89,28 @@ enum Socket {
     Client(GnsSocket<IsClient>),
 }
 impl Socket {
+    fn queued_reliable(&self, native: GnsConnection) -> Result<u64, TransportError> {
+        let (s, _) = match self {
+            Self::Server(s) => s.get_connection_real_time_status(native, 0),
+            Self::Client(s) => s.get_connection_real_time_status(native, 0),
+        }
+        .map_err(backend)?;
+        Ok(s.pending_bytes_reliable() as u64 + s.bytes_sent_unacked_reliable() as u64)
+    }
+    fn egress(&self, native: GnsConnection) -> Result<(u64, u64), TransportError> {
+        let (status, lanes) = match self {
+            Self::Server(s) => s.get_connection_real_time_status(native, 3),
+            Self::Client(s) => s.get_connection_real_time_status(native, 3),
+        }
+        .map_err(backend)?;
+        let total =
+            status.pending_bytes_reliable() as u64 + status.bytes_sent_unacked_reliable() as u64;
+        let bulk = &lanes[2];
+        Ok((
+            total,
+            bulk.pending_bytes_reliable() as u64 + bulk.bytes_sent_unacked_reliable() as u64,
+        ))
+    }
     fn events(&self) -> Vec<GnsConnectionEvent> {
         match self {
             Self::Server(s) => s.receive_events().take(CALLBACK_BATCH).collect(),
@@ -137,6 +164,11 @@ struct Connection {
     endpoint: Endpoint,
     connected: bool,
     authenticated: bool,
+    ready: bool,
+    created: Instant,
+    origin: Origin,
+    bulk_enqueued: u64,
+    bulk_delivered: Cell<u64>,
     rate_limit: InboundRateLimiter,
 }
 
@@ -151,6 +183,8 @@ pub struct GnsDirectIp {
     pending: Vec<TransportEvent>,
     next_receive_endpoint: Option<Endpoint>,
     rate_policy: &'static InboundRatePolicy,
+    admission: Admission,
+    next_admission_log: Option<Instant>,
 }
 
 impl GnsDirectIp {
@@ -166,6 +200,8 @@ impl GnsDirectIp {
             pending: Vec::new(),
             next_receive_endpoint: None,
             rate_policy,
+            admission: Admission::connections(),
+            next_admission_log: None,
         })
     }
     /// Remove mappings; dropping an outgoing socket performs its owned close.
@@ -184,7 +220,19 @@ impl GnsDirectIp {
         reason: DisconnectReason,
         events: &mut Vec<TransportEvent>,
     ) {
+        self.terminate_at(id, reason, events, Instant::now());
+    }
+    fn terminate_at(
+        &mut self,
+        id: ConnectionId,
+        reason: DisconnectReason,
+        events: &mut Vec<TransportEvent>,
+        now: Instant,
+    ) {
         if let Some(connection) = self.connections.get(&id) {
+            if lifecycle::is_abuse(reason) {
+                self.admission.penalize(Some(connection.origin), now);
+            }
             events.push(if connection.connected {
                 TransportEvent::Disconnected {
                     connection: id,
@@ -213,13 +261,31 @@ impl GnsDirectIp {
         let mut id = self.native_ids.get(&native).copied();
         if info.state() == State::k_ESteamNetworkingConnectionState_Connecting && id.is_none() {
             if let Some(Socket::Server(socket)) = self.sockets.get(&endpoint) {
-                if self.connections.len() >= MAX_CONNECTIONS {
-                    let _ = socket.close_connection(
-                        native,
-                        close_code(DisconnectReason::BackendFailure),
-                        None,
-                        false,
-                    );
+                let now = Instant::now();
+                let origin = Origin::Ip(info.remote_address().to_canonical());
+                let pending = self.connections.values().filter(|c| !c.ready).count();
+                let connecting = self.connections.values().filter(|c| !c.connected).count();
+                let origin_pending = self
+                    .connections
+                    .values()
+                    .filter(|c| !c.ready && c.origin == origin)
+                    .count();
+                let refusal = if self.connections.len() >= MAX_CONNECTIONS
+                    || pending >= MAX_PENDING_CONNECTIONS
+                    || connecting >= MAX_CONNECTING
+                {
+                    Some(DisconnectReason::JoinCapacity)
+                } else {
+                    self.admission
+                        .admit(Some(origin), origin_pending, now)
+                        .err()
+                };
+                if let Some(reason) = refusal {
+                    if self.next_admission_log.is_none_or(|next| now >= next) {
+                        bevy::log::warn!("Direct IP connection admission: {reason:?}");
+                        self.next_admission_log = Some(now + std::time::Duration::from_secs(1));
+                    }
+                    let _ = socket.close_connection(native, close_code(reason), None, false);
                     return Ok(());
                 }
                 let issued = ConnectionId::new(token()?);
@@ -230,6 +296,11 @@ impl GnsDirectIp {
                         endpoint,
                         connected: false,
                         authenticated: false,
+                        ready: false,
+                        created: now,
+                        origin,
+                        bulk_enqueued: 0,
+                        bulk_delivered: Cell::new(0),
                         rate_limit: InboundRateLimiter::with_policy(
                             &PREAUTH_INBOUND_POLICY,
                             Instant::now(),
@@ -270,9 +341,51 @@ impl GnsDirectIp {
         }
         Ok(())
     }
+    fn expire_connecting(&mut self, now: Instant, events: &mut Vec<TransportEvent>) {
+        let expired: Vec<_> = self
+            .connections
+            .iter()
+            .filter(|(_, c)| {
+                !c.connected && now.saturating_duration_since(c.created) >= CONNECTING_TIMEOUT
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        for id in expired {
+            self.terminate_at(id, DisconnectReason::BackendConnectionTimeout, events, now);
+        }
+    }
 }
 
 impl Transport for GnsDirectIp {
+    fn origin(&self, id: ConnectionId) -> Option<Origin> {
+        self.connections.get(&id).map(|c| c.origin)
+    }
+    fn reliable_egress(&self, id: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        let c = self
+            .connections
+            .get(&id)
+            .ok_or(TransportError::UnknownConnection)?;
+        let (queued_bytes, bulk_queued_bytes) = self.sockets[&c.endpoint].egress(c.native)?;
+        // Native backlog includes framing: subtraction underestimates delivery.
+        // A high-water mark makes this conservative estimate monotonic.
+        let delivered = c
+            .bulk_delivered
+            .get()
+            .max(c.bulk_enqueued.saturating_sub(bulk_queued_bytes));
+        c.bulk_delivered.set(delivered);
+        Ok(ReliableEgress {
+            queued_bytes,
+            bulk_queued_bytes,
+            bulk_delivered_bytes: delivered,
+        })
+    }
+    fn mark_ready(&mut self, id: ConnectionId) -> Result<(), TransportError> {
+        self.connections
+            .get_mut(&id)
+            .ok_or(TransportError::UnknownConnection)?
+            .ready = true;
+        Ok(())
+    }
     fn activate_secure_channel(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         let connection = self
             .connections
@@ -290,6 +403,7 @@ impl Transport for GnsDirectIp {
     }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.pending);
+        self.expire_connecting(Instant::now(), events);
         self.global.poll_callbacks();
         let callbacks: Vec<_> = self
             .sockets
@@ -409,22 +523,42 @@ impl Transport for GnsDirectIp {
             .sockets
             .get(&connection.endpoint)
             .ok_or(TransportError::UnknownConnection)?;
+        if class != MessageClass::Transient {
+            let queued = socket.queued_reliable(connection.native)?;
+            let limit = if class == MessageClass::Bulk {
+                MAX_BULK_QUEUE_BYTES
+            } else {
+                MAX_RELIABLE_QUEUE_BYTES
+            };
+            if queued.saturating_add(payload.len() as u64 + 64) > limit {
+                return Err(TransportError::Backpressure);
+            }
+        }
         let message = self
             .global
             .utils()
             .allocate_message(connection.native, flags(class), payload.to_vec())
             .set_lane(lane(class));
-        socket.send(message)
+        socket.send(message)?;
+        if class == MessageClass::Bulk {
+            let c = self.connections.get_mut(&id).expect("sent connection");
+            c.bulk_enqueued = c.bulk_enqueued.saturating_add(payload.len() as u64);
+        }
+        Ok(())
     }
     fn close(&mut self, id: ConnectionId, reason: DisconnectReason) -> Result<(), TransportError> {
+        if lifecycle::is_abuse(reason) {
+            self.admission.penalize(self.origin(id), Instant::now());
+        }
         let connection = self
             .connections
             .get(&id)
             .ok_or(TransportError::UnknownConnection)?;
-        self.sockets
+        let close_result = self
+            .sockets
             .get(&connection.endpoint)
             .ok_or(TransportError::UnknownConnection)?
-            .close_before_removal(connection.native, reason)?;
+            .close_before_removal(connection.native, reason);
         let connected = connection.connected;
         self.forget(id);
         self.pending.push(if connected {
@@ -438,7 +572,7 @@ impl Transport for GnsDirectIp {
                 reason,
             }
         });
-        Ok(())
+        close_result
     }
 }
 
@@ -511,7 +645,10 @@ impl DirectIpTransport for GnsDirectIp {
         Ok(())
     }
     fn connect(&mut self, address: SocketAddr) -> Result<ConnectionId, TransportError> {
-        if self.connections.len() >= MAX_CONNECTIONS {
+        if self.connections.len() >= MAX_CONNECTIONS
+            || self.connections.values().filter(|c| !c.ready).count() >= MAX_PENDING_CONNECTIONS
+            || self.connections.values().filter(|c| !c.connected).count() >= MAX_CONNECTING
+        {
             return Err(TransportError::Capacity);
         }
         let id = ConnectionId::new(token()?);
@@ -534,6 +671,11 @@ impl DirectIpTransport for GnsDirectIp {
                 endpoint,
                 connected: false,
                 authenticated: false,
+                ready: false,
+                created: Instant::now(),
+                origin: Origin::Ip(address.ip().to_canonical()),
+                bulk_enqueued: 0,
+                bulk_delivered: Cell::new(0),
                 rate_limit: InboundRateLimiter::with_policy(
                     &PREAUTH_INBOUND_POLICY,
                     Instant::now(),
@@ -564,6 +706,75 @@ mod tests {
         net::Ipv4Addr,
         time::{Duration, Instant},
     };
+    #[test]
+    fn native_invalid_message_cleanup_preserves_origin_cooldown() {
+        let sink = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut backend = GnsDirectIp::new().unwrap();
+        let now = Instant::now();
+        let origin = Origin::Ip(Ipv4Addr::LOCALHOST.into());
+        let mut events = Vec::new();
+        for _ in 0..lifecycle::COOLDOWN_FAILURES {
+            backend.admission.admit(Some(origin), 0, now).unwrap();
+            let id = backend.connect(sink.local_addr().unwrap()).unwrap();
+            backend.terminate_at(id, DisconnectReason::InvalidMessage, &mut events, now);
+            assert!(!backend.connections.contains_key(&id));
+            // A later native callback must not count the same failure again.
+            backend.terminate_at(id, DisconnectReason::InvalidMessage, &mut events, now);
+        }
+        assert_eq!(events.len(), lifecycle::COOLDOWN_FAILURES as usize);
+        assert_eq!(
+            backend.admission.admit(Some(origin), 0, now),
+            Err(DisconnectReason::RateLimited)
+        );
+        assert_eq!(
+            backend.admission.admit(
+                Some(origin),
+                0,
+                now + lifecycle::ORIGIN_COOLDOWN - Duration::from_nanos(1)
+            ),
+            Err(DisconnectReason::RateLimited)
+        );
+        backend
+            .admission
+            .admit(Some(origin), 0, now + lifecycle::ORIGIN_COOLDOWN)
+            .unwrap();
+        assert!(backend.native_ids.is_empty());
+        assert!(backend.sockets.is_empty());
+    }
+    #[test]
+    fn gns_connecting_slots_expire_with_explicit_time_without_sleep() {
+        let sink = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut backend = GnsDirectIp::new().unwrap();
+        let mut ids = Vec::new();
+        for _ in 0..MAX_CONNECTING {
+            ids.push(backend.connect(sink.local_addr().unwrap()).unwrap());
+        }
+        assert_eq!(
+            backend.connect(sink.local_addr().unwrap()),
+            Err(TransportError::Capacity)
+        );
+        let at = backend
+            .connections
+            .values()
+            .map(|c| c.created)
+            .max()
+            .unwrap()
+            + CONNECTING_TIMEOUT;
+        let mut events = Vec::new();
+        backend.expire_connecting(at, &mut events);
+        assert_eq!(events.len(), MAX_CONNECTING);
+        assert!(events.iter().all(|e| matches!(
+            e,
+            TransportEvent::ConnectionFailed {
+                reason: DisconnectReason::BackendConnectionTimeout,
+                ..
+            }
+        )));
+        assert!(backend.connections.is_empty());
+        assert!(backend.native_ids.is_empty());
+        assert!(backend.sockets.is_empty());
+        backend.connect(sink.local_addr().unwrap()).unwrap();
+    }
 
     fn poll(transport: &mut GnsDirectIp) -> Vec<TransportEvent> {
         let mut events = Vec::new();
@@ -853,6 +1064,9 @@ mod tests {
             sender
                 .send(sender_id, MessageClass::Control, &control)
                 .unwrap();
+            // The maximum Control record occupies the Bulk preflight budget.
+            // Drain its native ACK without polling/dequeuing the receiver tail.
+            flush_and_wait_for_reliable_ack(sender.backend_mut(), sender_id);
             sender.send(sender_id, MessageClass::Bulk, &bulk).unwrap();
             flush_and_wait_for_reliable_ack(sender.backend_mut(), sender_id);
             let mut events = Vec::new();

@@ -97,6 +97,9 @@ fn connected(connections: &mut SessionConnections, connection: ConnectionId, pla
 
 #[derive(Default)]
 pub(super) struct FakeTransport {
+    pub(super) egress: Option<ReliableEgress>,
+    pub(super) bulk_sent: u64,
+    pub(super) origin: Option<Origin>,
     pub(super) inbox: Vec<TransportEvent>,
     pub(super) sent: Vec<TransportEvent>,
     pub(super) fail: Option<ConnectionId>,
@@ -104,6 +107,15 @@ pub(super) struct FakeTransport {
     pub(super) fail_close: bool,
 }
 impl Transport for FakeTransport {
+    fn origin(&self, _: ConnectionId) -> Option<Origin> {
+        self.origin
+    }
+    fn reliable_egress(&self, _: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        Ok(self.egress.unwrap_or(ReliableEgress {
+            bulk_delivered_bytes: self.bulk_sent,
+            ..Default::default()
+        }))
+    }
     fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
         if self.fail_activation == Some(connection) {
             return Err(TransportError::NotConnected);
@@ -122,6 +134,9 @@ impl Transport for FakeTransport {
     ) -> Result<(), TransportError> {
         if self.fail == Some(connection) {
             return Err(TransportError::NotConnected);
+        }
+        if class == MessageClass::Bulk {
+            self.bulk_sent += payload.len() as u64;
         }
         self.sent.push(TransportEvent::Message {
             connection,
