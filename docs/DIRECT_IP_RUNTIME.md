@@ -146,6 +146,8 @@ localhost host/join through runtime APIs, transfers/decodes an actual PNG, promo
 Ready, and runs Grab/Release through scheduled commands. It is selected by the
 existing serial GNS CI test filter.
 
-Normal fmt checks, Clippy, test/doctest and builds run in GitHub Actions under
-AGENTS.md. No runtime FPS or cross-GPU/OS bit identity is claimed by these tests.
+The repository's GitHub Actions workflow covers fmt, Clippy, tests/doctests and
+builds on Windows/Linux with default and all features, plus serial localhost GNS
+tests. Local validation follows repository and task-specific instructions.
+No runtime FPS or cross-GPU/OS bit identity is claimed by these tests.
 Remote drag GPU rendering remains a follow-up.
