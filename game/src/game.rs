@@ -218,6 +218,7 @@ fn cleanup_game(
     mut progress: ResMut<PieceGenerationProgress>,
     mut game: ResMut<GameData>,
     mut config: ResMut<PuzzleConfig>,
+    file_registry: Res<crate::asset_reader::ExternalFileRegistry>,
     mut overlay: ResMut<crate::render::SelectionOverlay>,
     mut persistence: ResMut<PersistenceState>,
     mut autosave: ResMut<crate::persistence::autosave::AutosaveTimer>,
@@ -232,6 +233,7 @@ fn cleanup_game(
     selection.cancel();
     *progress = default();
     *game = default();
+    file_registry.clear();
     config.image_path.clear();
     persistence.generation = persistence.generation.wrapping_add(1);
     persistence.current_save = None;
@@ -275,7 +277,7 @@ mod tests {
     };
 
     #[test]
-    fn returning_to_menu_clears_image_load_failure() {
+    fn returning_to_menu_clears_image_load_failure_and_external_paths() {
         let (service, _requests) = PersistenceService::with_storage_requests();
         let mut app = App::new();
         app.insert_resource(service)
@@ -297,12 +299,19 @@ mod tests {
             .resource_mut::<NextState<AppState>>()
             .set(AppState::GameSetup);
         app.update();
-        app.world_mut().resource_mut::<PuzzleConfig>().image_path = "broken.png".into();
+        let key = app
+            .world()
+            .resource::<crate::asset_reader::ExternalFileRegistry>()
+            .register_file("broken.png");
+        app.world()
+            .resource::<crate::asset_reader::ExternalFileRegistry>()
+            .register_file("older.png");
+        app.world_mut().resource_mut::<PuzzleConfig>().image_path = key.clone();
         app.world()
             .resource::<ImageLoadSender>()
             .tx_results
             .send(crate::asset_reader::ImageLoadResult {
-                virtual_key: "broken.png".into(),
+                virtual_key: key,
                 image: Err("Image is too large".into()),
                 original: None,
             })
@@ -315,6 +324,10 @@ mod tests {
         app.update();
         assert!(!app.world().contains_resource::<ImageLoadError>());
         assert!(app.world().resource::<PuzzleConfig>().image_path.is_empty());
+        assert!(app
+            .world()
+            .resource::<crate::asset_reader::ExternalFileRegistry>()
+            .is_empty());
     }
 
     #[test]

@@ -104,13 +104,7 @@ fn assert_previous_image(app: &App) {
         app.world().resource::<OriginalPuzzleImage>().hash,
         puzzella_game::persistence::image_hash(b"previous image")
     );
-    assert!(app
-        .world()
-        .resource::<ExternalFileRegistry>()
-        .registered_paths
-        .read()
-        .unwrap()
-        .is_empty());
+    assert!(app.world().resource::<ExternalFileRegistry>().is_empty());
     assert!(app
         .world()
         .resource::<ImageLoadChannels>()
@@ -191,6 +185,58 @@ fn selected_file_uses_existing_decode_and_original_image_pipeline() {
         puzzella_game::persistence::image_hash(&bytes)
     );
     assert_eq!(original.encoded.unwrap().as_ref(), bytes.as_slice());
+}
+
+#[test]
+fn replacing_image_releases_previous_path_and_keeps_worker_results() {
+    let mut app = app();
+    let directory = tempfile::tempdir().unwrap();
+    let first_path = directory.path().join("first.png");
+    let second_path = directory.path().join("second.png");
+    for (path, height) in [(&first_path, 3), (&second_path, 4)] {
+        image::RgbImage::from_pixel(2, height, image::Rgb([23, 45, 67]))
+            .save(path)
+            .unwrap();
+    }
+    let selection = begin_selection(&mut app);
+    complete(&selection, Some(first_path.clone()));
+    finish(&mut app);
+    let first_key = app.world().resource::<PuzzleConfig>().image_path.clone();
+
+    let cancelled = begin_selection(&mut app);
+    complete(&cancelled, None);
+    finish(&mut app);
+    assert_eq!(app.world().resource::<PuzzleConfig>().image_path, first_key);
+    assert_eq!(
+        app.world()
+            .resource::<ExternalFileRegistry>()
+            .resolve_path(&first_key),
+        Some(first_path)
+    );
+
+    let replacement = begin_selection(&mut app);
+    complete(&replacement, Some(second_path.clone()));
+    finish(&mut app);
+    let second_key = app.world().resource::<PuzzleConfig>().image_path.clone();
+    let registry = app.world().resource::<ExternalFileRegistry>();
+    assert_ne!(second_key, first_key);
+    assert_eq!(registry.resolve_path(&first_key), None);
+    assert_eq!(registry.resolve_path(&second_key), Some(second_path));
+    assert_eq!(
+        registry.get_original_filename(&second_key).as_deref(),
+        Some("second.png")
+    );
+
+    // Workers own their source paths even after the registry releases a mapping.
+    let results = &app.world().resource::<ImageLoadChannels>().rx_results;
+    let loaded: std::collections::HashMap<_, _> = (0..2)
+        .map(|_| {
+            let result = results.recv_timeout(Duration::from_secs(5)).unwrap();
+            (result.virtual_key, result.image.unwrap().size())
+        })
+        .collect();
+    assert_eq!(loaded.get(&first_key), Some(&UVec2::new(2, 3)));
+    assert_eq!(loaded.get(&second_key), Some(&UVec2::new(2, 4)));
 }
 
 #[test]

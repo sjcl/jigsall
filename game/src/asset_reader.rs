@@ -1,65 +1,84 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-/// 外部ファイルパス管理
+/// Maps virtual image keys to the selected source files.
 #[derive(Resource, Default)]
 pub struct ExternalFileRegistry {
-    /// 仮想パス -> 実際のファイルパス のマッピング
-    pub registered_paths: Arc<RwLock<HashMap<String, PathBuf>>>,
-    /// 次に使用するIDカウンター
-    pub next_id: Arc<RwLock<u64>>,
+    registered_paths: RwLock<HashMap<String, PathBuf>>,
+    // Never reset between selections or sessions: late load results keep distinct keys.
+    next_id: AtomicU64,
 }
 
 impl ExternalFileRegistry {
-    /// 外部ファイルを登録して一意なキーを返す
+    /// Registers a source file and returns its unique virtual key.
     pub fn register_file<P: AsRef<Path>>(&self, file_path: P) -> String {
         let file_path = file_path.as_ref().to_path_buf();
-
-        // IDを取得
-        let mut id_guard = self.next_id.write().unwrap();
-        let id = *id_guard;
-        *id_guard += 1;
-        drop(id_guard);
-
-        // 一意なキーを生成
+        // The map lock synchronizes paths; the counter only allocates distinct IDs.
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let extension = file_path
             .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("bin");
-        let virtual_key = format!("external_file_{}.{}", id, extension);
-
-        // マッピングを保存
-        let mut paths_guard = self.registered_paths.write().unwrap();
-        paths_guard.insert(virtual_key.clone(), file_path.clone());
-        drop(paths_guard);
-
-        println!(
-            "📁 Registered external file: {} -> {}",
+        let virtual_key = format!("external_file_{id}.{extension}");
+        debug!(
+            "Registered external file: {} -> {}",
             virtual_key,
             file_path.display()
         );
+        self.write_paths().insert(virtual_key.clone(), file_path);
         virtual_key
     }
 
-    /// 仮想キーから実際のファイルパスを取得
+    /// Returns the source path for a registered virtual key.
     pub fn resolve_path(&self, virtual_key: &str) -> Option<PathBuf> {
-        let paths_guard = self.registered_paths.read().unwrap();
-        paths_guard.get(virtual_key).cloned()
+        self.read_paths().get(virtual_key).cloned()
     }
 
-    /// 外部ファイルキーかどうかをチェック
+    /// Releases a mapping when its image selection is replaced.
+    pub fn unregister_file(&self, virtual_key: &str) -> Option<PathBuf> {
+        self.write_paths().remove(virtual_key)
+    }
+
+    /// Releases all source paths when returning to the menu, preserving the ID counter.
+    pub fn clear(&self) {
+        self.write_paths().clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.read_paths().is_empty()
+    }
+
+    // Each map operation is independent, so a prior panic need not discard other entries.
+    fn read_paths(&self) -> RwLockReadGuard<'_, HashMap<String, PathBuf>> {
+        self.registered_paths.read().unwrap_or_else(|error| {
+            warn!("Recovering poisoned external file registry");
+            self.registered_paths.clear_poison();
+            error.into_inner()
+        })
+    }
+
+    fn write_paths(&self) -> RwLockWriteGuard<'_, HashMap<String, PathBuf>> {
+        self.registered_paths.write().unwrap_or_else(|error| {
+            warn!("Recovering poisoned external file registry");
+            self.registered_paths.clear_poison();
+            error.into_inner()
+        })
+    }
+
+    /// Identifies virtual keys, including those whose mappings have been released.
     pub fn is_external_key(&self, key: &str) -> bool {
         key.starts_with("external_file_")
     }
 
-    /// パズル設定のimage_pathが外部ファイルかどうかチェック
+    /// Checks whether a puzzle image path is an external file key.
     pub fn is_external_image_path(&self, image_path: &str) -> bool {
         self.is_external_key(image_path)
     }
 
-    /// 仮想キーからオリジナルのファイル名を取得
+    /// Returns the original filename for display in the image picker.
     pub fn get_original_filename(&self, virtual_key: &str) -> Option<String> {
         if let Some(real_path) = self.resolve_path(virtual_key) {
             real_path
@@ -72,17 +91,17 @@ impl ExternalFileRegistry {
     }
 }
 
-/// ExternalFileRegistryを初期化するプラグイン
+/// Initializes the registry for images loaded directly from source files.
 pub struct DirectFileAssetPlugin;
 
 impl Plugin for DirectFileAssetPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ExternalFileRegistry>();
-        println!("🔧 DirectFileAssetPlugin: ExternalFileRegistry initialized");
+        debug!("External file registry initialized");
     }
 }
 
-/// 画像読み込み結果
+/// A decoded image and its original bytes, identified by the selection's virtual key.
 pub struct ImageLoadResult {
     pub virtual_key: String,
     pub image: Result<Image, String>,
@@ -151,6 +170,113 @@ mod tests {
         asset::RenderAssetUsages,
         render::{render_asset::RenderAsset, texture::GpuImage},
     };
+
+    #[test]
+    fn concurrent_registrations_keep_unique_keys_and_source_paths() {
+        let registry = ExternalFileRegistry::default();
+        let registrations = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|worker| {
+                    let registry = &registry;
+                    scope.spawn(move || {
+                        (0..64)
+                            .map(|index| {
+                                let path = PathBuf::from(format!("source-{worker}-{index}.png"));
+                                (registry.register_file(&path), path)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let keys: std::collections::HashSet<_> = registrations.iter().map(|(key, _)| key).collect();
+        assert_eq!(keys.len(), 8 * 64);
+        for (key, path) in registrations {
+            assert!(key.ends_with(".png"));
+            assert_eq!(registry.resolve_path(&key), Some(path));
+        }
+    }
+
+    #[test]
+    fn releasing_paths_preserves_other_entries_and_does_not_reuse_keys() {
+        let registry = ExternalFileRegistry::default();
+        let first = registry.register_file("first.png");
+        let second = registry.register_file("second.jpg");
+        assert_eq!(
+            registry.get_original_filename(&first).as_deref(),
+            Some("first.png")
+        );
+        assert_eq!(
+            registry.unregister_file(&first),
+            Some(PathBuf::from("first.png"))
+        );
+        assert_eq!(registry.unregister_file(&first), None);
+        assert_eq!(registry.resolve_path(&first), None);
+        assert_eq!(registry.get_original_filename(&first), None);
+        assert!(registry.is_external_image_path(&first));
+        assert_eq!(
+            registry.resolve_path(&second),
+            Some(PathBuf::from("second.jpg"))
+        );
+
+        registry.clear();
+        assert!(registry.is_empty());
+        assert_eq!(registry.resolve_path(&second), None);
+        let next = registry.register_file("first.png");
+        assert_ne!(next, first);
+        assert_ne!(next, second);
+        assert_eq!(registry.resolve_path(&first), None);
+    }
+
+    fn poison_paths(registry: &ExternalFileRegistry) {
+        std::thread::scope(|scope| {
+            assert!(scope
+                .spawn(|| {
+                    let _guard = registry.registered_paths.write().unwrap();
+                    panic!("poison registry for recovery test");
+                })
+                .join()
+                .is_err());
+        });
+        assert!(registry.registered_paths.is_poisoned());
+    }
+
+    #[test]
+    fn poisoned_registry_recovers_for_reads_registration_and_cleanup() {
+        let registry = ExternalFileRegistry::default();
+        let first = registry.register_file("first.png");
+        poison_paths(&registry);
+        assert_eq!(
+            registry.resolve_path(&first),
+            Some(PathBuf::from("first.png"))
+        );
+        assert!(!registry.registered_paths.is_poisoned());
+
+        poison_paths(&registry);
+        let second = registry.register_file("second.jpg");
+        assert_eq!(
+            registry.resolve_path(&second),
+            Some(PathBuf::from("second.jpg"))
+        );
+        assert_eq!(
+            registry.resolve_path(&first),
+            Some(PathBuf::from("first.png"))
+        );
+
+        poison_paths(&registry);
+        assert_eq!(
+            registry.unregister_file(&first),
+            Some(PathBuf::from("first.png"))
+        );
+        poison_paths(&registry);
+        registry.clear();
+        assert!(registry.is_empty());
+        assert!(!registry.registered_paths.is_poisoned());
+    }
 
     #[test]
     fn selected_original_can_be_saved_after_source_file_is_deleted() {

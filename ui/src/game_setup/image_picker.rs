@@ -61,6 +61,7 @@ pub(crate) fn finish_image_selection(
 ) {
     if let Some(path) = picker.take_result() {
         let key = registry.register_file(&path);
+        registry.unregister_file(&config.image_path);
         config.image_path = key.clone();
         start_thread_image_load(key, path, sender.tx_results.clone());
         commands.remove_resource::<PuzzleImage>();
