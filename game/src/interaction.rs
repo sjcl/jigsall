@@ -117,9 +117,9 @@ impl PieceInteraction {
             }
         }
         let pending = self.pending_rotation?;
-        if !selection
+        if selection
             .latest
-            .is_some_and(|r| r.request_id == pending.request_id)
+            .is_none_or(|r| r.request_id != pending.request_id)
         {
             self.pending_rotation = None;
             return None;
