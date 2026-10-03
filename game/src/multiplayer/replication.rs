@@ -1,6 +1,8 @@
 //! Explicit transport-independent peer application. No scheduled/idle work.
 use crate::{
-    multiplayer::{GameSnapshot, SnapshotError, SnapshotExpectation},
+    multiplayer::{
+        GameSnapshot, JoinBaseline, JoinBaselineError, SnapshotError, SnapshotExpectation,
+    },
     resources::{pieces::AppliedCommand, PieceDataStore},
 };
 use bevy::math::Vec2;
@@ -356,17 +358,7 @@ impl PeerReplicationState {
         snapshot: &GameSnapshot,
         expected: SnapshotExpectation<'_>,
     ) -> Result<(), ReplicationError> {
-        if !session.is_active() {
-            return Err(ReplicationError::Protocol(ProtocolError::Frozen));
-        }
-        if expected.session != session.session_id() || expected.image_hash != session.image_hash() {
-            return Err(ReplicationError::Protocol(ProtocolError::WrongSession));
-        }
-        if expected.cursor.epoch != session.cursor().epoch || expected.cursor < session.cursor() {
-            return Err(ReplicationError::Protocol(
-                ProtocolError::WrongSnapshotCursor,
-            ));
-        }
+        Self::check_snapshot_session(session, expected).map_err(ReplicationError::Protocol)?;
         snapshot
             .install(store, expected)
             .map_err(ReplicationError::Snapshot)?;
@@ -376,6 +368,51 @@ impl PeerReplicationState {
             expected.cursor,
         );
         self.synchronize(session, store);
+        Ok(())
+    }
+
+    /// Trusted, authenticated same-epoch join baseline. All fallible validation
+    /// precedes mutation; accepted contexts restore only holds, without replaying
+    /// Grab or changing canonical Z/positions/local presentation.
+    pub fn install_join_baseline(
+        &mut self,
+        session: &mut AuthoritySession,
+        store: &mut PieceDataStore,
+        baseline: &JoinBaseline,
+        expected: SnapshotExpectation<'_>,
+    ) -> Result<(), JoinBaselineError> {
+        Self::check_snapshot_session(session, expected).map_err(JoinBaselineError::Protocol)?;
+        let prepared = baseline.prepare(expected)?;
+        baseline
+            .snapshot
+            .install_with_validated_connectivity(store, prepared.connectivity);
+        for (player, drag) in &prepared.drags {
+            store.restore_baseline_holds(*player, &drag.target);
+        }
+        *session = AuthoritySession::new(
+            session.session_definition(),
+            session.host(),
+            expected.cursor,
+        );
+        self.remote_drags = prepared.drags.into_iter().collect();
+        self.diverged = false;
+        self.scope = Some(Self::scope(session, store));
+        Ok(())
+    }
+
+    fn check_snapshot_session(
+        session: &AuthoritySession,
+        expected: SnapshotExpectation<'_>,
+    ) -> Result<(), ProtocolError> {
+        if !session.is_active() {
+            return Err(ProtocolError::Frozen);
+        }
+        if expected.session != session.session_id() || expected.image_hash != session.image_hash() {
+            return Err(ProtocolError::WrongSession);
+        }
+        if expected.cursor.epoch != session.cursor().epoch || expected.cursor < session.cursor() {
+            return Err(ProtocolError::WrongSnapshotCursor);
+        }
         Ok(())
     }
 }

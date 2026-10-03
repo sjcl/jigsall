@@ -182,6 +182,17 @@ impl CheckpointView<'_> {
     /// Resets holds, selections, cached highlights and dirty ranges; advances GPU epoch.
     pub fn install(&self, store: &mut PieceDataStore) -> Result<(), CheckpointError> {
         let connectivity = self.validated_connectivity()?;
+        self.install_with_validated_connectivity(store, connectivity);
+        Ok(())
+    }
+
+    /// Internal commit step: the caller must have validated this exact view.
+    /// Reuses the prepared DSU; no fallible checks remain after mutation starts.
+    pub(crate) fn install_with_validated_connectivity(
+        &self,
+        store: &mut PieceDataStore,
+        connectivity: PieceConnectivity,
+    ) {
         let states = self
             .pieces
             .iter()
@@ -218,7 +229,6 @@ impl CheckpointView<'_> {
             })
             .collect();
         store.replace_snapshot_states(states, self.next_z_order, connectivity);
-        Ok(())
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

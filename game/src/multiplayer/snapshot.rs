@@ -9,7 +9,7 @@ use crate::{
 };
 use puzzella_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
-    PuzzleDefinition,
+    PieceConnectivity, PuzzleDefinition,
 };
 use serde::{Deserialize, Serialize};
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 4;
@@ -53,8 +53,23 @@ impl GameSnapshot {
         })
     }
     pub fn validate(&self, expected: SnapshotExpectation<'_>) -> Result<(), SnapshotError> {
+        self.validated_connectivity(expected).map(|_| ())
+    }
+    pub(crate) fn validated_connectivity(
+        &self,
+        expected: SnapshotExpectation<'_>,
+    ) -> Result<PieceConnectivity, SnapshotError> {
         self.check_expectation(expected)?;
-        self.view().validated_connectivity().map(|_| ())
+        self.view().validated_connectivity()
+    }
+    /// Commit only after validating this snapshot and any join overlay.
+    pub(crate) fn install_with_validated_connectivity(
+        &self,
+        store: &mut PieceDataStore,
+        connectivity: PieceConnectivity,
+    ) {
+        self.view()
+            .install_with_validated_connectivity(store, connectivity);
     }
     fn check_expectation(&self, expected: SnapshotExpectation<'_>) -> Result<(), SnapshotError> {
         if self.schema_version != SNAPSHOT_SCHEMA_VERSION {
@@ -89,8 +104,9 @@ impl GameSnapshot {
         store: &mut PieceDataStore,
         expected: SnapshotExpectation<'_>,
     ) -> Result<(), SnapshotError> {
-        self.check_expectation(expected)?;
-        self.view().install(store)
+        let connectivity = self.validated_connectivity(expected)?;
+        self.install_with_validated_connectivity(store, connectivity);
+        Ok(())
     }
     pub fn into_checkpoint(self) -> PuzzleCheckpoint {
         PuzzleCheckpoint {

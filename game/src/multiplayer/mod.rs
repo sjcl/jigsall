@@ -1,8 +1,12 @@
 //! Opt-in multiplayer foundation. No systems are added to the single-player schedule.
+pub mod baseline;
 pub mod protocol;
 mod release;
 pub mod replication;
 pub mod snapshot;
+pub use baseline::{
+    BaselineDrag, JoinBaseline, JoinBaselineError, JOIN_BASELINE_SCHEMA_VERSION, MAX_BASELINE_DRAGS,
+};
 pub use snapshot::{
     GameSnapshot, SnapshotError, SnapshotExpectation, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
     SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED, SNAPSHOT_SCHEMA_VERSION,

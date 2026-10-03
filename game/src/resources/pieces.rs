@@ -290,6 +290,43 @@ impl PieceDataStore {
     pub fn len(&self) -> usize {
         self.states.len()
     }
+
+    /// Join-only commit step after snapshot/overlay validation and snapshot restore.
+    /// Membership is canonical, disjoint, nonempty and unplaced; target is unheld.
+    /// Changes only HELD/owners, with one player-count map write per drag. The new
+    /// snapshot epoch already requires a full upload, so no dirty mask is needed.
+    pub(crate) fn restore_baseline_holds(
+        &mut self,
+        player: PlayerId,
+        target: &puzzella_core::protocol::ActiveDragTarget,
+    ) {
+        use puzzella_core::protocol::ActiveDragTarget;
+        self.held_by.ensure_len(self.len());
+        let mut count = 0;
+        let states = &mut *self.states;
+        let owners = &mut self.held_by;
+        match target {
+            ActiveDragTarget::Sparse(refs) => {
+                for reference in refs {
+                    for id in self.connectivity.iter_component(reference.member) {
+                        states[id.0 as usize].flags |= HELD;
+                        owners.owners[id.0 as usize] = player;
+                        owners.occupied.insert(id);
+                        count += 1;
+                    }
+                }
+            }
+            ActiveDragTarget::Dense(dense) => {
+                for id in dense.members.iter() {
+                    states[id.0 as usize].flags |= HELD;
+                    owners.owners[id.0 as usize] = player;
+                }
+                owners.occupied.union(&dense.members);
+                count = dense.members.count();
+            }
+        }
+        owners.counts.insert(player, count);
+    }
     pub fn is_empty(&self) -> bool {
         self.states.is_empty()
     }
