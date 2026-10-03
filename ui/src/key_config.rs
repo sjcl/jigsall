@@ -6,6 +6,9 @@ use bevy::{
 use bevy_egui::egui;
 use puzzella_game::keybindings::*;
 
+const KEY_COLUMN_WIDTH: f32 = 200.0;
+const COLUMN_SPACING: f32 = 12.0;
+
 pub(crate) struct CaptureInput<'a> {
     pub keys: &'a ButtonInput<KeyCode>,
     pub events: &'a [KeyboardInput],
@@ -29,6 +32,24 @@ struct KeyCapture {
 }
 
 impl KeyConfigEditor {
+    pub fn preferred_width(ctx: &egui::Context, i18n: &Localization) -> f32 {
+        let font = egui::TextStyle::Body.resolve(&ctx.style_of(egui::Theme::Dark));
+        let description_width = ctx.fonts_mut(|fonts| {
+            KeyAction::ALL
+                .into_iter()
+                .map(KeyAction::label_key)
+                .chain(["keys-description", "keys-escape"])
+                .map(|key| {
+                    fonts
+                        .layout_no_wrap(i18n.text(key), font.clone(), theme::TEXT)
+                        .size()
+                        .x
+                })
+                .fold(0.0_f32, f32::max)
+        });
+        description_width.ceil() + 8.0 + KEY_COLUMN_WIDTH * 2.0 + COLUMN_SPACING * 2.0
+    }
+
     pub fn is_capturing(&self) -> bool {
         self.capture.is_some()
     }
@@ -170,9 +191,11 @@ impl KeyConfigEditor {
             }
         }
         ui.add_space(4.0);
-        let table_width = ui.available_width().max(760.0);
-        let key_width = 200.0;
-        let description_width = table_width - key_width * 2.0 - 24.0;
+        let table_width = ui
+            .available_width()
+            .max(Self::preferred_width(ui.ctx(), i18n));
+        let key_width = KEY_COLUMN_WIDTH;
+        let description_width = table_width - key_width * 2.0 - COLUMN_SPACING * 2.0;
         // Keep the three columns on one row, including in narrow windows.
         egui::ScrollArea::horizontal()
             .id_salt("key_binding_columns")
@@ -182,7 +205,7 @@ impl KeyConfigEditor {
                 egui::Grid::new("key_binding_table")
                     .num_columns(3)
                     .striped(true)
-                    .spacing(egui::vec2(12.0, 8.0))
+                    .spacing(egui::vec2(COLUMN_SPACING, 8.0))
                     .show(ui, |ui| {
                         for (key, width) in [
                             ("keys-description", description_width),

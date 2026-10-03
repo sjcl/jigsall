@@ -137,9 +137,12 @@ fn paint_settings(
         .backdrop_color(egui::Color32::from_black_alpha(185))
         .frame(theme::frame())
         .show(ctx, |ui| {
-            ui.set_width(
-                (screen.width() - 96.0).clamp(160.0, if dialog.key_tab { 840.0 } else { 520.0 }),
-            );
+            let preferred_width = if dialog.key_tab {
+                KeyConfigEditor::preferred_width(ctx, i18n)
+            } else {
+                520.0
+            };
+            ui.set_width((screen.width() - 96.0).clamp(160.0, preferred_width));
             theme::heading(ui, i18n.text("settings-title"));
             ui.separator();
             ui.add_enabled_ui(seconds.is_none(), |ui| {
