@@ -24,6 +24,9 @@ pub struct SessionConnections {
 impl SessionConnections {
     /// Observe lifecycle BEFORE routing messages from the same poll batch.
     /// Connected starts unassigned; a trusted session action assigns PlayerId.
+    /// A future authority disconnect coordinator must retain the assigned PlayerId
+    /// before this removes its mapping, then cancel_replicated and publish/retain
+    /// the resulting event. Observation itself does not mutate gameplay.
     pub fn observe(&mut self, event: &TransportEvent) {
         match *event {
             TransportEvent::Connected { connection } => {

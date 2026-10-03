@@ -4,7 +4,8 @@ Same-epoch join now has a separate `JoinBaseline` CPU API: canonical GameSnapsho
 plus ephemeral active drag contexts at one command boundary. Schema 1 permits at
 most 64 drags, captured in ascending PlayerId order with bounded deserialization.
 Transactional peer installation restores HELD/owners and remote contexts without
-replaying Grab, so existing Update/Release/RotateDrag streams can continue.
+replaying Grab, so existing Update/Release/RotateDrag/DragCancelled streams can
+continue.
 Migration/recovery still use snapshot only with a new epoch and discard drags;
 save/load still use canonical checkpoint state and discard drags. See
 [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for validation, memory and API details.
@@ -185,9 +186,10 @@ the base positions while releasing holds.
 
 A processed matching Release ends its context. Holds belonging to stale or
 otherwise invalid components remain unchanged; they are not expanded or moved.
-The backend can call `cancel_player` to clear that player's remaining holds without
-translation or snap. Wrong-context or nonfinite Release is rejected and retains
-the context so a later valid reliable control can release it. Duplicate Release
+The backend can choose the unreplicated `cancel_player` repair path plus coordinated
+resync for these inconsistent remaining holds; normal replicated lifecycle
+cancellation requires an intact exact context. Wrong-context or nonfinite Release
+is rejected and retains the context so a later valid reliable control can release it. Duplicate Release
 is rejected by the control tracker.
 
 ## Grab ACK and authority event boundary
@@ -377,12 +379,11 @@ coordinate host/peer hold cancellation at a resync baseline, or use the existing
 new-epoch migration flow, before continuing an in-flight drag. A pending Release
 without a post-baseline Grab context requests resync rather than guessing membership.
 
-`cancel_player` removes that player's context and uses existing component-wide
-hold cleanup without translation or snap. Disconnect/timeout decisions must be
-coordinated by the backend on the host and all replicas; no timeout scheduler or
-cancellation wire event is added here. Snapshot request messages, source
-authentication, retention/catch-up policy and coordination are future transport
-work.
+`cancel_player` remains unreplicated emergency cleanup with existing component-wide
+hold cleanup without translation or snap. Normal disconnect/timeout decisions use
+authority `cancel_replicated` and Reliable DragCancelled replay on peers. No timeout
+scheduler is added. Snapshot request messages, source authentication,
+retention/catch-up policy and runtime coordination remain future transport work.
 
 ## Best-effort DragUpdate and presentation
 
@@ -412,9 +413,11 @@ required; the sequence tracker alone does not create gameplay contexts.
 
 Contexts are scoped to session identity, authority epoch and store generation.
 Snapshot restore or successful migration invalidates old contexts; frozen migration
-rejects commands and hides active presentation. On disconnect or externally
-cancelled ownership, use `ProtocolDragContexts::cancel_player` before reusing the
-player. It clears the context and existing component-wide holds without snapping.
+rejects commands and hides active presentation. Normal active-session disconnects
+use `ProtocolDragContexts::cancel_replicated`, then publish/retain its Reliable
+authority event. `cancel_player` remains unreplicated emergency cleanup for
+migration, repair and tests; it does not advance a cursor. PlayerIds are not reused
+within a session and cancellation never resets client command sequence history.
 Do not mix local position/hold mutations into a protocol drag without cancelling
 it. The normal local schedule does not use protocol contexts.
 
@@ -548,6 +551,52 @@ Transient or a reliable final_delta repairs presentation. Successful rebases alo
 advance the sequence tracker's move basis; rejected reliable rebases consume their
 control number while leaving states, holds and the previous basis intact.
 
-Wire version 2 and fixed golden frames cover all rotation commands/events, signed
-turns, optional floors, field order and enum indices. Pre-release wire v1 is rejected
-without a legacy decoder; snapshot schema 4 and its 16-byte records are unchanged.
+Wire version 5 and fixed golden frames cover all rotation commands/events, signed
+turns, optional floors, field order and enum indices, plus DragCancelled. Earlier
+pre-release wire versions are rejected without a legacy decoder; snapshot schema 4
+and its 16-byte records are unchanged.
+
+## Reliable lifecycle cancellation
+
+`DragCancelled { player: PlayerId, grab_sequence: u64 }` is appended as authority
+event variant index **4**. It consumes exactly one authority cursor and carries
+no target, membership, delta or component list. Each peer already knows the exact
+target from GrabAccepted or JoinBaseline.active_drags.
+
+`ProtocolDragContexts::cancel_replicated(&mut AuthoritySession, &mut PieceDataStore,
+PlayerId) -> Result<Option<HostCancellationOutcome>, ProtocolCommandError>` returns
+an already-applied `AppliedCommand` and authority envelope. No current-scope context
+and no ownership returns `Ok(None)`, without advancing the cursor or creating an
+event. Holds without a current context are an invariant failure, not silent repair.
+Frozen sessions and exhausted cursors fail before mutation. Old session, authority
+epoch or store-generation contexts are never used for an event.
+
+The shared `PieceDataStore::cancel_drag_target` validates all sparse references or
+dense topology and exact full-component membership, nonempty membership, HELD,
+enabled, unplaced, matching owner and the player's total ownership count before
+any mutation. Count mismatch detects orphan holds outside the target using the
+existing player-count map. Failure retains holds, context and cursor. Sparse
+iteration uses at most 32 component roots; Dense uses bitsets without a million-ID
+or reference vector. Occupancy is cleared and the player-count entry removed once,
+without a HashMap count update per piece.
+
+Cancellation clears only HELD/ownership and removes target membership from local
+`store.drag`; its scalar presentation delta need not be zeroed. Dirty pieces are
+marked (Dense by bitset union) without changing store epoch. It commits no delta,
+performs no snap, and changes no canonical position, rotation, Z, connectivity or
+placed state. Earlier RotateDrag commits remain intact; later transient delta is
+discarded. `AppliedCommand.released` is the cancelled member count; placed/rotated
+are zero and drag_rebased is false.
+
+After validation the authority clears holds, removes the context, advances once,
+then creates the envelope. Peer replay checks context and grab_sequence, calls the
+same helper, removes the context, then records the cursor. Missing/wrong contexts
+return MissingDragContext/WrongDragContext; gameplay failure latches divergence
+without recording the cursor. Delayed RemoteDragUpdate after cancellation returns
+MissingDragContext without changing the authority cursor. Other players' targets,
+holds, deltas, ticks and bases stay intact.
+
+JoinBaseline at C followed by DragCancelled at C+1 is normal catch-up without
+replaying GrabAccepted. Migration still discards drags in a new epoch and does not
+require DragCancelled. Runtime disconnect wiring, PlayerLeft/roster UI and catch-up
+retention are separate future work; this layer adds no scheduled scans or benchmarks.

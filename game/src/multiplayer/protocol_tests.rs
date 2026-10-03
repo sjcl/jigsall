@@ -1,4 +1,6 @@
 use super::*;
+#[path = "authority_cancellation_tests.rs"]
+mod cancellation;
 use crate::multiplayer::{GameSnapshot, SnapshotExpectation};
 use crate::resources::pieces::{ENABLED, PLACED};
 use bevy::math::{UVec2, Vec2};

@@ -19,7 +19,9 @@ use puzzella_core::{
 };
 
 /// Expands this player's holds into complete components. Does not snap or move.
-/// Touches only this player's holds; an ordinary disconnect keeps other players' holds.
+/// Unreplicated emergency migration/repair cleanup; normal active-session
+/// disconnects use ProtocolDragContexts::cancel_replicated and peer event replay.
+/// Touches only this player's holds.
 pub fn release_player_holds(store: &mut PieceDataStore, player: PlayerId) -> Vec<PieceId> {
     store.clear_player_holds(player)
 }

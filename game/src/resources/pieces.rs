@@ -38,6 +38,7 @@ pub(crate) const CONNECTED_EDGE_PAIRS: [(u32, u32); 4] = [
     (CONNECTED_BOTTOM, CONNECTED_TOP),
 ];
 pub const MAX_Z: u32 = (1 << 24) - 2;
+mod cancellation;
 mod rotation;
 mod snapping;
 #[repr(C)]
@@ -174,6 +175,9 @@ impl PieceOwners {
     }
     pub fn has_player(&self, player: PlayerId) -> bool {
         self.counts.contains_key(&player)
+    }
+    pub(crate) fn count_for(&self, player: PlayerId) -> usize {
+        self.counts.get(&player).copied().unwrap_or(0)
     }
     fn ensure_len(&mut self, count: usize) {
         assert!(count <= puzzella_core::MAX_PIECES);

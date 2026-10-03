@@ -4,16 +4,17 @@ The multiplayer CPU layer provides `JoinBaseline` schema 1 for same-epoch join:
 GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId order.
 Its transactional install can continue existing authority events without a new
 Grab. This foundation is not connected to WireMessage, BulkChunk, image transfer,
-catch-up queues/drag refresh or Authenticated/Syncing/Ready yet. Transport versions,
-golden frames, SecureTransport, GNS and rate limiting are unchanged. Migration
-uses snapshot only plus a new epoch; save/load use checkpoint only; both discard
+catch-up queues/drag refresh or Authenticated/Syncing/Ready yet. Transport version and
+golden frames now use wire v5 for Reliable DragCancelled; SecureTransport, GNS
+and rate limiting retain their existing designs. Migration uses snapshot only
+plus a new epoch; save/load use checkpoint only; both discard
 drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
 
 Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 snapshot/image transfer, interpolation, prediction, or migration orchestration.
-Commands use the core authority, replication, cursor, topology and schema 4
-semantics. `core` has no transport/native dependency.
+Commands use the core authority, replication, cursor and topology semantics with
+wire v5 and snapshot schema 4. `core` has no transport/native dependency.
 
 ```text
 protocol / replication (existing gameplay semantics)
@@ -78,6 +79,18 @@ only explicit Ready promotion calls `assign_player`. One connection per player
 and no reassignment of a live connection remain enforced. Never derive `PlayerId`
 from an IP, connection token, native handle or SteamID. Envelope identity claims
 are still validated separately by the existing adapters.
+
+Future disconnect runtime wiring must preserve the assigned PlayerId **before**
+`SessionConnections::observe(Disconnected)` removes the mapping. Capture the player,
+call authority `cancel_replicated(player)` once, publish/retain a returned
+DragCancelled envelope, then remove the connection mapping (or remove it earlier
+only after retaining the player and envelope). `HostRouter::publish_authority_event`
+sends to all currently assigned Ready remote peers as Reliable Control, without
+source exclusion or host loopback. It returns per-connection send failures while
+attempting the remaining peers; retry the original event, never reapply cancellation
+to create a replacement. No actual Bevy/transport disconnect coordinator, PlayerLeft
+or catch-up buffer is added here. Migration continues to discard drags in a new
+epoch without requiring cancellation events.
 
 ## Mandatory session password authentication
 
@@ -380,7 +393,7 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v4
+## Wire v5
 
 Each inner Puzzella frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
@@ -388,7 +401,7 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 4 |
+| 4..6 | u16 wire version, little-endian, currently 5 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkChunk, 6 SessionControl |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -401,18 +414,24 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v4 Postcard field order and enum representation are part of the wire contract.
+The v5 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
-Version 4 adds mandatory PAKE-derived AEAD and encrypted SecureChannelReady to
-version 3's SessionControl/password bootstrap. It retains
-Rotate / RotationCommitted, RotateDrag / DragRotationCommitted
-and the RemoteDragUpdate basis sequence. Only version 4 is decoded; pre-release
-versions 1, 2 and 3 frames are rejected without a compatibility decoder.
-Fixed v4 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+Version 5 appends DragCancelled as authority event variant index 4, after
+DragRotationCommitted. Its only fields are player and grab_sequence. It consumes
+one authority cursor, does not resend a target, commits no delta and performs no
+snap. Existing event indices and payload field order are unchanged. It retains
+version 4's mandatory PAKE-derived AEAD and encrypted SecureChannelReady,
+Rotate / RotationCommitted, RotateDrag / DragRotationCommitted and the
+RemoteDragUpdate basis sequence. Only version 5 is decoded; pre-release versions
+1 through 4 are rejected without a compatibility decoder. WIRE_VERSION also binds
+PAKE and application AEAD derivation, so v4 and v5 peers cannot mix. No cryptographic
+design change is made.
+Fixed v5 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
-RotationCommitted, DragRotationCommitted, RemoteDragUpdate, AuthAccepted and SecureChannelReady. Each checks encoding
+RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
+AuthAccepted and SecureChannelReady. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
@@ -495,9 +514,10 @@ fresh connection/authentication/synchronization rather than same-key retries;
 queue acceptance, not an application ACK. Late join/baseline synchronization,
 backpressure recovery and disconnect ownership cancellation remain explicit
 session responsibilities. Before observing a disconnect, retain its assigned
-player. Disconnect removes the mapping; if that player was dragging, coordinate
-`cancel_player` on authority and replicas using the existing
-APIs before reusing that player. No new cancellation/migration protocol is invented.
+player. Disconnect observation removes the mapping; use `cancel_replicated` and
+`publish_authority_event` with the retained player identity as described above.
+PlayerIds are not reused in the session. Migration's new-epoch drag discard remains
+separate from this Reliable cancellation event.
 
 ## Native build and validation
 

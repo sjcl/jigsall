@@ -2,10 +2,10 @@
 use crate::resources::{pieces::AppliedCommand, PieceDataStore};
 use puzzella_core::{
     protocol::{
-        ActiveDrag, ActiveDragTarget, DragRotationCommitted, GrabAccepted, ProtocolAuthorityEvent,
-        ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand,
-        RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint, RemoteDragUpdate,
-        ResolvedPieceTarget, RotationCommitted, TargetError,
+        ActiveDrag, ActiveDragTarget, DragCancelled, DragRotationCommitted, GrabAccepted,
+        ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope,
+        ProtocolPieceCommand, RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint,
+        RemoteDragUpdate, ResolvedPieceTarget, RotationCommitted, TargetError,
     },
     session::{
         AuthorityEpoch, AuthoritySession, ClientCommandSequence, CommandSequenceStatus,
@@ -61,6 +61,14 @@ pub struct HostCommandOutcome {
     pub result: ProtocolCommandResult,
     pub authority_event: Option<ProtocolAuthorityEventEnvelope>,
     pub drag_update: Option<RemoteDragUpdate>,
+}
+
+/// Already-applied lifecycle action; retain/publish this event without reapplying
+/// cancellation on send failure. Client command sequence history is unchanged.
+#[derive(Debug)]
+pub struct HostCancellationOutcome {
+    pub applied: AppliedCommand,
+    pub authority_event: ProtocolAuthorityEventEnvelope,
 }
 
 /// Per-player accepted sets, scoped to both authority epoch and store generation.
@@ -216,11 +224,57 @@ impl ProtocolDragContexts {
             .map(|(&player, drag)| (player, drag))
     }
 
-    /// Explicit cancel/disconnect: release holds without translating or snapping.
-    /// Call this when ownership is cleared externally, before reusing a player.
+    /// Unreplicated emergency cleanup for migration/repair/tests. Normal
+    /// disconnects in an active replicated session must use cancel_replicated.
     pub fn cancel_player(&mut self, store: &mut PieceDataStore, player: PlayerId) {
         self.players.remove(&player);
         store.clear_player_holds(player);
+    }
+
+    /// Cancel only a current-scope drag as one Reliable authority event. A player
+    /// without a context or holds is a no-op; orphan holds require repair/resync.
+    /// All fallible checks precede store/context/cursor mutation.
+    pub fn cancel_replicated(
+        &mut self,
+        session: &mut AuthoritySession,
+        store: &mut PieceDataStore,
+        player: PlayerId,
+    ) -> Result<Option<HostCancellationOutcome>, ProtocolCommandError> {
+        if !session.is_active() {
+            return Err(ProtocolCommandError::Sequence(ProtocolError::Frozen));
+        }
+        if session.cursor().sequence.0 == u64::MAX {
+            return Err(ProtocolCommandError::Sequence(
+                ProtocolError::CounterExhausted,
+            ));
+        }
+        let Some(drag) = self.active_drag(session, store, player) else {
+            return if store.held_by.has_player(player) {
+                Err(ProtocolCommandError::InconsistentDragTarget)
+            } else {
+                Ok(None)
+            };
+        };
+        let grab_sequence = drag.grab_sequence;
+        let applied = store
+            .cancel_drag_target(player, &drag.target)
+            .ok_or(ProtocolCommandError::InconsistentDragTarget)?;
+        self.players.remove(&player);
+        let cursor = session
+            .advance_authority()
+            .expect("preflighted active cursor");
+        Ok(Some(HostCancellationOutcome {
+            applied,
+            authority_event: ProtocolAuthorityEventEnvelope {
+                session: session.session_id(),
+                host: session.host(),
+                cursor,
+                event: ProtocolAuthorityEvent::DragCancelled(DragCancelled {
+                    player,
+                    grab_sequence,
+                }),
+            },
+        }))
     }
 
     /// Authenticate externally, then pass that identity separately from the wire

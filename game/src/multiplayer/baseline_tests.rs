@@ -1,4 +1,6 @@
 use super::*;
+#[path = "baseline_cancellation_tests.rs"]
+mod cancellation;
 use crate::{
     multiplayer::{
         replication::{PeerReplicationState, ReplicationError},

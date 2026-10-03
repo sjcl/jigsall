@@ -89,8 +89,8 @@ impl PeerReplicationState {
         self.scope == Some(Self::scope(session, store)) && self.diverged
     }
 
-    /// Explicit externally coordinated disconnect/timeout, without translation or
-    /// snap. The authority and all replicas must cancel the same player.
+    /// Unreplicated emergency cleanup for migration/repair/tests. Normal active
+    /// session disconnects replay the authority's DragCancelled event instead.
     pub fn cancel_player(&mut self, store: &mut PieceDataStore, player: PlayerId) {
         self.remote_drags.remove(&player);
         store.clear_player_holds(player);
@@ -139,6 +139,20 @@ impl PeerReplicationState {
         local_player: PlayerId,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
+            ProtocolAuthorityEvent::DragCancelled(cancel) => {
+                let drag = self
+                    .remote_drags
+                    .get(&cancel.player)
+                    .ok_or(ReplicationError::MissingDragContext)?;
+                if drag.grab_sequence != cancel.grab_sequence {
+                    return Err(ReplicationError::WrongDragContext);
+                }
+                let applied = store
+                    .cancel_drag_target(cancel.player, &drag.target)
+                    .ok_or(ReplicationError::Diverged)?;
+                self.remote_drags.remove(&cancel.player);
+                Ok(applied)
+            }
             ProtocolAuthorityEvent::DragRotationCommitted(commit) => {
                 let definition = definition.ok_or(ReplicationError::Diverged)?;
                 let drag = self

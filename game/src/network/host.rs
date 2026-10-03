@@ -7,7 +7,9 @@ use crate::{
     multiplayer::protocol::{HostCommandOutcome, ProtocolCommandError, ProtocolDragContexts},
     resources::PieceDataStore,
 };
-use puzzella_core::{session::AuthoritySession, PlayerId, PuzzleDefinition};
+use puzzella_core::{
+    protocol::ProtocolAuthorityEventEnvelope, session::AuthoritySession, PlayerId, PuzzleDefinition,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum HostRouteError {
@@ -83,13 +85,32 @@ impl HostRouter<'_> {
         source: Option<ConnectionId>,
         outcome: &HostCommandOutcome,
     ) -> Result<Vec<(ConnectionId, TransportError)>, WireError> {
-        let message = if let Some(event) = &outcome.authority_event {
-            WireMessage::AuthorityEvent(event.clone())
-        } else if let Some(update) = &outcome.drag_update {
-            WireMessage::DragUpdate(update.clone())
-        } else {
+        if let Some(event) = &outcome.authority_event {
+            return self.publish_authority_event(transport, event);
+        }
+        let Some(update) = &outcome.drag_update else {
             return Ok(Vec::new());
         };
+        self.broadcast(transport, WireMessage::DragUpdate(update.clone()), source)
+    }
+
+    /// Publish an already-applied lifecycle/control event to all assigned Ready
+    /// remote peers as Reliable Control. No source exclusion or host loopback.
+    /// Return per-peer failures; retain/retry this envelope, never reapply gameplay.
+    pub fn publish_authority_event(
+        &self,
+        transport: &mut dyn Transport,
+        event: &ProtocolAuthorityEventEnvelope,
+    ) -> Result<Vec<(ConnectionId, TransportError)>, WireError> {
+        self.broadcast(transport, WireMessage::AuthorityEvent(event.clone()), None)
+    }
+
+    fn broadcast(
+        &self,
+        transport: &mut dyn Transport,
+        message: WireMessage,
+        source: Option<ConnectionId>,
+    ) -> Result<Vec<(ConnectionId, TransportError)>, WireError> {
         let payload = wire::encode(&message)?;
         let transient = matches!(message, WireMessage::DragUpdate(_));
         let mut failures = Vec::new();

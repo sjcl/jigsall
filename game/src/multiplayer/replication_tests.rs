@@ -1,4 +1,6 @@
 use super::*;
+#[path = "replication_cancellation_tests.rs"]
+mod cancellation;
 #[path = "drag_rotation_tests.rs"]
 mod drag_rotation_tests;
 use crate::{

@@ -34,7 +34,8 @@ validation separately requires exactly `definition.piece_count()` pieces.
 ## Capture at a command boundary
 
 Call `JoinBaseline::capture(&session, &store, &contexts, &definition)` between
-complete synchronous `ProtocolDragContexts::apply_replicated()` calls. Shared
+complete synchronous `ProtocolDragContexts::apply_replicated()` or
+`cancel_replicated()` calls. Shared
 borrows cover the session cursor, canonical store and active contexts together;
 the caller must not capture these separately around intervening commands.
 Transient updates do not advance the reliable cursor, but their latest basis,
@@ -93,10 +94,26 @@ uploads remain immutable. Local drag members/delta and selection remain empty.
 Install restores grab sequence, basis sequence, last tick, target and delta into
 `remote_drags`, resets divergence and binds scope to the current session/authority
 epoch and new store epoch. The session cursor becomes the snapshot cursor.
-Existing RemoteDragUpdate, ReleaseCommitted and DragRotationCommitted can follow
-immediately, without a replayed Grab. Last-tick stale/duplicate/gap checks and
+Existing RemoteDragUpdate, ReleaseCommitted, DragRotationCommitted and
+DragCancelled can follow immediately, without a replayed Grab. Last-tick stale/duplicate/gap checks and
 rotation basis checks continue unchanged; Release/Rotate fingerprints use the
 existing deterministic replay paths.
+
+`JoinBaseline @ C` can contain A's active drag even when A disconnects immediately
+after capture. Authority `cancel_replicated(A)` emits Reliable
+`DragCancelled { player: A, grab_sequence } @ C+1`; installing the baseline then
+applying that event clears the restored holds/context and reaches the same
+canonical/ownership state and cursor as the host. No GrabAccepted or target resend
+is needed. Cancellation commits no transient delta and performs no snap; canonical
+position, rotation, Z and connectivity, including earlier RotateDrag commits, stay
+intact. It removes local presentation membership and marks HELD changes dirty
+without advancing store epoch. Other players' active contexts remain intact.
+
+CPU tests feed the generated continuation directly, covering sparse/dense targets,
+simultaneous drags and rotation/rebase before cancellation. Event retention for a
+joining peer is not implemented. Future disconnect callers must retain the assigned
+PlayerId before removing its SessionConnections mapping, cancel once, and publish
+or retain the resulting envelope even if an individual send fails.
 
 ## Memory and scheduling
 
@@ -126,13 +143,15 @@ there is no million-entry member-ref list or new permanent per-piece metadata.
 | Save/load | Existing checkpoint/save format | Omitted on save and cleared on load |
 
 GameSnapshot remains canonical persistent state: no HELD, owner, drag delta or
-context fields. SNAPSHOT_SCHEMA_VERSION, PuzzleCheckpoint, save format,
-WIRE_VERSION and golden frames are unchanged. Join overlays are never applied
-automatically to migration or save/load.
+context fields. SNAPSHOT_SCHEMA_VERSION, PuzzleCheckpoint and save format are
+unchanged. Wire v5 appends DragCancelled as authority event index 4; fixed golden
+frames preserve earlier payload layouts and update their version header. Join
+overlays are never applied automatically to migration or save/load.
 
 Future work must connect authenticated bootstrap/Syncing/Ready, bounded bulk
 transfer, image transfer, post-capture authority-event queues/backpressure and
 catch-up drag refresh. None is implemented here. Remote drag rendering,
-interpolation, GPU owner buffers, SecureTransport/GNS/rate limiting and benchmarks
-are also outside this change. CPU tests feed post-baseline events directly in
-order and cover both sparse and dense targets.
+interpolation and GPU owner buffers remain future work. SecureTransport/GNS/rate
+limiting retain their existing designs. Benchmarks are outside this change. CPU
+tests feed post-baseline events directly in order and cover both sparse and dense
+targets.

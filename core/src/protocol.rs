@@ -331,6 +331,14 @@ pub struct DragRotationCommitted {
     pub result: ReleaseResultFingerprint,
 }
 
+/// Reliable lifecycle cancellation of the exact earlier accepted Grab. No target
+/// resend, translation, snap or canonical transform change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DragCancelled {
+    pub player: PlayerId,
+    pub grab_sequence: u64,
+}
+
 /// Host-forwarded transient presentation. Never consumes an authority cursor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RemoteDragUpdate {
@@ -349,6 +357,7 @@ pub enum ProtocolAuthorityEvent {
     ReleaseCommitted(ReleaseCommitted),
     RotationCommitted(RotationCommitted),
     DragRotationCommitted(DragRotationCommitted),
+    DragCancelled(DragCancelled),
 }
 
 pub type ProtocolAuthorityEventEnvelope =

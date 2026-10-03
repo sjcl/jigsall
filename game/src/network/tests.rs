@@ -308,7 +308,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 2, 3, 5] {
+    for version in [1u16, 2, 3, 4, 6] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),
@@ -637,6 +637,74 @@ fn failed_publication_preserves_outcome_and_attempts_other_peers() {
 }
 
 mod golden;
+
+#[test]
+fn lifecycle_cancellation_publication_is_reliable_and_retry_keeps_cursor() {
+    let mut s = Scenario::new();
+    connected(&mut s.host.connections, HA, A);
+    connected(&mut s.host.connections, HB, B);
+    let host_loopback = ConnectionId::new(104);
+    connected(&mut s.host.connections, host_loopback, HOST);
+    s.host.connections.observe(&TransportEvent::Connected {
+        connection: ConnectionId::new(105),
+    });
+    let HostRouteOutcome::Applied(_) = s
+        .host_router()
+        .route(&message_event(HA, &WireMessage::ClientCommand(grab())))
+        .unwrap()
+    else {
+        panic!()
+    };
+    let outcome = s
+        .contexts
+        .cancel_replicated(&mut s.host.session, &mut s.host.store, A)
+        .unwrap()
+        .unwrap();
+    let cursor = s.host.session.cursor();
+    let mut transport = FakeTransport {
+        fail: Some(HA),
+        ..Default::default()
+    };
+    assert_eq!(
+        s.host_router()
+            .publish_authority_event(&mut transport, &outcome.authority_event)
+            .unwrap(),
+        [(HA, TransportError::NotConnected)]
+    );
+    assert_eq!(transport.sent.len(), 1);
+    assert!(matches!(
+        &transport.sent[0],
+        TransportEvent::Message {
+            connection: HB,
+            class: MessageClass::Control,
+            ..
+        }
+    ));
+    transport.fail = None;
+    transport.sent.clear();
+    s.host_router()
+        .publish_authority_event(&mut transport, &outcome.authority_event)
+        .unwrap();
+    assert_eq!(transport.sent.len(), 2);
+    for sent in &transport.sent {
+        let TransportEvent::Message {
+            connection,
+            class,
+            payload,
+        } = sent
+        else {
+            panic!()
+        };
+        assert!([HA, HB].contains(connection));
+        assert_eq!(*class, MessageClass::Control);
+        assert_eq!(
+            wire::decode_for_class(payload, *class).unwrap(),
+            WireMessage::AuthorityEvent(outcome.authority_event.clone())
+        );
+    }
+    assert_eq!(s.host.session.cursor(), cursor);
+    assert!(s.host.store.held_by.is_empty());
+}
 
 #[cfg(feature = "gns")]
 mod localhost;
