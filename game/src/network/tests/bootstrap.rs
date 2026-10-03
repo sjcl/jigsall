@@ -527,7 +527,7 @@ fn all_gameplay_is_rejected_before_ready_on_both_endpoints() {
     let gameplay = [
         WireMessage::ClientCommand(grab()),
         WireMessage::ClientCommand(update()),
-        WireMessage::BulkChunk(vec![0]),
+        bulk_chunk(vec![0]),
         WireMessage::AuthorityEvent(ProtocolAuthorityEventEnvelope {
             session: SESSION.id,
             host: HOST,

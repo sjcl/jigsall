@@ -3,6 +3,7 @@
 //! opaque connections and protocol objects. No network work runs on idle pieces.
 pub mod auth;
 pub mod bootstrap;
+pub mod bulk;
 pub mod client;
 #[cfg(feature = "gns")]
 pub mod gns;

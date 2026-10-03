@@ -1,4 +1,5 @@
 use super::{
+    bulk::{BulkTransferMessage, TransferId, MAX_BULK_DATA_BYTES},
     client::{ClientRouteError, ClientRouteOutcome, ClientRouter},
     host::{HostRouteError, HostRouteOutcome, HostRouter},
     session::{SessionConnectionError, SessionConnections},
@@ -29,6 +30,14 @@ const SESSION: SessionDefinition = SessionDefinition {
 };
 const HA: ConnectionId = ConnectionId::new(101);
 const HB: ConnectionId = ConnectionId::new(102);
+
+pub(super) fn bulk_chunk(data: Vec<u8>) -> WireMessage {
+    WireMessage::BulkTransfer(BulkTransferMessage::Chunk {
+        transfer_id: TransferId(1),
+        offset: 0,
+        data,
+    })
+}
 
 fn command(
     sequence: ClientCommandSequence,
@@ -277,7 +286,7 @@ fn wire_header_and_protocol_roundtrips() {
             tick: u64::MAX,
             delta: Vec2::ONE,
         }),
-        WireMessage::BulkChunk(vec![1, 2, 3]),
+        bulk_chunk(vec![1, 2, 3]),
     ];
     for message in messages {
         let bytes = wire::encode(&message).unwrap();
@@ -308,7 +317,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 2, 3, 4, 6] {
+    for version in [1u16, 2, 3, 4, 5, 7, u16::MAX] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),
@@ -347,7 +356,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     for (kind, limit) in [
         (1, wire::MAX_CONTROL_PAYLOAD),
         (3, wire::MAX_TRANSIENT_PAYLOAD),
-        (5, wire::MAX_BULK_CHUNK),
+        (5, wire::MAX_BULK_WIRE_PAYLOAD),
     ] {
         bytes = valid.clone();
         bytes[6] = kind;
@@ -355,10 +364,10 @@ fn wire_rejects_untrusted_headers_and_payloads() {
         assert_eq!(wire::decode(&bytes), Err(WireError::Oversized));
     }
     assert_eq!(
-        wire::encode(&WireMessage::BulkChunk(vec![0; wire::MAX_BULK_CHUNK + 1])),
+        wire::encode(&bulk_chunk(vec![0; MAX_BULK_DATA_BYTES + 1])),
         Err(WireError::Oversized)
     );
-    assert!(wire::encode(&WireMessage::BulkChunk(vec![0; wire::MAX_BULK_CHUNK])).is_ok());
+    assert!(wire::encode(&bulk_chunk(vec![0; MAX_BULK_DATA_BYTES])).is_ok());
 }
 
 #[test]
@@ -536,12 +545,16 @@ fn fake_transport_routes_grab_drag_release_without_host_echo() {
     }
     assert_eq!(s.host.session.cursor().sequence.0, 2);
     s.assert_final_equal();
-    let bulk = message_event(HA, &WireMessage::BulkChunk(vec![1, 2]));
+    let message = bulk_chunk(vec![1, 2]);
+    let WireMessage::BulkTransfer(expected) = message.clone() else {
+        unreachable!();
+    };
+    let bulk = message_event(HA, &message);
     assert!(
-        matches!(s.host_router().route(&bulk).unwrap(), HostRouteOutcome::BulkChunk(v) if v == vec![1, 2])
+        matches!(s.host_router().route(&bulk).unwrap(), HostRouteOutcome::Bulk(v) if v == expected)
     );
     assert!(
-        matches!(s.client_router(0, HA).route(&bulk).unwrap(), ClientRouteOutcome::BulkChunk(v) if v == vec![1, 2])
+        matches!(s.client_router(0, HA).route(&bulk).unwrap(), ClientRouteOutcome::Bulk(v) if v == expected)
     );
     transport.close(HA, DisconnectReason::Requested).unwrap();
     let mut events = Vec::new();
