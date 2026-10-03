@@ -8,6 +8,7 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::keybindings::KeyBindingsState;
+use puzzella_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettingsState};
 use puzzella_game::settings::*;
 
 #[derive(Resource, Default)]
@@ -63,6 +64,7 @@ pub fn draw_settings_ui(
     capabilities: Res<DisplayCapabilities>,
     mut actions: MessageWriter<DisplaySettingsAction>,
     mut key_state: ResMut<KeyBindingsState>,
+    mut autosave: ResMut<AutosaveSettingsState>,
     keys: Res<ButtonInput<KeyCode>>,
     mut events: MessageReader<KeyboardInput>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
@@ -81,6 +83,7 @@ pub fn draw_settings_ui(
         &capabilities,
         &mut i18n,
         &mut preferences,
+        &mut autosave,
         &mut key_state,
         &CaptureInput {
             keys: &keys,
@@ -112,6 +115,7 @@ fn paint_settings(
     capabilities: &DisplayCapabilities,
     i18n: &mut Localization,
     preferences: &mut UiPreferences,
+    autosave: &mut AutosaveSettingsState,
     key_state: &mut KeyBindingsState,
     key_input: &CaptureInput<'_>,
 ) -> Option<DisplaySettingsAction> {
@@ -353,6 +357,9 @@ fn paint_settings(
                                 Some(dialog.limited_fps)
                             };
                         });
+                        theme::card().show(ui, |ui| {
+                            paint_autosave_settings(ui, autosave, i18n);
+                        });
                     });
                     if let Some(error) = &state.error {
                         ui.colored_label(theme::DANGER, i18n.display_error(error));
@@ -405,6 +412,47 @@ fn paint_settings(
         action = Some(dialog.close());
     }
     action
+}
+
+fn paint_autosave_settings(
+    ui: &mut egui::Ui,
+    state: &mut AutosaveSettingsState,
+    i18n: &Localization,
+) {
+    use std::num::NonZeroU32;
+    ui.set_width(ui.available_width());
+    let mut enabled = state.current.interval_minutes.is_some();
+    let mut minutes = state.current.interval_minutes.map_or(5, NonZeroU32::get);
+    let enable_changed = ui
+        .checkbox(&mut enabled, i18n.text("settings-autosave-enabled"))
+        .changed();
+    ui.label(i18n.text("settings-autosave-interval"));
+    let interval_changed = ui
+        .add_enabled(
+            enabled,
+            egui::DragValue::new(&mut minutes)
+                .range(1..=60)
+                .suffix(format!(" {}", i18n.text("settings-autosave-minutes"))),
+        )
+        .changed();
+    if enable_changed || interval_changed {
+        state.set_interval(if enabled {
+            NonZeroU32::new(minutes)
+        } else {
+            None
+        });
+    }
+    theme::hint(ui, i18n.text("settings-autosave-hint"));
+    if let Some(error) = &state.error {
+        let (key, reason) = match error {
+            AutosaveSettingsError::Read(reason) => ("settings-autosave-read-failed", reason),
+            AutosaveSettingsError::Save(reason) => ("settings-autosave-save-failed", reason),
+        };
+        ui.colored_label(
+            theme::DANGER,
+            i18n.format(key, &[("reason", reason.as_str().into())]),
+        );
+    }
 }
 
 #[cfg(test)]

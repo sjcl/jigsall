@@ -1,4 +1,5 @@
 //! Backend-neutral binary formats, logical storage and repository operations.
+pub mod autosave;
 mod codec;
 pub mod executor;
 mod repository;
@@ -49,6 +50,7 @@ pub struct SaveMetadata {
     /// Unix seconds (UTC), independent of the storage backend.
     pub created_at: u64,
     pub updated_at: u64,
+    pub is_autosave: bool,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct PuzzleSave {

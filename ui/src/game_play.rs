@@ -2,6 +2,7 @@ use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::keybindings::{KeyAction, KeyBindingsState};
+use puzzella_game::persistence::runtime::PersistenceState;
 use puzzella_game::resources::*;
 
 /// インゲームUI（プレイ中のUI）
@@ -11,6 +12,7 @@ pub fn draw_game_ui(
     game_state: Res<GameData>,
     bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
+    persistence: Res<PersistenceState>,
 ) {
     let _span = info_span!("draw_game_ui").entered();
 
@@ -43,6 +45,7 @@ pub fn draw_game_ui(
                 "game-player-count",
                 &[("count", game_state.players.len().into())],
             ));
+            paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();
             let binding_label = |action| {
@@ -76,6 +79,18 @@ pub fn draw_game_ui(
     capture.over_hud = ctx
         .pointer_interact_pos()
         .is_some_and(|point| panel.response.rect.contains(point));
+}
+
+fn paint_autosave_status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Localization) {
+    if state.autosaving {
+        ui.separator();
+        ui.spinner();
+        ui.label(i18n.text("game-autosaving"));
+    } else if let Some(error) = &state.autosave_error {
+        ui.separator();
+        ui.colored_label(crate::theme::DANGER, i18n.text("game-autosave-failed"))
+            .on_hover_text(i18n.persistence_error(error));
+    }
 }
 
 /// プレイヤー一覧オーバーレイ（割り当てキーを押している間表示）
@@ -161,4 +176,48 @@ pub fn draw_players_overlay(
                     });
                 });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autosave_status_shows_work_and_failure_and_hides_after_completion() {
+        for locale in [
+            crate::localization::Locale::EN_US,
+            crate::localization::Locale::JA,
+        ] {
+            let mut i18n = crate::localization::tests::english();
+            i18n.set_preference(crate::localization::LanguagePreference::Locale(locale));
+            for (saving, failed) in [(true, false), (false, true), (false, false)] {
+                let mut state = PersistenceState::default();
+                state.autosaving = saving;
+                state.autosave_error = failed.then_some(
+                    puzzella_game::persistence::runtime::PersistenceError::WorkerStopped,
+                );
+                let ctx = egui::Context::default();
+                let output = ctx.run_ui(default(), |ui| {
+                    ui.horizontal(|ui| paint_autosave_status(ui, &state, &i18n));
+                });
+                let text: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    text.contains(&i18n.text("game-autosaving").as_str()),
+                    saving
+                );
+                assert_eq!(
+                    text.contains(&i18n.text("game-autosave-failed").as_str()),
+                    failed
+                );
+                output.drop_without_applying_deltas();
+            }
+        }
+    }
 }

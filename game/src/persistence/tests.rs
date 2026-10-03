@@ -51,6 +51,7 @@ fn save() -> PuzzleSave {
             revision: 1,
             created_at: 100,
             updated_at: 101,
+            is_autosave: false,
         },
         checkpoint: checkpoint(&encoded_image(image::ImageFormat::Png)),
     }
@@ -163,7 +164,7 @@ fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
     let encoded = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         encoded.len(),
-        204 + save.metadata.title.as_str().len() + 16 * 4
+        205 + save.metadata.title.as_str().len() + 16 * 4
     );
     let restored = SaveCodec::decode(&encoded).unwrap();
     assert_eq!(save, restored);
@@ -183,6 +184,34 @@ fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
         restored.checkpoint.pieces[1].flags & SNAPSHOT_CONNECTED_DOWN,
         0
     );
+}
+
+#[test]
+fn autosave_flag_round_trips_in_full_save_and_list_header_and_rejects_invalid_values() {
+    for is_autosave in [false, true] {
+        let mut save = save();
+        save.metadata.is_autosave = is_autosave;
+        let mut bytes = SaveCodec::encode(&save).unwrap();
+        assert_eq!(
+            SaveCodec::decode(&bytes).unwrap().metadata.is_autosave,
+            is_autosave
+        );
+        assert_eq!(
+            SaveCodec::decode_header(&bytes, bytes.len() as u64)
+                .unwrap()
+                .metadata
+                .is_autosave,
+            is_autosave
+        );
+        let header_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+        bytes[header_len - 33] = 2;
+        resign_header(&mut bytes);
+        resign(&mut bytes);
+        assert_eq!(
+            SaveCodec::decode(&bytes),
+            Err(SaveError::CorruptSave("Invalid autosave flag"))
+        );
+    }
 }
 
 #[test]
@@ -214,7 +243,7 @@ fn million_piece_save_keeps_sixteen_byte_records_and_restores_directly() {
     let bytes = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         bytes.len(),
-        16_000_000 + 204 + save.metadata.title.as_str().len()
+        16_000_000 + 205 + save.metadata.title.as_str().len()
     );
     let decoded = SaveCodec::decode(&bytes).unwrap();
     assert_eq!(save, decoded);
@@ -876,7 +905,7 @@ fn fifty_million_piece_previews_read_only_bounded_headers() {
     }
     let mut header = SaveCodec::encode(&save()).unwrap();
     let t = save().metadata.title.as_str().len();
-    let header_len = 172 + t;
+    let header_len = 173 + t;
     let length = header_len as u64 + 16_000_000 + 32;
     header.truncate(header_len);
     header[14..22].copy_from_slice(&length.to_le_bytes());
@@ -1118,12 +1147,12 @@ fn exhausted_revision_does_not_publish_or_wrap() {
     assert_eq!(storage.blobs.lock().unwrap()[&key], encoded);
 }
 #[test]
-fn save_format_one_is_the_only_supported_layout() {
+fn save_format_two_is_the_only_supported_layout() {
     let original = SaveCodec::encode(&save()).unwrap();
-    assert_eq!(SAVE_FORMAT_VERSION, 1);
-    assert_eq!(&original[8..10], &1u16.to_le_bytes());
+    assert_eq!(SAVE_FORMAT_VERSION, 2);
+    assert_eq!(&original[8..10], &2u16.to_le_bytes());
     assert_eq!(SaveCodec::decode(&original).unwrap(), save());
-    for version in [0u16, 2, 9] {
+    for version in [0u16, 1, 9] {
         let mut bytes = original.clone();
         bytes[8..10].copy_from_slice(&version.to_le_bytes());
         assert_eq!(

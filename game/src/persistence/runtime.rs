@@ -15,13 +15,21 @@ pub struct OriginalPuzzleImage {
 #[derive(Resource, Default)]
 pub struct PersistenceState {
     pub current_save: Option<SaveMetadata>,
+    pub current_autosave: Option<SaveMetadata>,
+    pub autosaving: bool,
+    pub autosave_error: Option<PersistenceError>,
     pub entries: Vec<SaveListEntry>,
     pub busy: bool,
     pub title_dialog_open: bool,
     pub error: Option<PersistenceError>,
     pub message: Option<PersistenceNotice>,
     pub generation: u64,
-    pub(crate) capture_title: Option<SaveTitle>,
+    pub(crate) capture: Option<SaveCapture>,
+}
+
+pub(crate) struct SaveCapture {
+    title: SaveTitle,
+    is_autosave: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +75,7 @@ enum Request {
     Load(SaveId),
     Thumbnail(ImageHash),
     Save {
+        is_autosave: bool,
         update: Option<(SaveId, u64)>,
         title: SaveTitle,
         checkpoint: PuzzleCheckpoint,
@@ -79,7 +88,7 @@ enum Reply {
     Listed(Result<Vec<SaveListEntry>, SaveError>),
     Loaded(SaveId, Result<Box<LoadedPuzzle>, SaveError>),
     Thumbnail(ImageHash, Result<ThumbnailImage, SaveError>),
-    Saved(Result<SaveMetadata, SaveError>),
+    Saved(bool, Result<SaveMetadata, SaveError>),
     Deleted(Result<Vec<SaveListEntry>, SaveError>),
 }
 #[derive(Resource)]
@@ -137,12 +146,25 @@ impl PersistenceService {
         if state.busy {
             return;
         }
-        state.error = None;
-        state.message = None;
+        let is_autosave = matches!(
+            request,
+            Request::Save {
+                is_autosave: true,
+                ..
+            }
+        );
+        if is_autosave {
+            state.autosave_error = None;
+        } else {
+            state.error = None;
+            state.message = None;
+        }
         if self.tx.send((state.generation, request)).is_ok() {
             state.busy = true;
+            state.autosaving = is_autosave;
         } else {
-            state.error = Some(PersistenceError::WorkerStopped);
+            state.autosaving = false;
+            save_error(state, is_autosave, PersistenceError::WorkerStopped);
         }
     }
     pub fn list(&self, state: &mut PersistenceState) {
@@ -175,10 +197,30 @@ impl PersistenceService {
         checkpoint: PuzzleCheckpoint,
         bytes: Option<Arc<[u8]>>,
     ) {
+        self.save_as(state, title, checkpoint, bytes, false);
+    }
+    fn save_as(
+        &self,
+        state: &mut PersistenceState,
+        title: SaveTitle,
+        checkpoint: PuzzleCheckpoint,
+        bytes: Option<Arc<[u8]>>,
+        is_autosave: bool,
+    ) {
+        let metadata = if is_autosave {
+            state.current_autosave.as_ref()
+        } else {
+            state
+                .current_save
+                .as_ref()
+                .filter(|metadata| !metadata.is_autosave)
+        };
+        let update = metadata.map(|metadata| (metadata.id, metadata.revision));
         self.submit(
             state,
             Request::Save {
-                update: state.current_save.as_ref().map(|m| (m.id, m.revision)),
+                is_autosave,
+                update,
                 title,
                 checkpoint,
                 bytes,
@@ -187,13 +229,24 @@ impl PersistenceService {
     }
     /// UI requests are captured after the frame's queued release commands are applied.
     pub fn request_save(&self, state: &mut PersistenceState, title: SaveTitle) {
+        self.request_capture(state, title, false);
+    }
+    pub(crate) fn request_autosave(&self, state: &mut PersistenceState, title: SaveTitle) {
+        self.request_capture(state, title, true);
+    }
+    fn request_capture(&self, state: &mut PersistenceState, title: SaveTitle, is_autosave: bool) {
         if state.busy {
             return;
         }
-        state.capture_title = Some(title);
+        state.capture = Some(SaveCapture { title, is_autosave });
         state.busy = true;
-        state.error = None;
-        state.message = None;
+        state.autosaving = is_autosave;
+        if is_autosave {
+            state.autosave_error = None;
+        } else {
+            state.error = None;
+            state.message = None;
+        }
     }
     pub(crate) fn import(&self, generation: u64, hash: ImageHash, bytes: Arc<[u8]>) {
         let _ = self.tx.send((generation, Request::Import(hash, bytes)));
@@ -211,17 +264,39 @@ pub(crate) fn capture_requested_save(
     definition: Option<Res<PuzzleDefinition>>,
     original: Option<Res<OriginalPuzzleImage>>,
 ) {
-    let Some(title) = state.capture_title.take() else {
+    let Some(capture) = state.capture.take() else {
         return;
     };
     state.busy = false;
+    state.autosaving = false;
     let (Some(definition), Some(original)) = (definition, original) else {
-        state.error = Some(PersistenceError::DefinitionUnavailable);
+        save_error(
+            &mut state,
+            capture.is_autosave,
+            PersistenceError::DefinitionUnavailable,
+        );
         return;
     };
     match PuzzleCheckpoint::capture(&store, &definition, original.hash) {
-        Ok(checkpoint) => service.save(&mut state, title, checkpoint, original.encoded.clone()),
-        Err(error) => state.error = Some(PersistenceError::Checkpoint(error)),
+        Ok(checkpoint) => service.save_as(
+            &mut state,
+            capture.title,
+            checkpoint,
+            original.encoded.clone(),
+            capture.is_autosave,
+        ),
+        Err(error) => save_error(
+            &mut state,
+            capture.is_autosave,
+            PersistenceError::Checkpoint(error),
+        ),
+    }
+}
+fn save_error(state: &mut PersistenceState, is_autosave: bool, error: PersistenceError) {
+    if is_autosave {
+        state.autosave_error = Some(error);
+    } else {
+        state.error = Some(error);
     }
 }
 fn run_request<S: SaveStorage>(
@@ -258,19 +333,23 @@ fn run_request<S: SaveStorage>(
             r.list()
         })),
         Request::Save {
+            is_autosave,
             update,
             title,
             checkpoint,
             bytes,
-        } => Reply::Saved(repo().and_then(|r| {
-            let bytes = bytes.as_deref();
-            match update {
-                Some((id, expected_revision)) => {
-                    r.update(id, expected_revision, title, checkpoint, bytes)
+        } => Reply::Saved(
+            is_autosave,
+            repo().and_then(|r| {
+                let bytes = bytes.as_deref();
+                match update {
+                    Some((id, expected_revision)) => {
+                        r.update_as(id, expected_revision, title, checkpoint, bytes, is_autosave)
+                    }
+                    None => r.create_as(title, checkpoint, bytes, is_autosave),
                 }
-                None => r.create(title, checkpoint, bytes),
-            }
-        })),
+            }),
+        ),
         Request::Load(id) => Reply::Loaded(
             id,
             repo().and_then(|r| {
@@ -326,18 +405,37 @@ pub(crate) fn poll_results(
             continue;
         }
         state.busy = false;
+        state.autosaving = false;
+        if let Reply::Saved(is_autosave, result) = reply {
+            match result {
+                Ok(metadata) => {
+                    if is_autosave {
+                        if state
+                            .current_save
+                            .as_ref()
+                            .is_some_and(|save| save.id == metadata.id)
+                        {
+                            state.current_save = Some(metadata.clone());
+                        }
+                        state.current_autosave = Some(metadata);
+                        state.autosave_error = None;
+                    } else {
+                        state.current_save = Some(metadata);
+                        state.title_dialog_open = false;
+                        state.message = Some(PersistenceNotice::Saved);
+                    }
+                    if let Some(ref mut original) = original {
+                        original.encoded = None;
+                    }
+                }
+                Err(error) => save_error(&mut state, is_autosave, PersistenceError::Save(error)),
+            }
+            continue;
+        }
         let result = match reply {
             Reply::Listed(result) | Reply::Deleted(result) => {
                 result.map(|entries| state.entries = entries)
             }
-            Reply::Saved(result) => result.map(|metadata| {
-                state.current_save = Some(metadata);
-                state.title_dialog_open = false;
-                state.message = Some(PersistenceNotice::Saved);
-                if let Some(ref mut original) = original {
-                    original.encoded = None;
-                }
-            }),
             Reply::Loaded(id, result) => {
                 if let Err(error) = &result {
                     if let Some(entry) = state.entries.iter_mut().find(|entry| entry.id == id) {
@@ -361,11 +459,13 @@ pub(crate) fn poll_results(
                         encoded: None,
                     });
                     commands.insert_resource(PendingRestore(Some(loaded.restored)));
+                    state.current_autosave =
+                        loaded.metadata.is_autosave.then(|| loaded.metadata.clone());
                     state.current_save = Some(loaded.metadata);
                     next.set(AppState::InGame);
                 })
             }
-            Reply::Imported(..) | Reply::Thumbnail(..) => unreachable!(),
+            Reply::Imported(..) | Reply::Thumbnail(..) | Reply::Saved(..) => unreachable!(),
         };
         if let Err(error) = result {
             state.error = Some(PersistenceError::Save(error));
@@ -378,6 +478,193 @@ mod tests {
     use super::*;
     use executor::{StorageOperation, StorageValue};
     use std::time::{Duration, Instant};
+
+    fn save_app(root: std::path::PathBuf) -> App {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3])))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let bytes = bytes.into_inner();
+        let definition = PuzzleDefinition {
+            generator_version: puzzella_core::GENERATOR_VERSION,
+            seed: 1,
+            grid_size: UVec2::splat(2),
+            image_size: UVec2::splat(2),
+            snap_distance: 1.0,
+        };
+        let mut store = PieceDataStore::default();
+        store.initialize(
+            (0..4)
+                .map(|i| definition.correct_position(puzzella_core::PieceId(i)) + Vec2::splat(10.0))
+                .collect(),
+        );
+        let mut app = App::new();
+        app.insert_resource(PersistenceService::for_test(root))
+            .init_resource::<PersistenceState>()
+            .insert_resource(definition)
+            .insert_resource(store)
+            .insert_resource(OriginalPuzzleImage {
+                hash: image_hash(&bytes),
+                encoded: Some(bytes.into()),
+            })
+            .init_resource::<Assets<Image>>()
+            .insert_resource(State::new(AppState::InGame))
+            .insert_resource(NextState::<AppState>::default())
+            .add_systems(Update, (capture_requested_save, poll_results).chain());
+        app
+    }
+
+    fn request_and_wait(app: &mut App, automatic: bool) {
+        app.world_mut()
+            .resource_scope(|world, service: Mut<PersistenceService>| {
+                let mut state = world.resource_mut::<PersistenceState>();
+                let title = SaveTitle::new("Puzzle title").unwrap();
+                if automatic {
+                    service.request_autosave(&mut state, title);
+                } else {
+                    service.request_save(&mut state, title);
+                }
+                assert!(state.busy);
+                assert_eq!(state.autosaving, automatic);
+            });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.world().resource::<PersistenceState>().busy {
+            app.update();
+            assert!(Instant::now() < deadline, "save did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!app.world().resource::<PersistenceState>().autosaving);
+    }
+
+    #[test]
+    fn autosave_updates_its_own_slot_preserves_manual_save_and_reports_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+        let mut app = save_app(dir.path().to_owned());
+        request_and_wait(&mut app, false);
+        let manual = app
+            .world()
+            .resource::<PersistenceState>()
+            .current_save
+            .clone()
+            .unwrap();
+        assert!(!manual.is_autosave);
+        let original = repo.read_save(manual.id).unwrap();
+        app.world_mut().resource_mut::<PieceDataStore>().states[0]
+            .position
+            .x += 10.0;
+        request_and_wait(&mut app, true);
+        let automatic = app
+            .world()
+            .resource::<PersistenceState>()
+            .current_autosave
+            .clone()
+            .unwrap();
+        assert!(automatic.is_autosave);
+        assert_ne!(manual.id, automatic.id);
+        assert_eq!(
+            app.world()
+                .resource::<PersistenceState>()
+                .current_save
+                .as_ref(),
+            Some(&manual)
+        );
+        assert_eq!(repo.read_save(manual.id).unwrap(), original);
+        request_and_wait(&mut app, true);
+        let updated = app
+            .world()
+            .resource::<PersistenceState>()
+            .current_autosave
+            .clone()
+            .unwrap();
+        assert_eq!(updated.id, automatic.id);
+        assert_eq!(updated.revision, automatic.revision + 1);
+        assert_eq!(repo.list().unwrap().len(), 2);
+        let saved = repo.read_save(updated.id).unwrap();
+        repo.update_as(
+            updated.id,
+            updated.revision,
+            updated.title.clone(),
+            saved.checkpoint,
+            None,
+            true,
+        )
+        .unwrap();
+        request_and_wait(&mut app, true);
+        let state = app.world().resource::<PersistenceState>();
+        assert!(matches!(
+            state.autosave_error,
+            Some(PersistenceError::Save(SaveError::Conflict { .. }))
+        ));
+        assert!(state.error.is_none());
+        assert_eq!(state.current_autosave.as_ref(), Some(&updated));
+        assert_eq!(repo.read_save(manual.id).unwrap(), original);
+    }
+
+    #[test]
+    fn loading_autosave_resumes_its_slot_and_manual_save_creates_a_separate_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+        let mut app = save_app(dir.path().to_owned());
+        request_and_wait(&mut app, true);
+        let automatic = app
+            .world()
+            .resource::<PersistenceState>()
+            .current_autosave
+            .clone()
+            .unwrap();
+        app.insert_resource(State::new(AppState::Menu));
+        app.world_mut()
+            .resource_scope(|world, service: Mut<PersistenceService>| {
+                let mut state = world.resource_mut::<PersistenceState>();
+                state.current_autosave = None;
+                service.load(&mut state, automatic.id);
+            });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.world().resource::<PersistenceState>().busy {
+            app.update();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let state = app.world().resource::<PersistenceState>();
+        assert_eq!(state.current_save.as_ref(), Some(&automatic));
+        assert_eq!(state.current_autosave.as_ref(), Some(&automatic));
+        request_and_wait(&mut app, true);
+        assert_eq!(
+            app.world()
+                .resource::<PersistenceState>()
+                .current_save
+                .as_ref()
+                .unwrap()
+                .revision,
+            2
+        );
+        request_and_wait(&mut app, false);
+        let manual = app
+            .world()
+            .resource::<PersistenceState>()
+            .current_save
+            .clone()
+            .unwrap();
+        assert!(!manual.is_autosave);
+        assert_ne!(manual.id, automatic.id);
+        assert!(repo.read_save(automatic.id).unwrap().metadata.is_autosave);
+        assert_eq!(repo.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn capture_failure_clears_autosaving_and_is_visible_without_a_dialog() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = save_app(dir.path().to_owned());
+        app.world_mut().remove_resource::<OriginalPuzzleImage>();
+        request_and_wait(&mut app, true);
+        let state = app.world().resource::<PersistenceState>();
+        assert!(matches!(
+            state.autosave_error,
+            Some(PersistenceError::DefinitionUnavailable)
+        ));
+        assert!(state.current_autosave.is_none());
+    }
 
     #[test]
     fn thumbnail_worker_reads_only_the_image_and_keeps_foreground_replies_separate() {

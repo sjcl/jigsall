@@ -33,6 +33,7 @@ fn state() -> PersistenceState {
                     revision: 1,
                     created_at: 0,
                     updated_at: 0,
+                    is_autosave: false,
                 },
                 image_hash: hash(index),
                 piece_count: 1000,
@@ -98,6 +99,66 @@ fn text_rects(output: &egui::FullOutput, label: &str) -> Vec<(egui::Rect, egui::
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn load_cards_show_autosave_next_to_the_timestamp_only_for_autosaves() {
+    for locale in [
+        crate::localization::Locale::EN_US,
+        crate::localization::Locale::JA,
+    ] {
+        let mut i18n = english();
+        i18n.set_preference(crate::localization::LanguagePreference::Locale(locale));
+        let ctx = egui::Context::default();
+        let (service, _inbox) = PersistenceService::with_storage_requests();
+        let mut thumbnails = SaveThumbnails::default();
+        let mut dialogs = SaveDialogs {
+            load_open: true,
+            ..Default::default()
+        };
+        let mut saves = state();
+        saves.entries.truncate(2);
+        saves.entries[0]
+            .summary
+            .as_mut()
+            .unwrap()
+            .metadata
+            .is_autosave = true;
+        let render = |thumbnails: &mut SaveThumbnails,
+                      dialogs: &mut SaveDialogs,
+                      saves: &mut PersistenceState| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    paint_load_dialog(ui.ctx(), dialogs, saves, &service, thumbnails, &i18n);
+                },
+            )
+        };
+        for _ in 0..3 {
+            render(&mut thumbnails, &mut dialogs, &mut saves).drop_without_applying_deltas();
+        }
+        let output = render(&mut thumbnails, &mut dialogs, &mut saves);
+        let summaries: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text.contains("1970-") => {
+                    Some(text.galley.job.text.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries[0].ends_with(&format!("  ·  {}", i18n.text("save-autosave"))));
+        assert!(!summaries[1].contains(&i18n.text("save-autosave")));
+        output.drop_without_applying_deltas();
+    }
 }
 
 #[test]

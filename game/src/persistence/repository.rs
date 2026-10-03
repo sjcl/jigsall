@@ -60,13 +60,33 @@ impl<S: SaveStorage> SaveRepository<S> {
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
     ) -> Result<SaveMetadata, SaveError> {
-        self.create_with_ids(title, checkpoint, original_bytes, rand::random)
+        self.create_as(title, checkpoint, original_bytes, false)
     }
+    pub fn create_as(
+        &self,
+        title: SaveTitle,
+        checkpoint: PuzzleCheckpoint,
+        original_bytes: Option<&[u8]>,
+        is_autosave: bool,
+    ) -> Result<SaveMetadata, SaveError> {
+        self.create_as_with_ids(title, checkpoint, original_bytes, is_autosave, rand::random)
+    }
+    #[cfg(test)]
     pub(crate) fn create_with_ids(
         &self,
         title: SaveTitle,
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
+        id_source: impl FnMut() -> u128,
+    ) -> Result<SaveMetadata, SaveError> {
+        self.create_as_with_ids(title, checkpoint, original_bytes, false, id_source)
+    }
+    fn create_as_with_ids(
+        &self,
+        title: SaveTitle,
+        checkpoint: PuzzleCheckpoint,
+        original_bytes: Option<&[u8]>,
+        is_autosave: bool,
         mut id_source: impl FnMut() -> u128,
     ) -> Result<SaveMetadata, SaveError> {
         for _ in 0..32 {
@@ -81,6 +101,7 @@ impl<S: SaveStorage> SaveRepository<S> {
                 revision: 1,
                 created_at: now,
                 updated_at: now,
+                is_autosave,
             };
             return self.publish(
                 PuzzleSave {
@@ -102,6 +123,25 @@ impl<S: SaveStorage> SaveRepository<S> {
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
     ) -> Result<SaveMetadata, SaveError> {
+        self.update_as(
+            id,
+            expected_revision,
+            title,
+            checkpoint,
+            original_bytes,
+            false,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_as(
+        &self,
+        id: SaveId,
+        expected_revision: u64,
+        title: SaveTitle,
+        checkpoint: PuzzleCheckpoint,
+        original_bytes: Option<&[u8]>,
+        is_autosave: bool,
+    ) -> Result<SaveMetadata, SaveError> {
         let previous = self.read_header(id)?;
         if previous.metadata.revision != expected_revision {
             return Err(SaveError::Conflict {
@@ -120,6 +160,7 @@ impl<S: SaveStorage> SaveRepository<S> {
                 .ok_or(SaveError::CounterExhausted)?,
             created_at: previous.metadata.created_at,
             updated_at: timestamp().max(previous.metadata.updated_at),
+            is_autosave,
         };
         self.publish(
             PuzzleSave {

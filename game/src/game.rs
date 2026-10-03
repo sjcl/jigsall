@@ -26,8 +26,11 @@ impl Plugin for GamePlugin {
             .add_message::<PiecePlacedEvent>()
             .init_resource::<PersistenceService>()
             .init_resource::<PersistenceState>()
+            .init_resource::<crate::persistence::autosave::AutosaveSettingsState>()
+            .init_resource::<crate::persistence::autosave::AutosaveTimer>()
             .init_resource::<GameData>()
             .init_resource::<LocalPlayerId>()
+            .init_resource::<SessionHostId>()
             .init_resource::<PuzzleConfig>()
             .init_resource::<InputState>()
             .init_resource::<GameUiPointerCapture>()
@@ -129,7 +132,12 @@ impl Plugin for GamePlugin {
             )
             .add_systems(
                 Update,
-                crate::persistence::runtime::poll_results.after(handle_image_load_results),
+                (
+                    crate::persistence::runtime::poll_results,
+                    crate::persistence::autosave::tick_autosave,
+                )
+                    .chain()
+                    .after(handle_image_load_results),
             )
             .add_systems(
                 PostUpdate,
@@ -212,6 +220,7 @@ fn cleanup_game(
     mut config: ResMut<PuzzleConfig>,
     mut overlay: ResMut<crate::render::SelectionOverlay>,
     mut persistence: ResMut<PersistenceState>,
+    mut autosave: ResMut<crate::persistence::autosave::AutosaveTimer>,
 ) {
     for entity in &entities {
         commands.entity(entity).despawn();
@@ -226,19 +235,24 @@ fn cleanup_game(
     config.image_path.clear();
     persistence.generation = persistence.generation.wrapping_add(1);
     persistence.current_save = None;
+    persistence.current_autosave = None;
+    persistence.autosaving = false;
+    persistence.autosave_error = None;
+    *autosave = default();
     persistence.busy = false;
     persistence.title_dialog_open = false;
     persistence.error = None;
     persistence.message = None;
-    persistence.capture_title = None;
+    persistence.capture = None;
     commands.remove_resource::<OriginalPuzzleImage>();
     commands.remove_resource::<PendingRestore>();
     commands.remove_resource::<PuzzleImage>();
     commands.remove_resource::<PuzzleDefinition>();
 }
 
-fn reset_local_player(mut local_player: ResMut<LocalPlayerId>) {
+fn reset_local_player(mut local_player: ResMut<LocalPlayerId>, mut host: ResMut<SessionHostId>) {
     *local_player = LocalPlayerId::default();
+    *host = default();
 }
 
 fn clear_session_messages(

@@ -266,7 +266,7 @@ fn paint_load_dialog(
                                             .truncate(),
                                         )
                                         .on_hover_text(summary.metadata.title.as_str());
-                                        let time = i64::try_from(summary.metadata.updated_at)
+                                        let mut time = i64::try_from(summary.metadata.updated_at)
                                             .ok()
                                             .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
                                             .map(|t| {
@@ -275,6 +275,10 @@ fn paint_load_dialog(
                                                     .to_string()
                                             })
                                             .unwrap_or_else(|| i18n.text("save-unknown-time"));
+                                        if summary.metadata.is_autosave {
+                                            time.push_str("  ·  ");
+                                            time.push_str(&i18n.text("save-autosave"));
+                                        }
                                         theme::hint(
                                             ui,
                                             i18n.format(

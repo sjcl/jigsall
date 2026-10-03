@@ -13,6 +13,17 @@ impl Default for LocalPlayerId {
     }
 }
 
+/// Current authority identity. A network runtime must update this on join/migration.
+/// Local games are hosted by the local player.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionHostId(pub PlayerId);
+
+impl Default for SessionHostId {
+    fn default() -> Self {
+        Self(LOCAL_PLAYER)
+    }
+}
+
 #[derive(Resource, Default)]
 pub struct GameData {
     pub players: Vec<PlayerInfo>,

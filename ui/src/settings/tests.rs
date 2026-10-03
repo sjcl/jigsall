@@ -1,4 +1,95 @@
 use super::*;
+
+#[test]
+fn autosave_widgets_persist_disable_enable_and_interval_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("autosave.json");
+    let mut settings = AutosaveSettingsState::load(Some(path.clone()));
+    let ctx = egui::Context::default();
+    let render = |settings: &mut AutosaveSettingsState, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..default()
+            },
+            |ui| {
+                paint_autosave_settings(ui, settings, &english());
+            },
+        )
+    };
+    for _ in 0..3 {
+        render(&mut settings, vec![]).drop_without_applying_deltas();
+    }
+    let click = |settings: &mut AutosaveSettingsState, label: &str| {
+        let output = render(settings, vec![]);
+        let pos = text_position(&output, label);
+        output.drop_without_applying_deltas();
+        for pressed in [true, false] {
+            render(
+                settings,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: default(),
+                    },
+                ],
+            )
+            .drop_without_applying_deltas();
+        }
+    };
+    click(&mut settings, "Enable autosave");
+    assert_eq!(settings.current.interval_minutes, None);
+    assert_eq!(
+        AutosaveSettingsState::load(Some(path.clone())).current,
+        settings.current
+    );
+    click(&mut settings, "Enable autosave");
+    assert_eq!(
+        settings.current.interval_minutes,
+        std::num::NonZeroU32::new(5)
+    );
+    let output = render(&mut settings, vec![]);
+    let labels: Vec<_> = output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.clone()),
+            _ => None,
+        })
+        .collect();
+    let number = labels
+        .iter()
+        .find(|text| text.starts_with('5'))
+        .unwrap_or_else(|| panic!("Missing interval: {labels:?}"))
+        .clone();
+    output.drop_without_applying_deltas();
+    click(&mut settings, &number);
+    render(
+        &mut settings,
+        vec![
+            egui::Event::Text("12".into()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            },
+        ],
+    )
+    .drop_without_applying_deltas();
+    assert_eq!(
+        settings.current.interval_minutes,
+        std::num::NonZeroU32::new(12)
+    );
+    assert_eq!(
+        AutosaveSettingsState::load(Some(path)).current,
+        settings.current
+    );
+}
 fn english() -> Localization {
     let mut i18n = Localization::default();
     i18n.set_preference(LanguagePreference::Locale(Locale::EN_US));
@@ -56,6 +147,7 @@ fn frame_with_state(
                 capabilities,
                 &mut english(),
                 &mut UiPreferences::load(None),
+                &mut AutosaveSettingsState::load(None),
                 &mut KeyBindingsState::load(None),
                 &CaptureInput {
                     keys: &ButtonInput::default(),
@@ -352,6 +444,7 @@ fn localized_frame(
                 &capabilities(),
                 i18n,
                 preferences,
+                &mut AutosaveSettingsState::load(None),
                 &mut KeyBindingsState::load(None),
                 &CaptureInput {
                     keys: &ButtonInput::default(),
@@ -474,6 +567,7 @@ fn key_frame(
                 &capabilities(),
                 &mut english(),
                 &mut UiPreferences::load(None),
+                &mut AutosaveSettingsState::load(None),
                 key_state,
                 &CaptureInput {
                     keys: &ButtonInput::default(),
