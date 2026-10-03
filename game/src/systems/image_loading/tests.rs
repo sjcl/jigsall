@@ -24,19 +24,30 @@ fn image_failure_paths_require_debug_logging() {
         ecs::system::RunSystemOnce,
         log::{tracing, tracing_subscriber, Level},
     };
-    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::fmt::{writer::MutexGuardWriter, MakeWriter};
+
+    #[derive(Clone, Default)]
+    struct LogOutput(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'writer> MakeWriter<'writer> for LogOutput {
+        type Writer = MutexGuardWriter<'writer, Vec<u8>>;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            self.0.make_writer()
+        }
+    }
 
     for path in [
         r"C:\Users\private-user\Pictures\private-puzzle.png",
         "/home/private-user/Pictures/private-puzzle.png",
     ] {
         for level in [Level::INFO, Level::DEBUG] {
-            let output = std::sync::Mutex::new(Vec::<u8>::new());
+            let output = LogOutput::default();
             let subscriber = tracing_subscriber::fmt()
                 .with_max_level(level)
                 .without_time()
                 .with_ansi(false)
-                .with_writer(|| output.make_writer())
+                .with_writer(output.clone())
                 .finish();
             let (mut app, sender) = app();
             app.world_mut().resource_mut::<PuzzleConfig>().image_path = path.into();
@@ -55,7 +66,7 @@ fn image_failure_paths_require_debug_logging() {
                     .unwrap();
             });
 
-            let output = String::from_utf8(output.into_inner().unwrap()).unwrap();
+            let output = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
             assert!(output.contains("Image loading failed"));
             assert_eq!(output.contains(path), level == Level::DEBUG, "{output}");
             assert_eq!(
