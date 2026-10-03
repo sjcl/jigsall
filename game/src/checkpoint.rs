@@ -175,6 +175,22 @@ impl CheckpointView<'_> {
                 return Err(CheckpointError::InconsistentComponent(id));
             }
         }
+        let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(self.definition)
+            .map_err(CheckpointError::InvalidDefinition)?;
+        for index in 0..count {
+            let id = PieceId(index as u32);
+            if connectivity.minimum_member(id) != id {
+                continue;
+            }
+            let pivot = crate::play_area::component_center(
+                connectivity
+                    .iter_component(id)
+                    .map(|member| self.pieces[member.0 as usize].position),
+            );
+            if pivot.is_none_or(|pivot| !area.contains(pivot)) {
+                return Err(CheckpointError::OutsidePlayArea(id));
+            }
+        }
         Ok(connectivity)
     }
 
@@ -242,6 +258,7 @@ pub enum CheckpointError {
     WrongPieceCount { expected: usize, actual: usize },
     InvalidNextZOrder,
     NonFinitePosition(PieceId),
+    OutsidePlayArea(PieceId),
     InvalidZOrder(PieceId),
     InvalidFlags(PieceId),
     InvalidBorderConnection(PieceId),

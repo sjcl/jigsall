@@ -341,11 +341,19 @@ impl CommandBridge {
                 active.basis = sequence;
                 active.last_delta = None;
                 active.scalar_delta = Vec2::ZERO;
+                // This ACK can belong to a released gesture while interaction
+                // already tracks a new pick. Validate against the old members
+                // in their committed basis, never the current gesture's cache.
+                let validation = interaction.validation_for_members(store, &active.members);
                 // Controls sampled while waiting still carry the previous basis.
                 for (command, _, _) in &mut self.queue {
                     match command {
                         PieceCommand::ReleaseGroup { delta, .. }
-                        | PieceCommand::RotateDrag { delta, .. } => *delta -= commit.final_delta,
+                        | PieceCommand::RotateDrag { delta, .. } => {
+                            let residual = *delta - commit.final_delta;
+                            *delta =
+                                validation.map_or(residual, |v| v.pivots.clamp(v.area, residual));
+                        }
                         PieceCommand::Grab(_) | PieceCommand::GrabGroup { .. } => break,
                         _ => {}
                     }

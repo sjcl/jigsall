@@ -59,6 +59,39 @@ callers compatible. New transports use `ProtocolCommandEnvelope`, the alias with
 `C = ProtocolPieceCommand`; local scalar commands are not the network drag API.
 Both adapters use the same tracker rather than independent sequence mechanisms.
 
+## Logical play area
+
+`puzzle/src/placement.rs::LogicalPlayArea` bounds component pivots, not their
+geometry. Its origin-centered half extents are `placement_half_extents` for the
+validated definition plus twice the maximum logical image dimension on each axis.
+This includes all seeded initial scatter centers and an image-scaled workspace;
+window size, camera zoom and local GPU texture dimensions do not participate.
+No boundary fields are received from the client or added to saves/wire records.
+
+Grab requires a valid matching definition. Before changing holds or Z, authority
+computes the min/max envelope of the accepted components' world AABB centers.
+This private, constant-size record is kept per drag and removed with its context.
+DragUpdate checks `envelope + absolute delta` in f64 without resolving membership,
+visiting pieces/components or allocating masks. Grab also intersects the legal
+scalar translation intervals of each component's rounded f32 AABB extrema, so
+presentation rounding cannot cross a fractional area edge. Only the intersected
+limits survive in the 64-byte validation record. Out-of-area deltas return
+`InvalidDelta` and produce no publication. Reliable Release and RotateDrag perform
+the same preflight before committing; RotateDrag refreshes the envelope after its
+canonical rebase. Existing reliable sequence consumption and disconnect cleanup
+remain in effect.
+
+Release/rotation also preflight the rounded canonical centers at their existing
+semantic boundaries. Checkpoint validation checks each reconstructed component's
+center, so saves and snapshots cannot restore distant finite canonical positions.
+Snap candidates must preserve legal centers. Huge components may overhang the
+area and rotate about their existing center. Legal edge release/rotation corrects
+only an outward canonical normalization error inward by coordinate precision.
+Local pointer movement clamps using the same envelope, leaving a small f32
+rounding reserve, including delayed Grab /
+rotation ACKs and queued release residuals. Camera panning remains unrestricted,
+so components at the boundary remain reachable.
+
 ## Target forms and stable identity
 
 ```rust

@@ -13,6 +13,7 @@ pub mod persistence;
 #[cfg(any(test, feature = "cpu-picking-debug"))]
 #[allow(dead_code)]
 mod piece_geometry;
+mod play_area;
 pub mod render;
 pub mod resources;
 mod selection;

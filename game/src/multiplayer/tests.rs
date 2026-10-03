@@ -40,7 +40,7 @@ fn fixture() -> PieceDataStore {
         Vec2::new(-50.0, 50.0),
         Vec2::new(301.0, 402.0),
         Vec2::new(503.0, 604.0),
-        Vec2::new(705.0, 806.0),
+        Vec2::new(505.0, 506.0),
     ]);
     let mut placed = store.state(PieceId(0)).unwrap();
     placed.placed = true;

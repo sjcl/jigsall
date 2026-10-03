@@ -9,7 +9,10 @@ fn fixture(
         generator_version: GENERATOR_VERSION,
         seed: 42,
         grid_size: grid,
-        image_size: grid * 20,
+        image_size: puzzella_core::fit_image_size(
+            grid * 20,
+            puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+        ),
         snap_distance: 5.0,
     };
     let mut store = PieceDataStore::default();
@@ -379,13 +382,13 @@ fn one_release_never_moves_the_absorbed_component_to_another_offset() {
 fn large_same_offset_closure_scans_each_boundary_member_once() {
     let (d, mut s) = fixture(
         UVec2::splat(100),
-        std::iter::repeat_n(Vec2::splat(10_000.0), 10_000),
+        std::iter::repeat_n(Vec2::splat(1000.0), 10_000),
     );
     let mut scratch = snapping::SnapScratch::new(s.len(), &d);
     s.resolve_component_snap(PieceId(0), &mut scratch);
     assert_eq!(scratch.boundary_members, 10_000);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
-    assert_offset(&s, &d, 0, Vec2::splat(10_000.0));
+    assert_offset(&s, &d, 0, Vec2::splat(1000.0));
     assert_render_edges(&s, &d);
 }
 
@@ -393,7 +396,7 @@ fn large_same_offset_closure_scans_each_boundary_member_once() {
 fn multiple_disconnected_components_commit_delta_once_and_stay_independent() {
     let (d, mut s) = fixture(
         UVec2::new(4, 1),
-        [100.0, 100.0, 300.0, 300.0].map(Vec2::splat),
+        [100.0, 100.0, 200.0, 200.0].map(Vec2::splat),
     );
     s.connectivity.union(PieceId(0), PieceId(1));
     s.connectivity.union(PieceId(2), PieceId(3));
@@ -401,15 +404,15 @@ fn multiple_disconnected_components_commit_delta_once_and_stay_independent() {
     assert_eq!(result.released, 4);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 2);
     assert_offset(&s, &d, 0, Vec2::new(117.0, 119.0));
-    assert_offset(&s, &d, 3, Vec2::new(317.0, 319.0));
+    assert_offset(&s, &d, 3, Vec2::new(217.0, 219.0));
 }
 
 #[test]
 fn simultaneous_releases_see_other_components_after_their_delta_commit() {
-    let (d, mut s) = fixture(UVec2::new(2, 1), [Vec2::splat(100.0), Vec2::splat(103.0)]);
+    let (d, mut s) = fixture(UVec2::new(2, 1), [Vec2::splat(50.0), Vec2::splat(53.0)]);
     let result = release(&mut s, &d, &[0, 1], Vec2::new(50.0, 60.0));
     assert_eq!(result.released, 2);
-    assert_offset(&s, &d, 0, Vec2::new(153.0, 163.0));
+    assert_offset(&s, &d, 0, Vec2::new(103.0, 113.0));
 }
 
 #[test]
@@ -708,10 +711,20 @@ fn connected_board_threshold_is_strict_and_disconnect_does_not_snap() {
 }
 
 #[test]
-fn overflowing_release_ignores_translation_for_whole_component() {
+fn overflowing_release_rejects_gameplay_translation_and_keeps_numeric_fallback_without_definition()
+{
     let (d, mut s) = fixture(UVec2::new(2, 1), [Vec2::splat(f32::MAX); 2]);
     s.connectivity.union(PieceId(0), PieceId(1));
     let result = release(&mut s, &d, &[0], Vec2::splat(f32::MAX));
+    assert_eq!(result.released, 0);
+    assert_eq!(s.held_by.len(), 2);
+    let result = s.release_roots(
+        LOCAL_PLAYER,
+        vec![PieceId(0)],
+        Vec2::splat(f32::MAX),
+        None,
+        LOCAL_PLAYER,
+    );
     assert_eq!(result.released, 2);
     assert!(s.held_by.is_empty());
     assert!(s
@@ -884,11 +897,11 @@ fn multiple_released_components_snap_independently_and_never_move_resolved_targe
 
     let (d, mut s) = fixture(
         UVec2::new(6, 1),
-        [100.0, 104.0, 500.0, 600.0, 604.0, 700.0].map(|x| Vec2::new(x, 100.0)),
+        [100.0, 104.0, 150.0, 200.0, 204.0, 260.0].map(|x| Vec2::new(x, 100.0)),
     );
     release(&mut s, &d, &[0, 3], Vec2::ZERO);
     assert_offset(&s, &d, 0, Vec2::new(104.0, 100.0));
-    assert_offset(&s, &d, 3, Vec2::new(604.0, 100.0));
+    assert_offset(&s, &d, 3, Vec2::new(204.0, 100.0));
     assert_eq!(s.connectivity.component_size(PieceId(0)), 2);
     assert_eq!(s.connectivity.component_size(PieceId(3)), 2);
 }

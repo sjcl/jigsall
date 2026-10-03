@@ -794,6 +794,16 @@ impl PieceDataStore {
         {
             return;
         }
+        if let Some(area) = definition
+            .and_then(|d| puzzella_puzzle::placement::LogicalPlayArea::from_definition(d).ok())
+        {
+            let pivot = crate::play_area::component_center(
+                self.connectivity.iter_component(id).map(translated),
+            );
+            if pivot.is_none_or(|p| !area.contains(p)) {
+                return;
+            }
+        }
         let connectivity = &self.connectivity;
         let states = &mut *self.states;
         for member in connectivity.iter_component(id) {
@@ -850,20 +860,26 @@ impl PieceDataStore {
         if roots.is_empty() {
             return AppliedCommand::default();
         }
+        let area = definition
+            .and_then(|d| puzzella_puzzle::placement::LogicalPlayArea::from_definition(d).ok());
+        if let Some(area) = area {
+            if !self.release_pivots_fit(roots.iter().copied(), delta, definition, area) {
+                return AppliedCommand::default();
+            }
+        }
         let mut released = 0;
         let clear_drag = player == local_player && !self.drag.members.is_empty();
         // Commit ALL released translations before resolving any snap. A sibling
         // component in this same gesture is a target at its final release position.
         let geometry = definition.map(PuzzleDefinition::geometry);
-        let states = &mut *self.states;
         for &root in &roots {
             let connected = self.connectivity.component_size(root) > 1;
-            let rotation = decode_rotation(states[root.0 as usize].flags);
+            let rotation = decode_rotation(self.states[root.0 as usize].flags);
             let offset = geometry.as_ref().filter(|_| connected).map(|d| {
-                states[root.0 as usize].position
-                    - rotate_quarter(d.correct_position(root), rotation)
-                    + delta
+                self.connected_release_offset(root, delta, d, area)
+                    .expect("release preflight validated the normalized pivot")
             });
+            let states = &mut *self.states;
             let translated = |id: PieceId, position: Vec2| {
                 if connected {
                     if let (Some(d), Some(offset)) = (geometry.as_ref(), offset) {

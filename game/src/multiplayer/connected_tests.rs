@@ -297,7 +297,7 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
     let mut source = PieceDataStore::default();
     source.initialize(
         (0..1_000_000)
-            .map(|id| d.correct_position(PieceId(id)) + Vec2::new(10_000.37, 20_000.93))
+            .map(|id| d.correct_position(PieceId(id)) + Vec2::new(1000.37, 2000.93))
             .collect(),
     );
     for id in 1..1_000_000 {
@@ -371,7 +371,7 @@ fn assert_snapshot_root_independence(image_size: UVec2, fractional: Vec2) {
     };
     let mut source = PieceDataStore::default();
     source.initialize(
-        [98.0, 102.0, 98.0, 106.0, 98.0, 500.0, 98.0, 700.0]
+        [98.0, 102.0, 98.0, 106.0, 98.0, 150.0, 98.0, 180.0]
             .into_iter()
             .enumerate()
             .map(|(id, x)| {

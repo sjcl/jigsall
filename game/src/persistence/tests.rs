@@ -34,13 +34,13 @@ fn checkpoint(bytes: &[u8]) -> PuzzleCheckpoint {
     let mut store = PieceDataStore::default();
     store.initialize(
         (0..4)
-            .map(|i| definition.correct_position(PieceId(i)) + Vec2::splat(50.25))
+            .map(|i| definition.correct_position(PieceId(i)) + Vec2::splat(2.25))
             .collect(),
     );
     store.states[0].position = definition.correct_position(PieceId(0));
     store.states[0].flags |= PLACED;
     store.placed_count = 1;
-    store.states[2].position.x = f32::from_bits(0x42c80001);
+    store.states[2].position.x = f32::from_bits(0x40000001);
     store.connectivity.union(PieceId(1), PieceId(3));
     PuzzleCheckpoint::capture(&store, &definition, image_hash(bytes)).unwrap()
 }
@@ -230,7 +230,7 @@ fn autosave_flag_round_trips_in_full_save_and_list_header_and_rejects_invalid_va
 fn binary_save_restores_both_right_and_down_edges() {
     let mut save = save();
     save.checkpoint.pieces[2].position =
-        save.checkpoint.definition.correct_position(PieceId(2)) + Vec2::splat(50.25);
+        save.checkpoint.definition.correct_position(PieceId(2)) + Vec2::splat(2.25);
     save.checkpoint.pieces[2].flags = SNAPSHOT_CONNECTED_RIGHT;
     let decoded = SaveCodec::decode(&SaveCodec::encode(&save).unwrap()).unwrap();
     assert_eq!(save, decoded);
@@ -403,7 +403,7 @@ fn save_during_rebased_drag_restores_committed_rotation_and_discards_only_transi
     let mut members = PieceBitSet::new(store.len());
     members.extend([PieceId(1), PieceId(3)]);
     store.drag.members = members.words().clone();
-    store.drag.delta = Vec2::new(100.0, 0.0);
+    store.drag.delta = Vec2::new(1.0, 0.0);
     let result = store.apply_command(
         LOCAL_PLAYER,
         &PieceCommand::RotateDrag {

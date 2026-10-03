@@ -1,4 +1,5 @@
 //! Opt-in CPU authority adapter. No ECS systems, transport, or renderer changes.
+use crate::play_area::{DragValidation, PivotEnvelope};
 use crate::resources::{pieces::AppliedCommand, PieceDataStore};
 use puzzella_core::{
     protocol::{
@@ -13,6 +14,7 @@ use puzzella_core::{
     },
     PlayerId, PuzzleDefinition,
 };
+use puzzella_puzzle::placement::LogicalPlayArea;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +79,8 @@ pub struct HostCancellationOutcome {
 pub struct ProtocolDragContexts {
     scope: Option<(SessionId, AuthorityEpoch, u64)>,
     players: HashMap<PlayerId, ActiveDrag>,
+    // Authority-private, constant-size metadata per accepted drag. Never on wire.
+    validation: HashMap<PlayerId, DragValidation>,
 }
 
 impl ProtocolDragContexts {
@@ -228,6 +232,7 @@ impl ProtocolDragContexts {
     /// disconnects in an active replicated session must use cancel_replicated.
     pub fn cancel_player(&mut self, store: &mut PieceDataStore, player: PlayerId) {
         self.players.remove(&player);
+        self.validation.remove(&player);
         store.clear_player_holds(player);
     }
 
@@ -260,6 +265,7 @@ impl ProtocolDragContexts {
             .cancel_drag_target(player, &drag.target)
             .ok_or(ProtocolCommandError::InconsistentDragTarget)?;
         self.players.remove(&player);
+        self.validation.remove(&player);
         let cursor = session
             .advance_authority()
             .expect("preflighted active cursor");
@@ -295,6 +301,7 @@ impl ProtocolDragContexts {
         let scope = Self::scope(session, store);
         if self.scope != Some(scope) {
             self.players.clear();
+            self.validation.clear();
             self.scope = Some(scope);
         }
         session
@@ -324,6 +331,14 @@ impl ProtocolDragContexts {
                 if !valid_rebase_tick(drag.last_tick, *through_tick) {
                     return Err(ProtocolCommandError::InvalidRebaseTick);
                 }
+                let validation = self
+                    .validation
+                    .get(&player)
+                    .ok_or(ProtocolCommandError::InvalidDefinition)?;
+                if !validation.accepts(*final_delta) {
+                    return Err(ProtocolCommandError::InvalidDelta);
+                }
+                let area = validation.area;
                 let ClientCommandSequence::Control(basis_sequence) = envelope.sequence else {
                     unreachable!()
                 };
@@ -331,6 +346,9 @@ impl ProtocolDragContexts {
                 let (applied, roots) = store
                     .rotate_drag_target(player, &drag.target, *final_delta, turns, definition)
                     .ok_or(ProtocolCommandError::InconsistentDragTarget)?;
+                self.validation.get_mut(&player).unwrap().pivots =
+                    PivotEnvelope::from_roots(store, roots.iter().copied(), area)
+                        .expect("rotation plans preflight finite legal pivots");
                 drag.delta = bevy::math::Vec2::ZERO;
                 drag.last_tick = *through_tick;
                 drag.basis_sequence = basis_sequence;
@@ -375,10 +393,15 @@ impl ProtocolDragContexts {
                 if self.players.contains_key(&player) {
                     return Err(ProtocolCommandError::ActiveDragExists);
                 }
+                let definition = definition
+                    .filter(|d| d.validate().is_ok() && d.piece_count() == store.len())
+                    .ok_or(ProtocolCommandError::InvalidDefinition)?;
+                let area = LogicalPlayArea::from_definition(definition)
+                    .map_err(|_| ProtocolCommandError::InvalidDefinition)?;
                 let resolved = target
                     .resolve(&store.connectivity)
                     .map_err(ProtocolCommandError::Target)?;
-                let (applied, target) = match resolved.target {
+                let (applied, target, pivots) = match resolved.target {
                     ResolvedPieceTarget::Sparse(mut refs) => {
                         refs.retain(|reference| {
                             store
@@ -386,21 +409,39 @@ impl ProtocolDragContexts {
                                 .iter_component(reference.member)
                                 .all(|id| store.is_selectable(id))
                         });
+                        let nonempty = !refs.is_empty();
+                        let target = ActiveDragTarget::Sparse(refs);
+                        let pivots = PivotEnvelope::from_target(store, &target, area);
+                        if nonempty
+                            && pivots.is_none_or(|p| !p.accepts(area, bevy::math::Vec2::ZERO))
+                        {
+                            return Err(ProtocolCommandError::InvalidDelta);
+                        }
+                        let ActiveDragTarget::Sparse(refs) = &target else {
+                            unreachable!()
+                        };
                         let applied = store.grab_resolved_components(
                             player,
                             refs.iter().map(|r| r.member),
                             local_player,
                         );
-                        (applied, ActiveDragTarget::Sparse(refs))
+                        (applied, target, pivots)
                     }
                     ResolvedPieceTarget::Dense(members) => {
                         let accepted = store.selectable_members(&members);
                         let target =
                             ActiveDragTarget::from_accepted_members(&store.connectivity, &accepted)
                                 .map_err(ProtocolCommandError::Target)?;
+                        let pivots = PivotEnvelope::from_target(store, &target, area);
+                        if !accepted.is_empty()
+                            && pivots.is_none_or(|p| !p.accepts(area, bevy::math::Vec2::ZERO))
+                        {
+                            return Err(ProtocolCommandError::InvalidDelta);
+                        }
                         (
                             store.grab_accepted_members(player, &accepted, local_player),
                             target,
+                            pivots,
                         )
                     }
                 };
@@ -414,6 +455,14 @@ impl ProtocolDragContexts {
                     rejected: resolved.rejected,
                 };
                 if applied.grabbed != 0 {
+                    self.validation.insert(
+                        player,
+                        DragValidation {
+                            area,
+                            pivots: pivots
+                                .expect("nonempty accepted components have finite centers"),
+                        },
+                    );
                     self.players.insert(
                         player,
                         ActiveDrag {
@@ -454,6 +503,13 @@ impl ProtocolDragContexts {
                         }));
                     }
                 }
+                if !self
+                    .validation
+                    .get(&player)
+                    .is_some_and(|validation| validation.accepts(*delta))
+                {
+                    return Err(ProtocolCommandError::InvalidDelta);
+                }
                 let expected = drag
                     .last_tick
                     .map_or(Some(0), |last| last.checked_add(1))
@@ -476,12 +532,29 @@ impl ProtocolDragContexts {
                 if !final_delta.is_finite() {
                     return Err(ProtocolCommandError::InvalidDelta);
                 }
+                let definition =
+                    definition.filter(|d| d.validate().is_ok() && d.piece_count() == store.len());
                 let drag = self
                     .players
                     .get(&player)
                     .ok_or(ProtocolCommandError::NoActiveDrag)?;
                 if *grab_sequence != drag.grab_sequence {
                     return Err(ProtocolCommandError::WrongDragContext);
+                }
+                if !self
+                    .validation
+                    .get(&player)
+                    .is_some_and(|validation| validation.accepts(*final_delta))
+                {
+                    return Err(ProtocolCommandError::InvalidDelta);
+                }
+                if !store.release_target_fits(
+                    &drag.target,
+                    *final_delta,
+                    definition,
+                    self.validation[&player].area,
+                ) {
+                    return Err(ProtocolCommandError::InvalidDelta);
                 }
                 let (applied, rejected, result) = super::release::release_drag(
                     store,
@@ -493,6 +566,7 @@ impl ProtocolDragContexts {
                 )
                 .map_err(ProtocolCommandError::Target)?;
                 self.players.remove(&player);
+                self.validation.remove(&player);
                 Ok(ProtocolCommandResult::Released {
                     applied,
                     rejected,
@@ -510,3 +584,7 @@ pub(super) fn valid_rebase_tick(last: Option<u64>, through: Option<u64>) -> bool
 #[cfg(test)]
 #[path = "protocol_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "play_area_tests.rs"]
+mod play_area_tests;

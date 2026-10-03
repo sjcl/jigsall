@@ -80,14 +80,40 @@ impl PieceDataStore {
         // cancellation/overflow when changing the canonical orientation.
         // Rebuild from canonical coordinates, never by rotating rounded positions.
         let pivot = (world_min.as_dvec2() + world_max.as_dvec2()) * 0.5;
-        let translation = pivot - (correct_min.as_dvec2() + correct_max.as_dvec2()) * 0.5;
-        self.connectivity
-            .iter_component(minimum)
-            .all(|id| {
-                (rotate_quarter(geometry.correct_position(id), rotation).as_dvec2() + translation)
-                    .as_vec2()
-                    .is_finite()
-            })
+        let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(definition).ok()?;
+        if !area.contains(pivot) {
+            return None;
+        }
+        let mut translation = pivot - (correct_min.as_dvec2() + correct_max.as_dvec2()) * 0.5;
+        // Reconstruction is monotonic, so these rounded extrema determine the
+        // actual canonical pivot without another member scan. At an inclusive
+        // fractional edge, reorientation can round a legal pivot outward. Move
+        // only that rounding error inward rather than rejecting the rotation.
+        let rounded_center = |translation: DVec2| {
+            crate::play_area::component_center([
+                (correct_min.as_dvec2() + translation).as_vec2(),
+                (correct_max.as_dvec2() + translation).as_vec2(),
+            ])
+        };
+        let center = rounded_center(translation)?;
+        if !area.contains(center) {
+            translation -= center - center.clamp(-area.half_extents, area.half_extents);
+            let center = rounded_center(translation)?;
+            // Break an outward rounding tie by at most one endpoint ULP scale.
+            let precision = (correct_min.as_dvec2() + translation)
+                .abs()
+                .max((correct_max.as_dvec2() + translation).abs())
+                * f64::from(f32::EPSILON);
+            for axis in 0..2 {
+                if center[axis] > area.half_extents[axis] {
+                    translation[axis] -= precision[axis];
+                } else if center[axis] < -area.half_extents[axis] {
+                    translation[axis] += precision[axis];
+                }
+            }
+        }
+        rounded_center(translation)
+            .is_some_and(|center| area.contains(center))
             .then_some(RotationPlan {
                 minimum,
                 rotation,

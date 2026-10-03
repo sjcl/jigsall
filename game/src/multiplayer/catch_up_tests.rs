@@ -38,7 +38,10 @@ impl Host {
             generator_version: GENERATOR_VERSION,
             seed: 42,
             grid_size,
-            image_size: grid_size * 20,
+            image_size: puzzella_core::fit_image_size(
+                grid_size * 200,
+                puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+            ),
             snap_distance: 5.,
         };
         let mut store = PieceDataStore::default();

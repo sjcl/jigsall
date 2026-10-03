@@ -437,7 +437,7 @@ mod tests {
                 seed: 271,
                 grid_size: UVec2::splat(2),
                 image_size: UVec2::splat(2),
-                snap_distance: 8.0,
+                snap_distance: 0.5,
             };
             let pieces = (0..4)
                 .map(|index| SnapshotPieceState {
@@ -445,7 +445,7 @@ mod tests {
                         + if complete || index == 0 {
                             Vec2::ZERO
                         } else {
-                            Vec2::splat(25.0)
+                            Vec2::splat(2.5)
                         },
                     z_order: index,
                     flags: if complete || index == 0 {
@@ -584,7 +584,7 @@ mod tests {
                         player: LOCAL_PLAYER,
                         command: PieceCommand::ReleaseGroup {
                             members,
-                            delta: Vec2::splat(9.0),
+                            delta: Vec2::splat(4.0),
                         },
                     });
                 }
@@ -624,7 +624,7 @@ mod tests {
                         + if during_drag {
                             Vec2::ZERO
                         } else {
-                            Vec2::splat(9.0)
+                            Vec2::splat(4.0)
                         }
                 );
                 if during_drag {

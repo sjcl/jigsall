@@ -15,6 +15,7 @@ impl CorrectBounds {
 
 pub(super) struct SnapScratch {
     geometry: PuzzleGeometry,
+    play_area: puzzella_puzzle::placement::LogicalPlayArea,
     snap_distance: f32,
     #[cfg(test)]
     pub(super) boundary_members: usize,
@@ -33,6 +34,8 @@ impl SnapScratch {
     pub(super) fn new(count: usize, definition: &PuzzleDefinition) -> Self {
         Self {
             geometry: definition.geometry(),
+            play_area: puzzella_puzzle::placement::LogicalPlayArea::from_definition(definition)
+                .expect("validated gameplay definition"),
             snap_distance: definition.snap_distance,
             #[cfg(test)]
             boundary_members: 0,
@@ -179,6 +182,9 @@ impl PieceDataStore {
                     bounds
                 });
                 if bounds.fits(offset)
+                    && scratch.play_area.contains(
+                        ((bounds.min + offset).as_dvec2() + (bounds.max + offset).as_dvec2()) * 0.5,
+                    )
                     && self.snap_target_is_eligible(target, rotation, offset, scratch)
                 {
                     best = Some(candidate);

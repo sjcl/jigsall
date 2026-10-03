@@ -128,7 +128,7 @@ fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
     let cursor = h.s.peers[0].session.cursor();
     let states = h.s.peers[0].store.states.clone();
     for tick in [1, 2] {
-        let delta = Vec2::splat(tick as f32 * 50.0);
+        let delta = Vec2::splat(tick as f32 * 5.0);
         let mut cmd = update();
         cmd.player = B;
         cmd.sequence = ClientCommandSequence::Move {

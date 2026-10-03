@@ -13,7 +13,7 @@ fn app(connected: bool) -> App {
     let mut store = PieceDataStore::default();
     store.initialize(
         (0..3)
-            .map(|id| definition.correct_position(PieceId(id)) + Vec2::splat(1000.))
+            .map(|id| definition.correct_position(PieceId(id)) + Vec2::splat(100.))
             .collect(),
     );
     if connected {

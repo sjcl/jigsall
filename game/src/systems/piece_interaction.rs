@@ -14,6 +14,7 @@ pub fn handle_piece_input(
     bindings: Res<KeyBindingsState>,
     presses: Option<Res<KeyPresses>>,
     input: Res<InputState>,
+    definition: Option<Res<PuzzleDefinition>>,
     ui_capture: Res<GameUiPointerCapture>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut store: ResMut<PieceDataStore>,
@@ -39,6 +40,7 @@ pub fn handle_piece_input(
         over_ui,
         focused: input.window_focused,
     };
+    interaction.set_play_area(definition.as_deref());
     let pointer_commands = interaction.update(frame, &mut store, &mut selection, local_player.0);
     let released = pointer_commands
         .iter()
@@ -319,6 +321,50 @@ mod tests {
                 .resource::<crate::selection::PuzzleSelection>()
                 .preview_active
         );
+    }
+
+    #[test]
+    fn local_drag_and_release_at_huge_pointer_coordinates_stay_inside_play_area() {
+        let mut app = input_app();
+        let definition = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::new(2, 1),
+            image_size: UVec2::new(200, 100),
+            snap_distance: 5.0,
+        };
+        let area =
+            puzzella_puzzle::placement::LogicalPlayArea::from_definition(&definition).unwrap();
+        app.insert_resource(definition.clone());
+        // Select both independent components, preserving their relative positions.
+        for point in [Vec2::new(100.0, 100.0), Vec2::new(300.0, 100.0)] {
+            pointer_frame(&mut app, point, true, true);
+            pointer_frame(&mut app, point, false, true);
+        }
+        pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
+        pointer_frame(&mut app, Vec2::splat(1e37), true, false);
+        {
+            let store = app.world().resource::<PieceDataStore>();
+            assert_eq!(store.states[0].position, Vec2::new(100.0, 100.0));
+            assert!(area.contains((store.states[1].position + store.drag.delta).as_dvec2()));
+        }
+        pointer_frame(&mut app, Vec2::splat(1e37), false, false);
+        let store = app.world().resource::<PieceDataStore>();
+        assert!(store.held_by.is_empty());
+        assert!(store
+            .states
+            .iter()
+            .all(|s| area.contains(s.position.as_dvec2())));
+        assert_eq!(
+            store.states[1].position - store.states[0].position,
+            Vec2::new(200.0, 0.0)
+        );
+        crate::checkpoint::PuzzleCheckpoint::capture(
+            store,
+            &definition,
+            puzzella_core::session::ImageHash([0; 32]),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -691,7 +737,7 @@ mod rotation_input_tests {
             generator_version: GENERATOR_VERSION,
             seed: 42,
             grid_size: UVec2::new(2, 1),
-            image_size: UVec2::new(80, 40),
+            image_size: UVec2::new(120, 40),
             snap_distance: 5.0,
         });
         app.world_mut()

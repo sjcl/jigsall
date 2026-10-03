@@ -51,7 +51,7 @@ impl Host {
             seed: 42,
             grid_size,
             image_size: puzzella_core::fit_image_size(
-                grid_size * 20,
+                grid_size * 200,
                 puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
             ),
             snap_distance: 5.,

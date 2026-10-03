@@ -6,7 +6,7 @@ const REMOTE: PlayerId = PlayerId(0);
 
 fn store(count: usize) -> PieceDataStore {
     let mut store = PieceDataStore::default();
-    store.initialize(vec![Vec2::splat(1000.0); count]);
+    store.initialize(vec![Vec2::splat(100.0); count]);
     store
 }
 
@@ -137,7 +137,7 @@ fn nonzero_local_drag_rotation_rebases_and_remote_zero_cannot_use_local_adapter(
         let mut store = store(2);
         store.initialize(
             (0..2)
-                .map(|id| definition.correct_position(PieceId(id)) + Vec2::splat(1000.0))
+                .map(|id| definition.correct_position(PieceId(id)) + Vec2::splat(100.0))
                 .collect(),
         );
         store.connectivity.union(PieceId(0), PieceId(1));

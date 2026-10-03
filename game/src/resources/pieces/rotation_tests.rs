@@ -156,7 +156,7 @@ fn canonical_reconstruction_does_not_accumulate_fractional_grid_drift() {
 fn multiselection_rotates_each_component_about_its_own_center_once() {
     let (d, mut store) = fixture(UVec2::new(4, 1));
     store.connectivity.union(PieceId(0), PieceId(1));
-    set_transform(&mut store, &d, 2, 0, Vec2::new(1000.0, -1000.0));
+    set_transform(&mut store, &d, 2, 0, Vec2::new(100.0, -100.0));
     let singleton = store.states[2].position;
     let pair_pivot = (store.states[0].position + store.states[1].position) * 0.5;
     let untouched = store.states[3];
@@ -409,7 +409,7 @@ fn rotated_fractional_closure_keeps_fixed_translation_and_scans_each_boundary_on
                 } else {
                     104.37
                 },
-                1000.37,
+                100.37,
             );
             set_transform(
                 &mut store,
@@ -479,13 +479,38 @@ fn million_dense_rotation_uploads_only_changed_members_and_no_component_roots() 
 }
 
 #[test]
-fn singleton_centers_preserve_tiny_offsets_signed_zero_and_large_float_bits() {
+fn rotation_at_an_exact_fractional_play_area_edge_keeps_a_legal_pivot() {
+    let (mut d, mut store) = fixture(UVec2::new(11, 15));
+    d.image_size = UVec2::new(6276, 10697);
+    for id in 0..store.len() as u32 {
+        set_transform(&mut store, &d, id, 0, Vec2::ZERO);
+    }
+    for id in 0..4 {
+        set_transform(&mut store, &d, id, 0, Vec2::new(30_237.455, 0.0));
+        if id != 0 {
+            store.connectivity.union(PieceId(0), PieceId(id));
+        }
+    }
+    let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&d).unwrap();
+    let pivot =
+        crate::play_area::component_center(store.states[..4].iter().map(|s| s.position)).unwrap();
+    assert_eq!(pivot.x, area.half_extents.x);
+    PuzzleCheckpoint::capture(&store, &d, ImageHash([0; 32])).unwrap();
+    for _ in 0..4 {
+        assert_eq!(rotate(&mut store, &d, &[0], 1), 4);
+        let center =
+            crate::play_area::component_center(store.states[..4].iter().map(|s| s.position))
+                .unwrap();
+        assert!(area.contains(center));
+        assert!((center - pivot).abs().max_element() < 0.01);
+        PuzzleCheckpoint::capture(&store, &d, ImageHash([0; 32])).unwrap();
+    }
+}
+
+#[test]
+fn singleton_centers_preserve_tiny_offsets_and_signed_zero_and_reject_far_centers() {
     let (d, mut store) = fixture(UVec2::new(3, 1));
-    for position in [
-        Vec2::new(1e-20, -1e-20),
-        Vec2::new(-0.0, 0.0),
-        Vec2::new(1e30, -1e30),
-    ] {
+    for position in [Vec2::new(1e-20, -1e-20), Vec2::new(-0.0, 0.0)] {
         store.states[0].position = position;
         for _ in 0..4 {
             assert_eq!(rotate(&mut store, &d, &[0], 1), 1);
@@ -495,4 +520,8 @@ fn singleton_centers_preserve_tiny_offsets_signed_zero_and_large_float_bits() {
             );
         }
     }
+    store.states[0].position = Vec2::new(1e30, -1e30);
+    let before = store.states.clone();
+    assert_eq!(rotate(&mut store, &d, &[0], 1), 0);
+    assert_eq!(store.states, before);
 }

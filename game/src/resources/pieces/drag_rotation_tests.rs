@@ -12,7 +12,7 @@ fn fixture() -> (PuzzleDefinition, PieceDataStore, PieceBitSet) {
     let mut store = PieceDataStore::default();
     store.initialize(
         (0..4)
-            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(1000.))
+            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.))
             .collect(),
     );
     store.connectivity.union(PieceId(0), PieceId(1));
@@ -65,9 +65,9 @@ fn drag_rotation_commits_displayed_positions_with_independent_pivots_and_preserv
     let result = rotate_drag(&mut store, &d, &members, 1);
     assert!(result.drag_rebased);
     assert_eq!(result.rotated, 3);
-    assert_eq!(store.states[0].position, Vec2::new(1000., 1020.));
-    assert_eq!(store.states[1].position, Vec2::new(1000., 1040.));
-    assert_eq!(store.states[2].position, Vec2::new(1030., 1030.));
+    assert_eq!(store.states[0].position, Vec2::new(100., 120.));
+    assert_eq!(store.states[1].position, Vec2::new(100., 140.));
+    assert_eq!(store.states[2].position, Vec2::new(130., 130.));
     assert_eq!(store.states[3], before[3]);
     for id in members.iter() {
         let state = store.states[id.0 as usize];
@@ -101,7 +101,7 @@ fn repeated_drag_turns_reconstruct_fractional_l_shape_without_accumulated_drift(
     d.image_size = UVec2::new(123, 101);
     store.initialize(
         (0..21)
-            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(1000.))
+            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.))
             .collect(),
     );
     store.connectivity.union(PieceId(0), PieceId(1));
@@ -297,7 +297,7 @@ fn drag_rotation_upload_is_exact_even_for_fragmented_members_and_pointer_frames_
     d.image_size = UVec2::new(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION, 30);
     store.initialize(
         (0..1000)
-            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(1000.))
+            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.))
             .collect(),
     );
     let mut members = PieceBitSet::new(1000);

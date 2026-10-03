@@ -58,7 +58,7 @@ pub fn apply_piece_commands(
                 interaction.as_deref_mut(),
                 input.as_ref().and_then(|input| input.mouse_position),
             ) {
-                interaction.accept_drag_rotation(&request.command, pointer);
+                interaction.accept_drag_rotation(&request.command, pointer, &store);
             }
         }
     }

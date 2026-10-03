@@ -70,7 +70,7 @@ impl Simulation {
                 generator_version: GENERATOR_VERSION,
                 seed: 42,
                 grid_size: UVec2::new(offsets.len() as u32, 1),
-                image_size: UVec2::new(offsets.len() as u32 * 20, 20),
+                image_size: UVec2::new(offsets.len() as u32 * 20 + 2048, 2048),
                 snap_distance: 5.0,
             },
             offsets,
@@ -126,6 +126,7 @@ impl Simulation {
         command: ProtocolPieceCommand,
         snap: bool,
     ) -> HostCommandOutcome {
+        let provide_definition = snap || matches!(command, ProtocolPieceCommand::Grab { .. });
         self.contexts
             .apply_replicated(
                 &mut self.session,
@@ -138,7 +139,7 @@ impl Simulation {
                     sequence,
                     command,
                 },
-                snap.then_some(&self.definition),
+                provide_definition.then_some(&self.definition),
                 puzzella_core::LOCAL_PLAYER,
             )
             .unwrap()
@@ -1035,7 +1036,7 @@ fn dense_release_replay_and_stale_topology_preserve_target_specific_validation()
         snap_distance: 5.0,
     };
     let offsets: Vec<_> = (0..count)
-        .map(|id| Vec2::splat(1000.0 + id as f32 * 100.0))
+        .map(|id| Vec2::splat(1000.0 + id as f32 * 0.25))
         .collect();
     let mut s = Simulation::with_definition(d, &offsets, &[]);
     let ids: Vec<_> = (0..4000).collect();
@@ -1346,7 +1347,7 @@ fn publication_counter_exhaustion_is_rejected_before_mutation() {
             &mut s.store,
             A,
             &envelope,
-            None,
+            Some(&s.definition),
             puzzella_core::LOCAL_PLAYER,
         )
         .unwrap();
@@ -1407,7 +1408,7 @@ fn restored_replica_with_different_dsu_root_replays_connected_snap_identically()
         image_size: UVec2::new(60, 40),
         snap_distance: 5.0,
     };
-    let offsets = [100.0, 100.0, 104.0, 800.0, 100.0, 104.0].map(|x| Vec2::new(x, 100.0));
+    let offsets = [100.0, 100.0, 104.0, 180.0, 100.0, 104.0].map(|x| Vec2::new(x, 100.0));
     let mut s = Simulation::with_definition(definition, &offsets, &[(1, 4), (1, 0)]);
     let mut connectivity = puzzella_core::PieceConnectivity::new(6);
     connectivity.union(PieceId(1), PieceId(4));

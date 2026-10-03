@@ -125,15 +125,15 @@ fn definition() -> PuzzleDefinition {
         generator_version: GENERATOR_VERSION,
         seed: 37,
         grid_size: UVec2::splat(2),
-        image_size: UVec2::splat(8),
+        image_size: UVec2::splat(128),
         snap_distance: 0.01,
     }
 }
 fn encoded() -> Arc<[u8]> {
     let mut bytes = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-        8,
-        8,
+        128,
+        128,
         image::Rgba([60, 170, 20, 255]),
     ))
     .write_to(&mut bytes, image::ImageFormat::Png)
@@ -215,6 +215,7 @@ fn pointer(app: &mut App, position: Vec2, pressed: bool, just_pressed: bool) {
         .world_mut()
         .remove_resource::<PieceInteraction>()
         .unwrap();
+    interaction.set_play_area(app.world().get_resource::<PuzzleDefinition>());
     let mut store = app.world_mut().remove_resource::<PieceDataStore>().unwrap();
     let mut selection = app
         .world_mut()
@@ -881,6 +882,83 @@ fn client_rotation_ack_rebases_pointer_and_release_queued_before_ack_uses_the_ne
     );
     assert!(pair
         .client
+        .world()
+        .resource::<PieceDataStore>()
+        .held_by
+        .is_empty());
+}
+
+#[test]
+fn old_rotation_ack_uses_its_members_bounds_after_a_new_gesture_starts() {
+    let mut pair = Pair::new();
+    let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&definition()).unwrap();
+    pair.host
+        .world_mut()
+        .resource_mut::<PieceDataStore>()
+        .states[2]
+        .position
+        .x = area.half_extents.x as f32 - 1.0;
+    pair.ready();
+    begin_gesture(&mut pair.client);
+    pair.converge();
+    pointer(&mut pair.client, Vec2::new(20.0, 30.0), true, false);
+    pair.client.update();
+    let rotation = pair
+        .client
+        .world()
+        .resource::<PieceInteraction>()
+        .rotation_command(pair.client.world().resource::<PieceDataStore>(), 1)
+        .unwrap();
+    send(&mut pair.client, rotation);
+    pair.client.update();
+    pointer(&mut pair.client, Vec2::new(30.0, 40.0), false, false);
+    pair.client.update();
+    // The old Release waits behind RotateDrag. A different near-edge component
+    // now owns interaction's cache before either authority response arrives.
+    pointer(&mut pair.client, Vec2::ZERO, true, true);
+    let request = pair
+        .client
+        .world()
+        .resource::<crate::selection::PuzzleSelection>()
+        .latest
+        .unwrap();
+    pair.client
+        .world_mut()
+        .resource_mut::<crate::selection::PuzzleSelection>()
+        .completed = Some(crate::selection::SelectionResult {
+        request_id: request.request_id,
+        mode: crate::selection::SelectionMode::Point,
+        payload: crate::selection::SelectionPayload::Point(Some(PieceId(2))),
+        error: None,
+    });
+    pointer(&mut pair.client, Vec2::ZERO, true, false);
+    pair.client.update();
+    pair.converge();
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().states[0].position,
+        Vec2::new(130.0, 140.0)
+    );
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().states[1].position,
+        Vec2::new(230.0, 140.0)
+    );
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().states,
+        pair.client.world().resource::<PieceDataStore>().states
+    );
+    assert_eq!(
+        pair.client.world().resource::<PieceDataStore>().drag.delta,
+        Vec2::ZERO
+    );
+    assert!(pair
+        .client
+        .world()
+        .resource::<PieceInteraction>()
+        .is_dragging());
+    pointer(&mut pair.client, Vec2::ZERO, false, false);
+    pair.converge();
+    assert!(pair
+        .host
         .world()
         .resource::<PieceDataStore>()
         .held_by

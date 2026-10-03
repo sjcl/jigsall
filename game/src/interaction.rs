@@ -1,9 +1,11 @@
 //! Pointer gestures consume asynchronous GPU results; gameplay uses PieceCommand.
+use crate::play_area::{DragValidation, PivotEnvelope};
 use crate::resources::pieces::DragTransform;
 use crate::{resources::*, selection::*};
 use bevy::prelude::*;
 use puzzella_core::protocol::{ComponentRef, PieceTarget};
 use puzzella_core::*;
+use puzzella_puzzle::placement::LogicalPlayArea;
 
 #[cfg(test)]
 mod drag_rotation_tests;
@@ -48,6 +50,8 @@ pub struct PieceInteraction {
     // Stable only for this gesture; delayed network ACKs cannot affect a new
     // gesture even when it selects the exact same mask.
     network_gesture: std::sync::Arc<()>,
+    play_area: Option<LogicalPlayArea>,
+    drag_validation: Option<DragValidation>,
 }
 
 #[derive(Clone, Copy)]
@@ -67,6 +71,28 @@ pub struct PointerFrame {
     pub focused: bool,
 }
 impl PieceInteraction {
+    pub(crate) fn set_play_area(&mut self, definition: Option<&PuzzleDefinition>) {
+        self.play_area = definition.and_then(|d| LogicalPlayArea::from_definition(d).ok());
+    }
+    fn refresh_drag_validation(&mut self, store: &PieceDataStore, members: &PieceBitSet) {
+        self.drag_validation = self.validation_for_members(store, members);
+    }
+    pub(crate) fn validation_for_members(
+        &self,
+        store: &PieceDataStore,
+        members: &PieceBitSet,
+    ) -> Option<DragValidation> {
+        self.play_area.and_then(|area| {
+            PivotEnvelope::from_members(store, members, area)
+                .map(|pivots| DragValidation { area, pivots })
+        })
+    }
+    pub(crate) fn clamp_drag_delta(&self, delta: Vec2) -> Vec2 {
+        self.drag_validation.map_or_else(
+            || if delta.is_finite() { delta } else { Vec2::ZERO },
+            |v| v.pivots.clamp(v.area, delta),
+        )
+    }
     /// Only an explicit idle Q/E press requests a GPU point pick. Pointer frames
     /// never search pieces, build a membership mask, or refresh a hover cache.
     pub fn update_rotation(
@@ -189,7 +215,12 @@ impl PieceInteraction {
             quarter_turns,
         })
     }
-    pub(crate) fn accept_drag_rotation(&mut self, command: &PieceCommand, pointer: Vec2) {
+    pub(crate) fn accept_drag_rotation(
+        &mut self,
+        command: &PieceCommand,
+        pointer: Vec2,
+        store: &PieceDataStore,
+    ) {
         if let (
             Gesture::Dragging { members, anchor },
             PieceCommand::RotateDrag {
@@ -200,6 +231,9 @@ impl PieceInteraction {
             if pointer.is_finite() && members == accepted {
                 *anchor = pointer;
             }
+        }
+        if let PieceCommand::RotateDrag { members, .. } = command {
+            self.refresh_drag_validation(store, members);
         }
     }
     pub fn is_dragging(&self) -> bool {
@@ -217,6 +251,8 @@ impl PieceInteraction {
         if !std::sync::Arc::ptr_eq(token, &self.network_gesture) {
             return;
         }
+        self.refresh_drag_validation(store, &accepted);
+        store.drag.delta = self.clamp_drag_delta(store.drag.delta);
         if let Gesture::Dragging { members, .. } = &mut self.gesture {
             if members == requested {
                 if accepted.is_empty() {
@@ -244,6 +280,8 @@ impl PieceInteraction {
         if !std::sync::Arc::ptr_eq(token, &self.network_gesture) {
             return;
         }
+        self.refresh_drag_validation(store, members);
+        let residual = self.clamp_drag_delta(store.drag.delta - delta);
         if let Gesture::Dragging {
             members: current,
             anchor,
@@ -251,7 +289,7 @@ impl PieceInteraction {
         {
             if current == members {
                 *anchor = pointer.filter(|p| p.is_finite()).unwrap_or(*anchor + delta);
-                store.drag.delta -= delta;
+                store.drag.delta = residual;
             }
         }
     }
@@ -385,7 +423,13 @@ impl PieceInteraction {
                         }
                         let members = store.selectable_members(&store.selected_pieces);
                         store.selected_pieces = members.clone();
+                        let validation = self.play_area.and_then(|area| {
+                            PivotEnvelope::from_members(store, &members, area)
+                                .map(|pivots| DragValidation { area, pivots })
+                        });
                         let delta = *current - *anchor;
+                        let delta = validation.map_or(delta, |v| v.pivots.clamp(v.area, delta));
+                        self.drag_validation = validation;
                         store.drag = DragTransform {
                             members: members.words().clone(),
                             delta: if delta.is_finite() { delta } else { Vec2::ZERO },
@@ -423,12 +467,14 @@ impl PieceInteraction {
                 }
             }
         }
+        let validation = self.drag_validation;
         match &mut self.gesture {
             Gesture::Dragging { members, anchor } => {
                 if let Some(point) = point {
                     let delta = point - *anchor;
                     if delta.is_finite() {
-                        store.drag.delta = delta;
+                        store.drag.delta =
+                            validation.map_or(delta, |v| v.pivots.clamp(v.area, delta));
                     }
                 }
                 if !frame.pressed {

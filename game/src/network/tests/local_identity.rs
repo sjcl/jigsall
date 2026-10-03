@@ -81,7 +81,7 @@ fn routers_replay_own_42_and_remote_zero_grab_and_release_on_sparse_and_dense_pa
                     contexts: &mut contexts,
                     session: &mut host_session,
                     store: &mut host_store,
-                    definition: None,
+                    definition: Some(&definition),
                 };
                 let grab = ProtocolCommandEnvelope {
                     session: SESSION.id,
@@ -97,6 +97,8 @@ fn routers_replay_own_42_and_remote_zero_grab_and_release_on_sparse_and_dense_pa
                     panic!()
                 };
                 let event = outcome.authority_event.unwrap();
+                // Exercise the legacy no-snap replay independently of Grab validation.
+                host.definition = None;
                 assert!(
                     matches!(&event.event, ProtocolAuthorityEvent::GrabAccepted(ack) if ack.player == player)
                 );

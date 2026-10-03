@@ -59,19 +59,35 @@ fn join_capture_checks_authority_context_scalar_membership_and_overlap_invariant
 }
 
 struct Fixture {
+    definition: PuzzleDefinition,
     store: PieceDataStore,
     session: AuthoritySession,
     contexts: ProtocolDragContexts,
 }
 impl Fixture {
     fn new(count: usize) -> Self {
+        let width = if count <= 1000 { count } else { count.isqrt() };
+        let definition = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::new(width as u32, count.div_ceil(width) as u32),
+            image_size: UVec2::splat(16_384),
+            snap_distance: 5.0,
+        };
         let mut store = PieceDataStore::default();
         store.initialize(
             (0..count)
-                .map(|id| Vec2::new(1000.0 + id as f32 * 100.0, 1000.0))
+                .map(|id| {
+                    if count > 1000 {
+                        definition.correct_position(PieceId(id as u32)) + Vec2::splat(1000.0)
+                    } else {
+                        Vec2::new(1000.0 + id as f32 * 100.0, 1000.0)
+                    }
+                })
                 .collect(),
         );
         Self {
+            definition,
             store,
             session: AuthoritySession::new(SESSION, A, AuthorityCursor::new(3, 0)),
             contexts: ProtocolDragContexts::default(),
@@ -104,7 +120,8 @@ impl Fixture {
             &mut self.store,
             envelope.player,
             envelope,
-            None,
+            matches!(envelope.command, ProtocolPieceCommand::Grab { .. })
+                .then_some(&self.definition),
             puzzella_core::LOCAL_PLAYER,
         )
     }
@@ -607,7 +624,7 @@ fn snapshot_restore_preserves_stable_refs_and_invalidates_active_contexts() {
         snap_distance: 5.0,
     };
     for id in 0..8 {
-        f.store.states[id].position = d.correct_position(PieceId(id as u32)) + Vec2::splat(1000.0);
+        f.store.states[id].position = d.correct_position(PieceId(id as u32)) + Vec2::splat(100.0);
     }
     f.store.connectivity.union(PieceId(2), PieceId(3));
     f.store.connectivity.union(PieceId(2), PieceId(1));
@@ -664,6 +681,9 @@ fn migration_freezes_updates_and_new_epoch_cannot_reuse_a_drag() {
         image_size: UVec2::splat(40),
         snap_distance: 5.0,
     };
+    for id in 0..4 {
+        f.store.states[id].position = d.correct_position(PieceId(id as u32)) + Vec2::splat(50.0);
+    }
     f.grab(0, f.target(&[0, 1]));
     let snapshot = GameSnapshot::capture(&f.store, &d, SESSION, f.session.cursor()).unwrap();
     f.session.begin_graceful(B).unwrap();
@@ -945,7 +965,10 @@ fn million_singleton_context_uses_125kb_membership_and_no_component_list() {
         panic!()
     };
     assert_eq!(applied.released, 1_000_000);
-    assert_eq!(f.store.states[0].position, Vec2::splat(1001.0));
+    assert_eq!(
+        f.store.states[0].position,
+        f.definition.correct_position(PieceId(0)) + Vec2::splat(1001.0)
+    );
     assert!(f.store.held_by.is_empty());
     assert!(f.drag().is_none());
 }

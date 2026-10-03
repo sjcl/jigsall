@@ -13,7 +13,7 @@ fn app() -> App {
     let mut store = PieceDataStore::default();
     store.initialize(
         (0..2)
-            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(1000.))
+            .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.))
             .collect(),
     );
     store.connectivity.union(PieceId(0), PieceId(1));
@@ -37,7 +37,7 @@ fn app() -> App {
         .insert_resource(PieceInteraction {
             gesture: Gesture::Dragging {
                 members,
-                anchor: Vec2::splat(1000.),
+                anchor: Vec2::splat(100.),
             },
             ..default()
         })
@@ -60,8 +60,8 @@ fn app() -> App {
             )
                 .chain(),
         );
-    frame(&mut app, Vec2::splat(1000.), true, None);
-    frame(&mut app, Vec2::splat(1000.), true, None);
+    frame(&mut app, Vec2::splat(100.), true, None);
+    frame(&mut app, Vec2::splat(100.), true, None);
     app
 }
 
@@ -94,10 +94,10 @@ fn accepted_drag_rotation_rebases_anchor_in_same_frame_and_pointer_moves_remain_
         .drag
         .members
         .clone();
-    frame(&mut app, Vec2::new(1020., 1030.), true, Some(KeyCode::KeyQ));
+    frame(&mut app, Vec2::new(120., 130.), true, Some(KeyCode::KeyQ));
     let states = app.world().resource::<PieceDataStore>().states.to_vec();
-    assert_eq!(states[0].position, Vec2::new(1020., 1020.));
-    assert_eq!(states[1].position, Vec2::new(1020., 1040.));
+    assert_eq!(states[0].position, Vec2::new(120., 120.));
+    assert_eq!(states[1].position, Vec2::new(120., 140.));
     let upload = app.world().resource::<pieces::PieceUpload>();
     assert_eq!(upload.drag.delta, Vec2::ZERO);
     assert_eq!(
@@ -105,12 +105,12 @@ fn accepted_drag_rotation_rebases_anchor_in_same_frame_and_pointer_moves_remain_
         2
     );
     let revision = upload.revision;
-    frame(&mut app, Vec2::new(1020., 1030.), true, None);
+    frame(&mut app, Vec2::new(120., 130.), true, None);
     assert_eq!(
         app.world().resource::<PieceDataStore>().drag.delta,
         Vec2::ZERO
     );
-    frame(&mut app, Vec2::new(1030., 1030.), true, None);
+    frame(&mut app, Vec2::new(130., 130.), true, None);
     let store = app.world().resource::<PieceDataStore>();
     assert_eq!(store.drag.delta, Vec2::new(10., 0.));
     assert_eq!(store.states.to_vec(), states);
@@ -121,12 +121,7 @@ fn accepted_drag_rotation_rebases_anchor_in_same_frame_and_pointer_moves_remain_
         revision
     );
     // Mouse release wins over Q/E; it cannot issue a second rotation from Idle.
-    frame(
-        &mut app,
-        Vec2::new(1030., 1030.),
-        false,
-        Some(KeyCode::KeyE),
-    );
+    frame(&mut app, Vec2::new(130., 130.), false, Some(KeyCode::KeyE));
     let store = app.world().resource::<PieceDataStore>();
     for (id, state) in store.states.iter().enumerate() {
         assert_eq!(decode_rotation(state.flags), 1);
@@ -145,7 +140,7 @@ fn q_e_rotate_dragged_singletons_about_their_displayed_centers() {
     let before = app.world().resource::<PieceDataStore>().states.to_vec();
     let next_z = app.world().resource::<PieceDataStore>().next_z_order;
     for (key, rotation) in [(KeyCode::KeyQ, 1), (KeyCode::KeyE, 0)] {
-        frame(&mut app, Vec2::new(1020., 1030.), true, Some(key));
+        frame(&mut app, Vec2::new(120., 130.), true, Some(key));
         let store = app.world().resource::<PieceDataStore>();
         for (state, original) in store.states.iter().zip(&before) {
             assert_eq!(state.position, original.position + Vec2::new(20., 30.));
@@ -162,7 +157,7 @@ fn rejected_drag_rotation_keeps_the_old_anchor_and_delta() {
     let mut app = app();
     app.world_mut().resource_mut::<PieceDataStore>().states[1].flags &= !pieces::HELD;
     let before = app.world().resource::<PieceDataStore>().states.to_vec();
-    frame(&mut app, Vec2::new(1020., 1030.), true, Some(KeyCode::KeyQ));
+    frame(&mut app, Vec2::new(120., 130.), true, Some(KeyCode::KeyQ));
     assert_eq!(
         app.world().resource::<PieceDataStore>().states.to_vec(),
         before
@@ -172,7 +167,7 @@ fn rejected_drag_rotation_keeps_the_old_anchor_and_delta() {
         Vec2::new(20., 30.)
     );
     app.world_mut().resource_mut::<PieceDataStore>().states[1].flags |= pieces::HELD;
-    frame(&mut app, Vec2::new(1030., 1030.), true, None);
+    frame(&mut app, Vec2::new(130., 130.), true, None);
     assert_eq!(
         app.world().resource::<PieceDataStore>().drag.delta,
         Vec2::new(30., 30.)

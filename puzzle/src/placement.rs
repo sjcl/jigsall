@@ -1,6 +1,33 @@
 use bevy_math::Vec2;
+use puzzella_core::PuzzleDefinition;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+
+/// Deterministic workspace for component pivots, independent of the camera,
+/// texture allocation and window. Geometry may extend beyond this area.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LogicalPlayArea {
+    pub half_extents: bevy_math::DVec2,
+}
+impl LogicalPlayArea {
+    pub fn from_definition(definition: &PuzzleDefinition) -> Result<Self, &'static str> {
+        definition.validate()?;
+        let image = definition.image_size.as_vec2();
+        let scatter = placement_half_extents(
+            definition.piece_count(),
+            image / definition.grid_size.as_vec2(),
+            image,
+        );
+        Ok(Self {
+            half_extents: scatter.as_dvec2()
+                + bevy_math::DVec2::splat(f64::from(image.max_element()) * 2.0),
+        })
+    }
+
+    pub fn contains(self, pivot: bevy_math::DVec2) -> bool {
+        pivot.is_finite() && pivot.abs().cmple(self.half_extents).all()
+    }
+}
 
 /// Disjoint lattice slots on rectangular rings, then seeded Fisher-Yates. O(N).
 pub fn generate_placement_grid(
@@ -88,6 +115,59 @@ fn placement_slots(piece_size: Vec2, display_size: Vec2) -> impl Iterator<Item =
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn logical_play_area_contains_all_scatter_centers_and_image_scaled_workspace() {
+        for (grid, image) in [
+            (bevy_math::UVec2::splat(1), bevy_math::UVec2::splat(2)),
+            (
+                bevy_math::UVec2::new(40, 25),
+                bevy_math::UVec2::new(4096, 123),
+            ),
+            (
+                bevy_math::UVec2::new(1000, 1),
+                bevy_math::UVec2::new(16384, 1),
+            ),
+            (
+                bevy_math::UVec2::splat(1000),
+                bevy_math::UVec2::splat(16384),
+            ),
+        ] {
+            let definition = PuzzleDefinition {
+                generator_version: puzzella_core::GENERATOR_VERSION,
+                seed: 42,
+                grid_size: grid,
+                image_size: image,
+                snap_distance: 5.0,
+            };
+            let area = LogicalPlayArea::from_definition(&definition).unwrap();
+            let centers = placement_half_extents(
+                definition.piece_count(),
+                image.as_vec2() / grid.as_vec2(),
+                image.as_vec2(),
+            );
+            assert_eq!(
+                area.half_extents - centers.as_dvec2(),
+                bevy_math::DVec2::splat(f64::from(image.max_element()) * 2.0)
+            );
+            let positions = generate_placement_grid(
+                grid.x as usize,
+                grid.y as usize,
+                image.x as f32 / grid.x as f32,
+                image.y as f32 / grid.y as f32,
+                image.x as f32,
+                image.y as f32,
+                definition.seed,
+            );
+            assert!(positions.iter().all(|p| area.contains(p.as_dvec2())));
+            let mut another_seed = definition.clone();
+            another_seed.seed += 1;
+            assert_eq!(
+                LogicalPlayArea::from_definition(&another_seed).unwrap(),
+                area
+            );
+        }
+    }
 
     #[test]
     fn placement_bounds_include_first_partial_and_million_piece_rings() {

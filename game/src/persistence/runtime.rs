@@ -708,7 +708,7 @@ mod tests {
         let mut store = PieceDataStore::default();
         store.initialize(
             (0..4)
-                .map(|i| definition.correct_position(puzzella_core::PieceId(i)) + Vec2::splat(10.0))
+                .map(|i| definition.correct_position(puzzella_core::PieceId(i)) + Vec2::splat(2.0))
                 .collect(),
         );
         let mut app = App::new();
@@ -795,7 +795,7 @@ mod tests {
         let original = repo.read_save(manual.id).unwrap();
         app.world_mut().resource_mut::<PieceDataStore>().states[0]
             .position
-            .x += 10.0;
+            .x += 1.0;
         request_and_wait(&mut app, true);
         let automatic = app
             .world()

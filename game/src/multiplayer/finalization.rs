@@ -200,6 +200,13 @@ mod tests {
         let mut store = PieceDataStore::default();
         store.initialize((0..65).map(|i| Vec2::new(i as f32, 0.0)).collect());
         let mut contexts = ProtocolDragContexts::default();
+        let definition = puzzella_core::PuzzleDefinition {
+            generator_version: puzzella_core::GENERATOR_VERSION,
+            seed: 42,
+            grid_size: bevy::math::UVec2::new(65, 1),
+            image_size: bevy::math::UVec2::new(1300, 20),
+            snap_distance: 5.0,
+        };
         for i in (0..64).rev() {
             let cmd = ProtocolCommandEnvelope {
                 session: session.session_id(),
@@ -219,7 +226,7 @@ mod tests {
                     &mut store,
                     cmd.player,
                     &cmd,
-                    None,
+                    Some(&definition),
                     PlayerId(100),
                 )
                 .unwrap();
@@ -249,7 +256,7 @@ mod tests {
                 &mut store,
                 cmd.player,
                 &cmd,
-                None,
+                Some(&definition),
                 PlayerId(100),
             )
             .unwrap();
