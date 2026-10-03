@@ -188,7 +188,6 @@ fn million_selection_cpu_benchmark() {
             }
             assert_eq!(ranges, 1);
             let row=format!("{count},{run},{fill:.3},{receive:.3},{commit:.3},{highlight:.3},{snapshot_ns:.3},{copy:.3},{hashclone:.3},{down:.3},{members:.3},{grab:.3},{grab_upload:.3},{pointer:.3},{release_command:.3},{release:.3},{release_upload:.3},1,1,{},{},{grab_bytes},{release_bytes},{ranges}\n",count.div_ceil(32)*4,count*8+count.div_ceil(32)*4);
-            print!("{row}");
             csv.push_str(&row);
         }
     }
@@ -382,7 +381,6 @@ fn connected_snapping_cpu_benchmark() {
                     }
                 );
                 let row = format!("{count},{scenario},{run},{init:.3},{union:.3},{iteration:.3},{expansion:.3},{grab:.3},{pointer:.3},{release:.3},{},{},{component_size}\n", s.connectivity.storage_bytes(), released.released);
-                print!("{row}");
                 csv.push_str(&row);
             }
         }
@@ -468,7 +466,6 @@ fn small_component_release_cpu_benchmark() {
                         "{count},{members},{command},{run},{elapsed:.3},{},{size}\n",
                         outcome.released
                     );
-                    print!("{row}");
                     csv.push_str(&row);
                 }
             }
@@ -547,7 +544,6 @@ fn small_component_grab_cpu_benchmark() {
                             "{count},{members},{command},{owner_storage},{run},{elapsed:.3},{},{}\n",
                             outcome.grabbed, store.dirty_pieces.count()
                         );
-                        print!("{row}");
                         csv.push_str(&row);
                     }
                 }

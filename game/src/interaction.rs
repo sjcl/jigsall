@@ -724,7 +724,7 @@ mod tests {
         if cfg!(debug_assertions) {
             panic!("run with --release");
         }
-        println!("selected,pointer_frames,total_us,ns_per_frame");
+        crate::test_logging::init();
         for count in [1_000, 10_000, 100_000, 1_000_000] {
             let (mut interaction, mut store, mut selection) = begin(count);
             let start = Instant::now();
@@ -739,10 +739,12 @@ mod tests {
                 std::hint::black_box(&store.drag);
             }
             let elapsed = start.elapsed();
-            println!(
-                "{count},100000,{:.3},{:.3}",
-                elapsed.as_secs_f64() * 1e6,
-                elapsed.as_secs_f64() * 1e9 / 100_000.0
+            bevy::log::info!(
+                selected = count,
+                pointer_frames = 100_000,
+                total_us = elapsed.as_secs_f64() * 1e6,
+                ns_per_frame = elapsed.as_secs_f64() * 1e9 / 100_000.0,
+                "Multi-drag CPU benchmark"
             );
         }
     }

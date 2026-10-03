@@ -7,7 +7,8 @@ use puzzella_game::resources::{
 use std::{hint::black_box, time::Instant};
 
 fn main() {
-    println!("pieces,run,worker_ms,handoff_ms,upload_prep_ms,state_bytes");
+    let mut logging_app = App::new();
+    logging_app.add_plugins(bevy::log::LogPlugin::default());
     for grid in [
         UVec2::new(40, 25),
         UVec2::splat(100),
@@ -62,10 +63,14 @@ fn main() {
             state.position += Vec2::ONE;
             store.set_state(PieceId(0), state, local_player);
             assert_eq!(store.states.as_ptr(), allocation);
-            println!(
-                "{},{run},{worker_ms:.4},{handoff_ms:.4},{prep_ms:.4},{}",
-                definition.piece_count(),
-                definition.piece_count() * 16
+            bevy::log::info!(
+                pieces = definition.piece_count(),
+                run,
+                worker_ms,
+                handoff_ms,
+                upload_prep_ms = prep_ms,
+                state_bytes = definition.piece_count() * 16,
+                "Dense initialization benchmark"
             );
         }
     }

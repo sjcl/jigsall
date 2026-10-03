@@ -1,4 +1,6 @@
 //! Unbiased matching fixtures, aspect metrics, class ablations, and an offline human tool.
+#[path = "support/logging.rs"]
+mod logging;
 use bevy_math::Vec2;
 use puzzella_puzzle::fingerprint::{assessment::*, worst_case_profiles, EdgeFingerprint};
 use std::{collections::HashMap, fmt::Write, path::Path};
@@ -133,7 +135,7 @@ fn aspect_metrics(dir: &Path) {
                     }
                 }
             }
-            println!(
+            bevy_log::info!(
                 "nearest metrics: seed {seed}, {} complete",
                 orientation_name(o)
             );
@@ -228,7 +230,7 @@ fn axis_metrics(dir: &Path) {
                         }
                     }
                 }
-                println!(
+                bevy_log::info!(
                     "class contribution: {population}, ratio {ratio}, {} complete",
                     mode.name()
                 );
@@ -389,6 +391,7 @@ fn human_tool(dir: &Path) {
     std::fs::write(dir.join("edge-matching-tool.html"), html).unwrap();
 }
 fn main() {
+    logging::init();
     assert_eq!(puzzella_core::GENERATOR_VERSION, 5);
     let output = std::env::args()
         .nth(1)
@@ -401,5 +404,6 @@ fn main() {
         axis_metrics(dir);
     }
     human_tool(dir);
-    println!("Wrote requested assessment artifacts to {}", dir.display());
+    bevy_log::info!("Wrote requested assessment artifacts");
+    bevy_log::debug!(directory = %dir.display(), "Assessment artifact output directory");
 }

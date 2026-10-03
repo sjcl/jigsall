@@ -379,7 +379,8 @@ impl<S: SaveStorage> SaveRepository<S> {
         // Cleanup must not turn an already successful save deletion into a
         // failure. Leave any images we cannot safely remove for the next delete.
         if let Err(error) = self.cleanup_unreferenced_images() {
-            bevy::log::warn!("Could not clean up unreferenced puzzle images: {error}");
+            bevy::log::warn!("Could not clean up unreferenced puzzle images");
+            bevy::log::debug!(%error, "Unreferenced puzzle image cleanup failure details");
         }
         Ok(())
     }
@@ -396,9 +397,11 @@ impl<S: SaveStorage> SaveRepository<S> {
             if let StorageKey::Image(hash) = key {
                 if !referenced.contains(&hash) {
                     if let Err(error) = self.storage.delete(key) {
-                        bevy::log::warn!(
-                            "Could not delete unreferenced puzzle image {}: {error}",
-                            key.filename()
+                        bevy::log::warn!("Could not delete an unreferenced puzzle image");
+                        bevy::log::debug!(
+                            filename = %key.filename(),
+                            %error,
+                            "Unreferenced puzzle image deletion failure details"
                         );
                     }
                 }

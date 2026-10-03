@@ -238,11 +238,12 @@ impl PieceCollisionSystem {
         ray_origin: Vec2,
         ray_direction: Vec2,
     ) -> (Option<PieceId>, String) {
-        println!(
-            "🔍 Ray cast debug: origin={:?}, direction={:?}",
-            ray_origin, ray_direction
+        bevy::log::trace!(
+            ?ray_origin,
+            ?ray_direction,
+            pieces = self.pieces.len(),
+            "CPU reference ray cast"
         );
-        println!("🔍 Collision system has {} pieces", self.pieces.len());
 
         if self.pieces.is_empty() {
             return (None, "No pieces in collision system".to_string());
@@ -250,7 +251,6 @@ impl PieceCollisionSystem {
 
         // R-treeの状態確認
         if self.rtree.size() == 0 || self.need_rebuild {
-            println!("⚠️ R-tree not initialized, rebuilding...");
             self.rebuild_rtree();
         }
 

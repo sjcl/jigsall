@@ -31,6 +31,7 @@ use std::{
 };
 
 fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
+    crate::test_logging::init();
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -67,7 +68,7 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
         .sub_app(RenderApp)
         .world()
         .resource::<bevy::render::renderer::RenderAdapterInfo>();
-    println!("GPU adapter: {} ({:?})", info.name, info.backend);
+    bevy::log::info!(adapter = %info.name, backend = ?info.backend, "GPU test adapter");
     let mut target =
         Image::new_target_texture(resolution, resolution, TextureFormat::Rgba8UnormSrgb, None);
     target.texture_descriptor.usage |= TextureUsages::COPY_SRC;
@@ -370,10 +371,6 @@ vec4(p.polarity,p.center,p.width,p.depth),vec4(p.neck,p.head,p.asymmetry,0.0));}
             );
         }
     }
-    println!(
-        "GPU decode parity: {} profiles (macro classes + 7 parameters)",
-        inputs.len()
-    );
 }
 fn compute_output(
     app: &App,
@@ -1362,7 +1359,6 @@ fn procedural_gpu_benchmark() {
                 (0, 0)
             };
             let row=format!("{count},{name},{},{placement:.4},{state_ms:.4},{prep:.4},{dirty:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{image_bytes},{image_bytes},{pick_bytes},{sort_ms:.4},{selection_bytes},{meshes},0,1,{sort_workgroups},{sort_dispatches},{sort_bytes}\n",ids.len(),frame/30.0,cull/30.0,draw/30.0,point/5.0,rectangle/5.0,app.world().resource::<PieceDataStore>().states.capacity()*16,b.states.size(),b.visible.size(),b.selectable.size());
-            print!("{row}");
             csv.push_str(&row);
         }
     }

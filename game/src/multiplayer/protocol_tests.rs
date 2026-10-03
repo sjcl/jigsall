@@ -791,10 +791,6 @@ fn serialized_targets_round_trip_with_small_payload_bounds_and_bounded_decode() 
         serde_json::from_slice::<PieceTarget>(&bytes).unwrap(),
         million_component
     );
-    println!(
-        "JSON target bytes: Component={}, Components(8)={}, Components(32)={}, Dense(1M)={}",
-        sizes[0], sizes[1], sizes[2], sizes[3]
-    );
     let oversized = serde_json::to_vec(&PieceTarget::Components(vec![
         refs[0];
         MAX_COMPONENT_REFS + 1

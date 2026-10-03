@@ -1,4 +1,6 @@
 //! A/B preview of v2 contours and current analytic silhouettes, plus six root close-ups.
+#[path = "support/logging.rs"]
+mod logging;
 use bevy_math::{UVec2, Vec2};
 use puzzella_puzzle::{
     procedural::{
@@ -10,6 +12,7 @@ use puzzella_puzzle::{
 use std::{fmt::Write, path::Path};
 
 fn main() {
+    logging::init();
     let output = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "target/shape-comparison.svg".into());
@@ -92,13 +95,14 @@ fn main() {
         std::fs::create_dir_all(parent).unwrap();
     }
     std::fs::write(path, svg).unwrap();
-    println!("Wrote {}", path.display());
+    bevy_log::debug!(path = %path.display(), "Wrote shape comparison");
     let roots = path.with_file_name(format!(
         "{}-roots.svg",
         path.file_stem().unwrap().to_string_lossy()
     ));
     std::fs::write(&roots, root_comparison()).unwrap();
-    println!("Wrote {}", roots.display());
+    bevy_log::debug!(path = %roots.display(), "Wrote root comparison");
+    bevy_log::info!("Wrote shape and root comparisons");
 }
 
 fn root_comparison() -> String {

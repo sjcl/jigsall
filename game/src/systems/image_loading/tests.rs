@@ -19,6 +19,56 @@ fn app() -> (App, crossbeam::channel::Sender<ImageLoadResult>) {
 }
 
 #[test]
+fn image_failure_paths_require_debug_logging() {
+    use bevy::{
+        ecs::system::RunSystemOnce,
+        log::{tracing, tracing_subscriber, Level},
+    };
+    use tracing_subscriber::fmt::MakeWriter;
+
+    for path in [
+        r"C:\Users\private-user\Pictures\private-puzzle.png",
+        "/home/private-user/Pictures/private-puzzle.png",
+    ] {
+        for level in [Level::INFO, Level::DEBUG] {
+            let output = std::sync::Mutex::new(Vec::<u8>::new());
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(level)
+                .without_time()
+                .with_ansi(false)
+                .with_writer(|| output.make_writer())
+                .finish();
+            let (mut app, sender) = app();
+            app.world_mut().resource_mut::<PuzzleConfig>().image_path = path.into();
+            let reason = format!("Could not read {path}");
+            sender
+                .send(ImageLoadResult {
+                    virtual_key: path.into(),
+                    image: Err(reason.clone()),
+                    original: None,
+                })
+                .unwrap();
+
+            tracing::subscriber::with_default(subscriber, || {
+                app.world_mut()
+                    .run_system_once(handle_image_load_results)
+                    .unwrap();
+            });
+
+            let output = String::from_utf8(output.into_inner().unwrap()).unwrap();
+            assert!(output.contains("Image loading failed"));
+            assert_eq!(output.contains(path), level == Level::DEBUG, "{output}");
+            assert_eq!(
+                output.contains("Image loading failure details"),
+                level == Level::DEBUG,
+                "{output}"
+            );
+            assert_eq!(app.world().resource::<ImageLoadError>().reason, reason);
+        }
+    }
+}
+
+#[test]
 fn current_failure_keeps_reason_and_discards_previous_image() {
     for reason in [
         decode_image_bytes(b"corrupt image").unwrap_err(),

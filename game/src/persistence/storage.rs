@@ -126,18 +126,22 @@ impl FilesystemStorage {
                 Ok(entries) => entries,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
-                    bevy::log::warn!(
-                        "Could not clean up temporary files in {}: {e}",
-                        directory.display()
+                    bevy::log::warn!("Could not clean up temporary files");
+                    bevy::log::debug!(
+                        directory = %directory.display(),
+                        error = %e,
+                        "Temporary file cleanup failure details"
                     );
                     continue;
                 }
             };
             for entry in entries {
                 if let Err(e) = entry.and_then(|entry| remove_stale_temp_file(entry, cutoff)) {
-                    bevy::log::warn!(
-                        "Could not clean up a temporary file in {}: {e}",
-                        directory.display()
+                    bevy::log::warn!("Could not clean up a temporary file");
+                    bevy::log::debug!(
+                        directory = %directory.display(),
+                        error = %e,
+                        "Temporary file cleanup failure details"
                     );
                 }
             }

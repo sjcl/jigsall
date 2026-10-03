@@ -17,4 +17,6 @@ mod selection;
 pub mod settings;
 pub mod settings_file;
 mod systems;
+#[cfg(test)]
+mod test_logging;
 pub use game::GamePlugin;

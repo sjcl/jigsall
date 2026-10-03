@@ -100,19 +100,6 @@ pub fn auto_adjust_camera_zoom(
                 // カメラを画像の中心に配置
                 transform.translation.x = 0.0;
                 transform.translation.y = 0.0;
-
-                println!(
-                    "🎥 Adaptive camera zoom: {:.2}x for {}x{} image (aspect: {:.2})",
-                    final_scale, image_width, image_height, image_aspect
-                );
-                println!(
-                    "   Resolution factor: {:.2}, Adaptive margin: {:.2}",
-                    resolution_factor, adaptive_margin
-                );
-                println!(
-                    "   Window: {}x{} (aspect: {:.2}), Scale factors: x={:.2}, y={:.2}",
-                    window_width, window_height, window_aspect, scale_x, scale_y
-                );
             }
         }
     }

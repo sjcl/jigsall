@@ -90,7 +90,7 @@ fn probe(
             }
             _ => {}
         }
-        println!(
+        bevy::log::info!(
             "phase {}: native size {:?}, fullscreen {:?}",
             probe.phase,
             window.inner_size(),
@@ -104,7 +104,7 @@ fn probe(
             .unwrap()
             .duration_since(probe.samples[0]);
         let fps = (probe.samples.len() - 1) as f64 / duration.as_secs_f64();
-        println!("measured FPS: {fps:.2}, cap: {:?}", state.current.max_fps);
+        bevy::log::info!("measured FPS: {fps:.2}, cap: {:?}", state.current.max_fps);
         if let Some(cap) = state.current.max_fps {
             assert!(fps <= f64::from(cap) * 1.05);
         }
@@ -149,7 +149,7 @@ fn probe(
             ..default()
         },
         _ => {
-            println!("Native display settings probe passed.");
+            bevy::log::info!("Native display settings probe passed.");
             exit.write(AppExit::Success);
             return;
         }

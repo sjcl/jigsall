@@ -1,4 +1,5 @@
 use crate::resources::*;
+use bevy::log::{debug, debug_once, error_once, warn, warn_once};
 use bevy::prelude::*;
 
 /// 画像読み込みシステムをセットアップ
@@ -10,8 +11,6 @@ pub fn setup_image_load_system(mut commands: Commands) {
     commands.insert_resource(ImageLoadChannels { rx_results });
 
     commands.insert_resource(ImageLoadSender { tx_results });
-
-    println!("🔧 Image load system initialized with crossbeam channels");
 }
 
 /// 画像読み込み結果を処理（crossbeam-channel受信）
@@ -29,12 +28,6 @@ pub fn handle_image_load_results(
         if result.virtual_key != config.image_path {
             continue;
         }
-        println!(
-            "📨 MAIN THREAD [{:?}]: Received image load result for: {}",
-            std::thread::current().id(),
-            result.virtual_key
-        );
-
         match result.image {
             Ok(image) => {
                 commands.remove_resource::<ImageLoadError>();
@@ -44,11 +37,6 @@ pub fn handle_image_load_results(
                     }
                     commands.insert_resource(original);
                 }
-                println!(
-                    "✅ Thread-based image loading completed for: {}",
-                    result.virtual_key
-                );
-
                 // 画像のサイズを取得
                 let image_size = image.size();
                 let size_vec2 = Vec2::new(image_size.x as f32, image_size.y as f32);
@@ -64,16 +52,14 @@ pub fn handle_image_load_results(
                     opaque,
                 });
 
-                println!(
-                    "📝 Created PuzzleImage with handle: {:?}, size: {:?}",
-                    handle.id(),
-                    size_vec2
-                );
+                debug!(size = ?size_vec2, "Loaded puzzle image");
             }
             Err(e) => {
-                println!(
-                    "❌ Thread-based image loading failed for {}: {}",
-                    result.virtual_key, e
+                warn!("Image loading failed");
+                debug!(
+                    image_key = %result.virtual_key,
+                    error = %e,
+                    "Image loading failure details"
                 );
                 commands.remove_resource::<PuzzleImage>();
                 commands.remove_resource::<crate::persistence::runtime::OriginalPuzzleImage>();
@@ -101,8 +87,6 @@ pub fn update_puzzle_image_size(
         // 外部ファイルかどうかチェック
         let is_external = file_registry.is_external_image_path(&puzzle_config.image_path);
 
-        // デバッグ用に状態を出力（頻度制限）
-
         if is_external {
             // 外部ファイルの場合：AssetServerの状態チェックをスキップして直接Imageをチェック
             if let Some(image) = images.get(&puzzle_image.handle) {
@@ -111,9 +95,10 @@ pub fn update_puzzle_image_size(
 
                 // サイズが変更された場合のみ更新
                 if puzzle_image.size != new_size {
-                    println!(
-                        "✅ External image size updated from {}x{} to {}x{}",
-                        puzzle_image.size.x, puzzle_image.size.y, new_size.x, new_size.y
+                    debug!(
+                        old_size = ?puzzle_image.size,
+                        ?new_size,
+                        "Updated external image size"
                     );
                     puzzle_image.size = new_size;
                 }
@@ -131,19 +116,21 @@ pub fn update_puzzle_image_size(
 
                         // サイズが変更された場合のみ更新
                         if puzzle_image.size != new_size {
-                            println!(
-                                "Updating asset image size from {}x{} to {}x{}",
-                                puzzle_image.size.x, puzzle_image.size.y, new_size.x, new_size.y
+                            debug!(
+                                old_size = ?puzzle_image.size,
+                                ?new_size,
+                                "Updated asset image size"
                             );
                             puzzle_image.size = new_size;
                         }
                     } else {
-                        println!("Asset image is loaded but not found in Assets<Image>");
+                        warn_once!("Loaded puzzle image asset is missing from Assets<Image>");
                     }
                 }
                 bevy::asset::LoadState::Loading => {}
-                bevy::asset::LoadState::Failed(_) => {
-                    println!("Failed to load asset image!");
+                bevy::asset::LoadState::Failed(error) => {
+                    error_once!("Failed to load puzzle image asset");
+                    debug_once!(?error, "Puzzle image asset loading failure details");
                 }
                 bevy::asset::LoadState::NotLoaded => {}
             }

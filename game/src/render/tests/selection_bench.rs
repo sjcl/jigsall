@@ -189,7 +189,6 @@ fn gpu_million_selection_benchmark() {
         update_gpu(&mut app);
         let total = receive + commit + highlight;
         let row=format!("{adapter},{backend},{driver},1000000,{resolution},{run},{rect_gpu:.6},125000,{receive:.3},{commit:.3},{highlight:.3},{total:.3},125000,0,{grab_cpu:.3},{grab_frame:.3},{grab_bytes},{drag_bytes},{release_cpu:.3},{release_frame:.3},{release_bytes},1\n");
-        print!("{row}");
         csv.push_str(&row);
     }
     std::fs::create_dir_all("../target").unwrap();

@@ -1,5 +1,7 @@
 //! Release benchmark: fixed seed, 100px square cells, warmup + three samples.
 //! cargo run --release --locked -p puzzella-puzzle --example generation_bench
+#[path = "support/logging.rs"]
+mod logging;
 use bevy_asset::Assets;
 use bevy_math::{UVec2, Vec2};
 use bevy_mesh::{Mesh, MeshVertexAttribute, VertexFormat};
@@ -24,8 +26,9 @@ fn ms(start: Instant) -> f64 {
 }
 
 fn main() {
+    logging::init();
     let available = std::thread::available_parallelism().map_or(1, usize::from);
-    println!("available_threads={available} cell_size=100 seed=42 warmup=1 samples=3");
+    bevy_log::info!("available_threads={available} cell_size=100 seed=42 warmup=1 samples=3");
     let mut counts = vec![1, 4, available];
     counts.sort_unstable();
     counts.dedup();
@@ -77,7 +80,7 @@ fn main() {
                 let mut assets = Assets::<Mesh>::default();
                 let handles: Vec<_> = meshes.into_iter().map(|mesh| assets.add(mesh)).collect();
                 let asset_ms = ms(start);
-                println!("NATIVE threads={threads} pieces={} run={run} cpu_ms={cpu_ms:.3} mesh_ms={mesh_ms:.3} asset_ms={asset_ms:.3} fill_vertices={fill_vertices} stroke_vertices={stroke_vertices}", definition.piece_count());
+                bevy_log::info!("NATIVE threads={threads} pieces={} run={run} cpu_ms={cpu_ms:.3} mesh_ms={mesh_ms:.3} asset_ms={asset_ms:.3} fill_vertices={fill_vertices} stroke_vertices={stroke_vertices}", definition.piece_count());
                 std::hint::black_box((assets, handles));
             }
         }
@@ -106,7 +109,7 @@ fn compare_tolerances() {
                 rows as f32 * 100.0,
                 42,
             );
-            println!(
+            bevy_log::info!(
                 "PLACEMENT pieces={} run={run} placement_ms={:.3}",
                 columns * rows,
                 ms(start)
@@ -139,7 +142,7 @@ fn compare_tolerances() {
             });
             let geometry_ms = ms(start);
             let vertices: usize = pieces.iter().map(|p| p.geometry.fill.positions.len()).sum();
-            println!("TOLERANCE tolerance={tolerance} threads=4 run={run} geometry_ms={geometry_ms:.3} fill_vertices={vertices}");
+            bevy_log::info!("TOLERANCE tolerance={tolerance} threads=4 run={run} geometry_ms={geometry_ms:.3} fill_vertices={vertices}");
             std::hint::black_box(pieces);
         }
     }
@@ -184,5 +187,5 @@ fn compare_tolerances() {
             .unwrap();
         stroke_ms += ms(start);
     }
-    println!("STAGE pieces=1000 sequential_contour_ms={contour_ms:.3} sequential_fill_ms={fill_ms:.3} sequential_stroke_ms={stroke_ms:.3}");
+    bevy_log::info!("STAGE pieces=1000 sequential_contour_ms={contour_ms:.3} sequential_fill_ms={fill_ms:.3} sequential_stroke_ms={stroke_ms:.3}");
 }

@@ -415,6 +415,5 @@ fn main() {
         worst_case_profiles().len()
     )
     .unwrap();
-    print!("{report}");
     std::fs::write(dir.join("edge-fingerprint-metrics.txt"), report).unwrap();
 }
