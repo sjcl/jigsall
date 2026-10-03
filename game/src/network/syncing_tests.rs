@@ -99,6 +99,141 @@ fn empty_final_barrier_commits_both_endpoints_and_releases_all_join_state() {
 }
 
 #[test]
+fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    let player = h.p.client.assigned_player().unwrap();
+    h.apply_grab();
+    let final_delta = Vec2::new(12.0, 34.0);
+    authoritative_update(&mut h, 0, final_delta);
+    h.reach(SyncPhase::Finalizing);
+    assert!(matches!(
+        h.host_to_client().unwrap().pop(),
+        Some(ClientSyncOutcome::Finalized)
+    ));
+    h.client_to_host().unwrap();
+    assert_eq!(h.p.host.state(HA), Some(ConnectionState::Ready));
+    assert_eq!(h.p.host_connections.player(HA), Some(player));
+    assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
+    assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+
+    // Preserve the queued encrypted Control frame, but deliver a live Transient
+    // first. SecureTransport must accept independent sequence numbers per lane.
+    let mut ready_commit = std::mem::take(&mut h.p.ht.backend_mut().sent);
+    assert_eq!(ready_commit.len(), 1);
+    assert!(matches!(
+        &ready_commit[0],
+        TransportEvent::Message { class: MessageClass::Control, payload, .. }
+            if wire::decode(payload).is_err()
+    ));
+    let cursor = h.s.peers[0].session.cursor();
+    let states = h.s.peers[0].store.states.clone();
+    for tick in [1, 2] {
+        let delta = Vec2::splat(tick as f32 * 50.0);
+        let mut cmd = update();
+        cmd.player = B;
+        cmd.sequence = ClientCommandSequence::Move {
+            after_control_sequence: 0,
+            tick,
+        };
+        cmd.command = ProtocolPieceCommand::DragUpdate { delta };
+        let outcome =
+            h.s.contexts
+                .apply_replicated(
+                    &mut h.s.host.session,
+                    &mut h.s.host.store,
+                    B,
+                    &cmd,
+                    Some(&h.s.definition),
+                    HOST,
+                )
+                .unwrap();
+        let router = HostRouter {
+            local_player: HOST,
+            connections: &h.p.host_connections,
+            contexts: &mut h.s.contexts,
+            session: &mut h.s.host.session,
+            store: &mut h.s.host.store,
+            definition: Some(&h.s.definition),
+        };
+        assert!(router
+            .publish(&mut h.p.ht, Some(HB), &outcome)
+            .unwrap()
+            .is_empty());
+        let packets = std::mem::take(&mut h.p.ht.backend_mut().sent);
+        assert_eq!(packets.len(), 1);
+        assert!(matches!(
+            &packets[0],
+            TransportEvent::Message { class: MessageClass::Transient, payload, .. }
+                if wire::decode(payload).is_err()
+        ));
+        h.p.ct
+            .backend_mut()
+            .inbox
+            .extend(packets.into_iter().map(|e| remap(e, CLIENT_HOST)));
+        let mut events = Vec::new();
+        h.p.ct.poll(&mut events).unwrap();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert!(matches!(event,
+            TransportEvent::Message { class, payload, .. }
+                if matches!(wire::decode_for_class(payload, *class).unwrap(), WireMessage::DragUpdate(update)
+                    if update.player == B && update.tick == tick && update.delta == delta)
+        ));
+        let routed =
+            h.p.client
+                .process(event, &mut h.p.ct, &mut h.p.client_connections, h.p.now)
+                .unwrap();
+        assert_eq!(h.p.client.failure(), None);
+        assert!(h.p.ct.has_channel(CLIENT_HOST));
+        if tick == 1 {
+            assert_eq!(routed, BootstrapOutcome::Consumed);
+            assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
+            assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+            let peer = &h.s.peers[0];
+            let drag = peer
+                .replica
+                .remote_drag(&peer.session, &peer.store, B)
+                .unwrap();
+            assert_eq!(drag.last_tick, Some(0));
+            assert_eq!(drag.delta, final_delta);
+            assert_eq!(peer.store.states, states);
+            assert_eq!(peer.session.cursor(), cursor);
+
+            h.p.ht.backend_mut().sent.append(&mut ready_commit);
+            assert!(matches!(
+                h.host_to_client().unwrap().pop(),
+                Some(ClientSyncOutcome::Ready)
+            ));
+            assert_eq!(h.p.client.state(), Some(ConnectionState::Ready));
+            assert_eq!(h.p.client_connections.player(CLIENT_HOST), Some(HOST));
+        } else {
+            assert_eq!(routed, BootstrapOutcome::Gameplay);
+            let peer = &mut h.s.peers[0];
+            let mut router = ClientRouter {
+                local_player: player,
+                host_connection: CLIENT_HOST,
+                connections: &h.p.client_connections,
+                replica: &mut peer.replica,
+                session: &mut peer.session,
+                store: &mut peer.store,
+                definition: Some(&h.s.definition),
+            };
+            assert!(matches!(
+                router.route(event).unwrap(),
+                ClientRouteOutcome::Drag(_)
+            ));
+            let drag = peer
+                .replica
+                .remote_drag(&peer.session, &peer.store, B)
+                .unwrap();
+            assert_eq!(drag.last_tick, Some(tick));
+            assert_eq!(drag.delta, delta);
+            assert_eq!(peer.session.cursor(), cursor);
+        }
+    }
+}
+
+#[test]
 fn final_drags_reconcile_scalar_rollback_and_multiple_players_without_replaying_targets() {
     let mut h = Harness::new(true, CatchUpLimits::default());
     h.apply_grab();

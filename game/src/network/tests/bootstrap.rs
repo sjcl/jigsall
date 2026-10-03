@@ -640,7 +640,7 @@ fn malformed_and_oversized_session_control_rejected_before_deserialize() {
     );
 }
 #[test]
-fn all_gameplay_is_rejected_before_ready_on_both_endpoints() {
+fn pre_ready_gameplay_rejects_except_client_syncing_transient_drops() {
     let gameplay = [
         WireMessage::ClientCommand(grab()),
         WireMessage::ClientCommand(update()),
@@ -693,12 +693,19 @@ fn all_gameplay_is_rejected_before_ready_on_both_endpoints() {
                         p.now,
                     )
                 };
-                assert_eq!(
-                    result,
-                    Err(BootstrapError::Rejected(
-                        DisconnectReason::ProtocolViolation
-                    ))
-                );
+                if stage == 2 && !host_side && message.class() == MessageClass::Transient {
+                    assert_eq!(result, Ok(BootstrapOutcome::Consumed));
+                    assert_eq!(p.client.state(), Some(ConnectionState::Syncing));
+                    assert_eq!(p.client.failure(), None);
+                    assert!(p.ct.has_channel(CLIENT_HOST));
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(BootstrapError::Rejected(
+                            DisconnectReason::ProtocolViolation
+                        ))
+                    );
+                }
                 assert_eq!(p.host_connections.player(HA), None);
                 assert_eq!(p.client_connections.player(CLIENT_HOST), None);
             }
