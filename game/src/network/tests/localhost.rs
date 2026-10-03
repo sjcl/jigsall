@@ -1,7 +1,8 @@
 use super::*;
 use crate::network::gns::GnsDirectIp;
 use crate::network::syncing::{
-    ClientSyncOutcome, ClientSyncRouter, HostSyncCoordinator, SyncAuthority, SyncPhase, SyncReplica,
+    ClientSyncOutcome, ClientSyncRouter, HostSyncCoordinator, SyncAuthority, SyncHost, SyncPhase,
+    SyncReplica,
 };
 use crate::network::{
     auth::SessionPassword,
@@ -17,7 +18,7 @@ use std::{
 };
 
 #[test]
-fn gns_localhost_syncing_image_baseline_and_catch_up_stops_before_ready() {
+fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
     let mut s = Scenario::new();
     let image: Arc<[u8]> = vec![0x42; 2 * MAX_BULK_DATA_BYTES + 5].into();
     let session_definition = SessionDefinition {
@@ -55,7 +56,7 @@ fn gns_localhost_syncing_image_baseline_and_catch_up_stops_before_ready() {
     let deadline = Instant::now() + Duration::from_secs(15);
     while cs
         .as_ref()
-        .is_none_or(|sync: &ClientSyncRouter| sync.phase() != SyncPhase::Finalizing)
+        .is_none_or(|sync: &ClientSyncRouter| sync.phase() != SyncPhase::Ready)
     {
         assert!(Instant::now() < deadline, "secure localhost join timed out");
         let mut events = Vec::new();
@@ -75,7 +76,10 @@ fn gns_localhost_syncing_image_baseline_and_catch_up_stops_before_ready() {
             };
             if outcome == BootstrapOutcome::Syncing {
                 hs.route(
-                    &hb,
+                    &mut SyncHost {
+                        bootstrap: &mut hb,
+                        connections: &mut s.host.connections,
+                    },
                     &event,
                     &mut host,
                     &authority,
@@ -148,7 +152,8 @@ fn gns_localhost_syncing_image_baseline_and_catch_up_stops_before_ready() {
                     .as_mut()
                     .unwrap()
                     .route(
-                        &cb,
+                        &mut cb,
+                        &mut peer.connections,
                         &event,
                         &mut client,
                         &mut SyncReplica {
@@ -176,10 +181,90 @@ fn gns_localhost_syncing_image_baseline_and_catch_up_stops_before_ready() {
         .replica
         .remote_drag(&s.peers[0].session, &s.peers[0].store, B)
         .is_some());
-    assert_eq!(hb.state(host_peer.unwrap()), Some(ConnectionState::Syncing));
-    assert_eq!(cb.state(), Some(ConnectionState::Syncing));
-    assert_eq!(s.host.connections.player(host_peer.unwrap()), None);
-    assert_eq!(s.peers[0].connections.player(client_host), None);
+    let host_peer = host_peer.unwrap();
+    let local_player = cb.assigned_player().unwrap();
+    assert_eq!(hb.state(host_peer), Some(ConnectionState::Ready));
+    assert_eq!(cb.state(), Some(ConnectionState::Ready));
+    assert_eq!(s.host.connections.player(host_peer), Some(local_player));
+    assert_eq!(s.peers[0].connections.player(client_host), Some(HOST));
+    assert_ne!(local_player, HOST);
+    assert_eq!(hs.phase(host_peer), None);
+    assert!(hs.catch_up().status(local_player).is_err());
+
+    // A regular gameplay Grab after production promotion, over actual secure Control.
+    let mut request = grab();
+    request.player = local_player;
+    request.command = ProtocolPieceCommand::Grab {
+        target: PieceTarget::Component(ComponentRef {
+            member: PieceId(1),
+            expected_size: 1,
+        }),
+    };
+    let message = WireMessage::ClientCommand(request);
+    client
+        .send(
+            client_host,
+            MessageClass::Control,
+            &wire::encode(&message).unwrap(),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut applied = false;
+    let mut replicated = false;
+    while !replicated {
+        assert!(Instant::now() < deadline, "Ready gameplay timed out");
+        let mut events = Vec::new();
+        host.poll(&mut events).unwrap();
+        for event in events {
+            if hb
+                .process(&event, &mut host, &mut s.host.connections, Instant::now())
+                .unwrap()
+                == BootstrapOutcome::Gameplay
+            {
+                let mut router = s.host_router();
+                let HostRouteOutcome::Applied(outcome) = router.route(&event).unwrap() else {
+                    panic!("Grab must apply")
+                };
+                assert!(router
+                    .publish(&mut host, Some(host_peer), &outcome)
+                    .unwrap()
+                    .is_empty());
+                applied = true;
+            }
+        }
+        let mut events = Vec::new();
+        client.poll(&mut events).unwrap();
+        for event in events {
+            let peer = &mut s.peers[0];
+            if cb
+                .process(&event, &mut client, &mut peer.connections, Instant::now())
+                .unwrap()
+                == BootstrapOutcome::Gameplay
+            {
+                let mut router = ClientRouter {
+                    local_player,
+                    host_connection: client_host,
+                    connections: &peer.connections,
+                    replica: &mut peer.replica,
+                    session: &mut peer.session,
+                    store: &mut peer.store,
+                    definition: Some(&s.definition),
+                };
+                assert!(matches!(
+                    router.route(&event).unwrap(),
+                    ClientRouteOutcome::Authority(_)
+                ));
+                replicated = true;
+            }
+        }
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+    assert!(applied);
+    assert_eq!(s.peers[0].session.cursor(), s.host.session.cursor());
+    assert!(s.peers[0]
+        .replica
+        .remote_drag(&s.peers[0].session, &s.peers[0].store, local_player)
+        .is_some());
     host.backend_mut().assert_protected_after_handshake(2);
     client.backend_mut().assert_protected_after_handshake(1);
     client

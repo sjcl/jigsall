@@ -4,8 +4,447 @@ use crate::{
     multiplayer::catch_up::*,
     network::{bulk::*, sync_control::SyncControlMessage as Control, syncing::*},
 };
+use crate::{multiplayer::finalization::FinalDragSet, network::sync_control::SyncFinalization};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+
+fn final_token(h: &Harness, revision: u64) -> SyncFinalization {
+    SyncFinalization {
+        generation: h.client.generation().unwrap(),
+        cursor: h.s.peers[0].session.cursor(),
+        revision,
+    }
+}
+
+fn authoritative_update(h: &mut Harness, tick: u64, delta: Vec2) {
+    let mut cmd = update();
+    cmd.player = B;
+    cmd.sequence = ClientCommandSequence::Move {
+        after_control_sequence: 0,
+        tick,
+    };
+    cmd.command = ProtocolPieceCommand::DragUpdate { delta };
+    // Deliberately omit record_drag_update: final capture must still see this.
+    h.s.contexts
+        .apply_replicated(
+            &mut h.s.host.session,
+            &mut h.s.host.store,
+            B,
+            &cmd,
+            Some(&h.s.definition),
+            HOST,
+        )
+        .unwrap();
+}
+
+#[test]
+fn empty_final_barrier_commits_both_endpoints_and_releases_all_join_state() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    let player = h.p.client.assigned_player().unwrap();
+    h.reach(SyncPhase::Finalizing);
+    assert_eq!(h.p.host_connections.player(HA), None);
+    assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+    assert!(matches!(
+        h.host_to_client().unwrap().pop(),
+        Some(ClientSyncOutcome::Finalized)
+    ));
+    assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
+    h.client_to_host().unwrap();
+    assert_eq!(h.p.host.state(HA), Some(ConnectionState::Ready));
+    assert_eq!(h.p.host_connections.player(HA), Some(player));
+    assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
+    assert_eq!(h.host.phase(HA), None);
+    assert_eq!(
+        h.host.catch_up().status(player),
+        Err(CatchUpError::NotJoining)
+    );
+    assert_eq!(h.host.transfer_binding(HA), None);
+    assert_eq!(h.host.active_baseline_transfers(), 0);
+    assert!(matches!(
+        h.host_to_client().unwrap().pop(),
+        Some(ClientSyncOutcome::Ready)
+    ));
+    assert_eq!(h.p.client.state(), Some(ConnectionState::Ready));
+    assert_eq!(h.p.client_connections.player(CLIENT_HOST), Some(HOST));
+    assert_ne!(player, HOST);
+    assert_eq!(h.client.phase(), SyncPhase::Ready);
+    assert_eq!(h.client.baseline_cursor(), None);
+    assert_eq!(h.client.generation(), None);
+    assert_eq!(h.client.declared_in_flight_bytes(), 0);
+
+    // Normal client Grab/Drag/Release routes using the actual promoted mapping.
+    for mut cmd in [grab(), update(), release()] {
+        cmd.player = player;
+        let event = message_event(HA, &WireMessage::ClientCommand(cmd));
+        assert_eq!(
+            h.p.host
+                .process(&event, &mut h.p.ht, &mut h.p.host_connections, h.p.now)
+                .unwrap(),
+            BootstrapOutcome::Gameplay
+        );
+        let mut router = HostRouter {
+            local_player: HOST,
+            connections: &h.p.host_connections,
+            contexts: &mut h.s.contexts,
+            session: &mut h.s.host.session,
+            store: &mut h.s.host.store,
+            definition: Some(&h.s.definition),
+        };
+        assert!(matches!(
+            router.route(&event).unwrap(),
+            HostRouteOutcome::Applied(_)
+        ));
+    }
+    assert_eq!(h.s.host.session.cursor().sequence.0, 2);
+}
+
+#[test]
+fn final_drags_reconcile_scalar_rollback_and_multiple_players_without_replaying_targets() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    h.apply_grab();
+    let mut cmd = grab();
+    cmd.player = HOST;
+    cmd.command = ProtocolPieceCommand::Grab {
+        target: PieceTarget::Component(ComponentRef {
+            member: PieceId(1),
+            expected_size: 1,
+        }),
+    };
+    let outcome =
+        h.s.contexts
+            .apply_replicated(
+                &mut h.s.host.session,
+                &mut h.s.host.store,
+                HOST,
+                &cmd,
+                Some(&h.s.definition),
+                HOST,
+            )
+            .unwrap();
+    h.host
+        .record_command_outcome(&h.s.host.session, &h.s.host.store, &outcome)
+        .unwrap();
+    authoritative_update(&mut h, 3, Vec2::new(12.0, 34.0));
+    h.reach(SyncPhase::Finalizing);
+    let peer = &mut h.s.peers[0];
+    peer.replica
+        .apply_drag_update(
+            &peer.session,
+            &peer.store,
+            HOST,
+            &RemoteDragUpdate {
+                session: peer.session.session_id(),
+                authority_epoch: peer.session.cursor().epoch,
+                player: B,
+                grab_sequence: 0,
+                basis_sequence: 0,
+                tick: 99,
+                delta: Vec2::splat(999.0),
+            },
+        )
+        .unwrap();
+    h.reach(SyncPhase::Ready);
+    let peer = &h.s.peers[0];
+    let drag = peer
+        .replica
+        .remote_drag(&peer.session, &peer.store, B)
+        .unwrap();
+    assert_eq!(drag.last_tick, Some(3));
+    assert_eq!(drag.delta, Vec2::new(12.0, 34.0));
+    assert_eq!(
+        peer.replica
+            .remote_drags(&peer.session, &peer.store)
+            .count(),
+        2
+    );
+    assert_eq!(peer.store.states, h.s.host.store.states);
+}
+
+#[test]
+fn transient_race_retries_fresh_revision_without_reliable_replay_or_hook() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    h.apply_grab();
+    h.reach(SyncPhase::Finalizing);
+    let old = final_token(&h, 1);
+    h.host_to_client().unwrap();
+    authoritative_update(&mut h, 7, Vec2::splat(15.0));
+    h.client_to_host().unwrap();
+    assert_eq!(h.p.host.state(HA), Some(ConnectionState::Syncing));
+    assert_eq!(h.host.phase(HA), Some(SyncPhase::Finalizing));
+    assert_eq!(h.s.host.session.cursor(), old.cursor);
+    h.host
+        .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap();
+    h.send_client(Control::FinalizeAck { token: old }).unwrap();
+    assert_eq!(h.p.host_connections.player(HA), None);
+    h.reach(SyncPhase::Ready);
+    let peer = &h.s.peers[0];
+    let drag = peer
+        .replica
+        .remote_drag(&peer.session, &peer.store, B)
+        .unwrap();
+    assert_eq!(drag.last_tick, Some(7));
+    assert_eq!(drag.delta, Vec2::splat(15.0));
+}
+
+#[test]
+fn reliable_race_obsoletes_ack_then_catches_up_and_finalizes_again() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    h.reach(SyncPhase::Finalizing);
+    let old = final_token(&h, 1);
+    h.host_to_client().unwrap();
+    h.apply_grab();
+    assert_eq!(h.host.phase(HA), Some(SyncPhase::CatchingUp));
+    h.client_to_host().unwrap();
+    assert_eq!(h.p.host_connections.player(HA), None);
+    h.reach(SyncPhase::CatchingUp);
+    h.reach(SyncPhase::Finalizing);
+    h.send_client(Control::FinalizeAck { token: old }).unwrap();
+    assert_eq!(h.p.host.state(HA), Some(ConnectionState::Syncing));
+    h.reach(SyncPhase::Ready);
+    assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
+}
+
+#[test]
+fn final_full_set_mismatch_never_acks_or_promotes_and_is_transactional() {
+    for fault in 0..7 {
+        let mut h = Harness::new(true, CatchUpLimits::default());
+        h.apply_grab();
+        h.reach(SyncPhase::Finalizing);
+        // Keep secure Control sequence continuity, then submit a newer bad set.
+        h.host_to_client().unwrap();
+        h.p.ct.backend_mut().sent.clear();
+        let mut drags =
+            FinalDragSet::capture(&h.s.contexts, &h.s.host.session, &h.s.host.store).unwrap();
+        drags.entries[0].delta = Vec2::splat(222.0);
+        match fault {
+            0 => drags.entries.clear(),
+            1 => {
+                let mut extra = drags.entries[0];
+                extra.player = PlayerId(99);
+                drags.entries.push(extra);
+            }
+            2 => {
+                drags.entries[0].grab_sequence += 1;
+                drags.entries[0].basis_sequence += 1;
+            }
+            3 => drags.entries[0].basis_sequence += 1,
+            4 => drags.entries.push(drags.entries[0]),
+            5 => drags.entries[0].delta.x = f32::NAN,
+            _ => drags.entries[0].player = HOST,
+        }
+        let before = h.s.peers[0]
+            .replica
+            .remote_drag(&h.s.peers[0].session, &h.s.peers[0].store, B)
+            .unwrap()
+            .delta;
+        let token = final_token(&h, 2);
+        assert!(matches!(
+            h.send_host(WireMessage::SyncControl(Control::Finalize { token, drags })),
+            Err(SyncError::FinalDrag(_))
+        ));
+        assert!(h.p.ct.backend_mut().sent.is_empty());
+        assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+        assert_eq!(h.client.phase(), SyncPhase::RestartRequired);
+        assert_eq!(
+            h.s.peers[0]
+                .replica
+                .remote_drag(&h.s.peers[0].session, &h.s.peers[0].store, B)
+                .unwrap()
+                .delta,
+            before
+        );
+        assert_eq!(h.p.host_connections.player(HA), None);
+    }
+}
+
+#[test]
+fn ready_commit_send_or_host_registration_failure_rolls_back_and_drops_join_state() {
+    for registration_failure in [false, true] {
+        let mut h = Harness::new(true, CatchUpLimits::default());
+        let player = h.p.client.assigned_player().unwrap();
+        h.reach(SyncPhase::Finalizing);
+        h.host_to_client().unwrap();
+        if registration_failure {
+            h.p.host_connections.observe(&TransportEvent::Disconnected {
+                connection: HA,
+                reason: DisconnectReason::Requested,
+            });
+        } else {
+            h.p.ht.backend_mut().fail = Some(HA);
+        }
+        assert!(h.client_to_host().is_err());
+        assert_eq!(h.p.host_connections.player(HA), None);
+        assert_eq!(h.p.host.state(HA), None);
+        assert_eq!(h.host.phase(HA), None);
+        assert_eq!(
+            h.host.catch_up().status(player),
+            Err(CatchUpError::NotJoining)
+        );
+        assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
+        assert!(h.p.ht.backend_mut().sent.is_empty());
+    }
+}
+
+#[test]
+fn stale_generation_ack_cannot_complete_restarted_finalization() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    h.reach(SyncPhase::Finalizing);
+    let old = final_token(&h, 1);
+    h.host_to_client().unwrap();
+    h.s.host.store.epoch += 1;
+    assert!(h
+        .host
+        .observe_host_state(&h.s.host.session, &h.s.host.store)
+        .is_err());
+    h.host
+        .restart(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap();
+    h.host_to_client().unwrap();
+    h.client_to_host().unwrap(); // Includes delayed generation-0 final ACK.
+    assert_eq!(h.p.host_connections.player(HA), None);
+    h.reach(SyncPhase::Finalizing);
+    assert_eq!(h.client.generation(), Some(1));
+    h.send_client(Control::FinalizeAck { token: old }).unwrap();
+    assert_eq!(h.p.host_connections.player(HA), None);
+    h.reach(SyncPhase::Ready);
+}
+
+#[test]
+fn final_ack_cannot_cross_host_scope_or_freeze_changes() {
+    for change in 0..5 {
+        let mut h = Harness::new(true, CatchUpLimits::default());
+        h.reach(SyncPhase::Finalizing);
+        h.host_to_client().unwrap();
+        match change {
+            0 => h.s.host.store.epoch += 1,
+            1 => h.s.host.session.begin_graceful(B).unwrap(),
+            _ => {
+                let mut definition = h.s.host.session.session_definition();
+                let mut cursor = h.s.host.session.cursor();
+                let mut host = HOST;
+                match change {
+                    2 => definition.id = SessionId(999),
+                    3 => cursor.epoch = AuthorityEpoch(999),
+                    _ => host = B,
+                }
+                h.s.host.session = AuthoritySession::new(definition, host, cursor);
+            }
+        }
+        let result = h.client_to_host();
+        if change < 2 {
+            result.unwrap();
+            assert_eq!(h.host.phase(HA), Some(SyncPhase::RestartRequired));
+        } else {
+            assert_eq!(result, Err(SyncError::WrongIdentity));
+        }
+        assert_eq!(h.p.host_connections.player(HA), None);
+        assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+    }
+}
+
+#[test]
+fn final_ack_send_and_client_commit_failures_never_leave_client_registered() {
+    for failure in 0..4 {
+        let mut h = Harness::new(true, CatchUpLimits::default());
+        h.reach(SyncPhase::Finalizing);
+        if failure == 0 {
+            h.p.ct.backend_mut().fail = Some(CLIENT_HOST);
+        } else {
+            h.host_to_client().unwrap();
+            h.client_to_host().unwrap();
+            match failure {
+                1 => {
+                    h.p.client_connections
+                        .observe(&TransportEvent::Disconnected {
+                            connection: CLIENT_HOST,
+                            reason: DisconnectReason::Requested,
+                        });
+                }
+                2 => h.s.peers[0].store.epoch += 1,
+                _ => h.s.peers[0].session.begin_graceful(B).unwrap(),
+            }
+        }
+        assert!(h.host_to_client().is_err());
+        assert_eq!(h.p.client.state(), None);
+        assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+        assert_eq!(h.client.phase(), SyncPhase::RestartRequired);
+        // Observe the remote close using the same runtime lifecycle contract.
+        h.p.host
+            .process(
+                &TransportEvent::Disconnected {
+                    connection: HA,
+                    reason: DisconnectReason::RemoteClosed,
+                },
+                &mut h.p.ht,
+                &mut h.p.host_connections,
+                h.p.now,
+            )
+            .unwrap();
+        h.host.disconnect(HA);
+        assert_eq!(h.p.host_connections.player(HA), None);
+    }
+}
+
+#[test]
+fn actual_ready_handoff_rejects_sync_control_and_bulk_on_both_sides() {
+    for host_side in [true, false] {
+        for message in [
+            bulk_chunk(vec![0]),
+            WireMessage::SyncControl(Control::Restart { generation: 0 }),
+        ] {
+            let mut h = Harness::new(true, CatchUpLimits::default());
+            h.reach(SyncPhase::Ready);
+            let result = if host_side {
+                h.p.host.process(
+                    &message_event(HA, &message),
+                    &mut h.p.ht,
+                    &mut h.p.host_connections,
+                    h.p.now,
+                )
+            } else {
+                h.p.client.process(
+                    &message_event(CLIENT_HOST, &message),
+                    &mut h.p.ct,
+                    &mut h.p.client_connections,
+                    h.p.now,
+                )
+            };
+            assert_eq!(
+                result,
+                Err(BootstrapError::Rejected(
+                    DisconnectReason::ProtocolViolation
+                ))
+            );
+        }
+    }
+}
+
+#[test]
+fn unissued_or_inconsistent_final_ack_cannot_mint_ready_capability() {
+    for fault in 0..3 {
+        let mut h = Harness::new(true, CatchUpLimits::default());
+        h.reach(SyncPhase::Finalizing);
+        let mut token = final_token(&h, 1);
+        match fault {
+            0 => token.revision = u64::MAX,
+            1 => token.cursor.sequence.0 += 1,
+            _ => token.generation += 1,
+        }
+        let result = h.send_client(Control::FinalizeAck { token });
+        assert_eq!(
+            result,
+            Err(if fault == 2 {
+                SyncError::WrongGeneration
+            } else {
+                SyncError::WrongFinalization
+            })
+        );
+        assert_eq!(h.p.host_connections.player(HA), None);
+        assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+        assert_eq!(h.host.phase(HA), None);
+    }
+}
 
 struct Harness {
     p: Pair,
@@ -82,7 +521,8 @@ impl Harness {
             );
             let peer = &mut self.s.peers[0];
             let outcome = self.client.route(
-                &self.p.client,
+                &mut self.p.client,
+                &mut self.p.client_connections,
                 &event,
                 &mut self.p.ct,
                 &mut SyncReplica {
@@ -130,7 +570,10 @@ impl Harness {
                 BootstrapOutcome::Syncing
             );
             self.host.route(
-                &self.p.host,
+                &mut SyncHost {
+                    bootstrap: &mut self.p.host,
+                    connections: &mut self.p.host_connections,
+                },
                 &event,
                 &mut self.p.ht,
                 &authority(&self.s),
@@ -143,6 +586,9 @@ impl Harness {
     fn step(&mut self) {
         self.host_to_client().unwrap();
         self.client_to_host().unwrap();
+        if self.host.phase(HA).is_none() {
+            return;
+        }
         self.host
             .pump(
                 &self.p.host,
@@ -376,8 +822,17 @@ impl BaselineSlots {
                     .unwrap(),
                 BootstrapOutcome::Syncing
             );
-            self.host
-                .route(&p.host, &event, &mut p.ht, &authority(&self.s), None, p.now)?;
+            self.host.route(
+                &mut SyncHost {
+                    bootstrap: &mut p.host,
+                    connections: &mut p.host_connections,
+                },
+                &event,
+                &mut p.ht,
+                &authority(&self.s),
+                None,
+                p.now,
+            )?;
         }
         Ok(())
     }
@@ -851,6 +1306,9 @@ fn preoffer_future_bulk_wrong_direction_and_phase_cannot_install() {
         })),
         Err(SyncError::UnofferedTransfer)
     ));
+    assert_eq!(h.p.client.state(), None);
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    let player = h.p.host.assigned_player(HA).unwrap();
     h.p.ct.backend_mut().sent.clear();
     let message = WireMessage::BulkTransfer(BulkTransferMessage::Start {
         transfer_id: TransferId(1),
@@ -868,9 +1326,7 @@ fn preoffer_future_bulk_wrong_direction_and_phase_cannot_install() {
     assert_eq!(h.client_to_host(), Err(SyncError::WrongDirection));
     assert_eq!(h.s.host.session.cursor().sequence.0, 0);
     assert_eq!(
-        h.host
-            .catch_up()
-            .status(h.p.host.assigned_player(HA).unwrap()),
+        h.host.catch_up().status(player),
         Err(CatchUpError::NotJoining)
     );
 }
@@ -889,6 +1345,9 @@ fn offered_image_hash_is_bound_to_authenticated_session_and_content_is_verified(
         h.send_host(WireMessage::SyncControl(Control::ImageOffer(offer))),
         Err(SyncError::ImageHashMismatch)
     ));
+    assert_eq!(h.p.client.state(), None);
+    let mut h = Harness::new(false, CatchUpLimits::default());
+    h.host_to_client().unwrap();
     h.client_to_host().unwrap();
     h.host_to_client().unwrap();
     h.client_to_host().unwrap();
@@ -1035,6 +1494,12 @@ fn exact_offer_metadata_and_local_scope_changes_fail_without_install() {
         Err(SyncError::TransferMismatch)
     ));
     assert_eq!(h.client.declared_in_flight_bytes(), 0);
+    assert_eq!(h.p.client.state(), None);
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    h.host_to_client().unwrap();
+    h.client_to_host().unwrap();
+    h.host_to_client().unwrap();
+    h.client_to_host().unwrap();
     h.host
         .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
         .unwrap();

@@ -150,7 +150,7 @@ impl HostBootstrap {
             }
         }
     }
-    fn reject(
+    pub(crate) fn reject(
         &mut self,
         connection: ConnectionId,
         reason: DisconnectReason,
@@ -293,10 +293,8 @@ impl HostBootstrap {
                 if peer.state == ConnectionState::Ready && route == wire::FrameRoute::Gameplay {
                     return Ok(BootstrapOutcome::Gameplay);
                 }
-                if matches!(
-                    peer.state,
-                    ConnectionState::Authenticated | ConnectionState::Syncing
-                ) && route == wire::FrameRoute::Syncing
+                if peer.state == ConnectionState::Syncing
+                    && route == wire::FrameRoute::Syncing
                     && transport.has_channel(*connection)
                 {
                     return Ok(BootstrapOutcome::Syncing);
@@ -517,7 +515,7 @@ impl ClientBootstrap {
         self.player = None;
         self.handshake = None;
     }
-    fn reject(
+    pub(crate) fn reject(
         &mut self,
         reason: DisconnectReason,
         transport: &mut SecureTransport<impl Transport>,
@@ -608,10 +606,8 @@ impl ClientBootstrap {
                 {
                     return Ok(BootstrapOutcome::Gameplay);
                 }
-                if matches!(
-                    self.state,
-                    Some(ConnectionState::Authenticated | ConnectionState::Syncing)
-                ) && route == wire::FrameRoute::Syncing
+                if self.state == Some(ConnectionState::Syncing)
+                    && route == wire::FrameRoute::Syncing
                     && transport.has_channel(connection)
                 {
                     return Ok(BootstrapOutcome::Syncing);

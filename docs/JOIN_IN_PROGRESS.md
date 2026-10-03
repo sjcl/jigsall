@@ -1,9 +1,9 @@
-# Join baseline and bounded catch-up CPU foundation
+# Join baseline, bounded catch-up and Ready handoff
 
 `JoinBaseline` schema **1** combines the existing `GameSnapshot` schema **4**
 with at most **64** `BaselineDrag` records. This is a transport-independent CPU
 API. `network::syncing` now connects it to authenticated runtime routing and
-generation-bound Bulk transfer; final reconciliation and Ready handoff remain pending.
+generation-bound Bulk transfer, authoritative drag reconciliation and Ready handoff.
 
 ```rust
 pub struct JoinBaseline {
@@ -145,13 +145,13 @@ there is no million-entry member-ref list or new permanent per-piece metadata.
 
 GameSnapshot remains canonical persistent state: no HELD, owner, drag delta or
 context fields. SNAPSHOT_SCHEMA_VERSION, PuzzleCheckpoint and save format are
-unchanged. Wire v7 retains DragCancelled as authority event index 4; fixed golden
+unchanged. Wire v8 retains DragCancelled as authority event index 4; fixed golden
 frames preserve earlier payload layouts and update their version header. Join
 overlays are never applied automatically to migration or save/load.
 
 The opt-in Syncing runtime below connects authenticated bootstrap, image preparation,
-bounded Bulk, baseline installation and Reliable catch-up. Final active-drag
-reconciliation and Ready handoff remain future work. Remote drag rendering,
+bounded Bulk, baseline installation, Reliable catch-up, final active-drag
+reconciliation and Ready handoff. Remote drag rendering,
 interpolation and GPU owner buffers remain future work. SecureTransport/GNS/rate
 limiting retain their existing designs. Benchmarks are outside this change. CPU
 tests feed post-baseline events directly in order and cover both sparse and dense
@@ -163,8 +163,8 @@ targets.
 It does not use ConnectionId, GNS handles or Steam identities, change HostRouter
 parameters, install Bevy systems, call bootstrap `begin_sync`/`promote_ready`, or
 add wire messages. JOIN_BASELINE_SCHEMA_VERSION **1** and SNAPSHOT_SCHEMA_VERSION
-**4** remain unchanged. The application Syncing protocol uses WIRE_VERSION **7**
-and fixed v7 frames; catch-up semantics and generic Bulk fields are unchanged.
+**4** remain unchanged. The application Syncing protocol uses WIRE_VERSION **8**
+and fixed v8 frames; catch-up semantics and generic Bulk fields are unchanged.
 
 Only after image preparation and verified `ImageReady`, call
 `begin_join(player, session, store, contexts, definition)` between complete
@@ -292,10 +292,11 @@ It detects unrecorded authority gameplay and is **not** a Ready decision.
 `latest_drag_updates` returns latest presentation in ascending PlayerId order;
 the caller must deliver it after the corresponding reliable basis.
 
-Runtime foundation lifecycle (`network::syncing`):
+Runtime lifecycle (`network::syncing`, wire v8):
 
 ```text
 Authenticated
+→ explicit begin_sync()
 → Syncing: session/image identity and image availability negotiation
 → optional PuzzleImage offer/accept + Bulk (host gameplay continues)
 → SHA-256 == authenticated SessionDefinition.image_hash
@@ -306,9 +307,11 @@ Authenticated
 → transactional baseline install, ACK(G, C, T)
 → generation-bound Reliable catch-up events and cursor ACKs
 → Finalizing: Reliable catch-up complete != Ready
-→ future full authoritative active-drag reconciliation
-→ future final synchronization barrier and final ACK
-→ future Ready promotion
+→ Finalize(generation, cursor, revision, full authoritative active-drag scalar set)
+→ client full-set reconciliation, FinalizeAck(generation, cursor, revision)
+→ host rechecks scope, Reliable currency and current authoritative scalar set
+→ host Ready registration, then ReadyCommit(generation, cursor, revision)
+→ client Ready registration, then Ready gameplay
 ```
 
 Image transfer happens before any retention entry exists, so a 512 MiB image
@@ -332,6 +335,11 @@ Bulk receiver. No client-to-host Bulk receiver exists. ACKs/status use Control.
 Ready HostRouter/ClientRouter reject all current Bulk and SyncControl messages.
 Bootstrap returns `Consumed`, `Syncing`, or `Gameplay`; only the matching router
 may receive each routed outcome. Gameplay remains forbidden before Ready.
+Authentication states accept authentication messages only. `Authenticated` waits
+for explicit `begin_sync()` and rejects SyncControl/Bulk. Both `start` methods call
+`begin_sync()` before handling sync traffic. Only `ConnectionState::Syncing` can
+route SyncControl/authorized Bulk; Ready accepts gameplay only. Wrong-phase frames
+are protocol violations, including SyncControl/Bulk after Ready.
 
 `MAX_CONCURRENT_BASELINE_TRANSFERS` is **2** across the host coordinator, independently
 of the 64 authenticated/Syncing admissions. Image-ready peers enter the host-only
@@ -390,21 +398,73 @@ with an explicit-clock timeout predicate. Callers can enforce Syncing/progress
 timeouts and close/remove stalled connections; no timeout policy is scheduled
 automatically. A legal Start without chunks therefore remains visible to policy.
 
-Finalizing preserves the join's retention entry. New Reliable events return it
-to CatchingUp. `latest_drag_updates()` is presentation assistance, never the Ready
-criterion. Future finalization must capture authority `ProtocolDragContexts`
-directly as the full scalar set (player, grab_sequence, basis_sequence, last_tick,
-delta), reconcile, send `SyncFinalize(generation, cursor, revision/state)`, obtain
-`SyncFinalizeAck`, and verify nothing relevant changed before promotion.
-`promote_ready` now requires a private-construction `SyncReadyPermit`; this foundation
-cannot issue one. The future barrier must certify image ready, baseline installed,
-Reliable catch-up complete and final reconciliation complete together. Test-only
-Ready fixtures remain available for isolated gameplay/GNS tests.
+### Authoritative final reconciliation and barrier
+
+**ReliableComplete != Ready.** Transient updates have no authority cursor, so
+Reliable currency cannot prove drag presentation completeness. `latest_drag_updates()`
+is presentation assistance, never final truth: a missed retention hook must not
+carry stale presentation into Ready.
+
+Finalizing preserves the retention entry. `pump` captures `ProtocolDragContexts`
+directly at a complete command boundary into `FinalDragSet`: at most 64 scalar
+records `(player, grab_sequence, basis_sequence, last_tick, delta)`, sorted by
+numeric PlayerId. No target/membership is resent and no piece scan occurs. The
+bounded wire visitor starts with an empty Vec, ignores size hints and rejects
+entry 65. Direct encoding also enforces the cap. Noncanonical/duplicate players,
+nonfinite deltas and basis before grab reject.
+
+The client transactionally compares the entire set to `PeerReplicationState`:
+same player set, grab sequence and basis sequence. Missing/extra contexts or
+identity mismatch require disconnect and fresh join/resync; no target is inferred.
+Only after all validation succeeds are last_tick/delta overwritten with authority
+values, including rollback. This is a final synchronization operation, separate
+from ordinary monotonic Transient application and its benign late-update drops.
+
+`SyncFinalization` binds generation, AuthorityCursor and revision. Revision starts
+at 1, increases with checked arithmetic for every candidate, survives baseline
+restarts and never wraps or reuses a token. Client reconciliation sends FinalizeAck
+but leaves the connection Syncing. On that exact ACK, the host rechecks generation,
+session/host/authority epoch, active authority, store generation, Reliable currency
+and cursor, then recaptures and compares the full scalar set to the candidate.
+Only a still-current candidate can construct the private `SyncReadyPermit`.
+
+New Reliable events invalidate the candidate and return to CatchingUp; after
+ReliableComplete a fresh finalization follows. Transient-only differences leave
+the peer Finalizing and clear the candidate so the next pump sends a new revision,
+without replaying Reliable history. Superseded revisions, old generations and
+ACKs arriving during restart/fallback are harmless obsolete drops. Future or
+inconsistent tokens reject. Scope changes/freeze/migration/missed Reliable hooks
+invalidate candidates through the existing catch-up scope boundary.
+
+Host ACK routing calls `promote_ready` before queuing Reliable Control ReadyCommit.
+The SessionConnections mapping therefore exists before the client can receive
+commit and submit gameplay on either lane. The client requires the matching
+reconciled candidate and unchanged scope/cursor before its own `promote_ready`.
+Its mapping identifies the host; local PlayerId remains independently assigned.
+The synchronous route borrow covers validation, registration and commit sending,
+so authority commands cannot interleave that boundary. No host freeze is needed;
+existing Ready peers keep playing during retries.
+
+Sync route errors invalidate/remove join state, close the secure channel and remove
+bootstrap/gameplay mappings. Host commit-send or registration failure rolls back
+any host registration before returning; no commit is sent on failed registration.
+Client ACK/commit-validation/promotion failure closes without leaving a participant.
+As with other transport failure, the remote endpoint removes its mapping on the
+disconnect event. Runtime must process disconnects before subsequent gameplay.
+
+Successful host commit removes the entire sync peer, catch-up history, latest
+Transient cache, transfer association, restart metadata and candidate. Baseline
+slots were already released by install ACK. Client success releases candidate,
+definition, baseline/generation and receiver state and reports `ClientSyncOutcome::Ready`;
+the caller can drop the router then. Pump only joining connections. Test-only Ready
+fixtures remain available for isolated gameplay tests; production has no permit
+factory outside the validated barrier/commit path.
 
 No Ready idle join work or piece scans are added. Capture/install remain rare
 operations, dense masks retain COW representation, bounded history/Bulk budgets
-remain unchanged, and image import keeps its 512 MiB policy. Final reconciliation,
-full Ready barrier, Host/Join UI, remote drag rendering and Steamworks remain future work.
+remain unchanged, and image import keeps its 512 MiB policy. Host/Join UI, remote
+drag rendering, presence UI, persistent image cache integration and Steamworks
+remain future work.
 
 CPU tests exercise baseline-pending gameplay through sparse/dense Grab, transient,
 RotateDrag, cancellation and Release, then install/replay/ACK and compare canonical
@@ -413,8 +473,14 @@ latest-only ordering/rebase cleanup, staggered peers and shared event Arcs,
 independent slow-peer overflow, byte/count/zero limits, restart recovery, failed
 capture/exhausted counters, stale generations, missing reliable/transient hooks,
 ACK validation, scope/freeze invalidation, capacity and the no-join fast path.
+Secure routing tests additionally cover empty/multiple final sets, scalar rollback,
+missing/extra/wrong/duplicate contexts, unrecorded Transient retries, Reliable
+fallback, stale revision/generation ACKs, scope changes and failed ACK/commit/
+registration cleanup. The actual localhost GNS join test runs SPAKE2, missing-image
+negotiation/verification, baseline, catch-up, reconciliation, final ACK and production
+Ready promotion, then sends and replicates a normal Grab over encrypted Control.
 
-## Bounded Bulk substrate (wire v7, framing unchanged from v6)
+## Bounded Bulk substrate (wire v8, framing unchanged from v6)
 
 `network::bulk` provides `BulkTransferKind::{JoinBaseline, PuzzleImage}`,
 monotonic `TransferId(u64)` and typed Start/Chunk/Finish/Abort under outer wire
@@ -452,4 +518,4 @@ routers reject them. Baseline capture/install/catch-up CPU semantics, image impo
 local 512 MiB policy and persistence are unchanged. No persistent cache, file
 streaming, compression, Steamworks or automatically scheduled Bevy systems are added.
 See [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md#bounded-bulk-transfer-foundation)
-for the generic framing, receiver error semantics and fixed v7 golden contract.
+for the generic framing, receiver error semantics and fixed v8 golden contract.
