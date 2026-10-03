@@ -1,6 +1,6 @@
 use crate::components::*;
 use crate::resources::*;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::EguiContexts;
@@ -136,12 +136,17 @@ pub fn handle_camera_zoom(
             .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
     let focused = windows.single().is_ok_and(|window| window.focused);
     for ev in scroll_evr.read() {
-        if !focused || over_ui || ev.y == 0.0 {
+        if !focused || over_ui || ev.y == 0.0 || !ev.y.is_finite() {
             continue;
         }
+        let scroll_lines = match ev.unit {
+            MouseScrollUnit::Line => ev.y,
+            MouseScrollUnit::Pixel => ev.y / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR,
+        };
+        // Preserve the 10% zoom-in step per line, with reciprocal zoom-out.
+        // Exponentiation makes the result depend on distance, not event count.
+        let zoom_factor = 0.9_f32.powf(scroll_lines);
         for mut transform in camera_query.iter_mut() {
-            let zoom_factor = if ev.y > 0.0 { 0.9 } else { 1.1 };
-
             // 解像度に応じた適応的ズーム制限
             let (min_zoom, max_zoom) = if let Some(puzzle_image) = puzzle_image.as_ref() {
                 let resolution_factor =
@@ -317,6 +322,96 @@ pub fn handle_edge_scrolling(
 mod tests {
     use super::*;
     use bevy::camera::{ComputedCameraValues, RenderTargetInfo};
+
+    fn scroll_scale(unit: MouseScrollUnit, deltas: &[f32]) -> Vec3 {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GameUiPointerCapture>()
+            .init_resource::<PerformanceMonitor>()
+            .init_resource::<bevy_egui::EguiUserTextures>()
+            .add_message::<MouseWheel>()
+            .add_systems(Update, handle_camera_zoom);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    focused: true,
+                    ..default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((Transform::default(), MainCamera))
+            .id();
+        for &y in deltas {
+            app.world_mut().write_message(MouseWheel {
+                unit,
+                x: 0.0,
+                y,
+                window,
+                phase: bevy::input::touch::TouchPhase::Moved,
+            });
+        }
+        app.update();
+        app.world().get::<Transform>(camera).unwrap().scale
+    }
+
+    #[test]
+    fn wheel_zoom_respects_scroll_amount_and_unit() {
+        for (unit, delta, expected) in [
+            (MouseScrollUnit::Line, 1.0, 0.9),
+            (MouseScrollUnit::Line, 3.0, 0.729),
+            (MouseScrollUnit::Line, 0.5, 0.9486833),
+            (MouseScrollUnit::Line, -1.0, 1.1111111),
+            (MouseScrollUnit::Pixel, 100.0, 0.9),
+            (MouseScrollUnit::Pixel, 1.0, 0.99894696),
+            (MouseScrollUnit::Pixel, -1.0, 1.0010542),
+        ] {
+            let scale = scroll_scale(unit, &[delta]);
+            assert!((scale.x - expected).abs() < 0.00001, "{unit:?}: {delta}");
+            assert_eq!(scale.y, scale.x);
+            assert_eq!(scale.z, 1.0);
+        }
+    }
+
+    #[test]
+    fn wheel_zoom_is_independent_of_event_count() {
+        for direction in [1.0, -1.0] {
+            let combined = scroll_scale(MouseScrollUnit::Line, &[3.0 * direction]);
+            let lines = scroll_scale(MouseScrollUnit::Line, &[direction; 3]);
+            let pixels = scroll_scale(MouseScrollUnit::Pixel, &[direction; 300]);
+            assert!((combined - lines).length() < 0.00001);
+            assert!((combined - pixels).length() < 0.0001);
+        }
+    }
+
+    #[test]
+    fn wheel_zoom_is_reversible() {
+        for (unit, delta) in [(MouseScrollUnit::Line, 2.5), (MouseScrollUnit::Pixel, 25.0)] {
+            let scale = scroll_scale(unit, &[delta, -delta]);
+            assert!((scale - Vec3::ONE).length() < 0.00001);
+        }
+    }
+
+    #[test]
+    fn wheel_zoom_ignores_zero_and_non_finite_input() {
+        for unit in [MouseScrollUnit::Line, MouseScrollUnit::Pixel] {
+            assert_eq!(
+                scroll_scale(unit, &[0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY]),
+                Vec3::ONE,
+            );
+        }
+    }
+
+    #[test]
+    fn wheel_zoom_clamps_large_scrolls_without_scaling_depth() {
+        for unit in [MouseScrollUnit::Line, MouseScrollUnit::Pixel] {
+            assert_eq!(scroll_scale(unit, &[f32::MAX]), Vec3::new(0.1, 0.1, 1.0));
+            assert_eq!(scroll_scale(unit, &[-f32::MAX]), Vec3::new(10.0, 10.0, 1.0));
+        }
+    }
 
     #[test]
     fn pointer_uses_current_camera_transform_and_clears_invalid_coordinates() {
