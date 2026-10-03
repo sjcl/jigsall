@@ -305,6 +305,9 @@ impl RecordedGns {
     }
 }
 impl Transport for RecordedGns {
+    fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
+        self.inner.activate_secure_channel(connection)
+    }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         self.inner.poll(events)
     }

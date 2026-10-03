@@ -38,6 +38,26 @@ pub const DEFAULT_INBOUND_POLICY: InboundRatePolicy = InboundRatePolicy {
     },
 };
 
+/// Before verified channel installation, only small Control handshakes are legal.
+/// Eight tiny messages fit the burst; other classes are rejected by the backend.
+pub const PREAUTH_INBOUND_POLICY: InboundRatePolicy = InboundRatePolicy {
+    control: BucketPolicy {
+        bytes_per_second: 16 * 1024,
+        burst_bytes: 32 * 1024,
+        minimum_charge: 4 * 1024,
+    },
+    transient: BucketPolicy {
+        bytes_per_second: 0,
+        burst_bytes: 0,
+        minimum_charge: 1,
+    },
+    bulk: BucketPolicy {
+        bytes_per_second: 0,
+        burst_bytes: 0,
+        minimum_charge: 1,
+    },
+};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RateDecision {
     Allow,
@@ -148,6 +168,51 @@ mod tests {
         control: SMALL_BUCKET,
         bulk: SMALL_BUCKET,
     };
+
+    #[test]
+    fn preauth_budget_bounds_tiny_and_maximum_handshakes_and_refills() {
+        use crate::network::wire::{HEADER_SIZE, MAX_SESSION_CONTROL_PAYLOAD};
+        let now = Instant::now();
+        let mut limiter = InboundRateLimiter::with_policy(&PREAUTH_INBOUND_POLICY, now);
+        for _ in 0..8 {
+            assert_eq!(
+                limiter.check(MessageClass::Control, 1, now),
+                RateDecision::Allow
+            );
+        }
+        assert_eq!(
+            limiter.check(MessageClass::Control, 1, now),
+            RateDecision::Disconnect
+        );
+        assert_eq!(
+            limiter.check(MessageClass::Control, 1, now + Duration::from_millis(250)),
+            RateDecision::Allow
+        );
+        assert_eq!(
+            limiter.check(MessageClass::Control, 1, now + Duration::from_millis(250)),
+            RateDecision::Disconnect
+        );
+
+        let mut limiter = InboundRateLimiter::with_policy(&PREAUTH_INBOUND_POLICY, now);
+        for _ in 0..7 {
+            assert_eq!(
+                limiter.check(
+                    MessageClass::Control,
+                    HEADER_SIZE + MAX_SESSION_CONTROL_PAYLOAD,
+                    now
+                ),
+                RateDecision::Allow
+            );
+        }
+        assert_eq!(
+            limiter.check(
+                MessageClass::Control,
+                HEADER_SIZE + MAX_SESSION_CONTROL_PAYLOAD,
+                now
+            ),
+            RateDecision::Disconnect
+        );
+    }
 
     #[test]
     fn initial_burst_spends_tokens_and_zero_elapsed_does_not_refill() {

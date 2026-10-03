@@ -1,10 +1,14 @@
 use crate::network::{
-    rate_limit::{InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY},
+    rate_limit::{
+        InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY,
+        PREAUTH_INBOUND_POLICY,
+    },
     secure::record_limit,
     transport::{
         ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Transport,
         TransportError, TransportEvent,
     },
+    wire,
 };
 use ::gns::{
     sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
@@ -12,7 +16,7 @@ use ::gns::{
     ReceivedMessagesInto, SendFlags, ToSend,
 };
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     net::{SocketAddr, UdpSocket},
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
@@ -132,6 +136,7 @@ struct Connection {
     native: GnsConnection,
     endpoint: Endpoint,
     connected: bool,
+    authenticated: bool,
     rate_limit: InboundRateLimiter,
 }
 
@@ -224,8 +229,9 @@ impl GnsDirectIp {
                         native,
                         endpoint,
                         connected: false,
+                        authenticated: false,
                         rate_limit: InboundRateLimiter::with_policy(
-                            self.rate_policy,
+                            &PREAUTH_INBOUND_POLICY,
                             Instant::now(),
                         ),
                     },
@@ -267,6 +273,21 @@ impl GnsDirectIp {
 }
 
 impl Transport for GnsDirectIp {
+    fn activate_secure_channel(&mut self, id: ConnectionId) -> Result<(), TransportError> {
+        let connection = self
+            .connections
+            .get_mut(&id)
+            .ok_or(TransportError::UnknownConnection)?;
+        if !connection.connected {
+            return Err(TransportError::NotConnected);
+        }
+        if connection.authenticated {
+            return Err(TransportError::ProtocolViolation);
+        }
+        connection.authenticated = true;
+        connection.rate_limit = InboundRateLimiter::with_policy(self.rate_policy, Instant::now());
+        Ok(())
+    }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.pending);
         self.global.poll_callbacks();
@@ -294,6 +315,15 @@ impl Transport for GnsDirectIp {
         let mut slots = [const { MessageSlot::uninit() }; RECEIVE_CHUNK];
         let mut remaining = MAX_RECEIVE_PER_POLL;
         let now = Instant::now();
+        // A plaintext handshake may install keys before its queued encrypted
+        // tail can be consumed. Receive one at a time on sockets with pending
+        // authentication, leaving that tail in GNS's queue without any copy.
+        let unauthenticated_endpoints: BTreeSet<_> = self
+            .connections
+            .values()
+            .filter(|connection| !connection.authenticated)
+            .map(|connection| connection.endpoint)
+            .collect();
         while remaining != 0 {
             let Some(endpoint) = endpoints.pop_front() else {
                 break;
@@ -303,12 +333,15 @@ impl Transport for GnsDirectIp {
             };
             // Never receive more than the remaining budget. Unconsumed wrapper
             // messages are released on Drop, which would discard reliable data.
-            let messages = socket.receive(&mut slots[..RECEIVE_CHUNK.min(remaining)])?;
+            let chunk = if unauthenticated_endpoints.contains(&endpoint) {
+                1
+            } else {
+                RECEIVE_CHUNK
+            };
+            let messages = socket.receive(&mut slots[..chunk.min(remaining)])?;
             let received = messages.len();
             remaining -= received; // Unknown, invalid and rate-limited messages count too.
-            if received != 0 {
-                endpoints.push_back(endpoint);
-            }
+            let mut handshake_barrier = false;
             for message in messages {
                 let Some(&id) = self.native_ids.get(&message.connection()) else {
                     continue;
@@ -324,21 +357,31 @@ impl Transport for GnsDirectIp {
                     continue;
                 };
                 let payload = message.payload();
-                if payload.len() > record_limit(class) {
+                if payload.len() > record_limit(class)
+                    || (!connection.authenticated
+                        && !matches!(wire::is_session_control_for_class(payload, class), Ok(true)))
+                {
                     self.terminate(id, DisconnectReason::InvalidMessage, events);
                     continue;
                 }
                 match connection.rate_limit.check(class, payload.len(), now) {
-                    RateDecision::Allow => events.push(TransportEvent::Message {
-                        connection: id,
-                        class,
-                        payload: payload.to_vec(),
-                    }),
+                    RateDecision::Allow => {
+                        handshake_barrier = !connection.authenticated;
+                        events.push(TransportEvent::Message {
+                            connection: id,
+                            class,
+                            payload: payload.to_vec(),
+                        });
+                    }
                     RateDecision::Drop => {}
                     RateDecision::Disconnect => {
                         self.terminate(id, DisconnectReason::RateLimited, events);
                     }
                 }
+            }
+            // Let bootstrap handle this handshake before consuming the tail.
+            if received != 0 && !handshake_barrier {
+                endpoints.push_back(endpoint);
             }
         }
         // Continue with the next socket if budget ran out, rather than letting a
@@ -490,7 +533,11 @@ impl DirectIpTransport for GnsDirectIp {
                 native,
                 endpoint,
                 connected: false,
-                rate_limit: InboundRateLimiter::with_policy(self.rate_policy, Instant::now()),
+                authenticated: false,
+                rate_limit: InboundRateLimiter::with_policy(
+                    &PREAUTH_INBOUND_POLICY,
+                    Instant::now(),
+                ),
             },
         );
         self.native_ids.insert(native, id);
@@ -525,6 +572,17 @@ mod tests {
     }
 
     fn connect_pair(
+        host: &mut GnsDirectIp,
+        client: &mut GnsDirectIp,
+    ) -> (ListenerId, ConnectionId, ConnectionId) {
+        let pair = connect_pair_unauthenticated(host, client);
+        // Raw lane/drain fixtures exercise the post-auth transport policy.
+        host.activate_secure_channel(pair.1).unwrap();
+        client.activate_secure_channel(pair.2).unwrap();
+        pair
+    }
+
+    fn connect_pair_unauthenticated(
         host: &mut GnsDirectIp,
         client: &mut GnsDirectIp,
     ) -> (ListenerId, ConnectionId, ConnectionId) {
@@ -647,11 +705,244 @@ mod tests {
     };
 
     #[test]
+    fn gns_localhost_preauth_oversize_is_rejected_before_copy() {
+        for outgoing_receive in [false, true] {
+            for size in [
+                crate::network::wire::HEADER_SIZE
+                    + crate::network::wire::MAX_SESSION_CONTROL_PAYLOAD
+                    + 1,
+                record_limit(MessageClass::Control),
+            ] {
+                let mut host = GnsDirectIp::new().unwrap();
+                let mut client = GnsDirectIp::new().unwrap();
+                let (_, incoming, outgoing) = connect_pair_unauthenticated(&mut host, &mut client);
+                let (receiver, receiver_id, sender, sender_id) = if outgoing_receive {
+                    (&mut client, outgoing, &mut host, incoming)
+                } else {
+                    (&mut host, incoming, &mut client, outgoing)
+                };
+                let payload = plaintext_control(size);
+                sender
+                    .send(sender_id, MessageClass::Control, &payload)
+                    .unwrap();
+                flush_and_wait_for_reliable_ack(sender, sender_id);
+                let events = poll(receiver);
+                assert!(
+                    matches!(
+                        events.as_slice(),
+                        [TransportEvent::Disconnected {
+                            connection,
+                            reason: DisconnectReason::InvalidMessage,
+                        }] if *connection == receiver_id
+                    ),
+                    "oversized pre-auth data must be rejected without a Message event"
+                );
+                assert!(poll(receiver).is_empty());
+            }
+        }
+    }
+
+    fn plaintext_control(size: usize) -> Vec<u8> {
+        let mut payload = vec![0; size];
+        payload[..4].copy_from_slice(b"PZLA");
+        payload[4..6].copy_from_slice(&wire::WIRE_VERSION.to_le_bytes());
+        payload[6] = 6;
+        payload[8..12].copy_from_slice(&((size - wire::HEADER_SIZE) as u32).to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn gns_localhost_preauth_gate_checks_actual_length_header_and_lane() {
+        let maximum = plaintext_control(wire::HEADER_SIZE + wire::MAX_SESSION_CONTROL_PAYLOAD);
+        for outgoing_receive in [false, true] {
+            let mut cases = vec![(MessageClass::Control, maximum.clone(), true)];
+            let mut oversized = maximum.clone();
+            oversized.push(0); // Keep the declared length within the cap.
+            cases.push((MessageClass::Control, oversized, false));
+            let mut gameplay = maximum.clone();
+            gameplay[6] = 1;
+            cases.push((MessageClass::Control, gameplay, false));
+            let small = plaintext_control(wire::HEADER_SIZE + 1);
+            cases.push((MessageClass::Transient, small.clone(), false));
+            cases.push((MessageClass::Bulk, small, false));
+            cases.push((MessageClass::Control, vec![0; 4], false));
+            for (class, payload, allowed) in cases {
+                let mut host = GnsDirectIp::new().unwrap();
+                let mut client = GnsDirectIp::new().unwrap();
+                let (_, incoming, outgoing) = connect_pair_unauthenticated(&mut host, &mut client);
+                let (receiver, receiver_id, sender, sender_id) = if outgoing_receive {
+                    (&mut client, outgoing, &mut host, incoming)
+                } else {
+                    (&mut host, incoming, &mut client, outgoing)
+                };
+                // Use a reliable native backlog even on Transient, so delivery
+                // of wrong-lane attack frames does not depend on UDP timing/loss.
+                let connection = &sender.connections[&sender_id];
+                let message = sender
+                    .global
+                    .utils()
+                    .allocate_message(connection.native, SendFlags::RELIABLE, payload.clone())
+                    .set_lane(lane(class));
+                sender.sockets[&connection.endpoint].send(message).unwrap();
+                flush_and_wait_for_reliable_ack(sender, sender_id);
+                let expected = if allowed {
+                    TransportEvent::Message {
+                        connection: receiver_id,
+                        class,
+                        payload,
+                    }
+                } else {
+                    TransportEvent::Disconnected {
+                        connection: receiver_id,
+                        reason: DisconnectReason::InvalidMessage,
+                    }
+                };
+                assert_eq!(poll(receiver), vec![expected]);
+            }
+        }
+    }
+
+    #[test]
+    fn gns_localhost_preauth_tail_stays_native_until_verified_installation() {
+        use crate::network::{
+            auth::AuthenticatedSecret,
+            secure::{ChannelRole, SecureTransport},
+        };
+        for outgoing_receive in [false, true] {
+            let mut host = GnsDirectIp::new().unwrap();
+            let mut client = GnsDirectIp::new().unwrap();
+            let (_, incoming, outgoing) = connect_pair_unauthenticated(&mut host, &mut client);
+            let (receiver, receiver_id, receiver_role, sender, sender_id, sender_role) =
+                if outgoing_receive {
+                    (
+                        client,
+                        outgoing,
+                        ChannelRole::Client,
+                        host,
+                        incoming,
+                        ChannelRole::Host,
+                    )
+                } else {
+                    (
+                        host,
+                        incoming,
+                        ChannelRole::Host,
+                        client,
+                        outgoing,
+                        ChannelRole::Client,
+                    )
+                };
+            let mut sender = SecureTransport::new(sender);
+            let mut receiver = SecureTransport::new(receiver);
+            sender.start_connection(sender_id);
+            receiver.start_connection(receiver_id);
+            let handshake = plaintext_control(wire::HEADER_SIZE + 1);
+            sender
+                .send(sender_id, MessageClass::Control, &handshake)
+                .unwrap();
+            flush_and_wait_for_reliable_ack(sender.backend_mut(), sender_id);
+            sender
+                .install(
+                    sender_id,
+                    AuthenticatedSecret::fixture(&[7; 16]),
+                    sender_role,
+                )
+                .unwrap();
+            let control = vec![0x42; wire::frame_limit(MessageClass::Control)];
+            let bulk = vec![0x24; wire::frame_limit(MessageClass::Bulk)];
+            sender
+                .send(sender_id, MessageClass::Control, &control)
+                .unwrap();
+            sender.send(sender_id, MessageClass::Bulk, &bulk).unwrap();
+            flush_and_wait_for_reliable_ack(sender.backend_mut(), sender_id);
+            let mut events = Vec::new();
+            receiver.poll(&mut events).unwrap();
+            assert_eq!(
+                events,
+                vec![TransportEvent::Message {
+                    connection: receiver_id,
+                    class: MessageClass::Control,
+                    payload: handshake,
+                }]
+            );
+            assert!(!receiver.backend_mut().connections[&receiver_id].authenticated);
+            receiver
+                .install(
+                    receiver_id,
+                    AuthenticatedSecret::fixture(&[7; 16]),
+                    receiver_role,
+                )
+                .unwrap();
+            events.clear();
+            receiver.poll(&mut events).unwrap();
+            assert_eq!(events.len(), 2);
+            assert!(events.contains(&TransportEvent::Message {
+                connection: receiver_id,
+                class: MessageClass::Control,
+                payload: control,
+            }));
+            assert!(events.contains(&TransportEvent::Message {
+                connection: receiver_id,
+                class: MessageClass::Bulk,
+                payload: bulk,
+            }));
+            assert!(receiver.backend_mut().connections[&receiver_id].authenticated);
+        }
+    }
+
+    #[test]
+    fn gns_localhost_preauth_barrier_keeps_tail_native_and_rechecks_or_closes() {
+        for close_listener in [false, true] {
+            let mut host = GnsDirectIp::new().unwrap();
+            let mut client = GnsDirectIp::new().unwrap();
+            let (listener, incoming, outgoing) =
+                connect_pair_unauthenticated(&mut host, &mut client);
+            let handshake = plaintext_control(wire::HEADER_SIZE + 1);
+            client
+                .send(outgoing, MessageClass::Control, &handshake)
+                .unwrap();
+            let oversized =
+                plaintext_control(wire::HEADER_SIZE + wire::MAX_SESSION_CONTROL_PAYLOAD + 1);
+            for _ in 0..RECEIVE_CHUNK {
+                client
+                    .send(outgoing, MessageClass::Control, &oversized)
+                    .unwrap();
+            }
+            flush_and_wait_for_reliable_ack(&client, outgoing);
+            assert_eq!(
+                poll(&mut host),
+                vec![TransportEvent::Message {
+                    connection: incoming,
+                    class: MessageClass::Control,
+                    payload: handshake,
+                }]
+            );
+            assert!(!host.connections[&incoming].authenticated);
+            if close_listener {
+                host.close_listener(listener).unwrap();
+            }
+            assert_eq!(
+                poll(&mut host),
+                vec![TransportEvent::Disconnected {
+                    connection: incoming,
+                    reason: if close_listener {
+                        DisconnectReason::Requested
+                    } else {
+                        DisconnectReason::InvalidMessage
+                    },
+                }]
+            );
+            assert!(!host.connections.contains_key(&incoming));
+            assert!(poll(&mut host).is_empty());
+        }
+    }
+
+    #[test]
     fn gns_localhost_transient_drop_preserves_connection_and_receive_budget() {
         let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
         let mut client = GnsDirectIp::new().unwrap();
         let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
-        // No SessionConnections/PlayerId assignment: protection is already active.
+        // No SessionConnections/PlayerId assignment: post-auth protection is active.
         // Malformed wire bytes are still charged before any routing or decode.
         native_burst(&client, outgoing, lane(MessageClass::Transient), 513, 4);
         let events = poll(&mut host);

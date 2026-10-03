@@ -120,6 +120,23 @@ fn forbidden_plaintext_frames() -> Vec<(MessageClass, Vec<u8>)> {
 }
 
 #[test]
+fn failed_backend_activation_never_installs_channel_or_allows_gameplay() {
+    let mut transport = SecureTransport::new(FakeTransport::default());
+    transport.start_connection(ID);
+    transport.backend_mut().fail_activation = Some(ID);
+    assert_eq!(
+        transport.install(ID, secret(), ChannelRole::Host),
+        Err(TransportError::NotConnected)
+    );
+    assert!(!transport.has_channel(ID));
+    assert_eq!(
+        transport.send(ID, MessageClass::Bulk, &frame(MessageClass::Bulk)),
+        Err(TransportError::ProtocolViolation)
+    );
+    assert!(transport.backend_mut().sent.is_empty());
+}
+
+#[test]
 fn plaintext_send_blocks_gameplay_and_invalid_frames_before_backend_send() {
     for (class, payload) in forbidden_plaintext_frames() {
         let mut transport = SecureTransport::new(FakeTransport::default());
@@ -685,6 +702,12 @@ fn bootstrap_cleanup_does_not_reemit_the_backends_queued_disconnect() {
 fn listener_close_discards_secure_tail_before_it_can_complete_activation() {
     struct ListenerBackend(FakeTransport, bool);
     impl Transport for ListenerBackend {
+        fn activate_secure_channel(
+            &mut self,
+            connection: ConnectionId,
+        ) -> Result<(), TransportError> {
+            self.0.activate_secure_channel(connection)
+        }
         fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
             self.0.poll(events)
         }

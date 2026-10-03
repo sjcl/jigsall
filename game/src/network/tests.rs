@@ -100,9 +100,16 @@ pub(super) struct FakeTransport {
     pub(super) inbox: Vec<TransportEvent>,
     pub(super) sent: Vec<TransportEvent>,
     pub(super) fail: Option<ConnectionId>,
+    pub(super) fail_activation: Option<ConnectionId>,
     pub(super) fail_close: bool,
 }
 impl Transport for FakeTransport {
+    fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
+        if self.fail_activation == Some(connection) {
+            return Err(TransportError::NotConnected);
+        }
+        Ok(())
+    }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.inbox);
         Ok(())

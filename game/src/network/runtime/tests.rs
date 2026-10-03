@@ -22,6 +22,13 @@ struct Fake {
     bus: Arc<Mutex<Bus>>,
 }
 impl Transport for Fake {
+    fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError> {
+        if self.bus.lock().unwrap().routes.contains_key(&connection) {
+            Ok(())
+        } else {
+            Err(TransportError::NotConnected)
+        }
+    }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.extend(
             self.bus

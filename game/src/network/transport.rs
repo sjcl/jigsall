@@ -98,6 +98,10 @@ pub enum TransportEvent {
 /// An accepted reliable send is queued, not an application acknowledgement.
 pub trait Transport {
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError>;
+    /// Called by SecureTransport only after bootstrap verifies the peer, during
+    /// channel installation. Native backends may then lift pre-auth receive
+    /// limits. Delegating backends must forward this notification.
+    fn activate_secure_channel(&mut self, connection: ConnectionId) -> Result<(), TransportError>;
     fn send(
         &mut self,
         connection: ConnectionId,

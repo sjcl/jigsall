@@ -206,6 +206,7 @@ impl<T: Transport> SecureTransport<T> {
         else {
             return Err(TransportError::ProtocolViolation);
         };
+        self.inner.activate_secure_channel(connection)?;
         *state = ConnectionChannel::Secure(Box::new(Channel::new(secret, role)));
         Ok(())
     }
@@ -222,6 +223,10 @@ impl<T: Transport> SecureTransport<T> {
     }
 }
 impl<T: Transport> Transport for SecureTransport<T> {
+    fn activate_secure_channel(&mut self, _connection: ConnectionId) -> Result<(), TransportError> {
+        // Only install(), with an authenticated secret, may activate this wrapper.
+        Err(TransportError::ProtocolViolation)
+    }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.pending);
         // Drain a bounded native batch completely before requesting another;

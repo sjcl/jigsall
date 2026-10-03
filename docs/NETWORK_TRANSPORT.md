@@ -278,8 +278,13 @@ malformed records, pre-install secure packets and plaintext after installation
 cause a generic ProtocolViolation close. No cryptographic failure details, keys,
 passwords or session secrets are sent to the peer or logged.
 
-Native size checks now allow `wire::frame_limit(class) + 24` **before copying**.
-The existing inbound limiter charges the encrypted outer bytes before the copy
+After verified channel installation, native size checks allow
+`wire::frame_limit(class) + 24` **before copying**. Before installation, GNS uses
+the allocation-free SessionControl header gate: only Control kind 6 with both
+declared and actual payloads at most 4,096 bytes (4,108 bytes including the header)
+may be copied. Wrong lanes, malformed headers and oversize plaintext disconnect
+as InvalidMessage without producing a Message event.
+The inbound limiter charges the encrypted outer bytes before the copy
 and AEAD verification. Inner Control/Transient/Bulk/SessionControl payload bounds
 are unchanged. Open verifies outer bounds, decrypts in the owned bounded buffer,
 and returns the original frame. Existing `wire::decode_for_class` still applies
@@ -287,8 +292,13 @@ the inner kind/class/declared/actual limits before gameplay.
 
 Plaintext handshakes are per-connection poll-batch barriers: return at most one
 such event, preserve the raw tail, let bootstrap install keys, then decrypt that
-tail on the next poll. The wrapper finishes this bounded native batch before
-requesting another, so deferred pre-auth data cannot grow without bound. Stable
+tail on the next poll. On sockets with pending authentication, GNS receives one
+message at a time and stops receiving from that socket after a plaintext handshake.
+The tail stays in GNS's native queue without an application copy or retained
+native-message wrapper. It is checked against the current phase on the next poll,
+so a coalesced encrypted record can use the larger limit only after verified
+installation. Connection closure or socket Drop releases native queued data.
+Other backends retain the wrapper's existing owned-event barrier. Stable
 secure connections decrypt the whole batch with no handshake/KDF/password work,
 piece scans, per-piece cryptography or connection-map rebuild. Consume every
 returned event through bootstrap before the next poll. Securing remains subject
@@ -335,10 +345,17 @@ Poll appends events and returns any native receive error so the caller can handl
 ## Inbound rate limiting
 
 `network::rate_limit::InboundRateLimiter` is a pure Rust helper with three independent
-per-connection token buckets. The GNS backend stores it directly in `Connection`,
-starting with full buckets when an incoming or outgoing connection is created and
-discarding it with that connection. It is active before `SessionConnections` assigns
-a player, including connected peers with `player: None`.
+per-connection token buckets. The GNS backend stores it directly in `Connection`
+and discards it with that connection. Incoming and outgoing connections start
+with `PREAUTH_INBOUND_POLICY`: Control has a 16 KiB/s rate, 32 KiB burst and 4 KiB
+minimum charge. Eight tiny handshakes or seven maximum-size plaintext frames fit
+a fresh burst. Transient and Bulk are rejected by the pre-auth header gate.
+Only successful `SecureTransport::install`, after bootstrap verifies the peer,
+calls the backend's `activate_secure_channel` notification and replaces these
+buckets with fresh ordinary class budgets. Delegating transports forward this
+notification; failure prevents secure-channel installation. Repeated activation
+is rejected, so it cannot repeatedly refill an existing connection's buckets.
+Activation precedes Syncing image/baseline transfers and Ready player assignment.
 
 The immutable `DEFAULT_INBOUND_POLICY` uses the following byte-equivalent rates:
 
@@ -356,7 +373,7 @@ initial policies: 120 maximum-size 164-byte secure Drag records per second are c
 61,440 bytes/s, comfortably below 128 KiB/s. Control's burst holds 31 maximum-size
 262,180-byte secure records; Bulk's burst holds 511 maximum-size 32,804-byte secure records.
 Each burst holds two
-seconds of steady credit, allowing ordinary same-frame Grab/Release and handshake
+seconds of steady credit, allowing ordinary same-frame Grab/Release
 bursts while bounding sustained abnormal traffic. Each class permits at most 512
 tiny messages from a full bucket without refill, and 256 tiny messages/s at steady
 rate. The larger reliable-class minimum charges prevent their generous byte bursts
@@ -375,10 +392,11 @@ reference); adding class-specific minimum charges leaves this state size unchang
 The immutable 72-byte policy is shared rather than copied per connection.
 
 In `GnsDirectIp::poll`, native receive first resolves the existing connection and
-validates the lane and frame-size limit, then calls `rate_limit.check` **before**
+validates the lane, phase-specific header/size gate and rate limit **before**
 `payload.to_vec()`. Only `Allow` creates a `TransportEvent::Message`; a rejected
-payload has no application allocation/copy or routing event. Wire decode runs
-later, so malformed wire bytes within the native size limit are charged too.
+payload has no application payload allocation/copy or routing event. Full wire
+decode runs later. Authenticated malformed wire bytes within the native size
+limit are charged too; plaintext headers are validated before charging/copying.
 Unknown lanes and oversized native messages still disconnect as `InvalidMessage`.
 No per-message spam log or metrics backend is added.
 
@@ -394,9 +412,10 @@ wrapper-owned close behavior and generic native code; local events still carry
 
 All dequeued messages, including drops, invalid messages and messages belonging to
 already-removed connections, consume the existing shared 512-message receive
-budget. The 32-slot chunks, partial-chunk retention and socket round-robin cursor
-are unchanged. There is no additional connection map/lookup, piece scan, idle
-gameplay work, protocol change or transfer-level backpressure.
+budget. Authenticated sockets use 32-slot chunks; sockets with pending authentication
+use one slot and handshake barriers pause them until the next poll. Partial-chunk
+retention and the socket round-robin cursor remain in use. There is no piece scan,
+idle gameplay work or wire protocol change.
 
 Time is passed explicitly to `check(class, payload_len, now)` for deterministic
 unit tests. `with_policy(&'static InboundRatePolicy, now)` permits small test policies;
@@ -766,6 +785,13 @@ unit tests cover both directions/all classes, reflection and lane substitution,
 ciphertext/tag/sequence tampering, reliable replay/gaps, Transient gaps and stale
 drops, exhaustion, owned-key zeroization, fresh-PAKE key separation, downgrade
 rejection, outer/inner limits, same-batch activation and channel lifecycle.
+Pre-auth localhost regressions cover both receive directions, the 4,108-byte
+frame boundary, excess declared/actual lengths, forged small declarations,
+wrong kinds/lanes and malformed headers without a Message event. Queued plaintext
+followed by maximum-size encrypted Control/Bulk records waits for verified
+installation; an unactivated tail is rejected on the next poll or released by
+listener closure. Unit tests also cover the small pre-auth burst/refill budget
+and backend activation failure without an installed channel.
 Bootstrap tests also cover Securing timeout/capacity and encrypted-ready send
 failure. Receive
 regressions preload reliable UDP messages and wait for native ACKs without polling
