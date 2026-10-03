@@ -2,18 +2,18 @@ use crate::localization::Localization;
 use crate::{grid::calculate_grid_from_config, theme};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
-use puzzella_game::asset_reader::{start_thread_image_load, ExternalFileRegistry};
+use puzzella_game::asset_reader::ExternalFileRegistry;
 use puzzella_game::resources::*;
 
-#[allow(clippy::too_many_arguments)]
+pub(crate) mod image_picker;
+
 pub fn draw_game_setup_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     mut config: ResMut<PuzzleConfig>,
-    mut commands: Commands,
+    mut image_picker: ResMut<image_picker::ImagePicker>,
     puzzle_image: Option<Res<PuzzleImage>>,
     file_registry: Res<ExternalFileRegistry>,
-    image_sender: Res<ImageLoadSender>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     let texture = puzzle_image
@@ -31,6 +31,7 @@ pub fn draw_game_setup_ui(
         .is_some_and(|image| image.size.x > 10.0 && image.size.y > 10.0);
     let mut select_image = false;
     egui::Area::new("new_game_screen".into())
+        .enabled(!image_picker.is_open())
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             theme::frame().show(ui, |ui| {
@@ -114,21 +115,8 @@ pub fn draw_game_setup_ui(
                 });
             });
         });
-    // Keep the existing threaded decode and original-image persistence path.
     if select_image {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                i18n.text("setup-image-filter"),
-                &["png", "jpg", "jpeg", "bmp", "gif", "webp"],
-            )
-            .pick_file()
-        {
-            let key = file_registry.register_file(&path);
-            config.image_path = key.clone();
-            start_thread_image_load(key, path, image_sender.tx_results.clone());
-            commands.remove_resource::<PuzzleImage>();
-            commands.remove_resource::<puzzella_game::persistence::runtime::OriginalPuzzleImage>();
-        }
+        image_picker.open(i18n.text("setup-image-filter"));
     }
 }
 

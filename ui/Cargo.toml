@@ -23,5 +23,6 @@ directories = "6"
 tempfile = "3"
 
 [dev-dependencies]
+crossbeam.workspace = true
 fluent-syntax = "0.12"
 ab_glyph = "0.2"

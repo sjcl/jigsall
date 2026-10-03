@@ -27,6 +27,12 @@ impl Plugin for GameUiPlugin {
             .init_resource::<persistence::SaveDialogs>()
             .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()
+            .init_resource::<game_setup::image_picker::ImagePicker>()
+            .add_systems(Update, game_setup::image_picker::finish_image_selection)
+            .add_systems(
+                OnExit(AppState::GameSetup),
+                game_setup::image_picker::discard_image_selection,
+            )
             .add_systems(OnEnter(AppState::Menu), persistence::reset_dialogs)
             .add_systems(OnEnter(AppState::Menu), settings::reset_dialog)
             .add_systems(OnExit(AppState::Menu), settings::reset_dialog)

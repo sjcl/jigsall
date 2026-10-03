@@ -5474,6 +5474,7 @@ dependencies = [
  "bevy",
  "bevy_egui",
  "chrono",
+ "crossbeam",
  "directories",
  "fluent-bundle",
  "fluent-syntax",
