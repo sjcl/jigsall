@@ -171,6 +171,8 @@ pub struct DisplaySettingsState {
     pub notice: Option<DisplaySettingsNotice>,
     file: SettingsFile,
     preview: Option<DisplayPreview>,
+    saving_preview: Option<DisplayPreview>,
+    show_save_notice: bool,
 }
 
 impl Default for DisplaySettingsState {
@@ -193,6 +195,8 @@ impl DisplaySettingsState {
             notice: None,
             file,
             preview: None,
+            saving_preview: None,
+            show_save_notice: false,
         };
         if let Err(error) = state.current.validate() {
             state.current = default();
@@ -218,6 +222,7 @@ impl DisplaySettingsState {
         capabilities: &DisplayCapabilities,
     ) -> bool {
         self.preview.is_none()
+            && !self.file.is_save_pending()
             && capabilities.validate_settings(settings).is_ok()
             && (self.display_changed(settings)
                 || settings.max_fps != self.current.max_fps
@@ -236,7 +241,7 @@ impl DisplaySettingsState {
                 && settings.resolution != self.current.resolution)
     }
 
-    fn save(&self) -> Result<(), DisplaySettingsError> {
+    fn save(&mut self) -> Result<(), DisplaySettingsError> {
         self.file
             .save(SettingsSection::Display, &self.current)
             .map_err(DisplaySettingsError::SaveFailed)
@@ -253,12 +258,45 @@ impl DisplaySettingsState {
     fn commit(&mut self) {
         match self.save() {
             Ok(()) => {
-                self.preview = None;
+                // Keep is an explicit confirmation: a slow write must not let
+                // the preview timeout revert a choice already queued for saving.
+                self.saving_preview = self.preview.take();
                 self.error = None;
-                self.notice = Some(DisplaySettingsNotice::Saved);
+                self.notice = None;
+                self.show_save_notice = true;
+                self.poll_save();
             }
             Err(error) => self.error = Some(error),
         }
+    }
+
+    pub fn is_save_pending(&self) -> bool {
+        self.file.is_save_pending()
+    }
+
+    pub fn poll_save(&mut self) {
+        let Some(result) = self.file.poll_save() else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                self.saving_preview = None;
+                self.error = None;
+                if self.show_save_notice {
+                    self.notice = Some(DisplaySettingsNotice::Saved);
+                }
+            }
+            Err(error) => {
+                self.error = Some(DisplaySettingsError::SaveFailed(error));
+                // If the dialog remains open, retain the option to revert a
+                // confirmed display change whose persistence failed.
+                self.preview = self.saving_preview.take().map(|mut preview| {
+                    preview.deadline = Instant::now() + Duration::from_secs(CONFIRM_SECONDS);
+                    preview
+                });
+            }
+        }
+        self.show_save_notice = false;
     }
 }
 
@@ -279,6 +317,9 @@ impl Plugin for DisplaySettingsPlugin {
             .init_resource::<FramePacer>()
             .add_message::<DisplaySettingsAction>()
             .add_systems(First, limit_frame_rate.before(TimeSystems))
+            .add_systems(Update, |mut state: ResMut<DisplaySettingsState>| {
+                state.poll_save()
+            })
             .add_systems(
                 PostUpdate,
                 (refresh_capabilities, process_actions, apply_window_settings)
@@ -332,6 +373,8 @@ fn process_actions(
         match action {
             DisplaySettingsAction::Dismiss => {
                 state.revert();
+                state.saving_preview = None;
+                state.show_save_notice = false;
                 state.notice = None;
             }
             DisplaySettingsAction::Revert => state.revert(),
@@ -341,7 +384,7 @@ fn process_actions(
                 }
             }
             DisplaySettingsAction::Apply(settings) => {
-                if state.preview.is_some() {
+                if state.preview.is_some() || state.file.is_save_pending() {
                     continue;
                 }
                 if let Err(error) = capabilities.validate_settings(settings) {

@@ -278,6 +278,7 @@ pub struct KeyBindingsState {
     pub current: KeyBindings,
     pub error: Option<KeyBindingsError>,
     file: SettingsFile,
+    pending_bindings: Option<KeyBindings>,
 }
 
 impl Default for KeyBindingsState {
@@ -327,6 +328,7 @@ impl KeyBindingsState {
             current,
             error,
             file,
+            pending_bindings: None,
         }
     }
 
@@ -338,8 +340,32 @@ impl KeyBindingsState {
         }
         match self.file.save(SettingsSection::KeyBindings, &bindings) {
             Ok(()) => {
-                self.current = bindings;
+                self.pending_bindings = Some(bindings);
                 self.error = None;
+                self.poll_save();
+            }
+            Err(error) => self.error = Some(KeyBindingsError::Save(error)),
+        }
+    }
+
+    pub fn is_save_pending(&self) -> bool {
+        self.file.is_save_pending()
+    }
+
+    /// Activate validated controls only after their save succeeds.
+    pub fn poll_save(&mut self) {
+        let Some(result) = self.file.poll_save() else {
+            return;
+        };
+        let bindings = self.pending_bindings.take();
+        match result {
+            Ok(()) => {
+                if let Some(bindings) = bindings {
+                    self.current = bindings;
+                }
+                if !matches!(self.error, Some(KeyBindingsError::Invalid(_))) {
+                    self.error = None;
+                }
             }
             Err(error) => self.error = Some(KeyBindingsError::Save(error)),
         }

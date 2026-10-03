@@ -59,9 +59,11 @@ impl KeyConfigEditor {
     }
 
     pub fn changed(&self, state: &KeyBindingsState) -> bool {
-        self.draft
-            .as_ref()
-            .is_some_and(|draft| draft != &state.current)
+        !state.is_save_pending()
+            && self
+                .draft
+                .as_ref()
+                .is_some_and(|draft| draft != &state.current)
     }
 
     pub fn can_apply(&self) -> bool {

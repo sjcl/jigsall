@@ -18,6 +18,15 @@ impl Plugin for GamePlugin {
             .init_resource::<crate::keybindings::KeyBindingsState>()
             .init_resource::<crate::keybindings::KeyPresses>()
             .add_systems(
+                Update,
+                (
+                    |mut state: ResMut<crate::keybindings::KeyBindingsState>| state.poll_save(),
+                    |mut state: ResMut<crate::persistence::autosave::AutosaveSettingsState>| {
+                        state.poll_save()
+                    },
+                ),
+            )
+            .add_systems(
                 PreUpdate,
                 crate::keybindings::sample_key_presses.after(bevy::input::InputSystems),
             )

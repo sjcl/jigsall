@@ -42,6 +42,10 @@ fn autosave_widgets_persist_disable_enable_interval_and_limit_edits() {
     };
     click(&mut settings, "Enable autosave");
     assert_eq!(settings.current.interval_minutes, None);
+    crate::preferences::wait_for_save(|| {
+        settings.poll_save();
+        settings.is_save_pending()
+    });
     assert_eq!(
         AutosaveSettingsState::load(Some(path.clone())).current,
         settings.current
@@ -104,6 +108,10 @@ fn autosave_widgets_persist_disable_enable_interval_and_limit_edits() {
         settings.current.max_saves_per_game,
         std::num::NonZeroU32::new(3).unwrap()
     );
+    crate::preferences::wait_for_save(|| {
+        settings.poll_save();
+        settings.is_save_pending()
+    });
     assert_eq!(
         AutosaveSettingsState::load(Some(path)).current,
         settings.current
@@ -514,6 +522,10 @@ fn language_widgets_persist_selection_and_update_next_frame_without_restart() {
         }
     }
     assert_eq!(preferences.language, LanguagePreference::Locale(Locale::JA));
+    crate::preferences::wait_for_save(|| {
+        preferences.poll_save();
+        preferences.is_save_pending()
+    });
     assert_eq!(
         UiPreferences::load(Some(path)).language,
         preferences.language
@@ -689,6 +701,10 @@ fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
     )
     .drop_without_applying_deltas();
     key_click(&ctx, &mut dialog, &mut state, "Apply");
+    crate::preferences::wait_for_save(|| {
+        state.poll_save();
+        state.is_save_pending()
+    });
     assert!(state.error.is_none());
     assert_eq!(
         state.current.binding(KeyAction::RotateLeft).label(),
@@ -711,6 +727,10 @@ fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
     key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
     key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
     key_click(&ctx, &mut dialog, &mut state, "Apply");
+    crate::preferences::wait_for_save(|| {
+        state.poll_save();
+        state.is_save_pending()
+    });
     assert_eq!(
         KeyBindingsState::load(Some(path)).current,
         KeyBindings::default()

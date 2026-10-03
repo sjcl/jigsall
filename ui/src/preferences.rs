@@ -52,7 +52,7 @@ impl UiPreferences {
         self.error = self.save().err().map(PreferenceError::Save);
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&mut self) -> Result<(), String> {
         self.file.save(
             SettingsSection::Preferences,
             &Preferences {
@@ -60,8 +60,35 @@ impl UiPreferences {
             },
         )
     }
+
+    pub fn poll_save(&mut self) {
+        if let Some(result) = self.file.poll_save() {
+            self.error = result.err().map(PreferenceError::Save);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_save_pending(&self) -> bool {
+        self.file.is_save_pending()
+    }
+}
+
+pub(crate) fn poll_save(mut preferences: ResMut<UiPreferences>) {
+    preferences.poll_save();
 }
 
 pub(crate) fn initialize(preferences: Res<UiPreferences>, mut i18n: ResMut<Localization>) {
     i18n.set_preference(preferences.language);
+}
+
+#[cfg(test)]
+pub(crate) fn wait_for_save(mut poll: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while poll() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "settings save timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }

@@ -73,8 +73,18 @@ impl AutosaveSettingsState {
         self.error = self.save().err().map(AutosaveSettingsError::Save);
     }
 
-    fn save(&self) -> Result<(), String> {
+    fn save(&mut self) -> Result<(), String> {
         self.file.save(SettingsSection::Autosave, &self.current)
+    }
+
+    pub fn is_save_pending(&self) -> bool {
+        self.file.is_save_pending()
+    }
+
+    pub fn poll_save(&mut self) {
+        if let Some(result) = self.file.poll_save() {
+            self.error = result.err().map(AutosaveSettingsError::Save);
+        }
     }
 }
 

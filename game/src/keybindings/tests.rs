@@ -88,6 +88,10 @@ fn saves_both_slots_and_unassigned_keys_and_defaults_missing_actions() {
         Some(KeyChord::new(KeyCode::ShiftRight, Some(KeyCode::KeyR)).unwrap());
     bindings.binding_mut(KeyAction::Performance).primary = None;
     state.apply(bindings.clone());
+    crate::settings_file::wait_for_save(|| {
+        state.poll_save();
+        state.is_save_pending()
+    });
     assert!(state.error.is_none());
     assert_eq!(KeyBindingsState::load(Some(path.clone())).current, bindings);
     std::fs::write(&path, r#"{"keybindings":{}}"#).unwrap();
@@ -114,6 +118,10 @@ fn failed_save_and_invalid_apply_preserve_previous_controls() {
     let mut bindings = state.current.clone();
     bindings.binding_mut(KeyAction::Performance).primary = None;
     state.apply(bindings);
+    crate::settings_file::wait_for_save(|| {
+        state.poll_save();
+        state.is_save_pending()
+    });
     assert!(matches!(state.error, Some(KeyBindingsError::Save(_))));
     assert_eq!(state.current, KeyBindings::default());
     let mut bindings = state.current.clone();
@@ -125,6 +133,29 @@ fn failed_save_and_invalid_apply_preserve_previous_controls() {
         Some(KeyBindingsError::Invalid("keys-conflict"))
     );
     assert_eq!(state.current, KeyBindings::default());
+}
+
+#[test]
+fn pending_controls_activate_only_after_save_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let (file, resume) = SettingsFile::paused(path.clone());
+    let mut state = KeyBindingsState::from_file(file);
+    let mut bindings = state.current.clone();
+    bindings.binding_mut(KeyAction::Performance).primary = None;
+    state.apply(bindings.clone());
+    assert_eq!(state.current, KeyBindings::default());
+    assert!(state.is_save_pending());
+    assert!(state.error.is_none());
+    state.poll_save();
+    assert_eq!(state.current, KeyBindings::default());
+    resume.send(()).unwrap();
+    crate::settings_file::wait_for_save(|| {
+        state.poll_save();
+        state.is_save_pending()
+    });
+    assert_eq!(state.current, bindings);
+    assert_eq!(KeyBindingsState::load(Some(path)).current, bindings);
 }
 
 #[test]
