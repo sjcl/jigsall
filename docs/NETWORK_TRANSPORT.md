@@ -626,9 +626,12 @@ remains separate from the already-applied outcome; Ready publication still proce
 See [join runtime contract](JOIN_IN_PROGRESS.md#application-syncing-routing-and-generations).
 
 Both start APIs explicitly `begin_sync`. Authenticated rejects SyncControl/Bulk;
-authentication states accept authentication messages only; Syncing accepts sync
-traffic only; Ready rejects SyncControl/Bulk and admits gameplay. Sync routing
-borrows mutable bootstrap and SessionConnections to perform the commit handoff.
+authentication states accept authentication messages only; Syncing routes sync
+traffic, with the client silently dropping Transient gameplay that can overtake
+ReadyCommit across lanes. Reliable gameplay still rejects before Ready, and the
+host rejects all pre-Ready gameplay. Ready rejects SyncControl/Bulk and admits
+gameplay. Sync routing borrows mutable bootstrap and SessionConnections to perform
+the commit handoff.
 Host final ACK validation rechecks current scope, Reliable cursor and the directly
 captured scalar set. Reliable changes return to catch-up; Transient changes retry
 only finalization. Old generation/revision ACKs cannot promote a fresh attempt.

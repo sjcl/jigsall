@@ -334,7 +334,11 @@ connections. `ClientSyncRouter` owns one offered transfer and the existing bound
 Bulk receiver. No client-to-host Bulk receiver exists. ACKs/status use Control.
 Ready HostRouter/ClientRouter reject all current Bulk and SyncControl messages.
 Bootstrap returns `Consumed`, `Syncing`, or `Gameplay`; only the matching router
-may receive each routed outcome. Gameplay remains forbidden before Ready.
+may receive each routed outcome. Gameplay application remains gated until Ready.
+While Syncing, the client silently consumes/drops Transient gameplay without
+applying or buffering it: a live broadcast can overtake ReadyCommit across lanes.
+Reliable gameplay still rejects before Ready, and the host rejects all pre-Ready
+gameplay. Authenticated states also reject all gameplay.
 Authentication states accept authentication messages only. `Authenticated` waits
 for explicit `begin_sync()` and rejects SyncControl/Bulk. Both `start` methods call
 `begin_sync()` before handling sync traffic. Only `ConnectionState::Syncing` can
@@ -440,6 +444,9 @@ Host ACK routing calls `promote_ready` before queuing Reliable Control ReadyComm
 The SessionConnections mapping therefore exists before the client can receive
 commit and submit gameplay on either lane. The client requires the matching
 reconciled candidate and unchanged scope/cursor before its own `promote_ready`.
+Live Transient broadcasts can reach that client before Control ReadyCommit; the
+client drops them while Syncing and accepts subsequent updates after commit.
+FinalDragSet supplies the reconciled presentation state at the final barrier.
 Its mapping identifies the host; local PlayerId remains independently assigned.
 The synchronous route borrow covers validation, registration and commit sending,
 so authority commands cannot interleave that boundary. No host freeze is needed;

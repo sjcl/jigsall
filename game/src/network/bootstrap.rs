@@ -606,6 +606,15 @@ impl ClientBootstrap {
                 {
                     return Ok(BootstrapOutcome::Gameplay);
                 }
+                // Host registration precedes ReadyCommit on Control. Live
+                // Transient broadcasts may overtake that commit on another lane.
+                // Drop presentation until commit; Reliable gameplay still rejects.
+                if self.state == Some(ConnectionState::Syncing)
+                    && route == wire::FrameRoute::Gameplay
+                    && *class == MessageClass::Transient
+                {
+                    return Ok(BootstrapOutcome::Consumed);
+                }
                 if self.state == Some(ConnectionState::Syncing)
                     && route == wire::FrameRoute::Syncing
                     && transport.has_channel(connection)
