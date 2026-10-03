@@ -43,10 +43,36 @@ pub fn fill_placement_grid<T>(
     placements.shuffle(&mut ChaCha8Rng::seed_from_u64(seed));
 }
 
-fn placement_slots(piece_size: Vec2, display_size: Vec2) -> impl Iterator<Item = Vec2> {
+fn placement_layout(piece_size: Vec2, display_size: Vec2) -> (Vec2, i32, i32) {
     let spacing = piece_size * 1.5;
     let half_x = (display_size.x * 0.5 / spacing.x).ceil() as i32 + 1;
     let half_y = (display_size.y * 0.5 / spacing.y).ceil() as i32 + 1;
+    (spacing, half_x, half_y)
+}
+
+/// Conservative, origin-centered bounds of the initial piece centers, in O(1).
+/// Includes the entire last ring even when only some of its slots are occupied.
+/// Piece geometry must be added by the caller. Uses positive dimensions and
+/// counts from supported puzzle grids (at most 1000 pieces per axis).
+pub fn placement_half_extents(count: usize, piece_size: Vec2, display_size: Vec2) -> Vec2 {
+    if count == 0 {
+        return Vec2::ZERO;
+    }
+    let (spacing, half_x, half_y) = placement_layout(piece_size, display_size);
+    // k rings contain 4 * k * (half_x + half_y + k - 1) slots.
+    // Invert that count with an integer square root, then round up exactly.
+    let base = (half_x + half_y - 1) as usize;
+    let quarter_count = count.div_ceil(4);
+    let mut rings = ((base * base + 4 * quarter_count).isqrt() - base) / 2;
+    if rings * (base + rings) < quarter_count {
+        rings += 1;
+    }
+    let last_ring = (rings - 1) as f32;
+    Vec2::new(half_x as f32 + last_ring, half_y as f32 + last_ring) * spacing
+}
+
+fn placement_slots(piece_size: Vec2, display_size: Vec2) -> impl Iterator<Item = Vec2> {
+    let (spacing, half_x, half_y) = placement_layout(piece_size, display_size);
     (0..).flat_map(move |ring| {
         let x = half_x + ring;
         let y = half_y + ring;
@@ -62,6 +88,30 @@ fn placement_slots(piece_size: Vec2, display_size: Vec2) -> impl Iterator<Item =
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn placement_bounds_include_first_partial_and_million_piece_rings() {
+        for (w, h) in [(1, 1), (4, 4), (40, 25), (1000, 1000), (1000, 1), (1, 1000)] {
+            let piece_size = Vec2::new(10.0, 7.0);
+            let display_size = Vec2::new(w as f32 * 10.0, h as f32 * 7.0);
+            let (_, half_x, half_y) = placement_layout(piece_size, display_size);
+            let first_ring_count = 4 * (half_x + half_y) as usize;
+            for count in [1, first_ring_count, first_ring_count + 1, w * h] {
+                let half = placement_half_extents(count, piece_size, display_size);
+                let mut actual_half = Vec2::ZERO;
+                for position in placement_slots(piece_size, display_size).take(count) {
+                    actual_half = actual_half.max(position.abs());
+                }
+                assert!(actual_half.cmple(half).all(), "{w}x{h}, {count}");
+                // Complete rings reach the bound on both axes.
+                if count == first_ring_count {
+                    assert_eq!(actual_half, half);
+                }
+            }
+        }
+        assert_eq!(placement_half_extents(0, Vec2::ONE, Vec2::ONE), Vec2::ZERO);
+    }
+
     #[test]
     fn million_slots_are_unique_outside_and_reproducible() {
         for (w, h) in [(40, 25), (1000, 1000), (1000, 1), (1, 1000)] {
