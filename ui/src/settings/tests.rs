@@ -684,6 +684,110 @@ fn key_configuration_fits_small_windows_in_both_languages() {
     }
 }
 
+#[test]
+fn settings_geometry_is_stable_from_the_first_visible_frame() {
+    for locale in [Locale::EN_US, Locale::JA] {
+        for size in [
+            egui::vec2(1280.0, 720.0),
+            egui::vec2(640.0, 360.0),
+            egui::vec2(320.0, 360.0),
+        ] {
+            let ctx = egui::Context::default();
+            let state = DisplaySettingsState::load(None);
+            let mut dialog = SettingsDialog::default();
+            let mut preferences = UiPreferences::load(None);
+            let mut i18n = english();
+            preferences.set_language(LanguagePreference::Locale(locale), &mut i18n);
+            // The menu prepares the theme before the settings are opened in the game.
+            ctx.run_ui(egui::RawInput::default(), |ui| theme::prepare(ui.ctx()))
+                .drop_without_applying_deltas();
+            dialog.open(&state);
+            for transition in ["open", "keys", "general", "keys again", "reopen"] {
+                let mut events = match transition {
+                    "keys" | "keys again" | "general" => {
+                        let label = i18n.text(if transition == "general" {
+                            "settings-general"
+                        } else {
+                            "settings-keys"
+                        });
+                        let output = localized_frame(
+                            &ctx,
+                            &mut dialog,
+                            &mut preferences,
+                            &mut i18n,
+                            size,
+                            vec![],
+                        );
+                        let pos = text_position(&output, &label);
+                        output.drop_without_applying_deltas();
+                        localized_frame(
+                            &ctx,
+                            &mut dialog,
+                            &mut preferences,
+                            &mut i18n,
+                            size,
+                            vec![
+                                egui::Event::PointerMoved(pos),
+                                egui::Event::PointerButton {
+                                    pos,
+                                    button: egui::PointerButton::Primary,
+                                    pressed: true,
+                                    modifiers: default(),
+                                },
+                            ],
+                        )
+                        .drop_without_applying_deltas();
+                        vec![egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: false,
+                            modifiers: default(),
+                        }]
+                    }
+                    "reopen" => {
+                        dialog.close();
+                        dialog.open(&state);
+                        vec![]
+                    }
+                    _ => vec![],
+                };
+                let mut panels = vec![];
+                for _ in 0..6 {
+                    let output = localized_frame(
+                        &ctx,
+                        &mut dialog,
+                        &mut preferences,
+                        &mut i18n,
+                        size,
+                        std::mem::take(&mut events),
+                    );
+                    let panel = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Rect(rect) if rect.corner_radius.nw == 16 => {
+                                Some(rect.rect)
+                            }
+                            _ => None,
+                        })
+                        .expect("settings must be visible without a blank frame");
+                    panels.push(panel);
+                    assert_eq!(dialog.key_tab, matches!(transition, "keys" | "keys again"));
+                    output.drop_without_applying_deltas();
+                }
+                let settled = *panels.last().expect("settings must become visible");
+                for panel in panels {
+                    assert!(
+                        (panel.min - settled.min).length() <= 1.0
+                            && (panel.max - settled.max).length() <= 1.0,
+                        "{locale:?} {size:?} {transition}: visible panel {panel:?} changed to {settled:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Render the real game menus and save screenshots without touching user settings.
 #[test]
 #[ignore = "requires a native window and GPU"]

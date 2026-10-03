@@ -133,18 +133,15 @@ fn paint_settings(
         });
     }
     let mut action = None;
-    let response = egui::Modal::new("display_settings".into())
+    let modal_id = egui::Id::new("display_settings");
+    let previous_size = ctx.memory(|memory| memory.area_rect(modal_id).map(|rect| rect.size()));
+    let response = egui::Modal::new(modal_id)
         .backdrop_color(egui::Color32::from_black_alpha(185))
         .frame(theme::frame())
         .show(ctx, |ui| {
-            let preferred_width = if dialog.key_tab {
-                KeyConfigEditor::preferred_width(ctx, i18n)
-            } else {
-                520.0
-            };
-            ui.set_width((screen.width() - 96.0).clamp(160.0, preferred_width));
+            // A cached area height must not restrict this frame's content measurement.
+            ui.set_max_height(screen.height());
             theme::heading(ui, i18n.text("settings-title"));
-            ui.separator();
             ui.add_enabled_ui(seconds.is_none(), |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if ui
@@ -162,6 +159,13 @@ fn paint_settings(
                     }
                 });
             });
+            let preferred_width = if dialog.key_tab {
+                KeyConfigEditor::preferred_width(ctx, i18n)
+            } else {
+                520.0
+            };
+            ui.set_width((screen.width() - 96.0).clamp(160.0, preferred_width));
+            ui.separator();
             if let Some(seconds) = seconds {
                 ui.colored_label(
                     theme::ACCENT,
@@ -393,6 +397,10 @@ fn paint_settings(
                 }
             });
         });
+    if previous_size.is_none_or(|size| (size - response.response.rect.size()).length() > 1.0) {
+        // Re-center with the measured size before submitting a visible frame.
+        ctx.request_discard("settings dialog size changed");
+    }
     if response.should_close() && !capture_cancelled {
         action = Some(dialog.close());
     }

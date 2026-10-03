@@ -174,16 +174,19 @@ fn button_with_color(
     primary: bool,
     text_color: Color32,
 ) -> egui::Response {
+    let size = egui::vec2(
+        width.max(0.0),
+        if ui.ctx().content_rect().height() < 600.0 {
+            38.0
+        } else {
+            44.0
+        },
+    );
     ui.add_sized(
-        [
-            width.max(0.0),
-            if ui.ctx().content_rect().height() < 600.0 {
-                38.0
-            } else {
-                44.0
-            },
-        ],
+        size,
         egui::Button::new(egui::RichText::new(label).size(15.0).color(text_color))
+            // Preserve the requested size during an Area's initial sizing pass.
+            .min_size(size)
             .fill(if primary { ACCENT } else { SURFACE })
             .stroke(Stroke::new(1.0, if primary { ACCENT } else { BORDER }))
             .corner_radius(8),
