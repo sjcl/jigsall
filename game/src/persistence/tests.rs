@@ -510,8 +510,21 @@ fn filesystem_create_update_list_load_delete_deduplicate_and_ignore_temps() {
     assert!(list.iter().all(|e| e.summary.is_ok()));
     repo.delete(first.id).unwrap();
     assert_eq!(repo.list().unwrap().len(), 1);
+    assert_eq!(repo.load(second.id).unwrap().image_bytes, bytes);
     repo.delete(first.id).unwrap();
     assert!(repo.load(first.id).is_err());
+    let image_directory = dir.path().join("images");
+    let temp = image_directory.join(".puzzella-ignored.tmp");
+    let unrelated = image_directory.join("wrong.puzimg");
+    std::fs::write(&temp, b"partial").unwrap();
+    std::fs::write(&unrelated, b"unrelated").unwrap();
+    repo.delete(second.id).unwrap();
+    assert!(repo.list().unwrap().is_empty());
+    assert!(!image_directory
+        .join(StorageKey::Image(image_hash(&bytes)).filename())
+        .exists());
+    assert_eq!(std::fs::read(temp).unwrap(), b"partial");
+    assert_eq!(std::fs::read(unrelated).unwrap(), b"unrelated");
 }
 #[test]
 fn failed_filesystem_replace_preserves_previous_file_and_temp_is_not_listed() {
@@ -548,11 +561,17 @@ struct MemoryStorage {
     blobs: Arc<Mutex<HashMap<StorageKey, Vec<u8>>>>,
     writes: Arc<Mutex<Vec<StorageKey>>>,
     fail: Arc<Mutex<Option<StorageKey>>>,
+    fail_delete: Arc<Mutex<Option<StorageKey>>>,
+    fail_list: Arc<Mutex<Option<StorageNamespace>>>,
+    fail_range: Arc<Mutex<Option<StorageKey>>>,
     reads: Arc<Mutex<Vec<StorageKey>>>,
     ranges: Arc<Mutex<Vec<(StorageKey, u64, usize)>>>,
 }
 impl SaveStorage for MemoryStorage {
     fn list(&self, n: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
+        if *self.fail_list.lock().unwrap() == Some(n) {
+            return Err(StorageError::Io("injected list failure".into()));
+        }
         Ok(self
             .blobs
             .lock()
@@ -584,6 +603,9 @@ impl SaveStorage for MemoryStorage {
         length: usize,
     ) -> Result<Vec<u8>, StorageError> {
         self.ranges.lock().unwrap().push((key, offset, length));
+        if *self.fail_range.lock().unwrap() == Some(key) {
+            return Err(StorageError::Io("injected read failure".into()));
+        }
         let blobs = self.blobs.lock().unwrap();
         let bytes = blobs.get(&key).ok_or(StorageError::NotFound(key))?;
         let start = usize::try_from(offset)
@@ -608,6 +630,9 @@ impl SaveStorage for MemoryStorage {
         Ok(())
     }
     fn delete(&self, key: StorageKey) -> Result<(), StorageError> {
+        if *self.fail_delete.lock().unwrap() == Some(key) {
+            return Err(StorageError::Io("injected delete failure".into()));
+        }
         self.blobs.lock().unwrap().remove(&key);
         Ok(())
     }
@@ -615,6 +640,235 @@ impl SaveStorage for MemoryStorage {
         Ok(self.blobs.lock().unwrap().contains_key(&key))
     }
 }
+#[test]
+fn deleting_saves_collects_all_orphans_but_preserves_shared_manual_and_autosave_images() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let png = encoded_image(image::ImageFormat::Png);
+    let jpeg = encoded_image(image::ImageFormat::Jpeg);
+    let manual = repo
+        .create(
+            SaveTitle::new("manual").unwrap(),
+            checkpoint(&png),
+            Some(&png),
+        )
+        .unwrap();
+    let automatic = repo
+        .create_as(
+            SaveTitle::new("auto").unwrap(),
+            checkpoint(&png),
+            None,
+            true,
+        )
+        .unwrap();
+    let other = repo
+        .create(
+            SaveTitle::new("other").unwrap(),
+            checkpoint(&jpeg),
+            Some(&jpeg),
+        )
+        .unwrap();
+    let imported = b"image selected without saving";
+    repo.import_image(image_hash(imported), imported).unwrap();
+    let failed = b"image left by failed save publication";
+    *storage.fail.lock().unwrap() = Some(StorageKey::Save(SaveId(99)));
+    assert!(repo
+        .create_with_ids(
+            SaveTitle::new("failed").unwrap(),
+            checkpoint(failed),
+            Some(failed),
+            || 99,
+        )
+        .is_err());
+    let shared_key = StorageKey::Image(image_hash(&png));
+    let other_key = StorageKey::Image(image_hash(&jpeg));
+    assert_eq!(storage.list(StorageNamespace::Images).unwrap().len(), 4);
+
+    repo.delete(manual.id).unwrap();
+    assert_eq!(storage.list(StorageNamespace::Images).unwrap().len(), 2);
+    assert_eq!(repo.load(automatic.id).unwrap().image_bytes, png);
+    assert_eq!(repo.load(other.id).unwrap().image_bytes, jpeg);
+    repo.delete(automatic.id).unwrap();
+    assert!(!storage.exists(shared_key).unwrap());
+    assert!(storage.exists(other_key).unwrap());
+    repo.delete(other.id).unwrap();
+    assert!(storage.list(StorageNamespace::Images).unwrap().is_empty());
+    repo.delete(other.id).unwrap();
+}
+
+#[test]
+fn deleting_a_corrupt_save_collects_images_orphaned_by_updates() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let png = encoded_image(image::ImageFormat::Png);
+    let jpeg = encoded_image(image::ImageFormat::Jpeg);
+    let saved = repo
+        .create(
+            SaveTitle::new("save").unwrap(),
+            checkpoint(&png),
+            Some(&png),
+        )
+        .unwrap();
+    repo.update(
+        saved.id,
+        saved.revision,
+        saved.title,
+        checkpoint(&jpeg),
+        Some(&jpeg),
+    )
+    .unwrap();
+    storage
+        .write(StorageKey::Save(SaveId(99)), b"broken".to_vec())
+        .unwrap();
+    repo.delete(SaveId(99)).unwrap();
+    assert!(!storage.exists(StorageKey::Image(image_hash(&png))).unwrap());
+    assert_eq!(repo.load(saved.id).unwrap().image_bytes, jpeg);
+}
+
+#[test]
+fn image_cleanup_reads_only_headers_and_preserves_references_despite_body_or_image_errors() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let png = encoded_image(image::ImageFormat::Png);
+    let jpeg = encoded_image(image::ImageFormat::Jpeg);
+    let first = repo
+        .create(
+            SaveTitle::new("first").unwrap(),
+            checkpoint(&png),
+            Some(&png),
+        )
+        .unwrap();
+    repo.create(
+        SaveTitle::new("missing image").unwrap(),
+        checkpoint(&jpeg),
+        Some(&jpeg),
+    )
+    .unwrap();
+    storage
+        .delete(StorageKey::Image(image_hash(&jpeg)))
+        .unwrap();
+    let key = StorageKey::Save(first.id);
+    let mut body_corrupt = storage.read(key).unwrap();
+    let header_len = u32::from_le_bytes(body_corrupt[10..14].try_into().unwrap()) as usize;
+    body_corrupt[header_len] ^= 1;
+    storage.write(key, body_corrupt).unwrap();
+    let orphan = image_hash(b"orphan");
+    repo.import_image(orphan, b"orphan").unwrap();
+    storage.reads.lock().unwrap().clear();
+    storage.ranges.lock().unwrap().clear();
+
+    repo.delete(SaveId(99)).unwrap();
+    assert!(storage.reads.lock().unwrap().is_empty());
+    let ranges = storage.ranges.lock().unwrap();
+    assert_eq!(ranges.len(), 2);
+    assert!(ranges
+        .iter()
+        .all(|(_, offset, length)| *offset == 0 && *length == MAX_SAVE_HEADER_BYTES));
+    assert!(storage.exists(StorageKey::Image(image_hash(&png))).unwrap());
+    assert!(!storage.exists(StorageKey::Image(orphan)).unwrap());
+}
+
+#[test]
+fn unreadable_remaining_headers_skip_all_image_cleanup_without_failing_save_deletion() {
+    for failure in 0..4 {
+        let storage = MemoryStorage::default();
+        let repo = SaveRepository::new(storage.clone());
+        let bytes = encoded_image(image::ImageFormat::Png);
+        let target = repo
+            .create(
+                SaveTitle::new("target").unwrap(),
+                checkpoint(&bytes),
+                Some(&bytes),
+            )
+            .unwrap();
+        let remaining = repo
+            .create(
+                SaveTitle::new("remaining").unwrap(),
+                checkpoint(&bytes),
+                None,
+            )
+            .unwrap();
+        let key = StorageKey::Save(remaining.id);
+        match failure {
+            0 => storage.write(key, b"broken".to_vec()).unwrap(),
+            1 | 2 => {
+                let mut encoded = storage.read(key).unwrap();
+                if failure == 1 {
+                    encoded[8..10].copy_from_slice(&99u16.to_le_bytes());
+                } else {
+                    encoded[22..38].copy_from_slice(&target.id.0.to_le_bytes());
+                }
+                resign_header(&mut encoded);
+                storage.write(key, encoded).unwrap();
+            }
+            _ => *storage.fail_range.lock().unwrap() = Some(key),
+        }
+        repo.import_image(image_hash(b"orphan"), b"orphan").unwrap();
+        repo.delete(target.id).unwrap();
+        assert!(!storage.exists(StorageKey::Save(target.id)).unwrap());
+        assert_eq!(storage.list(StorageNamespace::Images).unwrap().len(), 2);
+        repo.delete(remaining.id).unwrap();
+        assert!(storage.list(StorageNamespace::Images).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn failed_cleanup_listing_preserves_images_and_retries_on_repeated_delete() {
+    for namespace in [StorageNamespace::Saves, StorageNamespace::Images] {
+        let storage = MemoryStorage::default();
+        let repo = SaveRepository::new(storage.clone());
+        let bytes = encoded_image(image::ImageFormat::Png);
+        let saved = repo
+            .create(
+                SaveTitle::new("save").unwrap(),
+                checkpoint(&bytes),
+                Some(&bytes),
+            )
+            .unwrap();
+        let image_key = StorageKey::Image(image_hash(&bytes));
+        *storage.fail_list.lock().unwrap() = Some(namespace);
+        repo.delete(saved.id).unwrap();
+        assert!(!storage.exists(StorageKey::Save(saved.id)).unwrap());
+        assert!(storage.exists(image_key).unwrap());
+        *storage.fail_list.lock().unwrap() = None;
+        repo.delete(saved.id).unwrap();
+        assert!(!storage.exists(image_key).unwrap());
+    }
+}
+
+#[test]
+fn failed_save_delete_skips_cleanup_and_failed_image_delete_does_not_stop_other_cleanup() {
+    let storage = MemoryStorage::default();
+    let repo = SaveRepository::new(storage.clone());
+    let bytes = encoded_image(image::ImageFormat::Png);
+    let saved = repo
+        .create(
+            SaveTitle::new("save").unwrap(),
+            checkpoint(&bytes),
+            Some(&bytes),
+        )
+        .unwrap();
+    let orphan = StorageKey::Image(image_hash(b"orphan"));
+    repo.import_image(image_hash(b"orphan"), b"orphan").unwrap();
+    *storage.fail_delete.lock().unwrap() = Some(StorageKey::Save(saved.id));
+    assert!(matches!(
+        repo.delete(saved.id),
+        Err(SaveError::Storage(StorageError::Io(_)))
+    ));
+    assert_eq!(repo.load(saved.id).unwrap().image_bytes, bytes);
+    assert!(storage.exists(orphan).unwrap());
+
+    let image_key = StorageKey::Image(image_hash(&bytes));
+    *storage.fail_delete.lock().unwrap() = Some(image_key);
+    repo.delete(saved.id).unwrap();
+    assert!(!storage.exists(StorageKey::Save(saved.id)).unwrap());
+    assert!(storage.exists(image_key).unwrap());
+    assert!(!storage.exists(orphan).unwrap());
+    *storage.fail_delete.lock().unwrap() = None;
+    repo.delete(saved.id).unwrap();
+    assert!(!storage.exists(image_key).unwrap());
+}
+
 #[test]
 fn backend_is_path_free_handles_collisions_and_never_publishes_before_image() {
     let storage = MemoryStorage::default();
@@ -1051,6 +1305,7 @@ fn thread_affine_backend_stays_with_owner_through_repository_operations() {
         .unwrap();
         repo.delete(saved.id).unwrap();
         assert!(repo.list().unwrap().is_empty());
+        assert!(repo.read_image(image_hash(&bytes)).is_err());
     });
     let deadline = Instant::now() + Duration::from_secs(10);
     while !worker.is_finished() {

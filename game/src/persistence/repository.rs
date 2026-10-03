@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 pub struct SaveRepository<S: SaveStorage> {
     storage: S,
@@ -239,7 +240,36 @@ impl<S: SaveStorage> SaveRepository<S> {
         Ok(entries)
     }
     pub fn delete(&self, id: SaveId) -> Result<(), SaveError> {
-        Ok(self.storage.delete(StorageKey::Save(id))?)
+        self.storage.delete(StorageKey::Save(id))?;
+        // Cleanup must not turn an already successful save deletion into a
+        // failure. Leave any images we cannot safely remove for the next delete.
+        if let Err(error) = self.cleanup_unreferenced_images() {
+            bevy::log::warn!("Could not clean up unreferenced puzzle images: {error}");
+        }
+        Ok(())
+    }
+    fn cleanup_unreferenced_images(&self) -> Result<(), SaveError> {
+        let mut referenced = HashSet::new();
+        for key in self.storage.list(StorageNamespace::Saves)? {
+            if let StorageKey::Save(id) = key {
+                // Validate every remaining header before deleting any images.
+                // An unreadable save may still reference any of the blobs.
+                referenced.insert(self.read_header(id)?.image_hash);
+            }
+        }
+        for key in self.storage.list(StorageNamespace::Images)? {
+            if let StorageKey::Image(hash) = key {
+                if !referenced.contains(&hash) {
+                    if let Err(error) = self.storage.delete(key) {
+                        bevy::log::warn!(
+                            "Could not delete unreferenced puzzle image {}: {error}",
+                            key.filename()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 fn timestamp() -> u64 {

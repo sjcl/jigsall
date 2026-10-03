@@ -90,7 +90,9 @@ storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と 
 
 プロセスの異常終了で残った一時ファイルは、起動時に persistence worker 上で1回掃除します。`saves` / `images` の直下にある `.puzzella-*.tmp` の通常ファイルだけを対象とし、最終更新から24時間以上経過したものを削除します。最近のファイル・未来の更新時刻を持つファイル・directory・symlink・保存データは対象外です。掃除は main thread をブロックせず、保存 request の処理前に完了します。directory が存在しない場合は何も作成せず、読み取り・削除の失敗は警告ログに残して他のファイルの掃除と保存処理を続けます。
 
-新規画像の import で元 bytes の hash と既存画像 container の完全性を検証し、その後に save を publish します。import 済み画像を使う通常 Save は存在確認だけを行い、`.puzimg` の再読込・再 hash は行いません。実際の load では画像全体を検証するため、import 後の外部破損はそこで検出します。同じ ImageHash は複数 save で共有します。途中 failure は高々 orphan image を残します。save の削除では共有画像を削除しません。orphan GC は未実装です。
+新規画像の import で元 bytes の hash と既存画像 container の完全性を検証し、その後に save を publish します。import 済み画像を使う通常 Save は存在確認だけを行い、`.puzimg` の再読込・再 hash は行いません。実際の load では画像全体を検証するため、import 後の外部破損はそこで検出します。同じ ImageHash は複数 save で共有します。途中 failure は高々 orphan image を残します。
+
+save の削除に成功した後、persistence worker 上で残ったすべての save の検証済み header から ImageHash を集め、どの save にも参照されていない `.puzimg` を削除します。手動保存・オートセーブのどちらかに参照があれば画像を保持し、以前の更新・保存失敗・未保存の画像選択で残った orphan image も掃除します。piece state や画像 payload の読み込み・decode は行いません。残った save の header が破損・未対応・読み取り失敗の場合、参照を確定できないため画像の掃除全体を見送ります。掃除の失敗は警告ログに残し、成功済みの save 削除と一覧更新は継続します。画像の削除が失敗した場合は他の未参照画像の掃除を続け、残った画像は次回の save 削除時に再試行します。存在しない save の再削除でも掃除を実行します。
 
 ## Worker と restore lifecycle
 
