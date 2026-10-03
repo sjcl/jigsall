@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn autosave_widgets_persist_disable_enable_and_interval_edits() {
+fn autosave_widgets_persist_disable_enable_interval_and_limit_edits() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     let mut settings = AutosaveSettingsState::load(Some(path.clone()));
@@ -84,6 +84,25 @@ fn autosave_widgets_persist_disable_enable_and_interval_edits() {
     assert_eq!(
         settings.current.interval_minutes,
         std::num::NonZeroU32::new(12)
+    );
+    click(&mut settings, "1");
+    render(
+        &mut settings,
+        vec![
+            egui::Event::Text("3".into()),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            },
+        ],
+    )
+    .drop_without_applying_deltas();
+    assert_eq!(
+        settings.current.max_saves_per_game,
+        std::num::NonZeroU32::new(3).unwrap()
     );
     assert_eq!(
         AutosaveSettingsState::load(Some(path)).current,

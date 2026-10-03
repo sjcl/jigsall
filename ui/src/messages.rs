@@ -102,6 +102,10 @@ impl Localization {
                 self.reason("save-import-failed", &self.save_error(error))
             }
             PersistenceError::Save(error) => self.save_error(error),
+            PersistenceError::AutosaveRotation(error) => self.reason(
+                "game-autosave-rotation-failed-detail",
+                &self.save_error(error),
+            ),
         }
     }
 

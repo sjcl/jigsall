@@ -442,6 +442,18 @@ fn paint_autosave_settings(
             None
         });
     }
+    ui.label(i18n.text("settings-autosave-limit"));
+    let mut limit = state.current.max_saves_per_game.get();
+    if ui
+        .add_enabled(
+            enabled,
+            egui::DragValue::new(&mut limit).range(1..=u32::MAX),
+        )
+        .changed()
+    {
+        state.set_max_saves_per_game(NonZeroU32::new(limit).expect("positive save limit"));
+    }
+    theme::hint(ui, i18n.text("settings-autosave-limit-hint"));
     theme::hint(ui, i18n.text("settings-autosave-hint"));
     if let Some(error) = &state.error {
         let (key, reason) = match error {

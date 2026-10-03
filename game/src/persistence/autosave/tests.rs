@@ -91,6 +91,8 @@ fn settings_persist_interval_and_disable_and_reject_zero() {
     let path = dir.path().join("settings.json");
     let mut settings = AutosaveSettingsState::load(Some(path.clone()));
     assert_eq!(settings.current.interval_minutes, NonZeroU32::new(5));
+    assert_eq!(settings.current.max_saves_per_game, NonZeroU32::MIN);
+    settings.set_max_saves_per_game(NonZeroU32::new(3).unwrap());
     settings.set_interval(NonZeroU32::new(12));
     assert!(settings.error.is_none());
     assert_eq!(
@@ -103,10 +105,38 @@ fn settings_persist_interval_and_disable_and_reject_zero() {
     assert_eq!(
         AutosaveSettingsState::load(Some(path.clone()))
             .current
+            .max_saves_per_game,
+        NonZeroU32::new(3).unwrap()
+    );
+    assert_eq!(
+        AutosaveSettingsState::load(Some(path.clone()))
+            .current
             .interval_minutes,
         None
     );
     std::fs::write(&path, br#"{"autosave":{"interval_minutes":0}}"#).unwrap();
+    let invalid = AutosaveSettingsState::load(Some(path));
+    assert!(matches!(
+        invalid.error,
+        Some(AutosaveSettingsError::Read(_))
+    ));
+    assert_eq!(invalid.current, AutosaveSettings::default());
+}
+
+#[test]
+fn missing_save_limit_defaults_to_one_and_zero_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(&path, br#"{"autosave":{"interval_minutes":12}}"#).unwrap();
+    let settings = AutosaveSettingsState::load(Some(path.clone()));
+    assert!(settings.error.is_none());
+    assert_eq!(settings.current.interval_minutes, NonZeroU32::new(12));
+    assert_eq!(settings.current.max_saves_per_game, NonZeroU32::MIN);
+    std::fs::write(
+        &path,
+        br#"{"autosave":{"interval_minutes":12,"max_saves_per_game":0}}"#,
+    )
+    .unwrap();
     let invalid = AutosaveSettingsState::load(Some(path));
     assert!(matches!(
         invalid.error,

@@ -162,6 +162,7 @@ fn initialize_game(
     mut progress: ResMut<PieceGenerationProgress>,
     mut store: ResMut<PieceDataStore>,
     pending: Option<ResMut<PendingRestore>>,
+    mut persistence: ResMut<PersistenceState>,
 ) {
     *game = GameData {
         players: vec![PlayerInfo {
@@ -190,6 +191,7 @@ fn initialize_game(
             return;
         }
     }
+    persistence.game_id = crate::persistence::GameId::default();
     let definition = PuzzleDefinition {
         generator_version: GENERATOR_VERSION,
         seed: config.seed,
@@ -869,6 +871,7 @@ mod local_identity_tests {
         for local in [LocalPlayerId::default(), LocalPlayerId(PlayerId(42))] {
             let mut app = App::new();
             app.insert_resource(local)
+                .init_resource::<PersistenceState>()
                 .init_resource::<PuzzleConfig>()
                 .init_resource::<GameData>()
                 .init_resource::<PieceGenerationProgress>()
@@ -879,6 +882,8 @@ mod local_identity_tests {
                     opaque: true,
                 });
             app.world_mut().run_system_once(initialize_game).unwrap();
+            let first_game_id = app.world().resource::<PersistenceState>().game_id;
+            assert_eq!(uuid::Uuid::from_u128(first_game_id.0).get_version_num(), 4);
             assert_eq!(app.world().resource::<GameData>().players[0].id, local.0);
             let definition = PuzzleDefinition {
                 generator_version: GENERATOR_VERSION,
@@ -909,6 +914,10 @@ mod local_identity_tests {
             assert_eq!(*app.world().resource::<LocalPlayerId>(), local);
             assert_eq!(app.world().resource::<PieceDataStore>().len(), 2);
             app.world_mut().run_system_once(initialize_game).unwrap();
+            assert_ne!(
+                app.world().resource::<PersistenceState>().game_id,
+                first_game_id
+            );
             assert_eq!(app.world().resource::<GameData>().players[0].id, local.0);
         }
         assert_eq!(LocalPlayerId::default().0, PlayerId(0));

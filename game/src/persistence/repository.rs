@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashSet;
+use std::{collections::HashSet, num::NonZeroU32};
 
 pub struct SaveRepository<S: SaveStorage> {
     storage: S,
@@ -19,6 +19,11 @@ pub struct SaveListEntry {
 pub struct LoadedSave {
     pub save: PuzzleSave,
     pub image_bytes: Vec<u8>,
+}
+pub(crate) struct SaveOutcome {
+    pub metadata: SaveMetadata,
+    /// Publishing succeeded even if removing an older checkpoint failed.
+    pub rotation_error: Option<SaveError>,
 }
 impl<S: SaveStorage> SaveRepository<S> {
     pub fn new(storage: S) -> Self {
@@ -63,6 +68,31 @@ impl<S: SaveStorage> SaveRepository<S> {
     ) -> Result<SaveMetadata, SaveError> {
         self.create_as(title, checkpoint, original_bytes, false)
     }
+    pub fn create_for_game(
+        &self,
+        game_id: GameId,
+        title: SaveTitle,
+        checkpoint: PuzzleCheckpoint,
+        original_bytes: Option<&[u8]>,
+    ) -> Result<SaveMetadata, SaveError> {
+        let now = timestamp();
+        self.create_with_metadata(
+            PuzzleSave {
+                metadata: SaveMetadata {
+                    id: SaveId(0),
+                    game_id,
+                    title,
+                    revision: 1,
+                    created_at: now,
+                    updated_at: now,
+                    is_autosave: false,
+                },
+                checkpoint,
+            },
+            original_bytes,
+            rand::random,
+        )
+    }
     pub fn create_as(
         &self,
         title: SaveTitle,
@@ -88,6 +118,30 @@ impl<S: SaveStorage> SaveRepository<S> {
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
         is_autosave: bool,
+        id_source: impl FnMut() -> u128,
+    ) -> Result<SaveMetadata, SaveError> {
+        let now = timestamp();
+        self.create_with_metadata(
+            PuzzleSave {
+                metadata: SaveMetadata {
+                    id: SaveId(0),
+                    game_id: GameId::default(),
+                    title,
+                    revision: 1,
+                    created_at: now,
+                    updated_at: now,
+                    is_autosave,
+                },
+                checkpoint,
+            },
+            original_bytes,
+            id_source,
+        )
+    }
+    fn create_with_metadata(
+        &self,
+        mut save: PuzzleSave,
+        original_bytes: Option<&[u8]>,
         mut id_source: impl FnMut() -> u128,
     ) -> Result<SaveMetadata, SaveError> {
         for _ in 0..32 {
@@ -95,24 +149,98 @@ impl<S: SaveStorage> SaveRepository<S> {
             if self.storage.exists(StorageKey::Save(id))? {
                 continue;
             }
-            let now = timestamp();
-            let metadata = SaveMetadata {
-                id,
-                title,
-                revision: 1,
-                created_at: now,
-                updated_at: now,
-                is_autosave,
-            };
-            return self.publish(
-                PuzzleSave {
-                    metadata,
-                    checkpoint,
-                },
-                original_bytes,
-            );
+            save.metadata.id = id;
+            return self.publish(save, original_bytes);
         }
         Err(SaveError::IdCollision)
+    }
+    /// Rotate only checkpoints belonging to the same persistent game ID.
+    pub(crate) fn autosave(
+        &self,
+        game_id: GameId,
+        previous: Option<(SaveId, u64)>,
+        title: SaveTitle,
+        checkpoint: PuzzleCheckpoint,
+        original_bytes: Option<&[u8]>,
+        max_saves_per_game: NonZeroU32,
+    ) -> Result<SaveOutcome, SaveError> {
+        if let Some((id, expected_revision)) = previous {
+            let header = self.read_header(id)?;
+            if header.metadata.revision != expected_revision {
+                return Err(SaveError::Conflict {
+                    id,
+                    expected_revision,
+                    actual_revision: header.metadata.revision,
+                });
+            }
+            if !header.metadata.is_autosave || header.metadata.game_id != game_id {
+                return Err(SaveError::CorruptSave("Autosave game identity changed"));
+            }
+        }
+        let mut history = Vec::new();
+        for key in self.storage.list(StorageNamespace::Saves)? {
+            let StorageKey::Save(id) = key else {
+                continue;
+            };
+            let header = match self.read_header(id) {
+                Ok(header) => header,
+                // Leave damaged or unsupported saves untouched; their identity is unknown.
+                Err(SaveError::Storage(error)) => return Err(error.into()),
+                Err(_) => continue,
+            };
+            if header.metadata.is_autosave && header.metadata.game_id == game_id {
+                history.push(header.metadata);
+            }
+        }
+        history.sort_by_key(|metadata| {
+            (
+                metadata.updated_at,
+                metadata.revision,
+                metadata.created_at,
+                metadata.id,
+            )
+        });
+        // A sequence across this game's checkpoints orders saves made in the same
+        // second. Clamp time like update() so a clock rollback cannot reorder them.
+        let revision = history
+            .iter()
+            .map(|metadata| metadata.revision)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(SaveError::CounterExhausted)?;
+        let now = timestamp().max(history.last().map_or(0, |metadata| metadata.updated_at));
+        let metadata = self.create_with_metadata(
+            PuzzleSave {
+                metadata: SaveMetadata {
+                    id: SaveId(0),
+                    game_id,
+                    title,
+                    revision,
+                    created_at: now,
+                    updated_at: now,
+                    is_autosave: true,
+                },
+                checkpoint,
+            },
+            original_bytes,
+            rand::random,
+        )?;
+        // Never delete history before publishing the replacement. Keep the freshly
+        // published save even when cleanup fails, and retry cleanup next interval.
+        let mut rotation_error = None;
+        let excess = history
+            .len()
+            .saturating_sub(max_saves_per_game.get() as usize - 1);
+        for old in history.into_iter().take(excess) {
+            if let Err(error) = self.delete(old.id) {
+                rotation_error.get_or_insert(error);
+            }
+        }
+        Ok(SaveOutcome {
+            metadata,
+            rotation_error,
+        })
     }
     /// Reject a stale session before encoding or publishing any data.
     /// Concurrent writers still need backend-specific atomic conflict handling.
@@ -153,6 +281,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         }
         let metadata = SaveMetadata {
             id,
+            game_id: previous.metadata.game_id,
             title,
             revision: previous
                 .metadata
@@ -229,13 +358,19 @@ impl<S: SaveStorage> SaveRepository<S> {
             entries.push(SaveListEntry { id, summary });
         }
         entries.sort_by(|a, b| {
-            let time = |e: &SaveListEntry| {
+            let order = |e: &SaveListEntry| {
                 e.summary
                     .as_ref()
-                    .map(|s| s.metadata.updated_at)
-                    .unwrap_or(0)
+                    .map(|s| {
+                        (
+                            s.metadata.updated_at,
+                            s.metadata.revision,
+                            s.metadata.created_at,
+                        )
+                    })
+                    .unwrap_or_default()
             };
-            time(b).cmp(&time(a)).then_with(|| a.id.cmp(&b.id))
+            order(b).cmp(&order(a)).then_with(|| a.id.cmp(&b.id))
         });
         Ok(entries)
     }

@@ -1,16 +1,18 @@
 # ローカル進捗保存
 
-2026-10-03。Main Menu の **Load Game** から保存一覧を開き、Pause Menu / 完成後の Puzzle Menu / 完成カードの **Save Game** からタイトルを入力して保存します。ホストのプレイ中にはオートセーブも行います。Save As・Steam Cloud は未実装です。
+2026-10-04。Main Menu の **Load Game** から保存一覧を開き、Pause Menu / 完成後の Puzzle Menu / 完成カードの **Save Game** からタイトルを入力して保存します。ホストのプレイ中にはオートセーブも行います。Save As・Steam Cloud は未実装です。
 
 ## オートセーブ
 
-Settings の一般タブで有効・無効と間隔（1–60分）を変更できます。初期値は有効・5分です。変更は即時反映し、`<OS user local application data>/puzzella/settings.json` の `autosave` セクションに保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。0や不正なJSONはエラーを表示して初期値を使います。共通のファイル形式と保存処理は [SETTINGS.md](SETTINGS.md) を参照してください。
+Settings の一般タブで有効・無効、間隔（1–60分）、ゲームごとの保存件数上限（1件以上）を変更できます。初期値は有効・5分・1件です。変更は即時反映し、`<OS user local application data>/puzzella/settings.json` の `autosave` セクションに保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。`max_saves_per_game` はゲームごとに保持するオートセーブ件数で、省略時は1です。0や不正なJSONはエラーを表示して初期値を使います。上限を減らした場合は、そのゲームの次のオートセーブ成功後に超過分を削除します。共通のファイル形式と保存処理は [SETTINGS.md](SETTINGS.md) を参照してください。
 
 `game/src/persistence/autosave.rs` は `GameSubState::Playing` かつ `LocalPlayerId == SessionHostId` の間だけ実時間を加算します。ポーズ・初期化・完成後・メニューでは加算しません。間隔変更・無効化・ホストでなくなった場合・セッション終了時にはタイマーをリセットします。間隔が来ても別の保存処理やタイトル入力中は待機し、空いたフレームで1回保存します。現在のローカルゲームはローカルプレイヤーがホストです。network runtime の接続・移行処理は `SessionHostId` を現在のauthorityに同期する必要があります。
 
-初回は手動保存と別のIDを作成し、同じセッション内の次回以降は `current_autosave` のID・revisionを使って更新します。手動保存や手動保存からのロード元を上書きしません。オートセーブからロードした場合はそのIDをオートセーブ用に継続使用し、手動保存は別のIDを作成します。手動保存から新たに再開したセッションでは新しいオートセーブ枠を作ります。タイトルは既存の保存タイトルを引き継ぎ、未保存なら `Puzzle` とします。
+新規ゲーム開始時に `uuid::Uuid::new_v4()` でUUID v4の `GameId` を生成し、128-bit整数として保持します。クライアント間で採番を調整せず、画像や生成条件が同じでも新規ゲームには別のIDを使います。`SaveMetadata.game_id` に保存し、手動保存・オートセーブのロードでは同じIDを引き継ぎます。`SaveId` は各保存ファイルを識別する別のIDです。
 
-`SaveMetadata.is_autosave` をheaderに格納し、Load Gameでは保存日時の横に `オートセーブ` / `Autosave` を表示します。ゲーム画面上部のHUDはcapture待ちからworker完了までスピナーと `オートセーブ中…` を表示します。失敗した場合はHUDにエラーを表示し、hoverで詳細を確認できます。revision競合や保存失敗では元データとID・revisionを保持し、次の間隔まで再試行しません。保存の開始要求はUI描画前、checkpoint captureはそのフレームの命令適用後に行います。
+オートセーブは毎回新しい `SaveId` にcheckpointを保存し、成功後に同じ `GameId` の古いオートセーブだけを削除して最新の指定件数を保持します。保存日時が同じ秒の場合は、ゲームのオートセーブ間で増加するrevisionを使って順序を判別します。時刻の巻き戻りでも直前の保存日時を下回りません。手動保存や他のゲーム、headerが不正・未対応の保存は削除しません。共有画像も保持します。タイトルは既存の保存タイトルを引き継ぎ、未保存なら `Puzzle` とします。一覧・header読み込み・保存・削除はworker上で行い、履歴のpiece stateは読み込みません。
+
+`SaveMetadata.is_autosave` をheaderに格納し、Load Gameでは保存日時の横に `オートセーブ` / `Autosave` を表示します。ゲーム画面上部のHUDはcapture待ちからworker完了までスピナーと `オートセーブ中…` を表示します。失敗した場合はHUDにエラーを表示し、hoverで詳細を確認できます。前回のオートセーブのrevisionが競合した場合や保存失敗では元データとID・revisionを保持し、次の間隔まで再試行しません。削除だけ失敗した場合は新しい保存のID・revisionを採用し、超過分を残してHUDにエラーを表示します。次のオートセーブ成功後に削除を再試行します。保存の開始要求はUI描画前、checkpoint captureはそのフレームの命令適用後に行います。
 
 ## 責務とデータフロー
 
@@ -37,7 +39,7 @@ PieceDataStore + PuzzleDefinition + ImageHash
 
 全整数・f32 bits は little endian。Rust の memory layout を書き出しません。未知 format version はそれぞれ拒否します。`GENERATOR_VERSION` は形状の互換性であり、save/container version や multiplayer schema と独立です。generator migration は未実装で、対応外 generator は専用エラーになります。将来の migration は codec での definition 読み取りと共通 validation の間に追加できます。
 
-### `.puzsave` version 2
+### `.puzsave` version 3
 
 | 順序 | フィールド | 幅 |
 | --- | --- | --- |
@@ -52,21 +54,22 @@ PieceDataStore + PuzzleDefinition + ImageHash
 | 9 | snap_distance | f32 bits |
 | 10 | next_z_order / piece count / placed_count cache | 各 u32 |
 | 11 | is_autosave（0=手動、1=自動、他の値は拒否） | u8 |
-| 12 | SHA-256 of all preceding header bytes | 32 bytes |
-| 13 | row-major piece states | 各 16 bytes |
-| 14 | SHA-256 of all preceding file bytes | 32 bytes |
+| 12 | GameId | u128 |
+| 13 | SHA-256 of all preceding header bytes | 32 bytes |
+| 14 | row-major piece states | 各 16 bytes |
+| 15 | SHA-256 of all preceding file bytes | 32 bytes |
 
-piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は placed=1、connected right=2、connected down=4、bit 9–10はrotationです。他の bits は拒否します。header 長は `173 + title UTF-8 bytes`、ファイル長は `205 + title UTF-8 bytes + 16 × N` です。100万ピースで state は 16,000,000 bytes。header は最大493 bytesです。
+piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は placed=1、connected right=2、connected down=4、bit 9–10はrotationです。他の bits は拒否します。header 長は `189 + title UTF-8 bytes`、ファイル長は `221 + title UTF-8 bytes + 16 × N` です。100万ピースで state は 16,000,000 bytes。header は最大509 bytesです。
 
 `placed_count` は一覧用の非 authority cache です。encode 時に state から計算し、完全 decode 時に state から再計算して cache と一致を確認します。progress / completion / GameData は従来どおり install 時に state から再構築します。
 
-一覧と更新元 metadata の取得は `read_range(key, 0, 493)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大24,650 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
+一覧と更新元 metadata の取得は `read_range(key, 0, 509)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大25,450 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
 
 Load Game の各カードには元画像のサムネイルを表示します。一覧の header から ImageHash を取得し、画像枠がスクロールの表示領域に入ったときだけ worker に読み込みを要求します。worker は該当 `.puzimg` を検証・decode し、縦横比を保って最大224×224 pixelsに縮小したRGBAだけをUIへ返します。読み込み中は画像枠にスピナーと `Loading image...` を表示します。要求は同時に1件だけで、画面外の未読画像をqueueへ積みません。読み込み開始後に画面外へ出た画像の処理は完了させます。ImageHash が同じ保存はtextureを共有し、最大64件のLRU cacheを保持します。Refresh・画面を閉じる・session変更でcacheを破棄し、古いreplyを採用しません。サムネイルの失敗は `Image unavailable` とhoverの詳細に表示し、保存一覧やResumeボタンの状態を変更しません。保存一覧とパズル本体のロードにもスピナーと専用の読み込み表示があります。
 
 完全 load はファイル全体の checksum、header、exact state length を検証してから state 領域を確保し、共通 checkpoint validation を行います。body のみの破損は一覧では検出せず、load の失敗をその entry に表示します。truncation・過大 length・trailing bytes・checksum 不一致・invalid state はエラーです。最大1000×1000 piecesです。
 
-オートセーブフラグの追加によりversion 2に変更しました。version 1と以前の試作layoutの読み込み互換・migrationは提供しません。一覧にはすべての対応saveの進捗を表示します。
+ゲームIDの追加によりversion 3に変更しました。version 1・2と以前の試作layoutは拒否し、読み込み互換・migrationは提供しません。一覧にはすべての対応saveの進捗を表示します。
 
 ### `.puzimg` version 1
 

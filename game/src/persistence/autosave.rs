@@ -11,12 +11,20 @@ use std::{num::NonZeroU32, path::PathBuf, time::Duration};
 pub struct AutosaveSettings {
     /// None disables autosaving. Zero is rejected when reading settings.
     pub interval_minutes: Option<NonZeroU32>,
+    /// Number of automatic checkpoints retained for each persistent game ID.
+    #[serde(default = "default_max_saves_per_game")]
+    pub max_saves_per_game: NonZeroU32,
+}
+
+fn default_max_saves_per_game() -> NonZeroU32 {
+    NonZeroU32::MIN
 }
 
 impl Default for AutosaveSettings {
     fn default() -> Self {
         Self {
             interval_minutes: NonZeroU32::new(5),
+            max_saves_per_game: default_max_saves_per_game(),
         }
     }
 }
@@ -57,6 +65,11 @@ impl AutosaveSettingsState {
     /// Apply immediately, like language preferences; a failed write keeps the choice usable.
     pub fn set_interval(&mut self, interval_minutes: Option<NonZeroU32>) {
         self.current.interval_minutes = interval_minutes;
+        self.error = self.save().err().map(AutosaveSettingsError::Save);
+    }
+
+    pub fn set_max_saves_per_game(&mut self, max_saves_per_game: NonZeroU32) {
+        self.current.max_saves_per_game = max_saves_per_game;
         self.error = self.save().err().map(AutosaveSettingsError::Save);
     }
 
@@ -105,7 +118,7 @@ pub(crate) fn tick_autosave(
         .or(state.current_autosave.as_ref())
         .map(|metadata| metadata.title.clone())
         .unwrap_or_else(|| SaveTitle::new("Puzzle").expect("valid default title"));
-    service.request_autosave(&mut state, title);
+    service.request_autosave(&mut state, title, settings.current.max_saves_per_game);
     timer.elapsed = Duration::ZERO;
 }
 

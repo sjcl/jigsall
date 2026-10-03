@@ -88,7 +88,15 @@ fn paint_autosave_status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Loc
         ui.label(i18n.text("game-autosaving"));
     } else if let Some(error) = &state.autosave_error {
         ui.separator();
-        ui.colored_label(crate::theme::DANGER, i18n.text("game-autosave-failed"))
+        let key = if matches!(
+            error,
+            puzzella_game::persistence::runtime::PersistenceError::AutosaveRotation(_)
+        ) {
+            "game-autosave-rotation-failed"
+        } else {
+            "game-autosave-failed"
+        };
+        ui.colored_label(crate::theme::DANGER, i18n.text(key))
             .on_hover_text(i18n.persistence_error(error));
     }
 }

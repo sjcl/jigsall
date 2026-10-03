@@ -11,7 +11,8 @@
   },
   "keybindings": {},
   "autosave": {
-    "interval_minutes": 5
+    "interval_minutes": 5,
+    "max_saves_per_game": 1
   },
   "preferences": {
     "language": "auto"
@@ -19,7 +20,7 @@
 }
 ```
 
-`keybindings` の省略した操作は初期割り当てを使います。`autosave.interval_minutes` の `null` は無効、`display.max_fps` の `null` は無制限を表します。言語IDは `auto`、`en-US`、`ja` です。
+`keybindings` の省略した操作は初期割り当てを使います。`autosave.interval_minutes` の `null` は無効、`display.max_fps` の `null` は無制限を表します。`autosave.max_saves_per_game` は同じゲームIDのオートセーブを保持する件数（1以上、既定1）です。上限変更は次回のオートセーブ成功後のローテーションに適用します。言語IDは `auto`、`en-US`、`ja` です。
 
 `game/src/settings_file.rs` の `SettingsFile` が各セクションのJSONの読み書きを共通化しています。保存時には最新のファイルを読み直し、対象セクションだけを更新します。一時ファイルに書き込み、sync後にatomic replaceするため、保存失敗で既存ファイルを途中まで書き換えません。
 

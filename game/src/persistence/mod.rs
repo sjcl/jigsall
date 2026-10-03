@@ -15,6 +15,14 @@ pub use repository::{LoadedSave, SaveListEntry, SaveRepository, SaveSummary};
 pub use storage::{FilesystemStorage, SaveStorage, StorageError, StorageKey, StorageNamespace};
 
 pub const MAX_SAVE_TITLE_CHARS: usize = 80;
+/// UUID v4 identity of one newly started game, shared by all its saves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GameId(pub u128);
+impl Default for GameId {
+    fn default() -> Self {
+        Self(uuid::Uuid::new_v4().as_u128())
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SaveId(pub u128);
 impl SaveId {
@@ -45,6 +53,7 @@ impl SaveTitle {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveMetadata {
     pub id: SaveId,
+    pub game_id: GameId,
     pub title: SaveTitle,
     pub revision: u64,
     /// Unix seconds (UTC), independent of the storage backend.

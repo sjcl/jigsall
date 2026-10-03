@@ -5,13 +5,13 @@ use bevy::math::{UVec2, Vec2};
 use puzzella_core::{PuzzleDefinition, GENERATOR_VERSION};
 use sha2::{Digest, Sha256};
 
-pub const SAVE_FORMAT_VERSION: u16 = 2;
+pub const SAVE_FORMAT_VERSION: u16 = 3;
 pub const PUZIMG_FORMAT_VERSION: u16 = 1;
 const SAVE_MAGIC: &[u8; 8] = b"PUZSAVE\0";
 const IMAGE_MAGIC: &[u8; 8] = b"PUZIMG\0\0";
 /// Maximum prefix needed for the save header. Independent of piece count.
-pub const MAX_SAVE_HEADER_BYTES: usize = 173 + MAX_SAVE_TITLE_CHARS * 4;
-pub(crate) const MAX_SAVE_BYTES: u64 = 205 + 320 + 16 * 1_000_000;
+pub const MAX_SAVE_HEADER_BYTES: usize = 189 + MAX_SAVE_TITLE_CHARS * 4;
+pub(crate) const MAX_SAVE_BYTES: u64 = 221 + 320 + 16 * 1_000_000;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024 + 50;
 pub fn image_hash(bytes: &[u8]) -> ImageHash {
     ImageHash(Sha256::digest(bytes).into())
@@ -40,7 +40,7 @@ impl SaveCodec {
         validate_metadata(m)?;
         let c = &save.checkpoint;
         let d = &c.definition;
-        let header_len = 173 + m.title.as_str().len();
+        let header_len = 189 + m.title.as_str().len();
         let total_len = header_len + c.pieces.len() * 16 + 32;
         let mut out = Vec::with_capacity(total_len);
         out.extend_from_slice(SAVE_MAGIC);
@@ -72,6 +72,7 @@ impl SaveCodec {
             out.extend_from_slice(&n.to_le_bytes());
         }
         out.push(u8::from(m.is_autosave));
+        out.extend_from_slice(&m.game_id.0.to_le_bytes());
         out.extend_from_slice(&image_hash(&out).0);
         for p in &c.pieces {
             for n in [
@@ -92,12 +93,12 @@ impl SaveCodec {
         let bad = SaveError::CorruptSave;
         let mut r = Reader::new(&prefix[..prefix.len().min(MAX_SAVE_HEADER_BYTES)], bad);
         read_save_version(&mut r)?;
-        if !(205..=MAX_SAVE_BYTES).contains(&file_len) {
+        if !(221..=MAX_SAVE_BYTES).contains(&file_len) {
             return Err(bad("Invalid length"));
         }
         let header_len = r.u32()? as usize;
         let declared_len = r.u64()?;
-        if !(173..=MAX_SAVE_HEADER_BYTES).contains(&header_len) || declared_len != file_len {
+        if !(189..=MAX_SAVE_HEADER_BYTES).contains(&header_len) || declared_len != file_len {
             return Err(bad("Invalid header or file length"));
         }
         let header = prefix
@@ -119,6 +120,7 @@ impl SaveCodec {
             std::str::from_utf8(r.take(title_len)?).map_err(|_| bad("Invalid UTF-8 title"))?;
         let mut metadata = SaveMetadata {
             id,
+            game_id: GameId(0),
             revision,
             created_at,
             updated_at,
@@ -149,6 +151,7 @@ impl SaveCodec {
             1 => true,
             _ => return Err(bad("Invalid autosave flag")),
         };
+        metadata.game_id = GameId(u128::from_le_bytes(r.array()?));
         let states_offset = header_len;
         if count != definition.piece_count()
             || file_len != states_offset as u64 + count as u64 * 16 + 32
@@ -172,7 +175,7 @@ impl SaveCodec {
     pub fn decode(bytes: &[u8]) -> Result<PuzzleSave, SaveError> {
         let bad = SaveError::CorruptSave;
         read_save_version(&mut Reader::new(bytes, bad))?;
-        if bytes.len() < 205 || bytes.len() as u64 > MAX_SAVE_BYTES {
+        if bytes.len() < 221 || bytes.len() as u64 > MAX_SAVE_BYTES {
             return Err(bad("Invalid length"));
         }
         let end = bytes.len() - 32;

@@ -28,6 +28,7 @@ fn state() -> PersistenceState {
             id: SaveId(index as u128),
             summary: Ok(SaveSummary {
                 metadata: SaveMetadata {
+                    game_id: puzzella_game::persistence::GameId(1),
                     id: SaveId(index as u128),
                     title: SaveTitle::new(&format!("Puzzle {index}")).unwrap(),
                     revision: 1,

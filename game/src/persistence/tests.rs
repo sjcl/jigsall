@@ -1,4 +1,5 @@
 use super::*;
+mod autosave;
 use crate::{
     checkpoint::{
         PuzzleCheckpoint, SNAPSHOT_CONNECTED_DOWN, SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED,
@@ -47,6 +48,7 @@ fn save() -> PuzzleSave {
     PuzzleSave {
         metadata: SaveMetadata {
             id: SaveId(0x1234),
+            game_id: GameId(0x5678),
             title: SaveTitle::new("  星のパズル  ").unwrap(),
             revision: 1,
             created_at: 100,
@@ -164,7 +166,7 @@ fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
     let encoded = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         encoded.len(),
-        205 + save.metadata.title.as_str().len() + 16 * 4
+        221 + save.metadata.title.as_str().len() + 16 * 4
     );
     let restored = SaveCodec::decode(&encoded).unwrap();
     assert_eq!(save, restored);
@@ -204,7 +206,7 @@ fn autosave_flag_round_trips_in_full_save_and_list_header_and_rejects_invalid_va
             is_autosave
         );
         let header_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
-        bytes[header_len - 33] = 2;
+        bytes[header_len - 49] = 2;
         resign_header(&mut bytes);
         resign(&mut bytes);
         assert_eq!(
@@ -243,7 +245,7 @@ fn million_piece_save_keeps_sixteen_byte_records_and_restores_directly() {
     let bytes = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         bytes.len(),
-        16_000_000 + 205 + save.metadata.title.as_str().len()
+        16_000_000 + 221 + save.metadata.title.as_str().len()
     );
     let decoded = SaveCodec::decode(&bytes).unwrap();
     assert_eq!(save, decoded);
@@ -564,6 +566,7 @@ struct MemoryStorage {
     fail_delete: Arc<Mutex<Option<StorageKey>>>,
     fail_list: Arc<Mutex<Option<StorageNamespace>>>,
     fail_range: Arc<Mutex<Option<StorageKey>>>,
+    fail_save_write: Arc<Mutex<bool>>,
     reads: Arc<Mutex<Vec<StorageKey>>>,
     ranges: Arc<Mutex<Vec<(StorageKey, u64, usize)>>>,
 }
@@ -622,7 +625,9 @@ impl SaveStorage for MemoryStorage {
             .ok_or(StorageError::NotFound(key))
     }
     fn write(&self, key: StorageKey, bytes: Vec<u8>) -> Result<(), StorageError> {
-        if *self.fail.lock().unwrap() == Some(key) {
+        if *self.fail.lock().unwrap() == Some(key)
+            || (matches!(key, StorageKey::Save(_)) && *self.fail_save_write.lock().unwrap())
+        {
             return Err(StorageError::Io("injected failure".into()));
         }
         self.writes.lock().unwrap().push(key);
@@ -1163,7 +1168,7 @@ fn fifty_million_piece_previews_read_only_bounded_headers() {
     }
     let mut header = SaveCodec::encode(&save()).unwrap();
     let t = save().metadata.title.as_str().len();
-    let header_len = 173 + t;
+    let header_len = 189 + t;
     let length = header_len as u64 + 16_000_000 + 32;
     header.truncate(header_len);
     header[14..22].copy_from_slice(&length.to_le_bytes());
@@ -1406,12 +1411,12 @@ fn exhausted_revision_does_not_publish_or_wrap() {
     assert_eq!(storage.blobs.lock().unwrap()[&key], encoded);
 }
 #[test]
-fn save_format_two_is_the_only_supported_layout() {
+fn save_format_three_is_the_only_supported_layout() {
     let original = SaveCodec::encode(&save()).unwrap();
-    assert_eq!(SAVE_FORMAT_VERSION, 2);
-    assert_eq!(&original[8..10], &2u16.to_le_bytes());
+    assert_eq!(SAVE_FORMAT_VERSION, 3);
+    assert_eq!(&original[8..10], &3u16.to_le_bytes());
     assert_eq!(SaveCodec::decode(&original).unwrap(), save());
-    for version in [0u16, 1, 9] {
+    for version in [0u16, 1, 2, 9] {
         let mut bytes = original.clone();
         bytes[8..10].copy_from_slice(&version.to_le_bytes());
         assert_eq!(

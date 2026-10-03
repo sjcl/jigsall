@@ -73,7 +73,10 @@ fn invalid_sections_use_defaults_without_blocking_other_sections_or_losing_data(
     autosave.set_interval(None);
     assert!(autosave.error.is_none());
     let saved: Value = read_json(&path).unwrap().unwrap();
-    assert_eq!(saved["autosave"], json!({"interval_minutes": null}));
+    assert_eq!(
+        saved["autosave"],
+        json!({"interval_minutes": null, "max_saves_per_game": 1})
+    );
     assert_eq!(saved["display"], document["display"]);
     assert_eq!(saved["keybindings"], document["keybindings"]);
     assert_eq!(saved["future"], document["future"]);
