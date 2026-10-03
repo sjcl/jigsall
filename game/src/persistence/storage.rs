@@ -92,6 +92,7 @@ pub trait SaveStorage {
     fn delete(&self, key: StorageKey) -> Result<(), StorageError>;
     fn exists(&self, key: StorageKey) -> Result<bool, StorageError>;
 }
+#[derive(Clone)]
 pub struct FilesystemStorage {
     root: PathBuf,
 }
