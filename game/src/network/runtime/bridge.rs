@@ -3,6 +3,7 @@ use crate::{interaction::PieceInteraction, resources::PieceDataStore};
 use bevy::math::Vec2;
 use puzzella_core::{protocol::*, session::*, PieceBitSet, PieceCommand, PlayerId};
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BridgeError {
@@ -20,11 +21,13 @@ struct LocalDrag {
     members: PieceBitSet,
     last_delta: Option<Vec2>,
     scalar_delta: Vec2,
+    token: Arc<()>,
 }
 struct PendingControl {
     envelope: ProtocolCommandEnvelope,
     requested: Option<PieceBitSet>,
     pointer: Option<Vec2>,
+    token: Arc<()>,
 }
 #[derive(Default)]
 pub(super) struct CommandBridge {
@@ -32,7 +35,7 @@ pub(super) struct CommandBridge {
     started: bool,
     active: Option<LocalDrag>,
     pending: Option<PendingControl>,
-    queue: VecDeque<(PieceCommand, Option<Vec2>)>,
+    queue: VecDeque<(PieceCommand, Option<Vec2>, Arc<()>)>,
 }
 
 impl CommandBridge {
@@ -40,11 +43,12 @@ impl CommandBridge {
         &mut self,
         command: PieceCommand,
         pointer: Option<Vec2>,
+        token: Arc<()>,
     ) -> Result<(), BridgeError> {
         if self.queue.len() == 64 {
             return Err(BridgeError::Capacity);
         }
-        self.queue.push_back((command, pointer));
+        self.queue.push_back((command, pointer, token));
         Ok(())
     }
     fn envelope(
@@ -70,7 +74,7 @@ impl CommandBridge {
         if self.pending.is_some() {
             return Ok(None);
         }
-        while let Some((command, pointer)) = self.queue.pop_front() {
+        while let Some((command, pointer, token)) = self.queue.pop_front() {
             let mut requested = None;
             let command = match command {
                 PieceCommand::Grab(id) => {
@@ -150,6 +154,7 @@ impl CommandBridge {
                 envelope: envelope.clone(),
                 requested,
                 pointer,
+                token,
             });
             return Ok(Some(envelope));
         }
@@ -255,6 +260,7 @@ impl CommandBridge {
                     }
                 };
                 interaction.reconcile_network_grab(
+                    &pending.token,
                     pending.requested.as_ref().expect("Grab request"),
                     accepted.clone(),
                     store,
@@ -266,6 +272,7 @@ impl CommandBridge {
                     members: accepted,
                     last_delta: None,
                     scalar_delta: Vec2::ZERO,
+                    token: pending.token,
                 });
             }
             (
@@ -277,6 +284,7 @@ impl CommandBridge {
                     .as_mut()
                     .ok_or(BridgeError::UnexpectedAuthorityResult)?;
                 interaction.rebase_network_drag(
+                    &active.token,
                     &active.members,
                     pending.pointer,
                     commit.final_delta,
@@ -286,7 +294,7 @@ impl CommandBridge {
                 active.last_delta = None;
                 active.scalar_delta = Vec2::ZERO;
                 // Controls sampled while waiting still carry the previous basis.
-                for (command, _) in &mut self.queue {
+                for (command, _, _) in &mut self.queue {
                     match command {
                         PieceCommand::ReleaseGroup { delta, .. }
                         | PieceCommand::RotateDrag { delta, .. } => *delta -= commit.final_delta,

@@ -78,6 +78,11 @@ pub enum ImageReadiness {
     Uploading,
     Ready,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostImageSource {
+    Available,
+    Unavailable,
+}
 #[derive(Clone, Debug)]
 pub struct RuntimePeer {
     pub connection: ConnectionId,
@@ -93,6 +98,7 @@ pub struct NetworkStatus {
     pub host: Option<PlayerId>,
     pub address: Option<SocketAddr>,
     pub image: ImageReadiness,
+    pub image_source: HostImageSource,
     pub peers: Vec<RuntimePeer>,
     pub error: Option<String>,
 }
@@ -105,6 +111,7 @@ impl Default for NetworkStatus {
             host: None,
             address: None,
             image: ImageReadiness::Unavailable,
+            image_source: HostImageSource::Unavailable,
             peers: Vec::new(),
             error: None,
         }
@@ -182,6 +189,11 @@ impl<T: DirectIpTransport> Runtime<T> {
             host: options.host,
             cursor: AuthorityCursor::new(0, 0),
         };
+        let image_source = if image.is_some() {
+            HostImageSource::Available
+        } else {
+            HostImageSource::Unavailable
+        };
         Ok(Self {
             transport,
             listener: Some(listener),
@@ -212,6 +224,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 local_player: Some(options.host),
                 host: Some(options.host),
                 address: Some(address),
+                image_source,
                 ..default()
             },
         })
@@ -225,7 +238,7 @@ impl<T: DirectIpTransport> Runtime<T> {
             transport,
             listener: None,
             connections: Default::default(),
-            live: Default::default(),
+            live: BTreeSet::from([connection]),
             role: Role::Client(Box::new(ClientState {
                 bootstrap: ClientBootstrap::new(options.password, connection),
                 sync: None,
@@ -703,7 +716,11 @@ impl<T: DirectIpTransport> Runtime<T> {
                 return Err("local command identity mismatch".into());
             }
             self.bridge
-                .enqueue(request.command, pointer)
+                .enqueue(
+                    request.command,
+                    pointer,
+                    interaction.network_gesture_token(),
+                )
                 .map_err(|e| format!("{e:?}"))?;
         }
         while let Some(command) = self
@@ -795,7 +812,8 @@ impl<T: DirectIpTransport> Runtime<T> {
         if let Some(listener) = self.listener.take() {
             let _ = self.transport.close_listener(listener);
         }
-        let players: BTreeSet<_> = store.held_by.iter().map(|(_, &player)| player).collect();
+        let players: std::collections::HashSet<_> =
+            store.held_by.iter().map(|(_, &player)| player).collect();
         for player in players {
             store.clear_player_holds(player);
         }

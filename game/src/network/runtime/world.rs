@@ -8,11 +8,28 @@ trait RuntimeDriver {
     fn commands(&mut self, world: &mut World, commands: Vec<ClientCommand>);
     fn teardown(&mut self, world: &mut World);
     fn active(&self) -> bool;
+    fn authority(&self) -> Option<&AuthoritySession>;
+    fn replica(&self) -> Option<&PeerReplicationState>;
+    #[cfg(test)]
+    fn host_state(&self) -> Option<&HostState>;
 }
 /// Presence gates offline authority, including failure awaiting Menu cleanup.
 pub struct NetworkSession {
     driver: Option<Box<dyn RuntimeDriver>>,
     reader: MessageCursor<ClientCommand>,
+}
+impl NetworkSession {
+    pub fn authority(&self) -> Option<&AuthoritySession> {
+        self.driver.as_ref()?.authority()
+    }
+    /// Read-only remote presentation for the future renderer integration.
+    pub fn replica(&self) -> Option<&PeerReplicationState> {
+        self.driver.as_ref()?.replica()
+    }
+    #[cfg(test)]
+    pub(super) fn host_state(&self) -> Option<&HostState> {
+        self.driver.as_ref()?.host_state()
+    }
 }
 pub struct NetworkRuntimePlugin;
 impl Plugin for NetworkRuntimePlugin {
@@ -105,6 +122,19 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     world.remove_resource::<PuzzleDefinition>();
     *world.resource_mut::<PieceDataStore>() = default();
     *world.resource_mut::<PieceInteraction>() = default();
+    if let Some(mut config) = world.get_resource_mut::<PuzzleConfig>() {
+        config.image_path.clear();
+    }
+    if let Some(mut persistence) =
+        world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
+    {
+        persistence.generation = persistence.generation.wrapping_add(1);
+        persistence.busy = false;
+        persistence.capture = None;
+    }
+    world.remove_resource::<crate::persistence::runtime::PendingRestore>();
+    world.remove_resource::<ImageLoadError>();
+    world.insert_resource(PieceGenerationProgress::default());
     if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
         next.set(AppState::GameSetup);
     }
@@ -245,6 +275,22 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
     fn active(&self) -> bool {
         self.active
     }
+    fn authority(&self) -> Option<&AuthoritySession> {
+        self.session.as_ref()
+    }
+    fn replica(&self) -> Option<&PeerReplicationState> {
+        match &self.role {
+            Role::Client(client) => Some(&client.replica),
+            Role::Host(_) => None,
+        }
+    }
+    #[cfg(test)]
+    fn host_state(&self) -> Option<&HostState> {
+        match &self.role {
+            Role::Host(host) => Some(host),
+            Role::Client(_) => None,
+        }
+    }
 }
 impl<T: DirectIpTransport> Runtime<T> {
     fn install_world(&mut self, world: &mut World) {
@@ -294,6 +340,10 @@ impl<T: DirectIpTransport> Runtime<T> {
                 && self.baseline_installed
             {
                 let definition = self.definition.as_ref().unwrap();
+                if world.resource::<PuzzleImage>().size.as_uvec2() != definition.image_size {
+                    self.fail("image dimensions differ from session definition");
+                    return;
+                }
                 let store = world.resource::<PieceDataStore>();
                 let len = store.len();
                 let placed = store.placed_count;
