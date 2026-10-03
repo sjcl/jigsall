@@ -537,18 +537,26 @@ The Rust wrapper builds the bundled open-source GNS sources; no Steamworks SDK,
 Windows MSVC prerequisites:
 
 - Rust 1.95+, Visual Studio 2022 C++ tools and Windows SDK (existing prerequisites).
-- CMake, Git, LLVM/libclang for bindgen (`LIBCLANG_PATH` if not auto-discovered).
+- CMake, Git, LLVM/libclang 18.1.8 for the locked bindgen 0.70.1
+  (`LIBCLANG_PATH` if not auto-discovered). LLVM 23.1.2 produces an incomplete
+  callback struct with this bindgen; see the Windows setup's compatibility note.
 - Internet access during the initial native build: the sys build script clones/
   bootstraps vcpkg and installs its manifest's protobuf, OpenSSL and their Abseil/
   UTF-8 dependencies. Runtime crypto uses Windows BCrypt in this build.
 - A short `GNS_VCPKG_BUILDTREES_ROOT` path (the wrapper rejects paths >100 chars).
   Use a writable path for that build; do not bypass the length check.
 
-Example in a short checkout path:
+For Windows, persist `LIBCLANG_PATH` and a short
+`GNS_VCPKG_BUILDTREES_ROOT` in the host's Cargo user configuration. This host is
+already configured, so ordinary PowerShell and Codex builds need no per-command
+environment setup. See [Windows build setup](WINDOWS_BUILD.md#gnsを使うビルド)
+for the configuration and setup on another host. The fixed buildtrees path and
+existing shared Rust build cache are reused from both the primary checkout and
+worktrees; wait for any Cargo build-directory lock to be released.
+
+From an ordinary shell on the configured host:
 
 ```powershell
-$env:LIBCLANG_PATH = 'C:\Program Files\LLVM\bin'
-$env:GNS_VCPKG_BUILDTREES_ROOT = Join-Path (Get-Location) 'target/vcpkg-trees'
 cargo check --locked --features gns
 cargo test --locked --features gns
 cargo build --locked --features gns
