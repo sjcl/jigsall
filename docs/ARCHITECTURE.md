@@ -25,6 +25,7 @@ puzzella
 | `game/src/resources/pieces/snapping.rs` | Release単位の単一snap判定、固定offsetのunion closure・一括配置 |
 | `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
 | `game/src/systems/game_logic.rs` | 命令適用、Release後のsnap、イベント駆動の進捗 |
+| `game/src/network/runtime.rs` / `runtime/` | Direct-IP session lifecycle、local command bridge、World同期、切断とMenu cleanup（[仕様](DIRECT_IP_RUNTIME.md)） |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
 | `game/src/render/mod.rs` | GPU buffers、Core2d pass、indirect draw、非同期readback |
 | `game/src/render/puzzle_shape.wgsl` | main / point / rectangle共通の形状・UV |

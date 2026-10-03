@@ -125,6 +125,12 @@ pub enum RuntimeStartError {
     ImageHashMismatch,
     Transport(TransportError),
 }
+impl std::fmt::Display for RuntimeStartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+impl std::error::Error for RuntimeStartError {}
 
 struct HostState {
     bootstrap: HostBootstrap,
@@ -633,20 +639,30 @@ impl<T: DirectIpTransport> Runtime<T> {
                     let result = if timeout {
                         Err("sync timeout".into())
                     } else {
-                        host.sync
-                            .pump(
+                        let authority = SyncAuthority {
+                            session: self.session.as_ref().unwrap(),
+                            store,
+                            contexts: &host.contexts,
+                            definition: self.definition.as_ref().unwrap(),
+                        };
+                        let result = if host.sync.phase(id) == Some(SyncPhase::RestartRequired) {
+                            host.sync.restart(
                                 &host.bootstrap,
                                 id,
                                 &mut self.transport,
-                                &SyncAuthority {
-                                    session: self.session.as_ref().unwrap(),
-                                    store,
-                                    contexts: &host.contexts,
-                                    definition: self.definition.as_ref().unwrap(),
-                                },
+                                &authority,
                                 now,
                             )
-                            .map_err(|e| format!("{e:?}"))
+                        } else {
+                            host.sync.pump(
+                                &host.bootstrap,
+                                id,
+                                &mut self.transport,
+                                &authority,
+                                now,
+                            )
+                        };
+                        result.map_err(|e| format!("{e:?}"))
                     };
                     if let Err(error) = result {
                         self.status.error = Some(error);

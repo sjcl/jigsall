@@ -14,6 +14,54 @@ pub enum BridgeError {
     UnexpectedAuthorityResult,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use puzzella_core::PieceId;
+    fn session() -> AuthoritySession {
+        AuthoritySession::new(
+            SessionDefinition {
+                id: SessionId(1),
+                image_hash: ImageHash([0; 32]),
+            },
+            PlayerId(37),
+            AuthorityCursor::new(0, 0),
+        )
+    }
+    #[test]
+    fn exhausted_control_and_move_counters_never_wrap() {
+        let mut bridge = CommandBridge {
+            started: true,
+            next_control: None,
+            ..Default::default()
+        };
+        let mut store = PieceDataStore::default();
+        store.initialize(vec![Vec2::ZERO]);
+        bridge
+            .enqueue(PieceCommand::Grab(PieceId(0)), None, Arc::new(()))
+            .unwrap();
+        assert_eq!(
+            bridge.next(&session(), PlayerId(37), &store),
+            Err(BridgeError::CounterExhausted)
+        );
+        let mut members = PieceBitSet::new(1);
+        members.insert(PieceId(0));
+        bridge.active = Some(LocalDrag {
+            grab: 0,
+            basis: 0,
+            last_tick: Some(u64::MAX),
+            members,
+            last_delta: None,
+            scalar_delta: Vec2::ONE,
+            token: Arc::new(()),
+        });
+        assert_eq!(
+            bridge.drag_update(&session(), PlayerId(37), &store),
+            Err(BridgeError::CounterExhausted)
+        );
+    }
+}
+
 struct LocalDrag {
     grab: u64,
     basis: u64,

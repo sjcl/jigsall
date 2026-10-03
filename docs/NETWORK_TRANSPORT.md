@@ -581,6 +581,11 @@ charge policy and GNS physical record limits remain unchanged. Snapshot schema
 
 ## Routing and frame integration
 
+The game-layer owner is now `NetworkRuntimePlugin` / `NetworkSession`; see
+[Direct-IP runtime](DIRECT_IP_RUNTIME.md) for programmatic start/stop, command
+bridging, World installation and disconnect cleanup. The routing primitives below
+remain transport-independent and are borrowed by that owner.
+
 The topology remains a host-authoritative star. No peer-to-peer mesh is created.
 
 ```text
@@ -610,7 +615,8 @@ route BootstrapOutcome::Syncing to HostSyncCoordinator/ClientSyncRouter and
 BootstrapOutcome::Gameplay to HostRouter/ClientRouter. Call bootstrap
 `expire` each frame too.
 Routers borrow the existing session/store/context; they do not duplicate gameplay.
-No systems are automatically scheduled and no piece scan occurs while idle.
+The foundation routers schedule no systems themselves. GamePlugin installs the
+runtime schedule; inactive networking is gated off and idle work never scans pieces.
 
 Start the client sync router after authentication, passing optional cached bytes;
 start the host sync coordinator for that connection to advertise the authenticated

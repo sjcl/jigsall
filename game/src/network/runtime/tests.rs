@@ -626,19 +626,12 @@ fn failure_before_connected_blocks_offline_commands_then_menu_releases_session()
         }]),
     );
     drop(bus);
+    send(&mut client, PieceCommand::Grab(PieceId(0)));
     client.update();
     assert_eq!(
         client.world().resource::<NetworkStatus>().phase,
         RuntimePhase::Disconnected
     );
-    assert!(client
-        .world()
-        .get_non_send::<NetworkSession>()
-        .unwrap()
-        .authority()
-        .is_none());
-    send(&mut client, PieceCommand::Grab(PieceId(0)));
-    client.update();
     assert!(!client.world().contains_non_send::<NetworkSession>());
     assert!(client
         .world()
@@ -855,6 +848,48 @@ fn syncing_disconnect_releases_transfer_and_catch_up_without_gameplay_cancellati
 }
 
 #[test]
+fn bounded_catch_up_overflow_restarts_through_the_runtime_and_reaches_ready() {
+    let mut pair = Pair::new();
+    let connection = reach_baseline(&mut pair);
+    let target = PieceTarget::Component(
+        ComponentRef::from_member(
+            &pair.host.world().resource::<PieceDataStore>().connectivity,
+            PieceId(0),
+        )
+        .unwrap(),
+    );
+    // Freeze the joining client past the retention bound while local host
+    // controls continue. The runtime must schedule the foundation's restart.
+    for _ in 0..=crate::multiplayer::catch_up::MAX_CATCH_UP_EVENTS {
+        send(
+            &mut pair.host,
+            PieceCommand::Rotate {
+                target: target.clone(),
+                quarter_turns: 1,
+            },
+        );
+        pair.host.update();
+    }
+    pair.host.update();
+    let host = pair
+        .host
+        .world()
+        .get_non_send::<NetworkSession>()
+        .unwrap()
+        .host_state()
+        .unwrap();
+    let player = host.bootstrap.assigned_player(connection).unwrap();
+    assert_eq!(host.sync.catch_up().status(player).unwrap().generation, 1);
+    pair.ready();
+    pair.converge();
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().states,
+        pair.client.world().resource::<PieceDataStore>().states
+    );
+    assert_eq!(cursor(&pair.host), cursor(&pair.client));
+}
+
+#[test]
 fn publication_failure_does_not_reapply_host_control_and_session_teardown_resets_sender() {
     let mut pair = Pair::new();
     pair.ready();
@@ -889,6 +924,29 @@ fn publication_failure_does_not_reapply_host_control_and_session_teardown_resets
         *pair.host.world().resource::<LocalPlayerId>(),
         LocalPlayerId::default()
     );
+    let session = SessionDefinition {
+        id: SessionId(271),
+        image_hash: pair.host.world().resource::<OriginalPuzzleImage>().hash,
+    };
+    assert_eq!(
+        host_with_transport(
+            pair.host.world_mut(),
+            Fake {
+                id: 0,
+                bus: pair.bus.clone()
+            },
+            HostOptions {
+                address: "127.0.0.1:0".parse().unwrap(),
+                session,
+                host: PlayerId(39),
+                password: password()
+            }
+        ),
+        Err(RuntimeStartError::InvalidWorld)
+    );
+    // Finish the scheduled Menu cleanup before installing a new puzzle/session.
+    pair.host.update();
+    assert!(!pair.host.world().contains_non_send::<NetworkSession>());
     let session = host_world(&mut pair.host);
     host_with_transport(
         pair.host.world_mut(),
@@ -906,6 +964,12 @@ fn publication_failure_does_not_reapply_host_control_and_session_teardown_resets
     .unwrap();
     send(&mut pair.host, PieceCommand::Grab(PieceId(0)));
     pair.host.update();
+    assert_eq!(
+        pair.host.world().resource::<NetworkStatus>().phase,
+        RuntimePhase::Hosting,
+        "{:?}",
+        pair.host.world().resource::<NetworkStatus>()
+    );
     assert_eq!(
         pair.host
             .world()
@@ -957,6 +1021,45 @@ fn image_identity_is_checked_before_host_listener_and_missing_bytes_remain_expli
     assert_eq!(
         host.world().resource::<NetworkStatus>().image,
         ImageReadiness::Unavailable
+    );
+}
+
+#[test]
+fn rejected_host_rotation_preserves_pointer_basis_and_consumes_control_history() {
+    let mut pair = Pair::new();
+    pair.ready();
+    begin_gesture(&mut pair.host);
+    pair.converge();
+    pointer(&mut pair.host, Vec2::splat(20.0), true, false);
+    let before = cursor(&pair.host);
+    send(
+        &mut pair.host,
+        PieceCommand::RotateDrag {
+            members: members(),
+            delta: Vec2::splat(f32::NAN),
+            quarter_turns: 1,
+        },
+    );
+    pair.host.update();
+    assert_eq!(cursor(&pair.host), before);
+    assert_eq!(
+        pair.host.world().resource::<NetworkStatus>().phase,
+        RuntimePhase::Hosting
+    );
+    pointer(&mut pair.host, Vec2::splat(30.0), true, false);
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().drag.delta,
+        Vec2::splat(30.0)
+    );
+    pointer(&mut pair.host, Vec2::splat(30.0), false, false);
+    pair.converge();
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().states,
+        pair.client.world().resource::<PieceDataStore>().states
+    );
+    assert_eq!(
+        pair.host.world().resource::<PieceDataStore>().states[0].position,
+        Vec2::splat(130.0)
     );
 }
 
@@ -1033,4 +1136,89 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
     );
     stop_session(client.world_mut());
     stop_session(host.world_mut());
+}
+
+#[test]
+fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker() {
+    use bevy::{asset::AssetPlugin, input::InputPlugin, transform::TransformPlugin};
+    let mut pair = Pair::new();
+    stop_session(pair.client.world_mut());
+    let (service, _requests) =
+        crate::persistence::runtime::PersistenceService::with_storage_requests();
+    let mut client = App::new();
+    client
+        .insert_resource(service)
+        .add_plugins((
+            MinimalPlugins,
+            StatesPlugin,
+            InputPlugin,
+            TransformPlugin,
+            AssetPlugin::default(),
+            crate::asset_reader::DirectFileAssetPlugin,
+            crate::GamePlugin,
+        ))
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<ColorMaterial>>()
+        .init_resource::<Assets<Image>>()
+        .insert_resource(crate::render::RenderReady::waiting_for_test())
+        .init_resource::<bevy_egui::EguiUserTextures>();
+    client.update();
+    join_with_transport(
+        client.world_mut(),
+        Fake {
+            id: 2,
+            bus: pair.bus.clone(),
+        },
+        JoinOptions {
+            address: "127.0.0.1:10000".parse().unwrap(),
+            password: password(),
+            cached_image: None,
+        },
+    )
+    .unwrap();
+    for _ in 0..2000 {
+        pair.host.update();
+        client.update();
+        if *client.world().resource::<State<AppState>>().get() == AppState::InGame {
+            break;
+        }
+        assert_ne!(
+            client.world().resource::<NetworkStatus>().phase,
+            RuntimePhase::Failed,
+            "{:?}",
+            client.world().resource::<NetworkStatus>().error
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        *client.world().resource::<State<AppState>>().get(),
+        AppState::InGame
+    );
+    for _ in 0..5 {
+        pair.host.update();
+        client.update();
+    }
+    assert_eq!(
+        client.world().resource::<PieceDataStore>().states,
+        pair.host.world().resource::<PieceDataStore>().states
+    );
+    let progress = client.world().resource::<PieceGenerationProgress>();
+    assert_eq!(progress.generation_phase, GenerationPhase::UploadingGpu);
+    assert!(progress.receiver.is_none());
+    assert_eq!(client.world().resource::<PuzzleDefinition>(), &definition());
+    assert_eq!(
+        client.world().resource::<OriginalPuzzleImage>().hash,
+        pair.host.world().resource::<OriginalPuzzleImage>().hash
+    );
+    client
+        .world_mut()
+        .resource_mut::<NextState<AppState>>()
+        .set(AppState::Menu);
+    client.update();
+    assert!(!client.world().contains_non_send::<NetworkSession>());
+    assert_eq!(
+        *client.world().resource::<LocalPlayerId>(),
+        LocalPlayerId::default()
+    );
+    assert!(client.world().resource::<PieceDataStore>().is_empty());
 }

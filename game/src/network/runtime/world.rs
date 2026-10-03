@@ -56,6 +56,16 @@ pub(crate) fn network_active(world: &World) -> bool {
 pub(crate) fn offline(world: &World) -> bool {
     !network_active(world)
 }
+fn menu_pending(world: &World) -> bool {
+    world
+        .get_resource::<NextState<AppState>>()
+        .is_some_and(|next| {
+            matches!(
+                next,
+                NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu)
+            )
+        })
+}
 fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, runtime: Runtime<T>) {
     world.insert_resource(runtime.status.clone());
     let reader = world
@@ -84,6 +94,13 @@ pub fn host_with_transport<T: DirectIpTransport + 'static>(
         || world.get_resource::<PieceDataStore>().is_none_or(|store| {
             store.len() != definition.piece_count() || !store.held_by.is_empty()
         })
+        || world
+            .get_resource::<PieceGenerationProgress>()
+            .is_some_and(|progress| progress.is_generating || progress.receiver.is_some())
+        || world
+            .get_resource::<PuzzleImage>()
+            .is_some_and(|image| image.size.as_uvec2() != definition.image_size)
+        || menu_pending(world)
     {
         return Err(RuntimeStartError::InvalidWorld);
     }
@@ -100,6 +117,14 @@ pub fn host_with_transport<T: DirectIpTransport + 'static>(
     let address = runtime.status.address.unwrap();
     world.insert_resource(LocalPlayerId(runtime.status.local_player.unwrap()));
     world.insert_resource(SessionHostId(runtime.status.host.unwrap()));
+    if let Some(mut persistence) =
+        world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
+    {
+        persistence.generation = persistence.generation.wrapping_add(1);
+        persistence.busy = false;
+        persistence.autosaving = false;
+        persistence.capture = None;
+    }
     install_driver(world, runtime);
     Ok(address)
 }
@@ -111,6 +136,9 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
 ) -> Result<(), RuntimeStartError> {
     if network_active(world) {
         return Err(RuntimeStartError::AlreadyActive);
+    }
+    if menu_pending(world) {
+        return Err(RuntimeStartError::InvalidWorld);
     }
     let runtime = Runtime::client(backend, options)?;
     world.init_resource::<PieceDataStore>();
@@ -130,6 +158,7 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     {
         persistence.generation = persistence.generation.wrapping_add(1);
         persistence.busy = false;
+        persistence.autosaving = false;
         persistence.capture = None;
     }
     world.remove_resource::<crate::persistence::runtime::PendingRestore>();
@@ -168,6 +197,12 @@ pub fn start_join(world: &mut World, options: JoinOptions) -> Result<(), Runtime
 }
 /// Closes sockets and destroys all session state; Menu performs game cleanup.
 pub fn stop_session(world: &mut World) {
+    teardown_session(world);
+    if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
+        next.set(AppState::Menu);
+    }
+}
+fn teardown_session(world: &mut World) {
     if let Some(mut session) = world.remove_non_send::<NetworkSession>() {
         if let Some(mut driver) = session.driver.take() {
             driver.teardown(world);
@@ -176,9 +211,19 @@ pub fn stop_session(world: &mut World) {
     if let Some(mut messages) = world.get_resource_mut::<Messages<ClientCommand>>() {
         messages.clear();
     }
+    if let Some(mut interaction) = world.get_resource_mut::<PieceInteraction>() {
+        *interaction = default();
+    }
+    if let Some(mut selection) = world.get_resource_mut::<crate::selection::PuzzleSelection>() {
+        selection.cancel();
+    }
     world.insert_resource(LocalPlayerId::default());
     world.insert_resource(SessionHostId::default());
     if let Some(mut status) = world.get_resource_mut::<NetworkStatus>() {
+        status.role = None;
+        status.address = None;
+        status.image = ImageReadiness::Unavailable;
+        status.image_source = HostImageSource::Unavailable;
         status.local_player = None;
         status.host = None;
         status.peers.clear();
@@ -186,13 +231,12 @@ pub fn stop_session(world: &mut World) {
             status.phase = RuntimePhase::Disconnected;
         }
     }
-    if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
-        next.set(AppState::Menu);
-    }
 }
 fn menu_teardown(world: &mut World) {
     if network_active(world) {
-        stop_session(world);
+        // Already entering Menu: do not schedule another Menu entry that could
+        // clear a puzzle/session created after this cleanup.
+        teardown_session(world);
     }
 }
 fn drive(world: &mut World, commands: bool) {
@@ -295,6 +339,16 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
 impl<T: DirectIpTransport> Runtime<T> {
     fn install_world(&mut self, world: &mut World) {
         if self.status.role == Some(RuntimeRole::Host) {
+            self.status.image = if !world.contains_resource::<PuzzleImage>() {
+                ImageReadiness::Unavailable
+            } else if world
+                .get_resource::<crate::render::RenderReady>()
+                .is_some_and(|ready| ready.is_ready(world.resource::<PieceDataStore>().epoch))
+            {
+                ImageReadiness::Ready
+            } else {
+                ImageReadiness::Uploading
+            };
             return;
         }
         if self.baseline_installed && !self.render_installed {
