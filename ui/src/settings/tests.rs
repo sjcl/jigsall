@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn autosave_widgets_persist_disable_enable_and_interval_edits() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("autosave.json");
+    let path = dir.path().join("settings.json");
     let mut settings = AutosaveSettingsState::load(Some(path.clone()));
     let ctx = egui::Context::default();
     let render = |settings: &mut AutosaveSettingsState, events| {
@@ -459,7 +459,7 @@ fn localized_frame(
 #[test]
 fn language_widgets_persist_selection_and_update_next_frame_without_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ui-settings.json");
+    let path = dir.path().join("settings.json");
     let mut preferences = UiPreferences::load(Some(path.clone()));
     let mut i18n = crate::localization::tests::english();
     let ctx = egui::Context::default();
@@ -631,7 +631,7 @@ fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
     use bevy::input::ButtonState::{Pressed, Released};
     use puzzella_game::keybindings::{KeyAction, KeyBindings};
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("controls.json");
+    let path = dir.path().join("settings.json");
     let mut state = KeyBindingsState::load(Some(path.clone()));
     let ctx = egui::Context::default();
     let mut dialog = SettingsDialog::default();

@@ -79,9 +79,9 @@ fn reserved_keys_duplicate_keys_and_duplicate_bindings_are_rejected() {
 }
 
 #[test]
-fn saves_both_slots_and_unassigned_keys_and_loads_older_files_with_defaults() {
+fn saves_both_slots_and_unassigned_keys_and_defaults_missing_actions() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("controls.json");
+    let path = dir.path().join("settings.json");
     let mut state = KeyBindingsState::load(Some(path.clone()));
     let mut bindings = state.current.clone();
     bindings.binding_mut(KeyAction::RotateLeft).secondary =
@@ -90,14 +90,14 @@ fn saves_both_slots_and_unassigned_keys_and_loads_older_files_with_defaults() {
     state.apply(bindings.clone());
     assert!(state.error.is_none());
     assert_eq!(KeyBindingsState::load(Some(path.clone())).current, bindings);
-    std::fs::write(&path, "{}").unwrap();
+    std::fs::write(&path, r#"{"keybindings":{}}"#).unwrap();
     assert_eq!(
         KeyBindingsState::load(Some(path.clone())).current,
         KeyBindings::default()
     );
     std::fs::write(
         &path,
-        r#"{"rotate_left":{"primary":{"first":"Escape","second":null},"secondary":null}}"#,
+        r#"{"keybindings":{"rotate_left":{"primary":{"first":"Escape","second":null},"secondary":null}}}"#,
     )
     .unwrap();
     let state = KeyBindingsState::load(Some(path));
@@ -110,7 +110,7 @@ fn failed_save_and_invalid_apply_preserve_previous_controls() {
     let dir = tempfile::tempdir().unwrap();
     let parent = dir.path().join("file");
     std::fs::write(&parent, "not a directory").unwrap();
-    let mut state = KeyBindingsState::load(Some(parent.join("controls.json")));
+    let mut state = KeyBindingsState::load(Some(parent.join("settings.json")));
     let mut bindings = state.current.clone();
     bindings.binding_mut(KeyAction::Performance).primary = None;
     state.apply(bindings);

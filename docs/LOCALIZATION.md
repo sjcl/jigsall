@@ -30,14 +30,15 @@ system names are preserved.
 
 Settings → Language offers Automatic, English and 日本語. A selection updates
 the live resource immediately and the next frame uses the new translations.
-Language preferences are saved independently of the display preview/confirmation
-to `puzzella/ui-settings.json` in `directories::BaseDirs::data_local_dir()`
-(Windows: `%LOCALAPPDATA%\puzzella\ui-settings.json`). This keeps the existing
-`settings.json` display format intact and prevents display reversion from undoing
-language selection. Writes use a synced temporary file and atomic replacement.
+Language preferences are saved in the `preferences` section of
+`puzzella/settings.json` in `directories::BaseDirs::data_local_dir()`
+(Windows: `%LOCALAPPDATA%\puzzella\settings.json`). The shared helper updates only
+this section, so display preview/confirmation and reversion cannot undo language
+selection. Writes use a synced temporary file and atomic replacement. See
+[SETTINGS.md](SETTINGS.md) for the unified format; old files are not migrated.
 
 ```json
-{ "language": "auto" }
+{ "preferences": { "language": "auto" } }
 ```
 
 The other stored IDs are `en-US` and `ja`. Missing preferences default to Auto.

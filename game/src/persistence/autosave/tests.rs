@@ -88,7 +88,7 @@ fn disabling_and_changing_interval_restart_the_timer() {
 #[test]
 fn settings_persist_interval_and_disable_and_reject_zero() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("autosave.json");
+    let path = dir.path().join("settings.json");
     let mut settings = AutosaveSettingsState::load(Some(path.clone()));
     assert_eq!(settings.current.interval_minutes, NonZeroU32::new(5));
     settings.set_interval(NonZeroU32::new(12));
@@ -106,7 +106,7 @@ fn settings_persist_interval_and_disable_and_reject_zero() {
             .interval_minutes,
         None
     );
-    std::fs::write(&path, br#"{"interval_minutes":0}"#).unwrap();
+    std::fs::write(&path, br#"{"autosave":{"interval_minutes":0}}"#).unwrap();
     let invalid = AutosaveSettingsState::load(Some(path));
     assert!(matches!(
         invalid.error,

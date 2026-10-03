@@ -1,8 +1,10 @@
-//! UI preferences use the same per-user directory and atomic writes as display settings.
+//! UI preferences occupy a section of the shared per-user settings.json.
 use crate::localization::{LanguagePreference, Localization};
 use bevy::prelude::*;
+use puzzella_game::settings_file::{SettingsFile, SettingsSection};
 use serde::{Deserialize, Serialize};
-use std::{io::Write, path::PathBuf};
+#[cfg(test)]
+use std::path::PathBuf;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Preferences {
@@ -14,7 +16,7 @@ struct Preferences {
 pub(crate) struct UiPreferences {
     pub language: LanguagePreference,
     pub error: Option<PreferenceError>,
-    path: Option<PathBuf>,
+    file: SettingsFile,
 }
 
 pub(crate) enum PreferenceError {
@@ -24,31 +26,23 @@ pub(crate) enum PreferenceError {
 
 impl Default for UiPreferences {
     fn default() -> Self {
-        Self::load(
-            directories::BaseDirs::new()
-                .map(|dirs| dirs.data_local_dir().join("puzzella/ui-settings.json")),
-        )
+        Self::from_file(SettingsFile::default())
     }
 }
 
 impl UiPreferences {
+    #[cfg(test)]
     pub fn load(path: Option<PathBuf>) -> Self {
-        let mut state = Self {
-            language: LanguagePreference::Auto,
-            error: None,
-            path,
-        };
-        if let Some(path) = &state.path {
-            match std::fs::read(path) {
-                Ok(bytes) => match serde_json::from_slice::<Preferences>(&bytes) {
-                    Ok(settings) => state.language = settings.language,
-                    Err(error) => state.error = Some(PreferenceError::Read(error.to_string())),
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => state.error = Some(PreferenceError::Read(error.to_string())),
-            }
+        Self::from_file(SettingsFile::new(path))
+    }
+
+    fn from_file(file: SettingsFile) -> Self {
+        let (preferences, error) = file.load::<Preferences>(SettingsSection::Preferences);
+        Self {
+            language: preferences.language,
+            error: error.map(PreferenceError::Read),
+            file,
         }
-        state
     }
 
     /// Change only after an explicit UI selection; a failed save keeps the choice usable.
@@ -59,21 +53,12 @@ impl UiPreferences {
     }
 
     fn save(&self) -> Result<(), String> {
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let parent = path.parent().ok_or("missing preferences directory")?;
-            std::fs::create_dir_all(parent)?;
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            file.write_all(&serde_json::to_vec_pretty(&Preferences {
+        self.file.save(
+            SettingsSection::Preferences,
+            &Preferences {
                 language: self.language,
-            })?)?;
-            file.as_file().sync_all()?;
-            file.persist(path)?;
-            Ok(())
-        };
-        write().map_err(|error| error.to_string())
+            },
+        )
     }
 }
 

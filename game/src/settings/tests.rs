@@ -294,11 +294,78 @@ fn fps_only_changes_save_immediately_and_invalid_config_uses_defaults() {
         max_fps: Some(0),
         ..default()
     };
-    std::fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({"display": invalid})).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         DisplaySettingsState::load(Some(path)).current,
         DisplaySettings::default()
     );
+}
+
+#[test]
+fn saving_other_sections_during_display_preview_preserves_confirmed_settings() {
+    use crate::{
+        keybindings::{KeyAction, KeyBindingsState},
+        persistence::autosave::AutosaveSettingsState,
+    };
+    use serde_json::json;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut app = test_app(Some(path.clone()));
+    // All resources load before any save, as they do at application startup.
+    let mut autosave = AutosaveSettingsState::load(Some(path.clone()));
+    let mut keys = KeyBindingsState::load(Some(path.clone()));
+    let file = SettingsFile::new(Some(path.clone()));
+    let confirmed = DisplaySettings {
+        max_fps: Some(144),
+        ..default()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(confirmed.clone()));
+    let preview = DisplaySettings {
+        resolution: UVec2::new(800, 600),
+        ..confirmed.clone()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(preview.clone()));
+    file.save(SettingsSection::Preferences, &json!({"language": "ja"}))
+        .unwrap();
+    autosave.set_interval(None);
+    let mut bindings = keys.current.clone();
+    bindings.binding_mut(KeyAction::Performance).primary = None;
+    keys.apply(bindings.clone());
+    assert!(autosave.error.is_none());
+    assert!(keys.error.is_none());
+    assert_eq!(
+        DisplaySettingsState::load(Some(path.clone())).current,
+        confirmed
+    );
+    action(&mut app, DisplaySettingsAction::Revert);
+    assert_eq!(
+        app.world().resource::<DisplaySettingsState>().current,
+        confirmed
+    );
+
+    action(&mut app, DisplaySettingsAction::Apply(preview.clone()));
+    action(&mut app, DisplaySettingsAction::Keep);
+    file.save(SettingsSection::Preferences, &json!({"language": "en-US"}))
+        .unwrap();
+    assert_eq!(
+        DisplaySettingsState::load(Some(path.clone())).current,
+        preview
+    );
+    assert_eq!(
+        AutosaveSettingsState::load(Some(path.clone()))
+            .current
+            .interval_minutes,
+        None
+    );
+    assert_eq!(KeyBindingsState::load(Some(path.clone())).current, bindings);
+    let (preferences, error) = file.load::<serde_json::Value>(SettingsSection::Preferences);
+    assert_eq!(preferences, json!({"language": "en-US"}));
+    assert!(error.is_none());
 }
 
 #[test]

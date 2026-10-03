@@ -1,8 +1,9 @@
 //! Local keyboard controls, shared by gameplay and the settings UI.
+use crate::settings_file::{SettingsFile, SettingsSection};
 use bevy::input::{keyboard::KeyboardInput, ButtonState};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{io::Write, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyAction {
@@ -276,15 +277,12 @@ pub enum KeyBindingsError {
 pub struct KeyBindingsState {
     pub current: KeyBindings,
     pub error: Option<KeyBindingsError>,
-    path: Option<PathBuf>,
+    file: SettingsFile,
 }
 
 impl Default for KeyBindingsState {
     fn default() -> Self {
-        Self::load(
-            directories::BaseDirs::new()
-                .map(|dirs| dirs.data_local_dir().join("puzzella/keybindings.json")),
-        )
+        Self::from_file(SettingsFile::default())
     }
 }
 
@@ -302,36 +300,34 @@ impl KeyBindingsState {
     }
 
     pub fn load(path: Option<PathBuf>) -> Self {
-        let mut state = Self {
-            current: default(),
-            error: None,
-            path,
-        };
-        if let Some(path) = &state.path {
-            match std::fs::read(path) {
-                Ok(bytes) => match serde_json::from_slice::<KeyBindings>(&bytes) {
-                    Ok(mut bindings) => match bindings.validate() {
-                        Ok(()) => {
-                            for action in KeyAction::ALL {
-                                let binding = bindings.binding_mut(action);
-                                for chord in [&mut binding.primary, &mut binding.secondary]
-                                    .into_iter()
-                                    .flatten()
-                                {
-                                    *chord = KeyChord::new(chord.first, chord.second).unwrap();
-                                }
-                            }
-                            state.current = bindings;
-                        }
-                        Err(key) => state.error = Some(KeyBindingsError::Invalid(key)),
-                    },
-                    Err(error) => state.error = Some(KeyBindingsError::Read(error.to_string())),
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => state.error = Some(KeyBindingsError::Read(error.to_string())),
+        Self::from_file(SettingsFile::new(path))
+    }
+
+    fn from_file(file: SettingsFile) -> Self {
+        let (mut current, error) = file.load::<KeyBindings>(SettingsSection::KeyBindings);
+        let mut error = error.map(KeyBindingsError::Read);
+        match current.validate() {
+            Ok(()) => {
+                for action in KeyAction::ALL {
+                    let binding = current.binding_mut(action);
+                    for chord in [&mut binding.primary, &mut binding.secondary]
+                        .into_iter()
+                        .flatten()
+                    {
+                        *chord = KeyChord::new(chord.first, chord.second).unwrap();
+                    }
+                }
+            }
+            Err(key) => {
+                current = default();
+                error = Some(KeyBindingsError::Invalid(key));
             }
         }
-        state
+        Self {
+            current,
+            error,
+            file,
+        }
     }
 
     /// Keep the previous controls active if validation or the atomic save fails.
@@ -340,23 +336,12 @@ impl KeyBindingsState {
             self.error = Some(KeyBindingsError::Invalid(key));
             return;
         }
-        let save = || -> Result<(), Box<dyn std::error::Error>> {
-            if let Some(path) = &self.path {
-                let parent = path.parent().ok_or("missing settings directory")?;
-                std::fs::create_dir_all(parent)?;
-                let mut file = tempfile::NamedTempFile::new_in(parent)?;
-                file.write_all(&serde_json::to_vec_pretty(&bindings)?)?;
-                file.as_file().sync_all()?;
-                file.persist(path)?;
-            }
-            Ok(())
-        };
-        match save() {
+        match self.file.save(SettingsSection::KeyBindings, &bindings) {
             Ok(()) => {
                 self.current = bindings;
                 self.error = None;
             }
-            Err(error) => self.error = Some(KeyBindingsError::Save(error.to_string())),
+            Err(error) => self.error = Some(KeyBindingsError::Save(error)),
         }
     }
 }

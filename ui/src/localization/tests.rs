@@ -213,12 +213,27 @@ fn new_locales_keep_fluent_directionality_isolation() {
 }
 
 #[test]
-fn preferences_round_trip_use_internal_ids_and_do_not_touch_display_settings() {
+fn all_settings_round_trip_in_one_file_without_overwriting_other_sections() {
+    use puzzella_game::{
+        keybindings::{KeyAction, KeyBindingsState},
+        persistence::autosave::AutosaveSettingsState,
+    };
+
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("ui-settings.json");
-    let display = dir.path().join("settings.json");
-    std::fs::write(&display, b"existing display preferences").unwrap();
+    let path = dir.path().join("settings.json");
+    let display = serde_json::json!({
+        "resolution": [1920, 1080], "mode": "Windowed", "max_fps": 144
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&serde_json::json!({"display": display})).unwrap(),
+    )
+    .unwrap();
     let mut preferences = UiPreferences::load(Some(path.clone()));
+    let mut autosave = AutosaveSettingsState::load(Some(path.clone()));
+    let mut keys = KeyBindingsState::load(Some(path.clone()));
+    let mut bindings = keys.current.clone();
+    bindings.binding_mut(KeyAction::Performance).primary = None;
     let mut i18n = english();
     for (language, id) in [
         (LanguagePreference::Auto, "auto"),
@@ -227,16 +242,25 @@ fn preferences_round_trip_use_internal_ids_and_do_not_touch_display_settings() {
     ] {
         preferences.set_language(language, &mut i18n);
         assert!(preferences.error.is_none());
+        autosave.set_interval(None);
+        keys.apply(bindings.clone());
+        assert!(autosave.error.is_none());
+        assert!(keys.error.is_none());
         assert_eq!(UiPreferences::load(Some(path.clone())).language, language);
+        assert_eq!(KeyBindingsState::load(Some(path.clone())).current, bindings);
+        assert_eq!(
+            AutosaveSettingsState::load(Some(path.clone()))
+                .current
+                .interval_minutes,
+            None
+        );
         let json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(json["language"], id);
+        assert_eq!(json["preferences"]["language"], id);
+        assert_eq!(json["display"], display);
+        assert_eq!(json.as_object().unwrap().len(), 4);
     }
-    assert_eq!(
-        std::fs::read(display).unwrap(),
-        b"existing display preferences"
-    );
-    std::fs::write(&path, b"{\"language\":\"unsupported\"}").unwrap();
+    std::fs::write(&path, br#"{"preferences":{"language":"unsupported"}}"#).unwrap();
     let preferences = UiPreferences::load(Some(path.clone()));
     assert_eq!(preferences.language, LanguagePreference::Auto);
     assert!(preferences.error.is_some());
@@ -254,7 +278,7 @@ fn failed_preference_write_keeps_live_translation_and_existing_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let blocked = dir.path().join("blocked");
     std::fs::write(&blocked, b"keep").unwrap();
-    let mut preferences = UiPreferences::load(Some(blocked.join("ui-settings.json")));
+    let mut preferences = UiPreferences::load(Some(blocked.join("settings.json")));
     let mut i18n = english();
     preferences.set_language(LanguagePreference::Locale(Locale::JA), &mut i18n);
     assert!(preferences.error.is_some());

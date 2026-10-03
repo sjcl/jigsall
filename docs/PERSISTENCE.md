@@ -4,7 +4,7 @@
 
 ## オートセーブ
 
-Settings の一般タブで有効・無効と間隔（1–60分）を変更できます。初期値は有効・5分です。変更は即時反映し、`<OS user local application data>/puzzella/autosave-settings.json` に保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。0や不正なJSONはエラーを表示して初期値を使います。
+Settings の一般タブで有効・無効と間隔（1–60分）を変更できます。初期値は有効・5分です。変更は即時反映し、`<OS user local application data>/puzzella/settings.json` の `autosave` セクションに保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。0や不正なJSONはエラーを表示して初期値を使います。共通のファイル形式と保存処理は [SETTINGS.md](SETTINGS.md) を参照してください。
 
 `game/src/persistence/autosave.rs` は `GameSubState::Playing` かつ `LocalPlayerId == SessionHostId` の間だけ実時間を加算します。ポーズ・初期化・完成後・メニューでは加算しません。間隔変更・無効化・ホストでなくなった場合・セッション終了時にはタイマーをリセットします。間隔が来ても別の保存処理やタイトル入力中は待機し、空いたフレームで1回保存します。現在のローカルゲームはローカルプレイヤーがホストです。network runtime の接続・移行処理は `SessionHostId` を現在のauthorityに同期する必要があります。
 

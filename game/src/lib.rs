@@ -15,5 +15,6 @@ pub mod render;
 pub mod resources;
 mod selection;
 pub mod settings;
+pub mod settings_file;
 mod systems;
 pub use game::GamePlugin;

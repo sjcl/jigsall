@@ -2,9 +2,10 @@
 use super::runtime::{PersistenceService, PersistenceState};
 use super::SaveTitle;
 use crate::resources::{GameSubState, LocalPlayerId, SessionHostId};
+use crate::settings_file::{SettingsFile, SettingsSection};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::{io::Write, num::NonZeroU32, path::PathBuf, time::Duration};
+use std::{num::NonZeroU32, path::PathBuf, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutosaveSettings {
@@ -30,38 +31,27 @@ pub enum AutosaveSettingsError {
 pub struct AutosaveSettingsState {
     pub current: AutosaveSettings,
     pub error: Option<AutosaveSettingsError>,
-    path: Option<PathBuf>,
+    file: SettingsFile,
 }
 
 impl Default for AutosaveSettingsState {
     fn default() -> Self {
-        Self::load(directories::BaseDirs::new().map(|dirs| {
-            dirs.data_local_dir()
-                .join("puzzella/autosave-settings.json")
-        }))
+        Self::from_file(SettingsFile::default())
     }
 }
 
 impl AutosaveSettingsState {
     pub fn load(path: Option<PathBuf>) -> Self {
-        let mut state = Self {
-            current: default(),
-            error: None,
-            path,
-        };
-        if let Some(path) = &state.path {
-            match std::fs::read(path) {
-                Ok(bytes) => match serde_json::from_slice(&bytes) {
-                    Ok(settings) => state.current = settings,
-                    Err(error) => {
-                        state.error = Some(AutosaveSettingsError::Read(error.to_string()))
-                    }
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => state.error = Some(AutosaveSettingsError::Read(error.to_string())),
-            }
+        Self::from_file(SettingsFile::new(path))
+    }
+
+    fn from_file(file: SettingsFile) -> Self {
+        let (current, error) = file.load(SettingsSection::Autosave);
+        Self {
+            current,
+            error: error.map(AutosaveSettingsError::Read),
+            file,
         }
-        state
     }
 
     /// Apply immediately, like language preferences; a failed write keeps the choice usable.
@@ -71,19 +61,7 @@ impl AutosaveSettingsState {
     }
 
     fn save(&self) -> Result<(), String> {
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let parent = path.parent().ok_or("missing autosave settings directory")?;
-            std::fs::create_dir_all(parent)?;
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            file.write_all(&serde_json::to_vec_pretty(&self.current)?)?;
-            file.as_file().sync_all()?;
-            file.persist(path)?;
-            Ok(())
-        };
-        write().map_err(|error| error.to_string())
+        self.file.save(SettingsSection::Autosave, &self.current)
     }
 }
 

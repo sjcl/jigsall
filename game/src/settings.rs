@@ -1,4 +1,5 @@
 //! Display settings, independent of the menu. Resolutions are physical pixels.
+use crate::settings_file::{SettingsFile, SettingsSection};
 use bevy::{
     prelude::*,
     time::TimeSystems,
@@ -10,7 +11,6 @@ use bevy::{
 use bevy_egui::EguiPostUpdateSet;
 use serde::{Deserialize, Serialize};
 use std::{
-    io::Write,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -169,44 +169,34 @@ pub struct DisplaySettingsState {
     pub current: DisplaySettings,
     pub error: Option<DisplaySettingsError>,
     pub notice: Option<DisplaySettingsNotice>,
-    path: Option<PathBuf>,
+    file: SettingsFile,
     preview: Option<DisplayPreview>,
 }
 
 impl Default for DisplaySettingsState {
     fn default() -> Self {
-        let path = directories::BaseDirs::new()
-            .map(|dirs| dirs.data_local_dir().join("puzzella/settings.json"));
-        Self::load(path)
+        Self::from_file(SettingsFile::default())
     }
 }
 
 impl DisplaySettingsState {
     /// Passing None supports probes without reading or writing the user's settings.
     pub fn load(path: Option<PathBuf>) -> Self {
+        Self::from_file(SettingsFile::new(path))
+    }
+
+    fn from_file(file: SettingsFile) -> Self {
+        let (current, error) = file.load::<DisplaySettings>(SettingsSection::Display);
         let mut state = Self {
-            current: default(),
-            error: None,
+            current,
+            error: error.map(DisplaySettingsError::ReadFailed),
             notice: None,
-            path,
+            file,
             preview: None,
         };
-        if let Some(path) = &state.path {
-            match std::fs::read(path) {
-                Ok(bytes) => match serde_json::from_slice::<DisplaySettings>(&bytes) {
-                    Ok(settings) => match settings.validate() {
-                        Ok(()) => state.current = settings,
-                        Err(error) => state.error = Some(DisplaySettingsError::InvalidSaved(error)),
-                    },
-                    Err(error) => {
-                        state.error = Some(DisplaySettingsError::ReadFailed(error.to_string()))
-                    }
-                },
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    state.error = Some(DisplaySettingsError::ReadFailed(error.to_string()))
-                }
-            }
+        if let Err(error) = state.current.validate() {
+            state.current = default();
+            state.error = Some(DisplaySettingsError::InvalidSaved(error));
         }
         state
     }
@@ -247,21 +237,9 @@ impl DisplaySettingsState {
     }
 
     fn save(&self) -> Result<(), DisplaySettingsError> {
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        let parent = path
-            .parent()
-            .ok_or(DisplaySettingsError::DirectoryUnavailable)?;
-        let write = || -> Result<(), Box<dyn std::error::Error>> {
-            std::fs::create_dir_all(parent)?;
-            let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            file.write_all(&serde_json::to_vec_pretty(&self.current)?)?;
-            file.as_file().sync_all()?;
-            file.persist(path)?;
-            Ok(())
-        };
-        write().map_err(|error| DisplaySettingsError::SaveFailed(error.to_string()))
+        self.file
+            .save(SettingsSection::Display, &self.current)
+            .map_err(DisplaySettingsError::SaveFailed)
     }
 
     fn revert(&mut self) {
