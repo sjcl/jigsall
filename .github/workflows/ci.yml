@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+  CARGO_INCREMENTAL: "0"
+  # Bevy's debug information is large; retain debug assertions without symbols.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  format:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Read minimum Rust version from Cargo.toml
+        id: rust-version
+        shell: python
+        run: |
+          import os, re, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["rust-version"]
+          if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", version):
+              raise ValueError(f"Invalid rust-version: {version!r}")
+          version += ".0" * (2 - version.count("."))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"toolchain={version}\n")
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: ${{ steps.rust-version.outputs.toolchain }}
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  test:
+    name: Build, lint and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      # A single-config generator keeps GNS in build/src when Cargo opt-level
+      # changes, rather than a Debug/Release directory inferred differently by GNS.
+      CMAKE_GENERATOR: Ninja
+      # GNS requires a short vcpkg build path on Windows (at most 100 characters).
+      GNS_VCPKG_BUILDTREES_ROOT: ${{ github.workspace }}/target/vcpkg-trees
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Read minimum Rust version from Cargo.toml
+        id: rust-version
+        shell: python
+        run: |
+          import os, re, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["rust-version"]
+          if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}", version):
+              raise ValueError(f"Invalid rust-version: {version!r}")
+          version += ".0" * (2 - version.count("."))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"toolchain={version}\n")
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
+        with:
+          toolchain: ${{ steps.rust-version.outputs.toolchain }}
+          components: clippy
+
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            cmake ninja-build pkg-config libclang-18-dev \
+            libssl-dev libprotobuf-dev protobuf-compiler \
+            libudev-dev libwayland-dev libxkbcommon-dev \
+            libx11-dev libxcursor-dev libxi-dev libxrandr-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+
+      - name: Install Windows LLVM 18.1.8
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'LLVM-18.1.8-win64.exe'
+          $llvmDir = Join-Path $env:RUNNER_TEMP 'llvm-18.1.8'
+          Invoke-WebRequest 'https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win64.exe' -OutFile $installer
+          # SHA256 from microsoft/winget-pkgs' LLVM.LLVM 18.1.8 x64 manifest.
+          $expectedHash = '94AF030060D88CC17E9F00EF1663EBDC1126B35E16BEBDFA1E807984B70ABD8F'
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw 'LLVM installer checksum mismatch'
+          }
+          $process = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$llvmDir" -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "LLVM installation failed: $($process.ExitCode)" }
+          $libclang = Join-Path $llvmDir 'bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $libclang 'libclang.dll'))) {
+            throw 'LLVM installation did not provide libclang.dll'
+          }
+          "LIBCLANG_PATH=$libclang" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # Keep binary packages outside target so rust-cache's cleanup preserves them.
+          $binaryCache = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
+          New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
+          "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          key: ${{ matrix.os }}-llvm18
+          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
+          cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
+
+      # Reuse dependencies between configurations on each OS. Clippy covers
+      # cargo check and examples; build also links the normal application binary.
+      - name: Clippy (default features)
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+      - name: Tests and doctests (default features)
+        run: cargo test --workspace --locked
+      - name: Build (default features)
+        run: cargo build --workspace --locked
+
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
+      - name: Tests and doctests (all features)
+        run: cargo test --workspace --locked --all-features -- --skip gns_localhost
+      # Native GNS uses a process-wide singleton; run its localhost tests serially.
+      # Use the workspace to retain the same unified features and compiled artifacts.
+      - name: GNS localhost integration tests
+        run: cargo test --workspace --locked --all-features gns_localhost -- --nocapture --test-threads=1
+      - name: Build (all features)
+        run: cargo build --workspace --locked --all-features

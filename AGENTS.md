@@ -1,5 +1,19 @@
 # Repository instructions
 
+## CI and local validation
+
+通常の自動検証は [GitHub Actions CI](.github/workflows/ci.yml) に任せます。PR、`master` への push、手動実行で、`Cargo.toml` の `workspace.package.rust-version` から読み取った最低対応バージョンの Rust を使い、以下の検証を行います。
+
+- `cargo fmt --all --check`
+- Windows / Linux で、通常構成と `--all-features` 構成の workspace 全体の Clippy（全 target、警告をエラー化）、テスト・doctest、ビルド
+- GNS の localhost 通信テスト（全 feature 構成で直列実行）
+
+CI と同じ結果しか得られない検証をローカルで繰り返さないでください。通常の `cargo check`、`cargo clippy`、`cargo test`、`cargo build`、`cargo fmt --check` は CI に任せ、変更ごとの確認や完了報告のためだけに実行しません。回帰テストの追加・修正は行い、実行結果は CI で確認します。整形が必要な場合の `cargo fmt --all` は実行できます。
+
+ローカルでは、変更に関連し、CI では同じ結果を得られない検証だけを必要な範囲で行います。対象は実 GPU を使う ignored テスト、ネイティブウィンドウ・UI 操作、実機固有の問題、release の性能・メモリ計測などです。CI の失敗原因を調べるために必要な最小限の再現・修正確認、またはユーザーが明示的に依頼した検証は実行できます。その場合は CI との重複が必要な理由を説明し、全チェックを一律に再実行しないでください。
+
+CI をまだ実行していない、または結果を取得できない場合は、その事実を報告してください。ローカルで重複検証して埋め合わせたり、CI が成功したと扱ったりしません。
+
 ## Rust builds
 
 Rust の中間ビルドキャッシュは、元リポジトリと worktree の間で共有する設定を使用します。
@@ -21,7 +35,7 @@ cargo test --locked -p puzzella-game --features gns gns_localhost -- --nocapture
 
 ## Commit messages
 
-通常のコミットメッセージは、既存の履歴に合わせて `<type>: <summary>` の形式にしてください。コミット前に `git log -10 --oneline` を確認し、内容に適した種別を選んでください。
+通常のコミットメッセージは、既存の履歴に合わせて `<type>: <summary>` の形式にしてください。
 
 - 種別は小文字で記載します。既存の例には `feat`、`fix`、`perf`、`refactor`、`docs`、`test`、`style`、`ui` があります。
 - 要約は短い英語で、小文字の動詞から始め、変更内容を具体的に説明します。末尾にピリオドは付けません。

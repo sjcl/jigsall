@@ -80,6 +80,10 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 
 ## 検証・計測
 
+通常の検証は [GitHub Actions CI](.github/workflows/ci.yml) が PR と `master` への push で実行します。`Cargo.toml` の `workspace.package.rust-version` から最低対応バージョンを読み取り、整形と、Windows / Linux の通常構成・全 feature 構成の Clippy、テスト・doctest、ビルドを確認します。GNS の localhost 通信テストは直列実行します。`cargo check` 相当の検証は Clippy に含まれます。手動実行にも対応しています。
+
+エージェントは [AGENTS.md](AGENTS.md) に従い、CI と同じ結果しか得られないローカル検証を繰り返しません。以下の通常コマンドは CI の検証内容の参考です。実 GPU / ネイティブウィンドウを必要とする ignored テスト、実機 UI の確認、release の性能計測は、変更に応じてローカルで行います。
+
 ```sh
 cargo fmt --check
 cargo check --locked
