@@ -100,7 +100,9 @@ Ready and image/GPU readiness remain distinct. The client enters InGame only
 after Ready, baseline installation and decoded image availability. Initialization
 continues at UploadingGpu without regenerating or replacing the canonical store.
 The image dimensions must match the negotiated definition. Old image-selection
-and persistence results are invalidated at join start.
+and persistence results are invalidated at join start. The previous puzzle's
+preview/grid and save destination are cleared; the new puzzle gets a fresh
+persistent game identity so a later save cannot overwrite the old checkpoint.
 
 Host retained `OriginalPuzzleImage.encoded` bytes are hashed against the session
 ImageHash before listening. A mismatching original identity is rejected. Missing

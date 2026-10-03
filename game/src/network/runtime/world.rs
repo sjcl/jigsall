@@ -150,16 +150,44 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     world.remove_resource::<PuzzleDefinition>();
     *world.resource_mut::<PieceDataStore>() = default();
     *world.resource_mut::<PieceInteraction>() = default();
+    if let Some(mut selection) = world.get_resource_mut::<crate::selection::PuzzleSelection>() {
+        selection.cancel();
+    }
+    if let Some(mut input) = world.get_resource_mut::<InputState>() {
+        *input = default();
+    }
+    if let Some(mut overlay) = world.get_resource_mut::<crate::render::SelectionOverlay>() {
+        *overlay = default();
+    }
+    // Joining can replace an offline puzzle without first visiting Menu.
+    // These are game-level presentation entities, never per-piece entities.
+    let old_entities: Vec<_> = world
+        .query_filtered::<Entity, Or<(
+            With<crate::components::GridReference>,
+            With<crate::components::SelectionBox>,
+        )>>()
+        .iter(world)
+        .collect();
+    for entity in old_entities {
+        world.despawn(entity);
+    }
     if let Some(mut config) = world.get_resource_mut::<PuzzleConfig>() {
         config.image_path.clear();
     }
     if let Some(mut persistence) =
         world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
     {
-        persistence.generation = persistence.generation.wrapping_add(1);
-        persistence.busy = false;
-        persistence.autosaving = false;
-        persistence.capture = None;
+        let generation = persistence.generation.wrapping_add(1);
+        let entries = std::mem::take(&mut persistence.entries);
+        *persistence = crate::persistence::runtime::PersistenceState {
+            generation,
+            entries,
+            ..default()
+        };
+    }
+    if let Some(mut timer) = world.get_resource_mut::<crate::persistence::autosave::AutosaveTimer>()
+    {
+        *timer = default();
     }
     world.remove_resource::<crate::persistence::runtime::PendingRestore>();
     world.remove_resource::<ImageLoadError>();

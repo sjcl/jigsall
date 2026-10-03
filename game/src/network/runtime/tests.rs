@@ -1163,6 +1163,33 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         .insert_resource(crate::render::RenderReady::waiting_for_test())
         .init_resource::<bevy_egui::EguiUserTextures>();
     client.update();
+    let old_reference = client
+        .world_mut()
+        .spawn(crate::components::GridReference)
+        .id();
+    let old_selection = client
+        .world_mut()
+        .spawn(crate::components::SelectionBox)
+        .id();
+    {
+        use crate::persistence::{GameId, SaveId, SaveMetadata, SaveTitle};
+        let mut persistence = client
+            .world_mut()
+            .resource_mut::<crate::persistence::runtime::PersistenceState>();
+        persistence.game_id = GameId(42);
+        persistence.generation = 9;
+        persistence.title_dialog_open = true;
+        persistence.current_save = Some(SaveMetadata {
+            id: SaveId(3),
+            game_id: GameId(42),
+            title: SaveTitle::new("Previous offline puzzle").unwrap(),
+            revision: 7,
+            created_at: 1,
+            updated_at: 2,
+            is_autosave: false,
+        });
+        persistence.current_autosave = persistence.current_save.clone();
+    }
     join_with_transport(
         client.world_mut(),
         Fake {
@@ -1176,6 +1203,15 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         },
     )
     .unwrap();
+    assert!(client.world().get_entity(old_reference).is_err());
+    assert!(client.world().get_entity(old_selection).is_err());
+    let persistence = client
+        .world()
+        .resource::<crate::persistence::runtime::PersistenceState>();
+    assert_eq!(persistence.generation, 10);
+    assert_ne!(persistence.game_id, crate::persistence::GameId(42));
+    assert!(persistence.current_save.is_none() && persistence.current_autosave.is_none());
+    assert!(!persistence.title_dialog_open);
     for _ in 0..2000 {
         pair.host.update();
         client.update();
