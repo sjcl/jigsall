@@ -26,6 +26,11 @@ The drag vector decoder caps allocation independently of `size_hint`, stops at
 64 entries, and rejects any extra entry. Direct Rust callers are checked too.
 Existing sparse ref and dense bitset decoding limits also apply.
 
+`GameSnapshot.pieces` is bounded during deserialization to `puzzella_core::MAX_PIECES`,
+including when nested inside `JoinBaseline`. The decoder starts with zero capacity
+and does not trust the sequence size hint for large upfront allocation. Semantic
+validation separately requires exactly `definition.piece_count()` pieces.
+
 ## Capture at a command boundary
 
 Call `JoinBaseline::capture(&session, &store, &contexts, &definition)` between

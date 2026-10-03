@@ -9,7 +9,7 @@ use crate::{
 };
 use puzzella_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
-    PieceConnectivity, PuzzleDefinition,
+    PieceConnectivity, PuzzleDefinition, MAX_PIECES,
 };
 use serde::{Deserialize, Serialize};
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 4;
@@ -21,7 +21,39 @@ pub struct GameSnapshot {
     pub cursor: AuthorityCursor,
     pub definition: PuzzleDefinition,
     pub next_z_order: u32,
+    #[serde(deserialize_with = "deserialize_snapshot_pieces")]
     pub pieces: Vec<SnapshotPieceState>,
+}
+fn deserialize_snapshot_pieces<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<SnapshotPieceState>, D::Error> {
+    struct Pieces;
+    impl<'de> serde::de::Visitor<'de> for Pieces {
+        type Value = Vec<SnapshotPieceState>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "at most {MAX_PIECES} snapshot pieces")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            // Never reserve from an untrusted size_hint; grow only after real decodes.
+            // Exact definition.piece_count() is checked separately by CheckpointView.
+            let mut pieces = Vec::new();
+            while pieces.len() < MAX_PIECES {
+                let Some(piece) = seq.next_element()? else {
+                    return Ok(pieces);
+                };
+                pieces.push(piece);
+            }
+            // Probe for overflow without decoding/retaining another full piece state.
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom("Too many snapshot pieces"));
+            }
+            Ok(pieces)
+        }
+    }
+    deserializer.deserialize_seq(Pieces)
 }
 /// Trusted context from the active session/recovery negotiation, never the packet.
 #[derive(Clone, Copy, Debug)]
@@ -31,6 +63,7 @@ pub struct SnapshotExpectation<'a> {
     pub cursor: AuthorityCursor,
     pub definition: &'a PuzzleDefinition,
 }
+
 impl GameSnapshot {
     /// Captures committed state even during local or remote drags, without
     /// changing gameplay. Call between complete authority command applications,
@@ -117,3 +150,7 @@ impl GameSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod tests;
