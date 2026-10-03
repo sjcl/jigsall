@@ -1,5 +1,22 @@
 # Repository instructions
 
+## Development guidance
+
+描画移行の方針は [INSTRUCTION.md](docs/INSTRUCTION.md)、現在の構成と責務は [ARCHITECTURE.md](docs/ARCHITECTURE.md)、GPU picking の仕様と実機検証は [GPU_PICKING.md](docs/GPU_PICKING.md) を参照してください。過去の移行手順を未実装の機能とみなさず、現行コードを確認してから変更してください。Rust の最低対応バージョンと依存バージョンはルートの `Cargo.toml` を参照し、workspace 共通の依存定義と lockfile を維持してください。
+
+## Architecture invariants
+
+- `puzzella-core` はゲーム状態・命令検証・snap、`puzzella-puzzle` は形状・配置生成、`puzzella-game` は Bevy のライフサイクル・worker・描画、`puzzella-ui` は egui の画面を担当します。core に描画や UI の責務を持ち込まないでください。
+- ゲーム状態の正本は CPU の `PieceDataStore` です。入力は命令を発行し、authority が所有権・座標・snap・配置を検証します。入力や GPU から正本を直接変更せず、進捗は個別 Entity の数ではなく正本から求めてください。ネットワーク命令は認証済み player、session、sequence と照合し、client が指定した `placed` を信用しないでください。
+- 通常描画は procedural GPU renderer、通常選択は GPU picking を使います。main / point / rectangle で形状・UV・画像 alpha の判定を共有し、元画像の texture を共有してください。ピースごとの Mesh・描画 Entity や旧 batch 再構築方式を通常経路に戻さないでください。CPU 形状・選択の参照実装は feature / test 限定です。
+- 入力は現在の egui 処理と camera 更新の後に扱います。非同期選択の古い応答を無視し、release の最終座標を反映してから snap を処理してください。Ctrl / 矩形選択、相対位置を保つ multi-drag、pause / focus loss 時の保持解放を維持してください。
+- 生成・画像 decode は worker と channel に分離し、worker から World や GPU resources にアクセスしないでください。ネイティブ画像選択 dialog は非同期で実行し、結果は main thread で適用してください。
+- 形状・配置生成は version と seed による再構成を維持してください。異 OS / GPU 間の bit 一致は、検証せずに主張しないでください。
+
+## Performance measurements
+
+性能計測は release モードで行ってください。F3 の性能 overlay と `tracy` / `chrome` feature による tracing を維持してください。60 fps や異 OS での runtime 互換性は、実測・実機検証なしに主張しないでください。
+
 ## CI and local validation
 
 通常の自動検証は [GitHub Actions CI](.github/workflows/ci.yml) に任せます。PR、`master` への push、手動実行で、`Cargo.toml` の `workspace.package.rust-version` から読み取った最低対応バージョンの Rust を使い、以下の検証を行います。
