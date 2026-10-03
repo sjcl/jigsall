@@ -1,4 +1,5 @@
 use super::{
+    bulk::BulkTransferMessage,
     session::SessionConnections,
     transport::{ConnectionId, Transport, TransportError, TransportEvent},
     wire::{self, WireError, WireMessage},
@@ -27,7 +28,7 @@ pub enum ClientRouteError {
 pub enum ClientRouteOutcome {
     Authority(AppliedCommand),
     Drag(CommandSequenceStatus),
-    BulkChunk(Vec<u8>),
+    Bulk(BulkTransferMessage),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -88,7 +89,7 @@ impl ClientRouter<'_> {
                 .apply_drag_update(self.session, self.store, host, &update)
                 .map(ClientRouteOutcome::Drag)
                 .map_err(ClientRouteError::Replication),
-            WireMessage::BulkChunk(bytes) => Ok(ClientRouteOutcome::BulkChunk(bytes)),
+            WireMessage::BulkTransfer(message) => Ok(ClientRouteOutcome::Bulk(message)),
             WireMessage::ClientCommand(_) | WireMessage::SessionControl(_) => {
                 Err(ClientRouteError::WrongDirection)
             }

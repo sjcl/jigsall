@@ -144,12 +144,12 @@ there is no million-entry member-ref list or new permanent per-piece metadata.
 
 GameSnapshot remains canonical persistent state: no HELD, owner, drag delta or
 context fields. SNAPSHOT_SCHEMA_VERSION, PuzzleCheckpoint and save format are
-unchanged. Wire v5 appends DragCancelled as authority event index 4; fixed golden
+unchanged. Wire v6 retains DragCancelled as authority event index 4; fixed golden
 frames preserve earlier payload layouts and update their version header. Join
 overlays are never applied automatically to migration or save/load.
 
-Future work must connect authenticated bootstrap/Syncing/Ready, bounded bulk
-transfer, image transfer and final catch-up drag refresh. These transport/runtime
+Future work must connect authenticated bootstrap/Syncing/Ready to the bounded Bulk
+foundation, image transfer and final catch-up drag refresh. These transport/runtime
 steps are not implemented here. Remote drag rendering,
 interpolation and GPU owner buffers remain future work. SecureTransport/GNS/rate
 limiting retain their existing designs. Benchmarks are outside this change. CPU
@@ -161,8 +161,9 @@ targets.
 `multiplayer::catch_up` is a CPU coordinator keyed by authenticated `PlayerId`.
 It does not use ConnectionId, GNS handles or Steam identities, change HostRouter
 parameters, install Bevy systems, call bootstrap `begin_sync`/`promote_ready`, or
-add wire messages. JOIN_BASELINE_SCHEMA_VERSION **1**, SNAPSHOT_SCHEMA_VERSION
-**4**, WIRE_VERSION **5** and golden frames are unchanged.
+add wire messages. JOIN_BASELINE_SCHEMA_VERSION **1** and SNAPSHOT_SCHEMA_VERSION
+**4** remain unchanged. The separate Bulk substrate now uses WIRE_VERSION **6**
+and fixed v6 frames; catch-up semantics are unchanged.
 
 Call `begin_join(player, session, store, contexts, definition)` between complete
 authority operations. This one API borrows the session cursor, canonical store and
@@ -294,8 +295,9 @@ Planned transport lifecycle (not implemented by this change):
 ```text
 Authenticated
 → Syncing
-→ begin_join: baseline generation G
-→ baseline/image transfer (host gameplay continues)
+→ JoinCatchUpCoordinator::begin_join: baseline generation G
+→ optional image Bulk transfer (host gameplay continues)
+→ JoinBaseline Bulk transfer
 → baseline installed ACK(G)
 → Reliable catch-up batches
 → authority cursor ACK
@@ -304,8 +306,9 @@ Authenticated
 → Ready
 ```
 
-Bulk chunking, byte reassembly, image transfer, SessionControl sync messages, final
-refresh ACK and Ready handoff remain future work, as do disconnect coordinator
+The Bulk chunking/reassembly substrate described below is implemented separately.
+Actual image/baseline transfer, SessionControl sync messages, final refresh ACK
+and Ready handoff remain future work, as do disconnect coordinator
 wiring, remote drag rendering and Steamworks integration.
 
 CPU tests exercise baseline-pending gameplay through sparse/dense Grab, transient,
@@ -315,3 +318,45 @@ latest-only ordering/rebase cleanup, staggered peers and shared event Arcs,
 independent slow-peer overflow, byte/count/zero limits, restart recovery, failed
 capture/exhausted counters, stale generations, missing reliable/transient hooks,
 ACK validation, scope/freeze invalidation, capacity and the no-join fast path.
+
+## Bounded Bulk substrate (wire v6, integration pending)
+
+`network::bulk` provides `BulkTransferKind::{JoinBaseline, PuzzleImage}`,
+monotonic `TransferId(u64)` and typed Start/Chunk/Finish/Abort under outer wire
+kind **5**, always Reliable ordered Bulk. Start declares kind, total bytes and
+SHA-256. Limits are **64 MiB JoinBaseline**, **512 MiB PuzzleImage**, **2 active
+transfers** and **576 MiB aggregate declared in-flight bytes** per receiver.
+Zero totals and policy/checked arithmetic overflow reject before content storage.
+
+Start does not preallocate total size, including a legal 512 MiB declaration.
+Storage begins as an empty `Vec<Vec<u8>>`; only validated received Chunk Vecs are
+moved into it. `MAX_BULK_DATA_BYTES` is **32,704 bytes**, preserving the **32 KiB**
+physical wire payload including typed Postcard fields. A bounded data visitor
+ignores untrusted size hints for upfront reservation, and direct Rust wire encode
+also checks the cap. Every non-final chunk is canonical full size; the final
+chunk equals remaining bytes. This bounds image chunk metadata to 16,417 entries.
+
+Each transfer requires strict contiguous `offset == received` with checked end
+arithmetic. Duplicate/overlap/gap/out-of-order, empty, oversized and out-of-range
+chunks reject before progress/hash changes. Two transfers can interleave while
+each preserves continuity. Finish requires all declared bytes and verifies the
+incremental SHA-256; a hash mismatch drops that transfer and releases its budget.
+This hash detects corruption, not authorization; future image code must compare
+it to `SessionDefinition.image_hash` separately.
+
+Wire Abort and local `abort_local` release chunks/count/budget. `clear()` releases
+all active state and resets count/budget to zero, retaining the Start-ID high-water
+mark to reject reuse. A fresh secure connection can construct a new receiver.
+The outbound sender hashes shared content and generates one Start/Chunk/Finish
+message at a time with checked ID issuance. `CompletedBulkTransfer::chunks()` and
+`into_chunks()` permit future streaming; explicit `into_bytes()` is the only
+post-completion contiguous allocation and reports reservation failure as Result.
+
+HostRouter/ClientRouter expose typed Bulk outcomes without reassembly. This Bulk
+transfer foundation is **not yet wired into Syncing/Ready** or
+JoinCatchUpCoordinator. Bootstrap outcomes/Ready transitions, baseline capture /
+install / catch-up CPU semantics, image import's local 512 MiB policy, persistence
+and image cache are unchanged. No application decode/install, transfer scheduling,
+file streaming, compression, Steamworks or Bevy runtime coordinator is added.
+See [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md#bounded-bulk-transfer-foundation)
+for the v6 schema, receiver error semantics and fixed golden contract.

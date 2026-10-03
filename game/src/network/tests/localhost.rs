@@ -179,9 +179,12 @@ impl Live {
                                 assert_eq!(*class, MessageClass::Transient);
                                 self.drags[index] += 1;
                             }
-                            ClientRouteOutcome::BulkChunk(bytes) => {
+                            ClientRouteOutcome::Bulk(message) => {
                                 assert_eq!(*class, MessageClass::Bulk);
-                                assert_eq!(bytes, b"future chunk");
+                                assert_eq!(
+                                    WireMessage::BulkTransfer(message),
+                                    bulk_chunk(b"future chunk".to_vec())
+                                );
                                 self.bulk[index] += 1;
                             }
                         }
@@ -326,7 +329,7 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
         Vec2::splat(-50.0)
     );
     assert_eq!(live.s.host.session.cursor().sequence.0, 1);
-    let bulk = wire::encode(&WireMessage::BulkChunk(b"future chunk".to_vec())).unwrap();
+    let bulk = wire::encode(&bulk_chunk(b"future chunk".to_vec())).unwrap();
     live.host
         .send(live.host_peers[1].unwrap(), MessageClass::Bulk, &bulk)
         .unwrap();

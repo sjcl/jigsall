@@ -1,5 +1,5 @@
 use super::*;
-use crate::network::tests::FakeTransport;
+use crate::network::tests::{bulk_chunk, FakeTransport};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const ID: ConnectionId = ConnectionId::new(501);
@@ -89,10 +89,7 @@ fn forbidden_plaintext_frames() -> Vec<(MessageClass, Vec<u8>)> {
     }
     frames.push((
         MessageClass::Bulk,
-        wire::encode(&wire::WireMessage::BulkChunk(
-            b"private image bytes".to_vec(),
-        ))
-        .unwrap(),
+        wire::encode(&bulk_chunk(b"private image bytes".to_vec())).unwrap(),
     ));
     frames.push((MessageClass::Control, vec![0]));
     for class in [MessageClass::Transient, MessageClass::Bulk] {
@@ -194,7 +191,7 @@ fn plaintext_session_control_passes_and_installed_channel_encrypts_bulk() {
     );
 
     transport.install(ID, secret(), ChannelRole::Host).unwrap();
-    let message = wire::WireMessage::BulkChunk(b"private image bytes".to_vec());
+    let message = bulk_chunk(b"private image bytes".to_vec());
     let plaintext = wire::encode(&message).unwrap();
     transport.send(ID, MessageClass::Bulk, &plaintext).unwrap();
     let TransportEvent::Message { payload, .. } = transport.backend_mut().sent.pop().unwrap()
@@ -220,8 +217,27 @@ fn plaintext_session_control_passes_and_installed_channel_encrypts_bulk() {
 
 #[test]
 fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
+    assert_eq!(WIRE_VERSION, 6);
     let (mut client, mut host) = channels();
+    let secret = secret();
+    let hk = Hkdf::<Sha256>::new(Some(b"puzzella-secure-channel-v1"), secret.as_bytes());
+    for (index, label) in KEY_LABELS.iter().enumerate() {
+        for version in [5u16, 6] {
+            let mut expected = [0; 32];
+            hk.expand_multi_info(
+                &[label, &version.to_le_bytes(), secret.binding()],
+                &mut expected,
+            )
+            .unwrap();
+            if version == 6 {
+                assert_eq!(client.keys[index], expected);
+            } else {
+                assert_ne!(client.keys[index], expected);
+            }
+        }
+    }
     for class in CLASSES {
+        assert_eq!(&aad(class, 0)[25..27], &[6, 0]);
         let plaintext = frame(class);
         let record = client.seal(class, &plaintext).unwrap();
         assert_eq!(record.len(), plaintext.len() + RECORD_OVERHEAD);
@@ -440,6 +456,12 @@ fn new_pake_produces_unrelated_keys_and_old_record_cannot_cross_sessions() {
             .unwrap();
         assert_eq!(server_secret.as_bytes().len(), 16);
         assert_eq!(server_secret.as_bytes(), client_secret.as_bytes());
+        let version_offset = b"puzzella-session-auth-v1".len();
+        assert_eq!(server_secret.binding(), client_secret.binding());
+        assert_eq!(
+            &server_secret.binding()[version_offset..version_offset + 2],
+            &[6, 0]
+        );
         (client_secret, server_secret)
     }
     let (cs, hs) = authenticate();

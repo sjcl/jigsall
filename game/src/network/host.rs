@@ -1,4 +1,5 @@
 use super::{
+    bulk::BulkTransferMessage,
     session::SessionConnections,
     transport::{ConnectionId, Transport, TransportError, TransportEvent},
     wire::{self, WireError, WireMessage},
@@ -24,7 +25,7 @@ pub enum HostRouteError {
 #[derive(Debug)]
 pub enum HostRouteOutcome {
     Applied(Box<HostCommandOutcome>),
-    BulkChunk(Vec<u8>),
+    Bulk(BulkTransferMessage),
 }
 
 /// Borrow existing authority state for a frame; does not create a second authority.
@@ -69,7 +70,7 @@ impl HostRouter<'_> {
                 )
                 .map(|outcome| HostRouteOutcome::Applied(Box::new(outcome)))
                 .map_err(HostRouteError::Command),
-            WireMessage::BulkChunk(bytes) => Ok(HostRouteOutcome::BulkChunk(bytes)),
+            WireMessage::BulkTransfer(message) => Ok(HostRouteOutcome::Bulk(message)),
             _ => Err(HostRouteError::WrongDirection),
         }
     }

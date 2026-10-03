@@ -1,4 +1,5 @@
 //! One GNS message = one frame. Stable header; Postcard payload, no JSON.
+use super::bulk::{BulkTransferMessage, MAX_BULK_DATA_BYTES};
 use super::session_control::SessionControlMessage;
 use super::transport::MessageClass;
 use puzzella_core::protocol::{
@@ -6,12 +7,12 @@ use puzzella_core::protocol::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 5;
+pub const WIRE_VERSION: u16 = 6;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_SESSION_CONTROL_PAYLOAD: usize = 4096;
 pub const MAX_TRANSIENT_PAYLOAD: usize = 128;
-pub const MAX_BULK_CHUNK: usize = 32 * 1024;
+pub const MAX_BULK_WIRE_PAYLOAD: usize = 32 * 1024;
 pub const MAX_WIRE_MESSAGE: usize = HEADER_SIZE + MAX_CONTROL_PAYLOAD;
 const MAGIC: &[u8; 4] = b"PZLA";
 
@@ -20,9 +21,7 @@ pub enum WireMessage {
     ClientCommand(ProtocolCommandEnvelope),
     AuthorityEvent(ProtocolAuthorityEventEnvelope),
     DragUpdate(RemoteDragUpdate),
-    /// Bounded opaque bytes reserved for future application chunk protocols.
-    /// No snapshot/image transfer semantics or reassembly are implemented.
-    BulkChunk(Vec<u8>),
+    BulkTransfer(BulkTransferMessage),
     SessionControl(SessionControlMessage),
 }
 
@@ -38,7 +37,7 @@ impl WireMessage {
                 MessageClass::Control
             }
             Self::DragUpdate(_) => MessageClass::Transient,
-            Self::BulkChunk(_) => MessageClass::Bulk,
+            Self::BulkTransfer(_) => MessageClass::Bulk,
         }
     }
     fn kind(&self) -> u8 {
@@ -47,7 +46,7 @@ impl WireMessage {
             Self::ClientCommand(_) => 1,
             Self::AuthorityEvent(_) => 2,
             Self::DragUpdate(_) => 3,
-            Self::BulkChunk(_) => 5,
+            Self::BulkTransfer(_) => 5,
             Self::SessionControl(_) => 6,
         }
     }
@@ -70,7 +69,7 @@ pub const fn payload_limit(class: MessageClass) -> usize {
     match class {
         MessageClass::Transient => MAX_TRANSIENT_PAYLOAD,
         MessageClass::Control => MAX_CONTROL_PAYLOAD,
-        MessageClass::Bulk => MAX_BULK_CHUNK,
+        MessageClass::Bulk => MAX_BULK_WIRE_PAYLOAD,
     }
 }
 
@@ -85,11 +84,12 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
         WireMessage::AuthorityEvent(v) => binary(v)?,
         WireMessage::DragUpdate(v) => binary(v)?,
         WireMessage::SessionControl(v) => binary(v)?,
-        WireMessage::BulkChunk(v) => {
-            if v.len() > MAX_BULK_CHUNK {
+        WireMessage::BulkTransfer(v) => {
+            if matches!(v, BulkTransferMessage::Chunk { data, .. } if data.len() > MAX_BULK_DATA_BYTES)
+            {
                 return Err(WireError::Oversized);
             }
-            v.clone()
+            binary(v)?
         }
     };
     if payload.len() > kind_payload_limit(message.kind(), message.class()) {
@@ -182,7 +182,7 @@ pub fn decode(frame: &[u8]) -> Result<WireMessage, WireError> {
         1 | 4 => WireMessage::ClientCommand(parse(payload)?),
         2 => WireMessage::AuthorityEvent(parse(payload)?),
         3 => WireMessage::DragUpdate(parse(payload)?),
-        5 => WireMessage::BulkChunk(payload.to_vec()),
+        5 => WireMessage::BulkTransfer(parse(payload)?),
         6 => WireMessage::SessionControl(parse(payload)?),
         _ => unreachable!("kind checked above"),
     };

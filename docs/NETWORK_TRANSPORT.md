@@ -3,9 +3,9 @@
 The multiplayer CPU layer provides `JoinBaseline` schema 1 for same-epoch join:
 GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId order.
 Its transactional install can continue existing authority events without a new
-Grab. This foundation is not connected to WireMessage, BulkChunk, image transfer,
+Grab. This CPU foundation is not connected to Bulk transfer, image transfer,
 catch-up queues/drag refresh or Authenticated/Syncing/Ready yet. Transport version and
-golden frames now use wire v5 for Reliable DragCancelled; SecureTransport, GNS
+golden frames now use wire v6 for typed bounded Bulk framing; SecureTransport, GNS
 and rate limiting retain their existing designs. Migration uses snapshot only
 plus a new epoch; save/load use checkpoint only; both discard
 drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
@@ -14,7 +14,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 snapshot/image transfer, interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v5 and snapshot schema 4. `core` has no transport/native dependency.
+wire v6 and snapshot schema 4. `core` has no transport/native dependency.
 
 ```text
 protocol / replication (existing gameplay semantics)
@@ -393,7 +393,7 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v5
+## Wire v6
 
 Each inner Puzzella frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
@@ -401,11 +401,11 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 5 |
-| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkChunk, 6 SessionControl |
+| 4..6 | u16 wire version, little-endian, currently 6 |
+| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
-| 12.. | Postcard 1.x binary serialization of the indicated protocol type; Bulk is raw bytes |
+| 12.. | Postcard 1.x binary serialization of the indicated protocol type, including BulkTransferMessage |
 
 `WireMessage::ClientCommand` maps to kind 1 or 4 based on its command. This allows
 the Transient limit to be checked before deserializing. After decoding, its actual
@@ -414,7 +414,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v5 Postcard field order and enum representation are part of the wire contract.
+The v6 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -424,14 +424,16 @@ one authority cursor, does not resend a target, commits no delta and performs no
 snap. Existing event indices and payload field order are unchanged. It retains
 version 4's mandatory PAKE-derived AEAD and encrypted SecureChannelReady,
 Rotate / RotationCommitted, RotateDrag / DragRotationCommitted and the
-RemoteDragUpdate basis sequence. Only version 5 is decoded; pre-release versions
-1 through 4 are rejected without a compatibility decoder. WIRE_VERSION also binds
-PAKE and application AEAD derivation, so v4 and v5 peers cannot mix. No cryptographic
-design change is made.
-Fixed v5 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+RemoteDragUpdate basis sequence. Version 6 replaces kind 5's opaque bytes with
+typed Start/Chunk/Finish/Abort. Gameplay payload layouts remain unchanged; only
+their version header advances. Only version 6 is decoded; pre-release versions
+1 through 5 and future versions are rejected without a compatibility decoder.
+WIRE_VERSION also binds PAKE context, HKDF application keys and secure record AAD
+to v6. No cryptographic design change is made.
+Fixed v6 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
-AuthAccepted and SecureChannelReady. Each checks encoding
+AuthAccepted, SecureChannelReady and all four Bulk variants. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
@@ -452,7 +454,7 @@ restore presentation. This keeps drag updates O(1) with scalar metadata only.
 | Control | 262,144 |
 | SessionControl (Control lane) | 4,096 |
 | Transient | 128 |
-| Bulk chunk | 32,768 |
+| Bulk transfer message | 32,768 |
 | Maximum whole plaintext frame | 262,156 (includes header) |
 | Maximum secure outer record | 262,180 (includes sequence/tag) |
 
@@ -467,10 +469,78 @@ worst-case word varints. Drag packets contain only scalar identity/context/tick/
 delta fields and are bounded by 140 plaintext bytes including the header,
 or 164 bytes as a secure record.
 
-BulkChunk is only a size-bounded opaque carrier for testing/reserving a class.
-It has no transfer identifiers, offsets, completion, compression or image logic.
-A future 16 MB snapshot must have a bounded application chunk protocol; the
-current frame limits deliberately do not permit a giant single message.
+## Bounded Bulk transfer foundation
+
+`network::bulk` is backend-independent and has no connection/native/ECS/store
+dependency. A caller owns one `BulkTransferReceiver` and one `BulkTransferSender`
+per secure connection/direction. Outer kind **5** always uses Reliable ordered
+`MessageClass::Bulk`, with these Postcard variants in stable index/field order:
+
+| Index | Variant | Fields in order |
+| --- | --- | --- |
+| 0 | Start | TransferId(u64), BulkTransferKind, total_size(u64), sha256([u8; 32]) |
+| 1 | Chunk | TransferId, offset(u64), data(Vec<u8>) |
+| 2 | Finish | TransferId |
+| 3 | Abort | TransferId |
+
+Kind indices are **0 JoinBaseline**, **1 PuzzleImage**. Production limits are:
+
+| Bound | Limit |
+| --- | --- |
+| `MAX_BULK_WIRE_PAYLOAD` | 32,768 bytes including typed Postcard metadata |
+| `MAX_BULK_DATA_BYTES` | 32,704 bytes (32 KiB minus a 64-byte margin) |
+| JoinBaseline declared total | 64 MiB |
+| PuzzleImage declared total | 512 MiB |
+| Active transfers per receiver | 2 |
+| Total declared in-flight per receiver | 576 MiB |
+
+`BulkTransferLimits` allows small injected test policies. Start rejects zero,
+kind-cap excess, active-count excess and checked aggregate overflow/excess **before
+creating content storage**. Start does not preallocate total size: it stores only
+metadata, an incremental SHA-256 and an empty `Vec<Vec<u8>>` with zero capacity.
+Accepted Start IDs must increase strictly. Completion, Abort and `clear()` retain
+the last accepted ID, preventing reuse without an unbounded tombstone set; a new
+secure connection may construct a new receiver. Rejected Starts do not advance it.
+
+Chunk's bounded serde visitor ignores untrusted length prefixes/size hints for
+reservation, growing from `Vec::new()` only on actual decoded bytes. It rejects
+more than 32,704 bytes; wire encode also rejects oversized direct Rust objects
+before serialization. Tests confirm even maximum u64 ID/offset encodings fit the
+64-byte margin. Receiver additionally rejects empty or oversized chunks, requires
+`offset == received`, uses checked `offset + len`, and rejects ends past total.
+Duplicate/overlap offsets and gaps/out-of-order offsets return OffsetMismatch.
+Each non-final chunk is canonical full size; the final chunk must equal all
+remaining bytes (1..=32,704). Thus metadata is bounded by
+`ceil(total / MAX_BULK_DATA_BYTES)`, at most 16,417 chunks for a 512 MiB image.
+
+Validated data Vecs are moved into chunk storage, without copying into a growing
+contiguous buffer. SHA-256 updates incrementally only after validation. Finish
+requires exact received total and verifies SHA-256 before yielding
+`CompletedBulkTransfer`; hash mismatch drops content and reclaims the declared
+budget. Invalid Start/Chunk and premature Finish leave prior state intact.
+Unknown transfer IDs return a typed error. Abort and `abort_local(id)` remove an
+active transfer/drop its chunks/reclaim its budget; `clear()` releases all active
+storage and sets active count/declared bytes to zero.
+
+The sender checks kind size, issues checked monotonic IDs, hashes an `Arc<[u8]>`,
+then generates Start, canonical contiguous Chunks and Finish one message per
+`next_message()` call. No whole-message-list allocation occurs. Counter exhaustion
+is an error. Completed content exposes `chunks()` and consuming `into_chunks()`
+for future storage streaming; explicit post-completion `into_bytes()` performs a
+fallible `try_reserve_exact` before flattening. The caller owns completed content:
+in-flight budgets bound receiver-active transfers, not caller-retained completions.
+SHA-256 provides corruption detection, **not authorization or provenance**. Future
+PuzzleImage installation must separately compare the descriptor hash to
+`SessionDefinition.image_hash`.
+
+HostRouter/ClientRouter return typed `Bulk(BulkTransferMessage)` after existing
+authentication/routing checks; routers do not reassemble. This Bulk transfer
+foundation is **not yet wired into Syncing/Ready**, JoinCatchUpCoordinator, image
+cache/negotiation, persistence or runtime scheduling. Bootstrap outcomes and Ready
+promotion are unchanged. No compression, file streaming or application payload
+decode/install is implemented. Bulk's 8 MiB/s, 16 MiB burst and 32 KiB minimum
+charge policy and GNS physical record limits remain unchanged. Snapshot schema
+**4** and JoinBaseline schema **1** remain unchanged.
 
 ## Routing and frame integration
 
