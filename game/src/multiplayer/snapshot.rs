@@ -32,6 +32,9 @@ pub struct SnapshotExpectation<'a> {
     pub definition: &'a PuzzleDefinition,
 }
 impl GameSnapshot {
+    /// Captures committed state even during local or remote drags, without
+    /// changing gameplay. Call between complete authority command applications,
+    /// pairing this borrowed store with its last applied cursor.
     pub fn capture(
         store: &PieceDataStore,
         definition: &PuzzleDefinition,

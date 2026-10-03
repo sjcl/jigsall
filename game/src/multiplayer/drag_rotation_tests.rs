@@ -6,6 +6,91 @@ use puzzella_core::protocol::*;
 use puzzella_core::session::*;
 
 #[test]
+fn snapshots_during_protocol_drag_preserve_rotation_rebase_without_committing_later_updates() {
+    let mut s = Simulation::new(&[Vec2::splat(1000.); 2], &[(0, 1)]);
+    let initial = s.store.states.clone();
+    s.grab(A, 0, &[0]);
+    s.update(A, 0, 0, Vec2::new(100., 0.));
+    let rotation = s.rotate_drag(1, Some(0), Vec2::new(100., 0.), 1);
+    s.deliver(&rotation, true);
+    let rebased = s.store.states.clone();
+    assert_ne!(rebased[0].position, initial[0].position);
+    assert_eq!(puzzella_core::decode_rotation(rebased[0].flags), 1);
+    let update = s.update(A, 1, 1, Vec2::new(50., 0.));
+    let active = s
+        .contexts
+        .active_drag(&s.session, &s.store, A)
+        .unwrap()
+        .clone();
+    let snapshot =
+        GameSnapshot::capture(&s.store, &s.definition, SESSION, s.session.cursor()).unwrap();
+    assert_eq!(s.store.states, rebased);
+    assert_eq!(
+        s.contexts.active_drag(&s.session, &s.store, A),
+        Some(&active)
+    );
+    for (piece, canonical) in snapshot.pieces.iter().zip(rebased.iter()) {
+        assert_eq!(piece.position, canonical.position);
+        assert_eq!(piece.z_order, canonical.z_order);
+        assert_eq!(puzzella_core::decode_rotation(piece.flags), 1);
+    }
+    for peer in &mut s.peers {
+        peer.replica
+            .apply_drag_update(&peer.session, &peer.store, HOST, &update)
+            .unwrap();
+        let remote = peer
+            .replica
+            .remote_drag(&peer.session, &peer.store, A)
+            .unwrap()
+            .clone();
+        assert_eq!(remote.delta, Vec2::new(50., 0.));
+        let peer_snapshot =
+            GameSnapshot::capture(&peer.store, &s.definition, SESSION, peer.session.cursor())
+                .unwrap();
+        assert_eq!(peer_snapshot, snapshot);
+        assert_eq!(
+            peer.replica.remote_drag(&peer.session, &peer.store, A),
+            Some(&remote)
+        );
+        peer.replica
+            .install_snapshot(
+                &mut peer.session,
+                &mut peer.store,
+                &snapshot,
+                SnapshotExpectation {
+                    session: SESSION.id,
+                    image_hash: SESSION.image_hash,
+                    cursor: snapshot.cursor,
+                    definition: &s.definition,
+                },
+            )
+            .unwrap();
+        assert!(peer
+            .replica
+            .remote_drag(&peer.session, &peer.store, A)
+            .is_none());
+        assert!(peer.store.held_by.is_empty());
+        assert!(peer.store.drag.members.is_empty());
+        assert_eq!(peer.store.drag.delta, Vec2::ZERO);
+        assert!(peer
+            .store
+            .connectivity
+            .same_component(PieceId(0), PieceId(1)));
+        for (piece, canonical) in peer.store.states.iter().zip(rebased.iter()) {
+            assert_eq!(piece.position, canonical.position);
+            assert_eq!(piece.z_order, canonical.z_order);
+            assert_eq!(puzzella_core::decode_rotation(piece.flags), 1);
+            assert_eq!(piece.flags & HELD, 0);
+        }
+        assert_eq!(
+            peer.replica
+                .apply_drag_update(&peer.session, &peer.store, HOST, &update),
+            Err(ReplicationError::MissingDragContext)
+        );
+    }
+}
+
+#[test]
 fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_and_peers() {
     let mut s = Simulation::new(&[Vec2::splat(1000.); 5], &[(0, 1), (0, 2), (3, 4)]);
     s.peers[0].store.connectivity = puzzella_core::PieceConnectivity::new(5);

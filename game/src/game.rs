@@ -331,7 +331,7 @@ mod tests {
         .unwrap();
         let encoded = encoded.into_inner();
         let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
-        for complete in [false, true] {
+        for (complete, during_drag) in [(false, false), (false, true), (true, false)] {
             let definition = PuzzleDefinition {
                 generator_version: GENERATOR_VERSION,
                 seed: 271,
@@ -453,7 +453,8 @@ mod tests {
                 app.update();
             }
             if !complete {
-                // A UI save queued in the release frame must capture committed delta.
+                // Exercise both a save during an ongoing drag and a UI save
+                // queued in the release frame, through the actual GamePlugin schedule.
                 {
                     let mut store = app.world_mut().resource_mut::<PieceDataStore>();
                     store.apply_command(
@@ -462,18 +463,25 @@ mod tests {
                         Some(&definition),
                         puzzella_core::LOCAL_PLAYER,
                     );
-                    // The interaction adapter clears presentation drag when it queues release.
-                    store.drag = default();
+                    if during_drag {
+                        store.drag.members = std::sync::Arc::from([1 << 1]);
+                        store.drag.delta = Vec2::splat(100.0);
+                    } else {
+                        // The interaction adapter clears presentation when it queues release.
+                        store.drag = default();
+                    }
                 }
-                let mut members = PieceBitSet::new(4);
-                members.insert(PieceId(1));
-                app.world_mut().write_message(ClientCommand {
-                    player: LOCAL_PLAYER,
-                    command: PieceCommand::ReleaseGroup {
-                        members,
-                        delta: Vec2::splat(9.0),
-                    },
-                });
+                if !during_drag {
+                    let mut members = PieceBitSet::new(4);
+                    members.insert(PieceId(1));
+                    app.world_mut().write_message(ClientCommand {
+                        player: LOCAL_PLAYER,
+                        command: PieceCommand::ReleaseGroup {
+                            members,
+                            delta: Vec2::splat(9.0),
+                        },
+                    });
+                }
             }
             app.world_mut()
                 .resource_scope(|world, service: Mut<PersistenceService>| {
@@ -506,8 +514,21 @@ mod tests {
             if !complete {
                 assert_eq!(
                     repo.load(metadata.id).unwrap().save.checkpoint.pieces[1].position,
-                    checkpoint.pieces[1].position + Vec2::splat(9.0)
+                    checkpoint.pieces[1].position
+                        + if during_drag {
+                            Vec2::ZERO
+                        } else {
+                            Vec2::splat(9.0)
+                        }
                 );
+                if during_drag {
+                    let store = app.world().resource::<PieceDataStore>();
+                    assert_eq!(store.states[1].position, checkpoint.pieces[1].position);
+                    assert_eq!(store.held_by.get(&PieceId(1)), Some(&LOCAL_PLAYER));
+                    assert_eq!(&*store.drag.members, &[1 << 1]);
+                    assert_eq!(store.drag.delta, Vec2::splat(100.0));
+                    assert_ne!(store.states[1].flags & crate::resources::pieces::HELD, 0);
+                }
             }
             // Another writer advances the save while this session retains its
             // loaded revision. A stale Save must leave both the game and file intact.

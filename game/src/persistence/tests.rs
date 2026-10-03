@@ -305,15 +305,109 @@ fn restore_uses_shared_dsu_validation_and_resets_presentation() {
         .unwrap(),
         save.checkpoint
     );
-    store.drag.members = Arc::from([1]);
-    assert!(matches!(
-        PuzzleCheckpoint::capture(
-            &store,
-            &save.checkpoint.definition,
-            save.checkpoint.image_hash
-        ),
-        Err(crate::checkpoint::CheckpointError::ActiveLocalDrag)
-    ));
+}
+
+#[test]
+fn checkpoint_during_drag_captures_canonical_state_and_leaves_drag_untouched() {
+    use puzzella_core::{PieceCommand, LOCAL_PLAYER};
+    let expected = save().checkpoint;
+    let mut store = PieceDataStore::default();
+    expected.install(&mut store).unwrap();
+    store.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Grab(PieceId(1)),
+        Some(&expected.definition),
+        LOCAL_PLAYER,
+    );
+    store.drag.members = Arc::from([0b1010]);
+    let states = store.states.clone();
+    let members = store.drag.members.clone();
+    let held_by = store.held_by.clone();
+    let dirty = store.dirty_pieces.clone();
+    let epoch = store.epoch;
+    assert!(!members.is_empty());
+    assert_eq!(held_by.len(), 2);
+    for delta in [Vec2::ZERO, Vec2::new(100.0, 200.0)] {
+        store.drag.delta = delta;
+        let checkpoint =
+            PuzzleCheckpoint::capture(&store, &expected.definition, expected.image_hash).unwrap();
+        for (piece, canonical) in checkpoint.pieces.iter().zip(states.iter()) {
+            assert_eq!(piece.position, canonical.position);
+            assert_eq!(piece.z_order, canonical.z_order);
+        }
+        assert_eq!(checkpoint.pieces[0], expected.pieces[0]);
+        assert_eq!(checkpoint.pieces[1].flags, expected.pieces[1].flags);
+        assert_eq!(store.states, states);
+        assert_eq!(store.held_by, held_by);
+        assert!(Arc::ptr_eq(&store.drag.members, &members));
+        assert_eq!(store.drag.delta, delta);
+        assert_eq!(store.dirty_pieces, dirty);
+        assert_eq!(store.epoch, epoch);
+    }
+}
+
+#[test]
+fn save_during_rebased_drag_restores_committed_rotation_and_discards_only_transient_delta() {
+    use puzzella_core::{decode_rotation, PieceBitSet, PieceCommand, LOCAL_PLAYER};
+    let mut save = save();
+    let mut store = PieceDataStore::default();
+    save.checkpoint.install(&mut store).unwrap();
+    let before_grab = store.states.clone();
+    store.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::Grab(PieceId(1)),
+        Some(&save.checkpoint.definition),
+        LOCAL_PLAYER,
+    );
+    let mut members = PieceBitSet::new(store.len());
+    members.extend([PieceId(1), PieceId(3)]);
+    store.drag.members = members.words().clone();
+    store.drag.delta = Vec2::new(100.0, 0.0);
+    let result = store.apply_command(
+        LOCAL_PLAYER,
+        &PieceCommand::RotateDrag {
+            members: members.clone(),
+            delta: store.drag.delta,
+            quarter_turns: 1,
+        },
+        Some(&save.checkpoint.definition),
+        LOCAL_PLAYER,
+    );
+    assert!(result.drag_rebased);
+    assert_eq!(result.rotated, 2);
+    assert_eq!(store.drag.delta, Vec2::ZERO);
+    assert_ne!(store.states[1].position, before_grab[1].position);
+    store.drag.delta = Vec2::new(50.0, 0.0);
+    store.selected_pieces = members.clone();
+    store.sync_highlights();
+    let rebased = store.states.clone();
+    save.checkpoint = PuzzleCheckpoint::capture(
+        &store,
+        &save.checkpoint.definition,
+        save.checkpoint.image_hash,
+    )
+    .unwrap();
+    let loaded = SaveCodec::decode(&SaveCodec::encode(&save).unwrap()).unwrap();
+    loaded.checkpoint.install(&mut store).unwrap();
+    for (piece, canonical) in store.states.iter().zip(rebased.iter()) {
+        assert_eq!(piece.position, canonical.position);
+        assert_eq!(piece.z_order, canonical.z_order);
+        assert_eq!(
+            decode_rotation(piece.flags),
+            decode_rotation(canonical.flags)
+        );
+        assert_eq!(piece.flags & PLACED, canonical.flags & PLACED);
+        assert_eq!(piece.flags & (HELD | SELECTED | PREVIEW), 0);
+    }
+    assert_eq!(decode_rotation(store.states[1].flags), 1);
+    assert_eq!(store.states[0].position, before_grab[0].position);
+    assert_eq!(store.placed_count, 1);
+    assert!(store.connectivity.same_component(PieceId(1), PieceId(3)));
+    assert!(!store.connectivity.same_component(PieceId(0), PieceId(1)));
+    assert!(store.held_by.is_empty());
+    assert!(store.selected_pieces.is_empty());
+    assert!(store.drag.members.is_empty());
+    assert_eq!(store.drag.delta, Vec2::ZERO);
 }
 #[test]
 fn invalid_checkpoint_install_is_transactional() {

@@ -41,15 +41,13 @@ pub(crate) struct CheckpointView<'a> {
 }
 impl PuzzleCheckpoint {
     /// Explicit checkpoint only: O(N), with no per-piece entity/map allocation.
-    /// The adapter must finish or discard local presentation drag before capture.
+    /// Captures committed canonical state, ignoring holds and presentation drag.
+    /// Capture never commits or cancels a drag, including after a rotation rebase.
     pub fn capture(
         store: &PieceDataStore,
         definition: &PuzzleDefinition,
         image_hash: ImageHash,
     ) -> Result<Self, CheckpointError> {
-        if !store.drag.members.is_empty() {
-            return Err(CheckpointError::ActiveLocalDrag);
-        }
         // Validate before counting/indexing an untrusted definition.
         definition
             .validate()
@@ -225,7 +223,6 @@ impl CheckpointView<'_> {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CheckpointError {
-    ActiveLocalDrag,
     UnsupportedSchema(u16),
     InvalidDefinition(&'static str),
     WrongSession,

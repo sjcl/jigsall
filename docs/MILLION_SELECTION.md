@@ -21,7 +21,7 @@
 | drag release | N個のMove + N個のRelease、その後各pieceの完了Messageとsnap |
 | held_by | HashMap<PieceId, PlayerId> |
 | authority boundary | coreのPieceCommand / ClientCommand、serialized ClientCommandEnvelope。player / reliable control / move sequence / authority epochの検証 |
-| migration / snapshot | schema 2、dense position / Z / PLACEDだけを共有。active local dragをcapture時に拒否。installでselection / holds / presentationをreset |
+| migration / snapshot | schema 2、dense position / Z / PLACEDだけを共有。installでselection / holds / presentationをreset。現行のactive drag中のcaptureは[HOST_MIGRATION.md](HOST_MIGRATION.md)を参照 |
 | benchmarks | release CPU pointer 1k / 10k / 100k / 1M、実GPU near / medium / entire、opaque / translucent、同じ4サイズ |
 
 ## 変更後の型とフロー
@@ -116,7 +116,7 @@ all-validの全選択drag中はselected / requested / accepted / extractedが同
 
 ReleaseGroupのdeltaはauthorityに保持しているpositionに対する最終移動です。group pointer updatesはlocal presentationのみです。将来のtransport adapterも同じgroupの途中にper-piece absolute Moveを送らず、reliable grabとfinal releaseを使う契約です。通信中のgroup presentation同期は今後の作業です。
 
-snapshot schema 2とdense snapshot形式は変更していません。selection / original / preview / drag / ownerはsnapshotへ追加していません。captureのactive drag拒否、restoreのholds / selection reset、GPU epoch更新を維持し、既存migration testsを実行しています。disconnectの既存release_player_holdsは互換性のためID Vecを返しますが、通常dragの開始 / release / idle経路は使いません。
+このselection実装時点ではsnapshot schema 2とdense snapshot形式を変更していません。現行schema 4でもselection / original / preview / drag / ownerはsnapshotへ追加せず、active drag中はcommitted canonical stateだけをcaptureします。restoreのholds / selection reset、GPU epoch更新を維持し、未確定deltaを破棄します。詳細は[HOST_MIGRATION.md](HOST_MIGRATION.md)を参照してください。disconnectの既存release_player_holdsは互換性のためID Vecを返しますが、通常dragの開始 / release / idle経路は使いません。
 
 ## Benchmark環境と手順
 

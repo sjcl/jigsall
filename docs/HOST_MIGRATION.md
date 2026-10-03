@@ -148,12 +148,15 @@ per-piece Entity、Mesh、Handle、String、HashMapは追加しない。
 - placed_count / progress（snapshotのPLACEDから再計算）
 - 画像bytesやGPU texture
 
-`GameSnapshot::capture()` はsource storeを変更せず、presentation flagsを除いて保存する。
-`store.drag.members` が空でなければ、dense stateを割り当てる前に
-`SnapshotError::ActiveLocalDrag` を返す。deltaがzeroでもactiveなmembersがあれば拒否する。
-現在の表示位置は `states.position + drag.delta` なので、active drag中のdense stateだけを
-保存すると、そのdragの開始位置まで戻る可能性がある。captureはdeltaをpositionへ加算せず、
-確定・破棄・Release・snapの判断はruntime adapterが行う。
+`GameSnapshot::capture()` は通常 Save と同じ `PuzzleCheckpoint::capture()` を使い、
+source storeを変更せず、確定済みの canonical state のみを保存する。
+active local / remote drag があってもcaptureでき、migration / recoveryはDragの終了を待たない。
+表示位置が `states.position + drag.delta` でも保存するのは `states.position` だけで、
+deltaを加算せず、captureのためにcancel / Release / snapしない。
+hold / holder identity / active drag context / transient deltaはserializeせず、restore時に破棄する。
+`RotateDrag` / `DragRotationCommitted` でcommit / rebase済みの位置と回転は保存し、
+その後の未確定移動だけを捨てる。Grab時にcanonical Zがfrontへ更新済みならそのZも保存する。
+Grab開始前の完全なstateへのrollback履歴は持たない。
 `SnapshotExpectation` はsession/recovery交渉と現在のPuzzleDefinitionから作る期待値。
 image_hashはsession開始時に合意したSessionDefinitionから取得する。
 `install_migration_snapshot()` もAuthoritySessionのimage_hashを使い、受信snapshotの
@@ -170,26 +173,39 @@ invalid snapshotはResultで拒否し、storeを変更しない。
 installはdense statesとconnectivity、placed_count / next_z_orderを復元し、
 store内のhold、selection、dragのmembers/delta、以前のhighlight caches、dirty IDsを全て消す。
 GPU側のbox previewなど別resourceのcleanupは、下記TODOのbackend adapterが担当する。
-placedとpositionとz_orderはそのまま保存する。migration時にsnapは実行しない。
+placedとpositionとrotationとz_orderはそのまま保存する。migration時にsnapは実行しない。
 新しいローカルepochを割り当てるので、既存 `prepare_piece_upload()` の次回実行が
 full initial uploadを行い、古いGPU readbackは無効になる。
 通常のその次のidle frameでは全量uploadもdirty rangeも発生しない。
+
+`ProtocolDragContexts` / `PeerReplicationState` はsession、authority epoch、store generationで
+contextをscopeする。installはstore generationを更新するため、外部から直接restoreしても
+旧contextは読めず、次のcommand/event/update適用時に破棄される。
+`PeerReplicationState::install_snapshot()` は成功時に直ちにcontextをclearする。
+migration後の旧epochのDragUpdate / Release / RotateDragおよび対応eventは、
+canonical state変更前のepoch検証で拒否される。
 
 capture / validate / installは稀なcheckpoint処理としてO(N)。
 join、reconnect、host migration、明示的checkpointでのみ呼び出す。
 画像とPuzzleDefinition resourceは呼び出し側が既に保持している前提で、
 installは一致を要求し、画像resourceを置き換えない。
 
+canonical stateのcutは、完了したcommand適用の間で取得する。通常Saveはmain worldの
+PostUpdateで `apply_piece_commands` 後に実行され、`Res<PieceDataStore>` のread borrowと
+command側の `ResMut<PieceDataStore>` が同時変更を防ぐ。multiplayerはscheduled systemを
+追加しない同期APIで、`ProtocolDragContexts::apply_replicated()` はgameplay変更とcursor更新を
+完了してから戻る。adapterはその呼び出し間でstoreとlast applied cursorを組にしてcaptureする。
+peerでも `apply_event()` が完了してcursorを記録した境界を使う。Drag完了待ちやtimeoutは不要。
+
 ## Graceful migration
 
 例: Aがhost、B/Cがclient、cursor 3:100。
 
 1. SessionBackendが次host候補Bを外部で決める。
-2. runtime adapterが新規入力を停止し、host自身のGPU dragをfinishする。
-   Move(final position)とReleaseを生成するだけでなく、hostでcommandを適用し、
-   snap判定とauthority state/cursorの確定まで済ませる。pending commandも処理する。
-3. その後 `begin_graceful(B)` でauthorityとcommand処理を凍結する。
-   この例の最終cursor 3:100はdrag確定後の値。
+2. runtime adapterが新規入力を停止し、実行中のauthority command適用を完了する。
+   active dragをfinish / Releaseする必要はなく、playerのDrag終了を待たない。
+3. `begin_graceful(B)` でauthorityとcommand処理を凍結する。
+   この例の最終cursor 3:100は最後に適用済みのcanonical stateに対応する値。
 4. `GameSnapshot::capture()` でfinal snapshotを作り、Bへ転送する。
 5. Bが信頼済みexpectationで `snapshot.validate()` を行い、検証済みsnapshotを保持してACKする。
    この時点ではstoreへinstallしない。
@@ -214,15 +230,16 @@ backendはsourceとcursorの通知を各peerに伝え、同じ交渉結果を再
 ## Abrupt loss と recovery source
 
 1. `host_lost()` で直ちに凍結する。正常transfer途中のhost lossもこの経路へ切り替える。
-   runtime adapterはpeer自身の未確定local drag/predictionを破棄し、
-   `drag.members = empty` / `drag.delta = zero` にする。deltaをcanonical stateへcommitしない。
+   runtime adapterはpeer自身の未確定local drag/predictionを停止する。
+   capture前に `drag.members` / `drag.delta` をclearする必要はなく、
+   restore時に破棄する。deltaをcanonical stateへcommitしない。
    現在のfinishや通常cancelの確定経路はMove/Releaseを生成するため、この破棄には使わない。
 2. Steam Lobby等の外部backendが新ownerを選び、`host_changed(new_host)` を通知する。
    owner通知が先に来た場合、Activeから直接recoveryへ入ることもできる。
 3. peerのsession / player / last applied cursorを収集する。
 4. `choose_recovery_source()` で同session・失われたepochの候補に限定して選ぶ。
    cursor最大、同cursorなら最小PlayerIdが勝つ。入力順序によらない。
-5. source peerはprediction破棄後、最後に受信・適用済みのauthoritative dense stateから
+5. source peerはactive dragを残したまま、最後に受信・適用済みのcanonical dense stateから
    `GameSnapshot::capture()` する。選んだsourceからsnapshotを受け、
    認証済みsourceと完全一致するcursorを確認する。
 6. `install_migration_snapshot()` で復元し、epoch + 1 / sequence 0で再開する。
@@ -280,7 +297,9 @@ Steamもsocketも使わないテストを追加した。
   placed_count再計算、実際のPieceUpload full upload、次idleの空upload、再Grab。
 - game: abrupt B=4:801/C=D=4:805、epoch 5:0と旧epoch command/eventの拒否。
 - game: Bが10/11/25を保持した状態から切断、他playerの12は維持、dirty IDs。
-- game: active local drag（membersあり、delta=(100, 200)）のcapture拒否とstore全状態の維持。
+- game: active local drag（membersあり、delta=(100, 200)）中のcanonical capture成功とstore全状態の維持。
+- game: rotation rebase後のtransient deltaを持つhost / remote peer snapshotの一致とrestore時のdrag破棄。
+- game: migration後の旧epochのDragUpdate / Release / RotateDrag拒否とcanonical stateの維持。
 - game: wrong session/image hash/count、NaN、±Infinity、unsupported generator/schema（旧version 1を含む）、
   古い/未来cursor、異なるdefinition、不正grid/Z/flagsをResultで原子的に拒否。
 - game: snapshot検証失敗時はauthorityを有効にしない。image_hash不一致でもauthority/store/GPU epochを変更しない。
@@ -326,8 +345,8 @@ masterへのrebase後の実行結果: 上記4コマンドは全て成功。works
   一致検証は実装済み。今回は参加済みclientが同じ画像を既に持つ前提。
 - reconnect timeout、再試行、ownerがrecovery途中で再び消失した場合の交渉再開、
   重複callbackの吸収、欠落eventの再送/resync。
-- runtime adapterでgraceful前のlocal drag確定と、abrupt loss時のprediction破棄を接続する。
-  captureのActiveLocalDragガードは実装済み。入力経路の変更・自動commitはこの基盤には含めない。
+- runtime adapterでcommand適用境界のcaptureと、migration / recovery時の入力停止・
+  restore後のprediction破棄を接続する。captureはactive drag中も可能で、自動commitはしない。
 - runtime wiring時はgesture、pending selection/readback、overlay、queued command/event、
   GameData progress/completionを同期してから入力を再開する。
   PieceDataStoreのpresentation stateは既にresetするが、これらの別resourceのcleanupは

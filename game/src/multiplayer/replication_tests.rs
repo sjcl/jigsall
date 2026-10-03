@@ -1184,6 +1184,14 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
         peer.session.host_changed(B).unwrap();
         install_migration_snapshot(&mut peer.session, &mut peer.store, &s.definition, &snapshot)
             .unwrap();
+        assert!(peer.store.held_by.is_empty());
+        assert!(peer.store.drag.members.is_empty());
+        assert_eq!(peer.store.drag.delta, Vec2::ZERO);
+        assert!(peer
+            .replica
+            .remote_drag(&peer.session, &peer.store, A)
+            .is_none());
+        let restored = peer.store.states.clone();
         assert_eq!(
             peer.replica
                 .apply_drag_update(&peer.session, &peer.store, B, &update),
@@ -1200,6 +1208,32 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
             ),
             Err(ReplicationError::Protocol(ProtocolError::WrongEpoch))
         );
+        let delayed_rotation = ProtocolAuthorityEventEnvelope {
+            event: ProtocolAuthorityEvent::DragRotationCommitted(
+                puzzella_core::protocol::DragRotationCommitted {
+                    player: A,
+                    grab_sequence: 0,
+                    basis_sequence: 1,
+                    through_tick: Some(0),
+                    final_delta: Vec2::ONE,
+                    quarter_turns: 1,
+                    result: ReleaseResultFingerprint(0),
+                },
+            ),
+            ..pending.clone()
+        };
+        assert_eq!(
+            peer.replica.apply_event(
+                &mut peer.session,
+                &mut peer.store,
+                HOST,
+                &delayed_rotation,
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER,
+            ),
+            Err(ReplicationError::Protocol(ProtocolError::WrongEpoch))
+        );
+        assert_eq!(peer.store.states, restored);
         assert_eq!(
             peer.replica.apply_event(
                 &mut peer.session,
@@ -1217,6 +1251,54 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
         );
     }
     install_migration_snapshot(&mut s.session, &mut s.store, &s.definition, &snapshot).unwrap();
+    assert!(s.store.held_by.is_empty());
+    assert!(s.contexts.active_drag(&s.session, &s.store, A).is_none());
+    let restored = s.store.states.clone();
+    for (sequence, command) in [
+        (
+            ClientCommandSequence::Move {
+                after_control_sequence: 0,
+                tick: 1,
+            },
+            ProtocolPieceCommand::DragUpdate { delta: Vec2::ONE },
+        ),
+        (
+            ClientCommandSequence::Control(1),
+            ProtocolPieceCommand::Release {
+                grab_sequence: 0,
+                final_delta: Vec2::ONE,
+            },
+        ),
+        (
+            ClientCommandSequence::Control(2),
+            ProtocolPieceCommand::RotateDrag {
+                grab_sequence: 0,
+                final_delta: Vec2::ONE,
+                through_tick: Some(0),
+                quarter_turns: 1,
+            },
+        ),
+    ] {
+        assert!(matches!(
+            s.contexts.apply_replicated(
+                &mut s.session,
+                &mut s.store,
+                A,
+                &ProtocolCommandEnvelope {
+                    session: SESSION.id,
+                    authority_epoch: cursor.epoch,
+                    player: A,
+                    sequence,
+                    command,
+                },
+                Some(&s.definition),
+                puzzella_core::LOCAL_PLAYER,
+            ),
+            Err(ProtocolCommandError::Sequence(ProtocolError::WrongEpoch))
+        ));
+        assert_eq!(s.store.states, restored);
+        assert_eq!(s.session.cursor(), AuthorityCursor::new(4, 0));
+    }
     s.grab(A, 0, &[0]);
     s.release(A, 1, 0, Vec2::ONE, false);
     s.assert_equal();

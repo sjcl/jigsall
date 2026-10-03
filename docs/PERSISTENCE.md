@@ -6,7 +6,7 @@
 
 ```text
 PieceDataStore + PuzzleDefinition + ImageHash
-                ↓ 明示的 capture（active local drag は拒否）
+                ↓ 明示的 capture（committed canonical state のみ）
         PuzzleCheckpoint
           ├── GameSnapshot（session / cursor、schema 4）
           └── PuzzleSave（SaveMetadata）
@@ -18,6 +18,8 @@ PieceDataStore + PuzzleDefinition + ImageHash
 ```
 
 `game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、serialized fields・field order・16-byte piece layoutを維持し、schema versionは4です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
+
+通常 Save と multiplayer snapshot は、active local / remote drag の有無に関係なく、その時点までに確定済みの canonical state を保存します。capture は `states.position` を読み、表示用の `drag.delta` を加算せず、現在の Drag を cancel / Release しません。restore では hold / holder identity / drag membership / transient delta を破棄します。`RotateDrag` で既に commit / rebase 済みの位置と回転、および Grab で更新済みの Z は保存し、rebase 後の未確定移動だけを破棄します。Grab 開始時の state に巻き戻す履歴は持ちません。migration / recovery も Drag の終了を待ちません。
 
 `SaveRepository` は create / update / list / load / delete / image import を提供します。ランダム 128-bit `SaveId` の collision を確認し、更新は `update(id, expected_revision, title, checkpoint, original_bytes)` に session が読み込んだ revision を渡し、現在の header と一致した場合だけ同じ ID / created_at を保持して revision を増やします。`PersistenceService` は `current_save` の ID と revision を request に固定して worker に渡します。不一致は `SaveError::Conflict { id, expected_revision, actual_revision }` として、画像 import・encode・publish より前に拒否します。失敗した session の gameplay state と current_save は維持し、自動で最新 revision に付け替えて再試行しません。ロードした session の通常 Save はロード元 ID を更新します。タイトル変更にも同じ規則を適用します。タイトルは trim 後 1–80 Unicode scalar values、control / 改行禁止で、重複可能です。タイトルをファイル名に使いません。
 

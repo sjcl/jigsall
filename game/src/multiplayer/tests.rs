@@ -107,7 +107,7 @@ fn assert_restored(snapshot: &GameSnapshot, store: &PieceDataStore) {
 #[test]
 fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() {
     let definition = definition();
-    let mut a_store = fixture();
+    let mut a_store = dragging_fixture();
     // Cached progress is deliberately stale: it is absent from the protocol.
     a_store.placed_count = 99;
     let mut session = AuthoritySession::new(SESSION_DEFINITION, A, AuthorityCursor::new(3, 100));
@@ -122,8 +122,8 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
     assert_eq!(a_store.held_by.len(), 2); // Capturing does not change the old host.
     assert!(a_store.selected_pieces.contains(&PieceId(1)));
     assert_eq!(a_store.states[1].flags & SELECTED, 0);
-    assert!(a_store.drag.members.is_empty());
-    assert_eq!(a_store.drag.delta, Vec2::ZERO);
+    assert_eq!(&*a_store.drag.members, &[0b110]);
+    assert_eq!(a_store.drag.delta, Vec2::new(11.0, 22.0));
 
     let mut app = App::new();
     app.insert_resource(dragging_fixture())
@@ -265,10 +265,9 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
     peer.host_changed(C).unwrap();
     assert_eq!(peer.choose_recovery_source(candidates).unwrap(), chosen);
 
-    let mut source_store = dragging_fixture();
+    let source_store = dragging_fixture();
     let authoritative_states = source_store.states.clone();
-    // An abrupt recovery source discards prediction without committing its delta.
-    source_store.drag = default();
+    // Recovery can capture without first touching the source's presentation drag.
     let snapshot = GameSnapshot::capture(
         &source_store,
         &definition,
@@ -277,6 +276,8 @@ fn abrupt_a_loss_recovers_latest_cursor_then_activates_externally_chosen_c() {
     )
     .unwrap();
     assert_eq!(source_store.states, authoritative_states);
+    assert_eq!(&*source_store.drag.members, &[0b110]);
+    assert_eq!(source_store.drag.delta, Vec2::new(11.0, 22.0));
     for (piece, authoritative) in snapshot.pieces.iter().zip(&authoritative_states) {
         assert_eq!(piece.position, authoritative.position);
     }
@@ -364,20 +365,26 @@ fn ordinary_disconnect_releases_only_b_holds_marks_dirty_without_moving_or_snapp
 }
 
 #[test]
-fn capture_rejects_active_local_drag_without_changing_the_store() {
+fn capture_during_local_drag_keeps_canonical_positions_without_changing_the_store() {
     let mut store = dragging_fixture();
     store.drag.delta = Vec2::new(100.0, 200.0);
     let original = dragging_fixture();
     let epoch = store.epoch;
     let members = store.drag.members.clone();
-    assert_eq!(
-        GameSnapshot::capture(
-            &store,
-            &definition(),
-            SESSION_DEFINITION,
-            AuthorityCursor::new(3, 100),
-        ),
-        Err(SnapshotError::ActiveLocalDrag)
+    let snapshot = GameSnapshot::capture(
+        &store,
+        &definition(),
+        SESSION_DEFINITION,
+        AuthorityCursor::new(3, 100),
+    )
+    .unwrap();
+    for (piece, canonical) in snapshot.pieces.iter().zip(store.states.iter()) {
+        assert_eq!(piece.position, canonical.position);
+        assert_eq!(piece.z_order, canonical.z_order);
+    }
+    assert_ne!(
+        snapshot.pieces[1].position,
+        store.states[1].position + store.drag.delta
     );
     assert_eq!(store.states, original.states);
     assert_eq!(store.epoch, epoch);
