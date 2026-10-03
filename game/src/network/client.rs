@@ -1,6 +1,6 @@
 use super::{
-    bulk::BulkTransferMessage,
     session::SessionConnections,
+    transient::{replication_drop, TransientDrop},
     transport::{ConnectionId, Transport, TransportError, TransportEvent},
     wire::{self, WireError, WireMessage},
 };
@@ -28,7 +28,7 @@ pub enum ClientRouteError {
 pub enum ClientRouteOutcome {
     Authority(AppliedCommand),
     Drag(CommandSequenceStatus),
-    Bulk(BulkTransferMessage),
+    DroppedTransient(TransientDrop),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -84,15 +84,19 @@ impl ClientRouter<'_> {
                 )
                 .map(ClientRouteOutcome::Authority)
                 .map_err(ClientRouteError::Replication),
-            WireMessage::DragUpdate(update) => self
-                .replica
-                .apply_drag_update(self.session, self.store, host, &update)
-                .map(ClientRouteOutcome::Drag)
-                .map_err(ClientRouteError::Replication),
-            WireMessage::BulkTransfer(message) => Ok(ClientRouteOutcome::Bulk(message)),
-            WireMessage::ClientCommand(_) | WireMessage::SessionControl(_) => {
-                Err(ClientRouteError::WrongDirection)
+            WireMessage::DragUpdate(update) => {
+                match self
+                    .replica
+                    .apply_drag_update(self.session, self.store, host, &update)
+                {
+                    Ok(status) => Ok(ClientRouteOutcome::Drag(status)),
+                    Err(error) => match replication_drop(&error) {
+                        Some(reason) => Ok(ClientRouteOutcome::DroppedTransient(reason)),
+                        None => Err(ClientRouteError::Replication(error)),
+                    },
+                }
             }
+            _ => Err(ClientRouteError::WrongDirection),
         }
     }
 

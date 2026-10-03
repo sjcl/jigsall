@@ -1,15 +1,192 @@
 use super::*;
 use crate::network::gns::GnsDirectIp;
+use crate::network::syncing::{
+    ClientSyncOutcome, ClientSyncRouter, HostSyncCoordinator, SyncAuthority, SyncPhase, SyncReplica,
+};
 use crate::network::{
     auth::SessionPassword,
     bootstrap::{BootstrapOutcome, ClientBootstrap, ConnectionState, HostBootstrap},
     secure::SecureTransport,
     session_control::SessionMetadata,
 };
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     time::{Duration, Instant},
 };
+
+#[test]
+fn gns_localhost_syncing_image_baseline_and_catch_up_stops_before_ready() {
+    let mut s = Scenario::new();
+    let image: Arc<[u8]> = vec![0x42; 2 * MAX_BULK_DATA_BYTES + 5].into();
+    let session_definition = SessionDefinition {
+        id: SESSION.id,
+        image_hash: ImageHash(Sha256::digest(&image).into()),
+    };
+    let cursor = AuthorityCursor::new(3, 0);
+    s.host.session = AuthoritySession::new(session_definition, HOST, cursor);
+    s.peers[0].session = AuthoritySession::new(session_definition, HOST, cursor);
+    let mut host = SecureTransport::new(RecordedGns::new());
+    let listener = host
+        .listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .unwrap();
+    let mut client = SecureTransport::new(RecordedGns::new());
+    let client_host = client
+        .connect(host.listener_address(listener).unwrap())
+        .unwrap();
+    let password = || SessionPassword::new("correct password".to_owned()).unwrap();
+    let mut hb = HostBootstrap::new(
+        password(),
+        SessionMetadata {
+            definition: session_definition,
+            cursor,
+            host: HOST,
+        },
+        [],
+        Instant::now(),
+    );
+    let mut cb = ClientBootstrap::new(password(), client_host);
+    let mut hs = HostSyncCoordinator::default();
+    let mut cs = None;
+    let mut host_peer = None;
+    let mut generated = false;
+    let mut images = 0;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while cs
+        .as_ref()
+        .is_none_or(|sync: &ClientSyncRouter| sync.phase() != SyncPhase::Finalizing)
+    {
+        assert!(Instant::now() < deadline, "secure localhost join timed out");
+        let mut events = Vec::new();
+        host.poll(&mut events).unwrap();
+        for event in events {
+            if let TransportEvent::Connected { connection } = event {
+                host_peer = Some(connection);
+            }
+            let outcome = hb
+                .process(&event, &mut host, &mut s.host.connections, Instant::now())
+                .unwrap();
+            let authority = SyncAuthority {
+                session: &s.host.session,
+                store: &s.host.store,
+                contexts: &s.contexts,
+                definition: &s.definition,
+            };
+            if outcome == BootstrapOutcome::Syncing {
+                hs.route(
+                    &hb,
+                    &event,
+                    &mut host,
+                    &authority,
+                    Some(image.clone()),
+                    Instant::now(),
+                )
+                .unwrap();
+            }
+            if let Some(connection) = host_peer {
+                if hb.state(connection) == Some(ConnectionState::Authenticated) {
+                    hs.start(&mut hb, connection, &mut host, &authority, Instant::now())
+                        .unwrap();
+                }
+            }
+        }
+        if let Some(connection) = host_peer {
+            if hs.phase(connection).is_some() {
+                let player = hb.assigned_player(connection).unwrap();
+                if hs.catch_up().status(player).is_ok() && !generated {
+                    // A real authority operation while baseline Bulk is in flight.
+                    let mut request = grab();
+                    request.player = B;
+                    let applied = s
+                        .contexts
+                        .apply_replicated(
+                            &mut s.host.session,
+                            &mut s.host.store,
+                            B,
+                            &request,
+                            Some(&s.definition),
+                            HOST,
+                        )
+                        .unwrap();
+                    hs.record_command_outcome(&s.host.session, &s.host.store, &applied)
+                        .unwrap();
+                    generated = true;
+                }
+                hs.pump(
+                    &hb,
+                    connection,
+                    &mut host,
+                    &SyncAuthority {
+                        session: &s.host.session,
+                        store: &s.host.store,
+                        contexts: &s.contexts,
+                        definition: &s.definition,
+                    },
+                    Instant::now(),
+                )
+                .unwrap();
+            }
+        }
+        let mut events = Vec::new();
+        client.poll(&mut events).unwrap();
+        for event in events {
+            let outcome = cb
+                .process(
+                    &event,
+                    &mut client,
+                    &mut s.peers[0].connections,
+                    Instant::now(),
+                )
+                .unwrap();
+            if cb.state() == Some(ConnectionState::Authenticated) {
+                cs = Some(ClientSyncRouter::start(&mut cb, None, Instant::now()).unwrap());
+            }
+            if outcome == BootstrapOutcome::Syncing {
+                let peer = &mut s.peers[0];
+                let routed = cs
+                    .as_mut()
+                    .unwrap()
+                    .route(
+                        &cb,
+                        &event,
+                        &mut client,
+                        &mut SyncReplica {
+                            replica: &mut peer.replica,
+                            session: &mut peer.session,
+                            store: &mut peer.store,
+                        },
+                        Instant::now(),
+                    )
+                    .unwrap();
+                if let ClientSyncOutcome::ImageReady(completed) = routed {
+                    assert_eq!(completed.into_bytes().unwrap(), image.as_ref());
+                    images += 1;
+                }
+            }
+        }
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+    assert_eq!(images, 1);
+    assert!(generated);
+    assert_eq!(s.peers[0].store.states, s.host.store.states);
+    assert_eq!(s.peers[0].session.cursor(), s.host.session.cursor());
+    assert_eq!(s.host.session.cursor().sequence.0, 1);
+    assert!(s.peers[0]
+        .replica
+        .remote_drag(&s.peers[0].session, &s.peers[0].store, B)
+        .is_some());
+    assert_eq!(hb.state(host_peer.unwrap()), Some(ConnectionState::Syncing));
+    assert_eq!(cb.state(), Some(ConnectionState::Syncing));
+    assert_eq!(s.host.connections.player(host_peer.unwrap()), None);
+    assert_eq!(s.peers[0].connections.player(client_host), None);
+    host.backend_mut().assert_protected_after_handshake(2);
+    client.backend_mut().assert_protected_after_handshake(1);
+    client
+        .close(client_host, DisconnectReason::Requested)
+        .unwrap();
+    host.close_listener(listener).unwrap();
+}
 
 /// Inspect/tamper the bytes immediately below SecureTransport, before real GNS
 /// sends them. Test-only access cannot bypass protection in production.
@@ -95,7 +272,6 @@ struct Live {
     client_hosts: [Option<ConnectionId>; 2],
     controls: [usize; 2],
     drags: [usize; 2],
-    bulk: [usize; 2],
     host_commands: usize,
     host_bootstrap: HostBootstrap,
     client_bootstraps: [Option<ClientBootstrap>; 2],
@@ -120,7 +296,7 @@ impl Live {
                     self.host_peers[index] = Some(*connection);
                 }
                 TransportEvent::Message { connection, .. } => {
-                    if outcome == BootstrapOutcome::Consumed {
+                    if outcome != BootstrapOutcome::Gameplay {
                         continue;
                     }
                     let mut router = self.s.host_router();
@@ -158,7 +334,7 @@ impl Live {
                         assert_eq!(Some(*connection), self.client_hosts[index]);
                     }
                     TransportEvent::Message { class, .. } => {
-                        if outcome == BootstrapOutcome::Consumed {
+                        if outcome != BootstrapOutcome::Gameplay {
                             continue;
                         }
                         let local_player = self.client_bootstraps[index]
@@ -179,14 +355,7 @@ impl Live {
                                 assert_eq!(*class, MessageClass::Transient);
                                 self.drags[index] += 1;
                             }
-                            ClientRouteOutcome::Bulk(message) => {
-                                assert_eq!(*class, MessageClass::Bulk);
-                                assert_eq!(
-                                    WireMessage::BulkTransfer(message),
-                                    bulk_chunk(b"future chunk".to_vec())
-                                );
-                                self.bulk[index] += 1;
-                            }
+                            ClientRouteOutcome::DroppedTransient(_) => {}
                         }
                     }
                     TransportEvent::ConnectionFailed { .. } => {
@@ -232,7 +401,6 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
         client_hosts: [None; 2],
         controls: [0; 2],
         drags: [0; 2],
-        bulk: [0; 2],
         host_commands: 0,
         host_bootstrap: HostBootstrap::new(
             SessionPassword::new("localhost password".to_owned()).unwrap(),
@@ -283,10 +451,10 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
         live.host_bootstrap.begin_sync(host_peer).unwrap();
         bootstrap.begin_sync().unwrap();
         live.host_bootstrap
-            .promote_ready(host_peer, &mut live.s.host.connections)
+            .promote_ready_for_test(host_peer, &mut live.s.host.connections)
             .unwrap();
         bootstrap
-            .promote_ready(&mut live.s.peers[index].connections)
+            .promote_ready_for_test(&mut live.s.peers[index].connections)
             .unwrap();
         assert_ne!(Some(connection), live.host_peers[index]); // tokens are not mirrored native handles
     }
@@ -330,13 +498,8 @@ fn gns_localhost_host_two_clients_grab_drag_release_disconnect() {
     );
     assert_eq!(live.s.host.session.cursor().sequence.0, 1);
     let bulk = wire::encode(&bulk_chunk(b"future chunk".to_vec())).unwrap();
-    live.host
-        .send(live.host_peers[1].unwrap(), MessageClass::Bulk, &bulk)
-        .unwrap();
     live.send(release());
-    live.until("ReleaseCommitted and independent Bulk lane", None, |live| {
-        live.controls == [2, 2] && live.bulk == [0, 1]
-    });
+    live.until("ReleaseCommitted", None, |live| live.controls == [2, 2]);
     assert_eq!(live.host_commands, 3);
     live.s.assert_final_equal();
     live.host.backend_mut().assert_protected_after_handshake(4);
@@ -552,9 +715,9 @@ fn gns_localhost_tampered_secure_grab_closes_without_gameplay_mutation() {
     assert!(client.has_channel(outgoing));
     hb.begin_sync(incoming).unwrap();
     cb.begin_sync().unwrap();
-    hb.promote_ready(incoming, &mut scenario.host.connections)
+    hb.promote_ready_for_test(incoming, &mut scenario.host.connections)
         .unwrap();
-    cb.promote_ready(&mut scenario.peers[0].connections)
+    cb.promote_ready_for_test(&mut scenario.peers[0].connections)
         .unwrap();
     client.backend_mut().tamper_next = true;
     let mut command = grab();

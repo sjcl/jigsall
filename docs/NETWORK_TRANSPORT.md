@@ -3,23 +3,25 @@
 The multiplayer CPU layer provides `JoinBaseline` schema 1 for same-epoch join:
 GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId order.
 Its transactional install can continue existing authority events without a new
-Grab. This CPU foundation is not connected to Bulk transfer, image transfer,
-catch-up queues/drag refresh or Authenticated/Syncing/Ready yet. Transport version and
-golden frames now use wire v6 for typed bounded Bulk framing; SecureTransport, GNS
+Grab. The opt-in Syncing runtime connects image preparation, generation-bound
+Bulk baseline transfer and Reliable catch-up. Final active-drag reconciliation
+and Ready handoff remain pending. Transport version and golden frames now use
+wire v7 with a dedicated SyncControl kind; generic Bulk framing, SecureTransport, GNS
 and rate limiting retain their existing designs. Migration uses snapshot only
 plus a new epoch; save/load use checkpoint only; both discard
 drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
 
 Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
-snapshot/image transfer, interpolation, prediction, or migration orchestration.
+interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v6 and snapshot schema 4. `core` has no transport/native dependency.
+wire v7 and snapshot schema 4. `core` has no transport/native dependency.
 
 ```text
-protocol / replication (existing gameplay semantics)
-        ↓
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
+        ├ authentication SessionControl (Consumed)
+        ├ authenticated SyncControl / Bulk (Syncing coordinator/router)
+        └ Ready protocol / replication (HostRouter / ClientRouter)
         ↓
 wire (versioned Postcard binary messages)
         ↓
@@ -89,7 +91,8 @@ sends to all currently assigned Ready remote peers as Reliable Control, without
 source exclusion or host loopback. It returns per-connection send failures while
 attempting the remaining peers; retry the original event, never reapply cancellation
 to create a replacement. No actual Bevy/transport disconnect coordinator, PlayerLeft
-or catch-up buffer is added here. Migration continues to discard drags in a new
+is automatically scheduled. The opt-in Syncing coordinator retains catch-up events.
+Migration continues to discard drags in a new
 epoch without requiring cancellation events.
 
 ## Mandatory session password authentication
@@ -118,19 +121,23 @@ GNS Connected / TransportConnected
   client becomes Authenticated only after successful send; discards password
   host decrypts and consumes SecureChannelReady, then becomes Authenticated
 Authenticated -> explicit begin_sync() -> Syncing
-  trusted snapshot-sync coordinator completes baseline/catch-up on both ends
-  explicit promote_ready() -> Ready -> SessionConnections::assign_player()
+  session/image identity -> image availability negotiation
+  optional PuzzleImage offer/accept + Bulk -> hash verification -> ImageReady
+  begin_join() -> generation-bound JoinBaseline offer/accept + Bulk
+  baseline install ACK -> Reliable catch-up + ACK
+  Finalizing -> future full active-drag reconciliation -> final barrier/ACK
+  future SyncReadyPermit -> promote_ready() -> Ready -> assign_player()
 ```
 
 PAKE success != gameplay Ready. Authentication alone leaves both endpoint gameplay
 mappings unassigned; on the client the eventual mapping identifies the host, while
 the independently assigned local PlayerId stays in bootstrap state. Metadata can
 be authenticated without owning a snapshot: SessionDefinition (SessionId/ImageHash),
-AuthorityCursor and host PlayerId. This change implements no snapshot/image transfer
-or gameplay Ready negotiation on the wire. SecureChannelReady confirms channel
-possession only. The future synchronization coordinator must
-coordinate both endpoints' promotion and stream ordering before sending gameplay.
-It must also check the supplied image hash and installed snapshot/catch-up cursor.
+AuthorityCursor and host PlayerId. SecureChannelReady confirms channel possession
+only. The Syncing protocol verifies image identity and the offered baseline/catch-up
+cursor. It deliberately stops at Finalizing; Reliable catch-up alone cannot mint
+the private-construction Ready permit. The future barrier must also reconcile the
+authority's current full active-drag scalar set and verify the final ACK.
 
 The isolated `network::auth` adapter uses pinned `pakery-spake2` / `pakery-crypto`
 0.6.0, the RFC 9382 P256-SHA256-HKDF-HMAC suite (not the crate's Ristretto suite).
@@ -159,7 +166,8 @@ and confirmation arrays. The 4,096-byte declared AND actual payload limits are
 checked from the header before postcard decoding. Malformed/unexpected control,
 duplicate handshakes, or any gameplay before Ready closes the connection and
 removes gameplay mappings immediately, including later events in the same batch.
-Only `BootstrapOutcome::Gameplay` may reach a gameplay router. Header-only kind
+`BootstrapOutcome::Consumed` stays in authentication, `Syncing` goes to the dedicated
+sync router, and only `Gameplay` may reach a Ready gameplay router. Header-only kind
 validation blocks pre-Ready gameplay before deserializing its payload; Ready
 gameplay is decoded once by the existing router. The existing
 `player(connection) == None` router/broadcast guard remains in place. No regular
@@ -296,8 +304,8 @@ fresh OS randomness remain security assumptions; this is not an independent audi
 | Class | Messages | GNS lane | Send flags | Priority / weight |
 | --- | --- | --- | --- | --- |
 | Transient | Client DragUpdate command, host RemoteDragUpdate | 0 | UNRELIABLE + NO_NAGLE + NO_DELAY | 0 / 1 |
-| Control | Grab/Release commands, GrabAccepted/ReleaseCommitted events, SessionControl | 1 | RELIABLE | 0 / 4 |
-| Bulk | Bounded opaque dummy/future chunk bytes | 2 | RELIABLE | 1 / 1 |
+| Control | Gameplay commands/events, SessionControl handshake, dedicated SyncControl | 1 | RELIABLE | 0 / 4 |
+| Bulk | Syncing PuzzleImage / JoinBaseline transfer framing | 2 | RELIABLE | 1 / 1 |
 
 The **pinned native header** specifies lower numeric priority as higher priority.
 Transient and Control share priority with a 1:4 weight; Bulk has lower priority.
@@ -393,7 +401,7 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v6
+## Wire v7
 
 Each inner Puzzella frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
@@ -401,8 +409,8 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 6 |
-| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl |
+| 4..6 | u16 wire version, little-endian, currently 7 |
+| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
 | 12.. | Postcard 1.x binary serialization of the indicated protocol type, including BulkTransferMessage |
@@ -414,7 +422,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v6 Postcard field order and enum representation are part of the wire contract.
+The v7 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -426,14 +434,16 @@ version 4's mandatory PAKE-derived AEAD and encrypted SecureChannelReady,
 Rotate / RotationCommitted, RotateDrag / DragRotationCommitted and the
 RemoteDragUpdate basis sequence. Version 6 replaces kind 5's opaque bytes with
 typed Start/Chunk/Finish/Abort. Gameplay payload layouts remain unchanged; only
-their version header advances. Only version 6 is decoded; pre-release versions
-1 through 5 and future versions are rejected without a compatibility decoder.
+their version header advances. Version 7 adds SyncControl kind 7 on Reliable Control,
+including generation-bound baseline offers, catch-up events and ACKs. Bulk fields
+and gameplay layouts remain unchanged. Only version 7 is decoded; pre-release versions
+1 through 6 and future versions are rejected without a compatibility decoder.
 WIRE_VERSION also binds PAKE context, HKDF application keys and secure record AAD
-to v6. No cryptographic design change is made.
-Fixed v6 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+to v7. No cryptographic design change is made.
+Fixed v7 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
-AuthAccepted, SecureChannelReady and all four Bulk variants. Each checks encoding
+AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
@@ -529,16 +539,22 @@ is an error. Completed content exposes `chunks()` and consuming `into_chunks()`
 for future storage streaming; explicit post-completion `into_bytes()` performs a
 fallible `try_reserve_exact` before flattening. The caller owns completed content:
 in-flight budgets bound receiver-active transfers, not caller-retained completions.
-SHA-256 provides corruption detection, **not authorization or provenance**. Future
-PuzzleImage installation must separately compare the descriptor hash to
-`SessionDefinition.image_hash`.
+SHA-256 provides corruption detection, **not authorization or provenance**. The
+Syncing layer compares the receiver's actual verified image digest to the
+PAKE-authenticated `SessionDefinition.image_hash`. Cache bytes are hashed against
+that same identity before claiming availability; trusting a Start hash is insufficient.
 
-HostRouter/ClientRouter return typed `Bulk(BulkTransferMessage)` after existing
-authentication/routing checks; routers do not reassemble. This Bulk transfer
-foundation is **not yet wired into Syncing/Ready**, JoinCatchUpCoordinator, image
-cache/negotiation, persistence or runtime scheduling. Bootstrap outcomes and Ready
-promotion are unchanged. No compression, file streaming or application payload
-decode/install is implemented. Bulk's 8 MiB/s, 16 MiB burst and 32 KiB minimum
+HostSyncCoordinator/ClientSyncRouter now own authorization and phase routing.
+Host-to-client transfers require an exact Reliable Control offer and acceptance
+before Start: TransferId/kind/size/hash, plus generation/cursor for JoinBaseline.
+Restart retires the old association, sends Bulk Abort and Control Restart, and
+preserves monotonic ID high-water marks. Cross-lane reordering cannot rebind old
+completion to the new generation. The client immediately validates/installs a
+baseline or hands verified image chunks to the caller, with no completion queue.
+Client-to-host Bulk is rejected in every current phase. Ready routers and Ready
+bootstrap reject current Sync Bulk entirely. Future Ready Bulk needs an explicit
+protocol extension. Persistent cache, compression, file streaming and automatic
+runtime scheduling remain pending. Bulk's 8 MiB/s, 16 MiB burst and 32 KiB minimum
 charge policy and GNS physical record limits remain unchanged. Snapshot schema
 **4** and JoinBaseline schema **1** remain unchanged.
 
@@ -562,17 +578,41 @@ peer ClientRouter::send_command
 The authority has already applied its local mutation. Publication never applies an
 event to the host; a host-player connection is excluded. Unassigned connections
 cannot submit commands or receive gameplay broadcasts. Clients reject messages
-from any connection other than their designated, assigned host. Bulk bytes are
-returned to the caller without touching gameplay; commands/events in the wrong
+from any connection other than their designated, assigned host. Sync Bulk goes
+only to the dedicated client sync router; commands/events in the wrong
 direction are rejected. The backend never interprets protocol objects or accesses
 `PieceDataStore`.
 
 During each Bevy frame, keep SecureTransport<T> in caller-owned state, call its
 `poll`, process every event through HostBootstrap/ClientBootstrap::process, and
-forward only BootstrapOutcome::Gameplay to the appropriate router. Call bootstrap
+route BootstrapOutcome::Syncing to HostSyncCoordinator/ClientSyncRouter and
+BootstrapOutcome::Gameplay to HostRouter/ClientRouter. Call bootstrap
 `expire` each frame too.
 Routers borrow the existing session/store/context; they do not duplicate gameplay.
 No systems are automatically scheduled and no piece scan occurs while idle.
+
+Start the client sync router after authentication, passing optional cached bytes;
+start the host sync coordinator for that connection to advertise the authenticated
+identity and puzzle definition. Keep sync state only while a join exists. Schedule
+bounded `pump` calls for joining peers and enforce timeouts using exposed
+`SyncTiming` (overall start and transfer progress). On disconnect, remove sync state
+and the catch-up entry. On scope/migration boundaries call `observe_host_state`;
+store changes restart, while changed PAKE-bound session/epoch/host needs reauthentication.
+Use `HostRouter::route_with_sync` for remote authority commands and explicit
+`record_command_outcome` / `record_authority_event` for local commands/cancellation:
+apply -> immediate catch-up record -> ordinary Ready publication. Retention failure
+remains separate from the already-applied outcome; Ready publication still proceeds.
+See [join runtime contract](JOIN_IN_PROGRESS.md#application-syncing-routing-and-generations).
+
+Ready routers return `DroppedTransient(TransientDrop)` for decoded Transient
+MissingDragContext, WrongDragContext, DuplicateUpdate and StaleUpdate. These include
+updates before GrabAccepted/RotateDrag commit and after ReleaseCommitted/DragCancelled.
+Host command-stream equivalents (ControlNotProcessed, StaleMoveContext and duplicate/
+stale Move commands) are classified only on the Transient path. Reliable errors
+are never run through that classifier. WrongSession, WrongEpoch, WrongHost,
+InvalidDelta, malformed authenticated frames and Reliable cursor gaps remain errors;
+ReplicationError::Diverged still requires resync. The core replication/replay
+semantics are unchanged. Valid late updates are O(1) presentation drops.
 
 Host apply and publication are separate: `route` returns the already applied
 outcome even if the next send might fail. `publish` attempts every eligible peer
@@ -660,12 +700,15 @@ cargo build --locked --features gns
 The GNS tests use only 127.0.0.1, ephemeral ports, 15-second deadlines with polling
 backoff, explicit closes and RAII cleanup on panic. The routing test validates
 actual listener acceptance, A's reliable Grab, both replicas' ACK, a Transient drag
-delivered only to B, a small independent Bulk message, reliable Release with snap, equal final
+delivered only to B, reliable Release with snap, equal final
 piece/connectivity/snapshot/cursor state, and disconnect on both ends. That test
 now performs mutual SPAKE2 confirmation plus encrypted SecureChannelReady for both
 clients, checks ciphertext immediately below the wrapper on actual UDP sends, and verifies independent
 PlayerIds and unassigned gameplay mappings, and explicitly promotes through
-Syncing to Ready before Grab/Drag/Release. A separate actual-socket wrong-password
+Syncing to Ready with test-only completion permits before Grab/Drag/Release. A
+dedicated localhost join test exercises image and baseline transfer/catch-up through
+the actual secure lanes and stops at Finalizing without gameplay registration.
+A separate actual-socket wrong-password
 test verifies rejection, close, no channel installation, no registration and no
 gameplay mutation. An actual-socket ciphertext-tampered Grab test verifies
 ProtocolViolation close, destroyed keys and unchanged host pieces/cursor.
@@ -715,10 +758,9 @@ alongside the reusable session password layer. Independent PlayerId assignment
 still belongs to bootstrap, and SessionConnections registration waits for Ready.
 Wrap the future Steamworks Transport in SecureTransport<T> and apply its outer
 record limit before native copies. The existing wire codec, host/client routers
-and authority/replication adapters remain the integration points. Future snapshot
-and image chunks use this same secured Transport, with begin_sync/promote_ready
-coordinated separately on both ends; add chunk semantics in wire/bootstrap,
-without a separate encryption path. Steam P2P/SDR selection belongs to that future
+and authority/replication adapters remain the integration points. The same Syncing
+protocol and generic Bulk substrate use this secured Transport; the future final
+barrier coordinates Ready promotion on both ends. Steam P2P/SDR selection belongs to that future
 backend. `SteamLobbyBackend`, if added, separately chooses session members and
 the lobby owner/host identity; it does not send gameplay messages. No lobby or
 Steamworks placeholder dependency/module is added in this change.

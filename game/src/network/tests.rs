@@ -7,6 +7,7 @@ use super::{
     wire::{self, WireError, WireMessage},
 };
 mod bootstrap;
+mod transient;
 use crate::{
     multiplayer::{
         protocol::{ProtocolCommandError, ProtocolDragContexts},
@@ -317,7 +318,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 2, 3, 4, 5, 7, u16::MAX] {
+    for version in [1u16, 2, 3, 4, 5, 6, 8, u16::MAX] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),
@@ -546,15 +547,14 @@ fn fake_transport_routes_grab_drag_release_without_host_echo() {
     assert_eq!(s.host.session.cursor().sequence.0, 2);
     s.assert_final_equal();
     let message = bulk_chunk(vec![1, 2]);
-    let WireMessage::BulkTransfer(expected) = message.clone() else {
-        unreachable!();
-    };
     let bulk = message_event(HA, &message);
-    assert!(
-        matches!(s.host_router().route(&bulk).unwrap(), HostRouteOutcome::Bulk(v) if v == expected)
+    assert_eq!(
+        s.host_router().route(&bulk).unwrap_err(),
+        HostRouteError::WrongDirection
     );
-    assert!(
-        matches!(s.client_router(0, HA).route(&bulk).unwrap(), ClientRouteOutcome::Bulk(v) if v == expected)
+    assert_eq!(
+        s.client_router(0, HA).route(&bulk).unwrap_err(),
+        ClientRouteError::WrongDirection
     );
     transport.close(HA, DisconnectReason::Requested).unwrap();
     let mut events = Vec::new();

@@ -6,6 +6,8 @@ use crate::network::{
     session_control::*,
 };
 use std::time::{Duration, Instant};
+#[path = "../syncing_tests.rs"]
+mod syncing;
 
 fn password(value: &str) -> SessionPassword {
     SessionPassword::new(value.to_owned()).unwrap()
@@ -159,27 +161,31 @@ fn correct_password_mutual_confirmation_and_explicit_ready_registration() {
     assert_eq!(p.host_connections.player(HA), None);
     assert_eq!(p.client_connections.player(CLIENT_HOST), None);
     assert_eq!(
-        p.host.promote_ready(HA, &mut p.host_connections),
+        p.host.promote_ready_for_test(HA, &mut p.host_connections),
         Err(BootstrapError::InvalidTransition)
     );
     assert_eq!(
-        p.client.promote_ready(&mut p.client_connections),
+        p.client.promote_ready_for_test(&mut p.client_connections),
         Err(BootstrapError::InvalidTransition)
     );
     p.host.begin_sync(HA).unwrap();
     p.client.begin_sync().unwrap();
     assert_eq!(p.host.state(HA), Some(ConnectionState::Syncing));
     assert_eq!(p.client.state(), Some(ConnectionState::Syncing));
-    p.host.promote_ready(HA, &mut p.host_connections).unwrap();
-    p.client.promote_ready(&mut p.client_connections).unwrap();
+    p.host
+        .promote_ready_for_test(HA, &mut p.host_connections)
+        .unwrap();
+    p.client
+        .promote_ready_for_test(&mut p.client_connections)
+        .unwrap();
     assert_eq!(p.host_connections.player(HA), Some(player));
     assert_eq!(p.client_connections.player(CLIENT_HOST), Some(HOST));
     assert_eq!(
-        p.host.promote_ready(HA, &mut p.host_connections),
+        p.host.promote_ready_for_test(HA, &mut p.host_connections),
         Err(BootstrapError::InvalidTransition)
     );
     assert_eq!(
-        p.client.promote_ready(&mut p.client_connections),
+        p.client.promote_ready_for_test(&mut p.client_connections),
         Err(BootstrapError::InvalidTransition)
     );
     assert_eq!(p.host_connections.peers().count(), 1);
@@ -192,6 +198,66 @@ fn correct_password_mutual_confirmation_and_explicit_ready_registration() {
         ),
         Ok(BootstrapOutcome::Gameplay)
     );
+}
+
+#[test]
+fn sync_bulk_and_control_are_separate_from_ready_gameplay() {
+    for message in [
+        bulk_chunk(vec![0]),
+        WireMessage::SyncControl(crate::network::sync_control::SyncControlMessage::Restart {
+            generation: 0,
+        }),
+    ] {
+        for host_side in [true, false] {
+            let mut p = Pair::new("correct password");
+            p.authenticate();
+            p.host.begin_sync(HA).unwrap();
+            p.client.begin_sync().unwrap();
+            let result = if host_side {
+                p.host.process(
+                    &message_event(HA, &message),
+                    &mut p.ht,
+                    &mut p.host_connections,
+                    p.now,
+                )
+            } else {
+                p.client.process(
+                    &message_event(CLIENT_HOST, &message),
+                    &mut p.ct,
+                    &mut p.client_connections,
+                    p.now,
+                )
+            };
+            assert_eq!(result, Ok(BootstrapOutcome::Syncing));
+            p.host
+                .promote_ready_for_test(HA, &mut p.host_connections)
+                .unwrap();
+            p.client
+                .promote_ready_for_test(&mut p.client_connections)
+                .unwrap();
+            let result = if host_side {
+                p.host.process(
+                    &message_event(HA, &message),
+                    &mut p.ht,
+                    &mut p.host_connections,
+                    p.now,
+                )
+            } else {
+                p.client.process(
+                    &message_event(CLIENT_HOST, &message),
+                    &mut p.ct,
+                    &mut p.client_connections,
+                    p.now,
+                )
+            };
+            assert_eq!(
+                result,
+                Err(BootstrapError::Rejected(
+                    DisconnectReason::ProtocolViolation
+                ))
+            );
+        }
+    }
 }
 #[test]
 fn wrong_password_closes_without_registering_or_mutating_gameplay() {
@@ -527,7 +593,6 @@ fn all_gameplay_is_rejected_before_ready_on_both_endpoints() {
     let gameplay = [
         WireMessage::ClientCommand(grab()),
         WireMessage::ClientCommand(update()),
-        bulk_chunk(vec![0]),
         WireMessage::AuthorityEvent(ProtocolAuthorityEventEnvelope {
             session: SESSION.id,
             host: HOST,
@@ -602,7 +667,9 @@ fn nonzero_host_reserved_ids_and_reused_connection_never_reuse_stale_mapping() {
     let old = p.client.assigned_player().unwrap();
     assert_eq!(old, PlayerId(2));
     p.host.begin_sync(HA).unwrap();
-    p.host.promote_ready(HA, &mut p.host_connections).unwrap();
+    p.host
+        .promote_ready_for_test(HA, &mut p.host_connections)
+        .unwrap();
     p.host
         .process(
             &TransportEvent::Disconnected {
@@ -651,7 +718,9 @@ fn authentication_and_syncing_peers_receive_no_gameplay_broadcasts() {
         .unwrap()
         .is_empty());
     assert!(published.sent.is_empty());
-    p.host.promote_ready(HA, &mut s.host.connections).unwrap();
+    p.host
+        .promote_ready_for_test(HA, &mut s.host.connections)
+        .unwrap();
     s.host_router()
         .publish(&mut published, None, &outcome)
         .unwrap();

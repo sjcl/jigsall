@@ -1,13 +1,14 @@
 //! One GNS message = one frame. Stable header; Postcard payload, no JSON.
 use super::bulk::{BulkTransferMessage, MAX_BULK_DATA_BYTES};
 use super::session_control::SessionControlMessage;
+use super::sync_control::SyncControlMessage;
 use super::transport::MessageClass;
 use puzzella_core::protocol::{
     ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand, RemoteDragUpdate,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 6;
+pub const WIRE_VERSION: u16 = 7;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_SESSION_CONTROL_PAYLOAD: usize = 4096;
@@ -23,6 +24,7 @@ pub enum WireMessage {
     DragUpdate(RemoteDragUpdate),
     BulkTransfer(BulkTransferMessage),
     SessionControl(SessionControlMessage),
+    SyncControl(SyncControlMessage),
 }
 
 impl WireMessage {
@@ -33,9 +35,10 @@ impl WireMessage {
             {
                 MessageClass::Transient
             }
-            Self::ClientCommand(_) | Self::AuthorityEvent(_) | Self::SessionControl(_) => {
-                MessageClass::Control
-            }
+            Self::ClientCommand(_)
+            | Self::AuthorityEvent(_)
+            | Self::SessionControl(_)
+            | Self::SyncControl(_) => MessageClass::Control,
             Self::DragUpdate(_) => MessageClass::Transient,
             Self::BulkTransfer(_) => MessageClass::Bulk,
         }
@@ -48,6 +51,7 @@ impl WireMessage {
             Self::DragUpdate(_) => 3,
             Self::BulkTransfer(_) => 5,
             Self::SessionControl(_) => 6,
+            Self::SyncControl(_) => 7,
         }
     }
 }
@@ -84,6 +88,7 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
         WireMessage::AuthorityEvent(v) => binary(v)?,
         WireMessage::DragUpdate(v) => binary(v)?,
         WireMessage::SessionControl(v) => binary(v)?,
+        WireMessage::SyncControl(v) => binary(v)?,
         WireMessage::BulkTransfer(v) => {
             if matches!(v, BulkTransferMessage::Chunk { data, .. } if data.len() > MAX_BULK_DATA_BYTES)
             {
@@ -143,7 +148,7 @@ fn checked_payload(frame: &[u8]) -> Result<(u8, MessageClass, &[u8]), WireError>
         return Err(WireError::UnsupportedVersion(version));
     }
     let class = match frame[6] {
-        1 | 2 | 6 => MessageClass::Control,
+        1 | 2 | 6 | 7 => MessageClass::Control,
         3 | 4 => MessageClass::Transient,
         5 => MessageClass::Bulk,
         kind => return Err(WireError::UnknownKind(kind)),
@@ -166,6 +171,18 @@ fn checked_payload(frame: &[u8]) -> Result<(u8, MessageClass, &[u8]), WireError>
 /// Header-only gate: reject gameplay before allocating/deserializing its payload,
 /// and let Ready gameplay be decoded just once by the existing router.
 pub fn is_session_control_for_class(frame: &[u8], class: MessageClass) -> Result<bool, WireError> {
+    Ok(frame_route_for_class(frame, class)? == FrameRoute::Authentication)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameRoute {
+    Authentication,
+    Syncing,
+    Gameplay,
+}
+
+/// Header-only routing gate. Sync payloads never reach Ready gameplay routers.
+pub fn frame_route_for_class(frame: &[u8], class: MessageClass) -> Result<FrameRoute, WireError> {
     if frame.len() > frame_limit(class) {
         return Err(WireError::Oversized);
     }
@@ -173,7 +190,11 @@ pub fn is_session_control_for_class(frame: &[u8], class: MessageClass) -> Result
     if declared_class != class {
         return Err(WireError::WrongClass);
     }
-    Ok(kind == 6)
+    Ok(match kind {
+        6 => FrameRoute::Authentication,
+        5 | 7 => FrameRoute::Syncing,
+        _ => FrameRoute::Gameplay,
+    })
 }
 
 pub fn decode(frame: &[u8]) -> Result<WireMessage, WireError> {
@@ -184,6 +205,7 @@ pub fn decode(frame: &[u8]) -> Result<WireMessage, WireError> {
         3 => WireMessage::DragUpdate(parse(payload)?),
         5 => WireMessage::BulkTransfer(parse(payload)?),
         6 => WireMessage::SessionControl(parse(payload)?),
+        7 => WireMessage::SyncControl(parse(payload)?),
         _ => unreachable!("kind checked above"),
     };
     if message.class() != class {

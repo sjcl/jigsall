@@ -1,6 +1,6 @@
 use super::{
-    bulk::BulkTransferMessage,
     session::SessionConnections,
+    transient::{command_drop, TransientDrop},
     transport::{ConnectionId, Transport, TransportError, TransportEvent},
     wire::{self, WireError, WireMessage},
 };
@@ -25,7 +25,13 @@ pub enum HostRouteError {
 #[derive(Debug)]
 pub enum HostRouteOutcome {
     Applied(Box<HostCommandOutcome>),
-    Bulk(BulkTransferMessage),
+    DroppedTransient(TransientDrop),
+}
+
+/// Retention failures remain separate from the already-applied publication.
+pub struct HostSyncRouteOutcome {
+    pub gameplay: HostRouteOutcome,
+    pub retention: Result<(), crate::multiplayer::catch_up::CatchUpError>,
 }
 
 /// Borrow existing authority state for a frame; does not create a second authority.
@@ -58,21 +64,58 @@ impl HostRouter<'_> {
             return Err(HostRouteError::HostConnection);
         }
         match wire::decode_for_class(payload, *class).map_err(HostRouteError::Wire)? {
-            WireMessage::ClientCommand(command) => self
-                .contexts
-                .apply_replicated(
+            WireMessage::ClientCommand(command) => {
+                let transient = matches!(
+                    command.command,
+                    puzzella_core::protocol::ProtocolPieceCommand::DragUpdate { .. }
+                );
+                // Reject invalid authenticated scalars even when an old context
+                // would otherwise yield a benign sequencing error first.
+                if matches!(command.command, puzzella_core::protocol::ProtocolPieceCommand::DragUpdate { delta } if !delta.is_finite())
+                {
+                    return Err(HostRouteError::Command(ProtocolCommandError::InvalidDelta));
+                }
+                match self.contexts.apply_replicated(
                     self.session,
                     self.store,
                     player,
                     &command,
                     self.definition,
                     self.local_player,
-                )
-                .map(|outcome| HostRouteOutcome::Applied(Box::new(outcome)))
-                .map_err(HostRouteError::Command),
-            WireMessage::BulkTransfer(message) => Ok(HostRouteOutcome::Bulk(message)),
+                ) {
+                    Ok(outcome) => Ok(HostRouteOutcome::Applied(Box::new(outcome))),
+                    Err(error) => {
+                        if transient {
+                            if let Some(reason) = command_drop(&error) {
+                                return Ok(HostRouteOutcome::DroppedTransient(reason));
+                            }
+                        }
+                        Err(HostRouteError::Command(error))
+                    }
+                }
+            }
             _ => Err(HostRouteError::WrongDirection),
         }
+    }
+
+    /// Use for a runtime with pending joins. Recording always precedes caller
+    /// publication; a retention failure cannot discard an applied command.
+    pub fn route_with_sync(
+        &mut self,
+        event: &TransportEvent,
+        sync: &mut super::syncing::HostSyncCoordinator,
+    ) -> Result<HostSyncRouteOutcome, HostRouteError> {
+        let gameplay = self.route(event)?;
+        let retention = match &gameplay {
+            HostRouteOutcome::Applied(outcome) => {
+                sync.record_command_outcome(self.session, self.store, outcome)
+            }
+            HostRouteOutcome::DroppedTransient(_) => Ok(()),
+        };
+        Ok(HostSyncRouteOutcome {
+            gameplay,
+            retention,
+        })
     }
 
     /// Authority controls echo to every Ready remote peer (including sender).

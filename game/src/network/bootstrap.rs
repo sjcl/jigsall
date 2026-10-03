@@ -1,10 +1,11 @@
 //! Opt-in, frame-driven session bootstrap over SecureTransport. Process every event
-//! here BEFORE gameplay routing; only `Gameplay` may be forwarded to a router.
+//! here BEFORE routing; `Syncing` and `Gameplay` have separate routers.
 use super::{
     auth::{ClientHandshake, ServerHandshake, SessionPassword},
     secure::{ChannelRole, SecureTransport},
     session::{SessionConnectionError, SessionConnections},
     session_control::*,
+    syncing::SyncReadyPermit,
     transport::*,
     wire::{self, WireMessage},
 };
@@ -32,6 +33,7 @@ pub enum ConnectionState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BootstrapOutcome {
     Consumed,
+    Syncing,
     Gameplay,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,6 +134,10 @@ impl HostBootstrap {
                 )
             })
             .map(|p| p.hello.reserved_player)
+    }
+    pub fn metadata(&self, connection: ConnectionId) -> Option<SessionMetadata> {
+        self.assigned_player(connection)?;
+        self.peers.get(&connection).map(|p| p.hello.metadata)
     }
     fn allocate(&mut self, connections: &SessionConnections) -> Option<PlayerId> {
         loop {
@@ -276,8 +282,7 @@ impl HostBootstrap {
                         connections,
                     ));
                 }
-                let Ok(session_control) = wire::is_session_control_for_class(payload, *class)
-                else {
+                let Ok(route) = wire::frame_route_for_class(payload, *class) else {
                     return Err(self.reject(
                         *connection,
                         DisconnectReason::ProtocolViolation,
@@ -285,10 +290,18 @@ impl HostBootstrap {
                         connections,
                     ));
                 };
-                if peer.state == ConnectionState::Ready && !session_control {
+                if peer.state == ConnectionState::Ready && route == wire::FrameRoute::Gameplay {
                     return Ok(BootstrapOutcome::Gameplay);
                 }
-                if !session_control {
+                if matches!(
+                    peer.state,
+                    ConnectionState::Authenticated | ConnectionState::Syncing
+                ) && route == wire::FrameRoute::Syncing
+                    && transport.has_channel(*connection)
+                {
+                    return Ok(BootstrapOutcome::Syncing);
+                }
+                if route != wire::FrameRoute::Authentication {
                     return Err(self.reject(
                         *connection,
                         DisconnectReason::ProtocolViolation,
@@ -421,12 +434,15 @@ impl HostBootstrap {
         &mut self,
         connection: ConnectionId,
         connections: &mut SessionConnections,
+        permit: &SyncReadyPermit,
     ) -> Result<(), BootstrapError> {
         let peer = self
             .peers
             .get_mut(&connection)
             .ok_or(BootstrapError::InvalidTransition)?;
-        if peer.state != ConnectionState::Syncing {
+        if peer.state != ConnectionState::Syncing
+            || !permit.matches(connection, peer.hello.metadata, peer.hello.reserved_player)
+        {
             return Err(BootstrapError::InvalidTransition);
         }
         connections
@@ -434,6 +450,20 @@ impl HostBootstrap {
             .map_err(BootstrapError::Registration)?;
         peer.state = ConnectionState::Ready;
         Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn promote_ready_for_test(
+        &mut self,
+        connection: ConnectionId,
+        connections: &mut SessionConnections,
+    ) -> Result<(), BootstrapError> {
+        let peer = self
+            .peers
+            .get(&connection)
+            .ok_or(BootstrapError::InvalidTransition)?;
+        let permit =
+            SyncReadyPermit::fixture(connection, peer.hello.metadata, peer.hello.reserved_player);
+        self.promote_ready(connection, connections, &permit)
     }
 }
 
@@ -463,6 +493,9 @@ impl ClientBootstrap {
     }
     pub fn state(&self) -> Option<ConnectionState> {
         self.state
+    }
+    pub fn host_connection(&self) -> ConnectionId {
+        self.host_connection
     }
     pub fn assigned_player(&self) -> Option<PlayerId> {
         self.player
@@ -564,18 +597,26 @@ impl ClientBootstrap {
                         connections,
                     ));
                 }
-                let Ok(session_control) = wire::is_session_control_for_class(payload, *class)
-                else {
+                let Ok(route) = wire::frame_route_for_class(payload, *class) else {
                     return Err(self.reject(
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
                     ));
                 };
-                if self.state == Some(ConnectionState::Ready) && !session_control {
+                if self.state == Some(ConnectionState::Ready) && route == wire::FrameRoute::Gameplay
+                {
                     return Ok(BootstrapOutcome::Gameplay);
                 }
-                if !session_control {
+                if matches!(
+                    self.state,
+                    Some(ConnectionState::Authenticated | ConnectionState::Syncing)
+                ) && route == wire::FrameRoute::Syncing
+                    && transport.has_channel(connection)
+                {
+                    return Ok(BootstrapOutcome::Syncing);
+                }
+                if route != wire::FrameRoute::Authentication {
                     return Err(self.reject(
                         DisconnectReason::ProtocolViolation,
                         transport,
@@ -718,8 +759,16 @@ impl ClientBootstrap {
     pub fn promote_ready(
         &mut self,
         connections: &mut SessionConnections,
+        permit: &SyncReadyPermit,
     ) -> Result<(), BootstrapError> {
-        if self.state != Some(ConnectionState::Syncing) {
+        if self.state != Some(ConnectionState::Syncing)
+            || !self
+                .metadata
+                .zip(self.player)
+                .is_some_and(|(metadata, player)| {
+                    permit.matches(self.host_connection, metadata, player)
+                })
+        {
             return Err(BootstrapError::InvalidTransition);
         }
         connections
@@ -730,6 +779,18 @@ impl ClientBootstrap {
             .map_err(BootstrapError::Registration)?;
         self.state = Some(ConnectionState::Ready);
         Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn promote_ready_for_test(
+        &mut self,
+        connections: &mut SessionConnections,
+    ) -> Result<(), BootstrapError> {
+        let permit = SyncReadyPermit::fixture(
+            self.host_connection,
+            self.metadata.ok_or(BootstrapError::InvalidTransition)?,
+            self.player.ok_or(BootstrapError::InvalidTransition)?,
+        );
+        self.promote_ready(connections, &permit)
     }
 }
 
