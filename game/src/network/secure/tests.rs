@@ -64,6 +64,160 @@ fn rejected(payload: Vec<u8>, class: MessageClass) {
     assert!(poll(&mut transport).is_empty());
 }
 
+fn session_control_frame() -> Vec<u8> {
+    use crate::network::session_control::{AuthAccepted, SessionControlMessage};
+    wire::encode(&wire::WireMessage::SessionControl(
+        SessionControlMessage::AuthAccepted(AuthAccepted {
+            player: puzzella_core::PlayerId(43),
+            confirmation: [8; 32],
+        }),
+    ))
+    .unwrap()
+}
+fn forbidden_plaintext_frames() -> Vec<(MessageClass, Vec<u8>)> {
+    let mut frames = Vec::new();
+    // All gameplay header kinds must be rejected before body deserialization.
+    for (kind, class) in [
+        (1, MessageClass::Control),
+        (2, MessageClass::Control),
+        (3, MessageClass::Transient),
+        (4, MessageClass::Transient),
+    ] {
+        let mut payload = frame(class);
+        payload[6] = kind;
+        frames.push((class, payload));
+    }
+    frames.push((
+        MessageClass::Bulk,
+        wire::encode(&wire::WireMessage::BulkChunk(
+            b"private image bytes".to_vec(),
+        ))
+        .unwrap(),
+    ));
+    frames.push((MessageClass::Control, vec![0]));
+    for class in [MessageClass::Transient, MessageClass::Bulk] {
+        frames.push((class, session_control_frame()));
+    }
+    for (offset, value) in [(0, 0), (4, 0), (6, 7), (7, 1)] {
+        let mut payload = session_control_frame();
+        payload[offset] = value;
+        frames.push((MessageClass::Control, payload));
+    }
+    let mut truncated = session_control_frame();
+    truncated.pop();
+    frames.push((MessageClass::Control, truncated));
+    for (class, length) in CLASSES
+        .map(|class| (class, wire::frame_limit(class) + 1))
+        .into_iter()
+        .chain([(
+            MessageClass::Control,
+            wire::HEADER_SIZE + wire::MAX_SESSION_CONTROL_PAYLOAD + 1,
+        )])
+    {
+        let mut payload = frame(class);
+        payload.resize(length, 0);
+        payload[8..12].copy_from_slice(&((length - wire::HEADER_SIZE) as u32).to_le_bytes());
+        frames.push((class, payload));
+    }
+    frames
+}
+
+#[test]
+fn plaintext_send_blocks_gameplay_and_invalid_frames_before_backend_send() {
+    for (class, payload) in forbidden_plaintext_frames() {
+        let mut transport = SecureTransport::new(FakeTransport::default());
+        transport.start_connection(ID);
+        transport.start_connection(OTHER);
+        assert_eq!(
+            transport.send(ID, class, &payload),
+            Err(TransportError::ProtocolViolation)
+        );
+        assert!(transport.backend_mut().sent.is_empty());
+        assert_eq!(
+            poll(&mut transport),
+            vec![TransportEvent::Disconnected {
+                connection: ID,
+                reason: DisconnectReason::ProtocolViolation,
+            }]
+        );
+        assert!(poll(&mut transport).is_empty());
+        assert_eq!(
+            transport.send(ID, MessageClass::Control, &session_control_frame()),
+            Err(TransportError::UnknownConnection)
+        );
+        transport
+            .send(OTHER, MessageClass::Control, &session_control_frame())
+            .unwrap();
+    }
+}
+
+#[test]
+fn plaintext_receive_blocks_gameplay_and_invalid_frames_before_bootstrap() {
+    for (class, payload) in forbidden_plaintext_frames() {
+        let mut transport = SecureTransport::new(FakeTransport::default());
+        transport.start_connection(ID);
+        transport.start_connection(OTHER);
+        transport.backend_mut().inbox.push(incoming(class, payload));
+        assert_eq!(
+            poll(&mut transport),
+            vec![TransportEvent::Disconnected {
+                connection: ID,
+                reason: DisconnectReason::ProtocolViolation,
+            }]
+        );
+        assert!(poll(&mut transport).is_empty());
+        transport
+            .send(OTHER, MessageClass::Control, &session_control_frame())
+            .unwrap();
+    }
+}
+
+#[test]
+fn plaintext_session_control_passes_and_installed_channel_encrypts_bulk() {
+    let mut transport = SecureTransport::new(FakeTransport::default());
+    transport.start_connection(ID);
+    let handshake = session_control_frame();
+    transport
+        .send(ID, MessageClass::Control, &handshake)
+        .unwrap();
+    assert_eq!(
+        transport.backend_mut().sent,
+        vec![incoming(MessageClass::Control, handshake.clone())]
+    );
+    transport
+        .backend_mut()
+        .inbox
+        .push(incoming(MessageClass::Control, handshake.clone()));
+    assert_eq!(
+        poll(&mut transport),
+        vec![incoming(MessageClass::Control, handshake)]
+    );
+
+    transport.install(ID, secret(), ChannelRole::Host).unwrap();
+    let message = wire::WireMessage::BulkChunk(b"private image bytes".to_vec());
+    let plaintext = wire::encode(&message).unwrap();
+    transport.send(ID, MessageClass::Bulk, &plaintext).unwrap();
+    let TransportEvent::Message { payload, .. } = transport.backend_mut().sent.pop().unwrap()
+    else {
+        panic!("message expected");
+    };
+    assert_ne!(payload, plaintext);
+    let (mut client, _) = channels();
+    assert_eq!(
+        client.open(MessageClass::Bulk, payload).unwrap(),
+        Some(plaintext.clone())
+    );
+    transport.backend_mut().inbox.push(incoming(
+        MessageClass::Bulk,
+        client.seal(MessageClass::Bulk, &plaintext).unwrap(),
+    ));
+    assert_eq!(
+        poll(&mut transport),
+        vec![incoming(MessageClass::Bulk, plaintext)]
+    );
+    assert!(transport.has_channel(ID));
+}
+
 #[test]
 fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
     let (mut client, mut host) = channels();

@@ -165,8 +165,11 @@ wire, authority, replication, and LocalPlayerId behavior.
 `DirectIpTransport` establishment when supported by T. It contains no GNS type.
 Bootstrap's typed transport boundary requires this wrapper; its inner backend is
 private, with no production mutable/consuming accessor and no public downgrade or
-raw-key installation API. Uninstalled connections pass valid plaintext PZLA frames
-through; bootstrap still gates every event before routing. Installed connections
+raw-key installation API. Uninstalled connections only send and receive plaintext
+SessionControl frames on Control, as validated by the wire header/class/size gate.
+Gameplay, Bulk, malformed headers and class/size violations close that connection
+as ProtocolViolation; rejected sends never reach the backend. Bootstrap still owns
+SessionControl body decoding and state validation before routing. Installed connections
 interpret every incoming payload exclusively as an encrypted record. Plaintext
 gameplay or readiness markers never get a fallback decoder.
 

@@ -1,5 +1,6 @@
 //! Backend-independent authenticated channel. Bootstrap is the sole installer.
-//! No active channel ever falls back to plaintext. Consume each poll's events
+//! Plaintext connections only carry SessionControl; active channels never fall
+//! back to plaintext. Consume each poll's events
 //! before polling again: plaintext handshakes are per-connection batch barriers.
 use super::{
     auth::AuthenticatedSecret,
@@ -282,10 +283,12 @@ impl<T: Transport> Transport for SecureTransport<T> {
                         Some(ConnectionChannel::Secure(channel)) => channel.open(class, payload),
                         Some(ConnectionChannel::Plaintext) => {
                             barriers.insert(connection);
-                            // Secure records before activation are never offered
-                            // to a router as plaintext. Header-only validation;
-                            // bootstrap still owns session-control/state gating.
-                            if wire::is_session_control_for_class(&payload, class).is_ok() {
+                            // Only session-control headers pass before activation;
+                            // bootstrap still owns body decoding and state gating.
+                            if matches!(
+                                wire::is_session_control_for_class(&payload, class),
+                                Ok(true)
+                            ) {
                                 Ok(Some(payload))
                             } else {
                                 Err(())
@@ -316,7 +319,13 @@ impl<T: Transport> Transport for SecureTransport<T> {
         class: MessageClass,
         payload: &[u8],
     ) -> Result<(), TransportError> {
-        if payload.len() > wire::frame_limit(class) {
+        // Plaintext must reach the session-control gate even when oversized.
+        if payload.len() > wire::frame_limit(class)
+            && !matches!(
+                self.connections.get(&connection),
+                Some(ConnectionChannel::Plaintext)
+            )
+        {
             return Err(TransportError::PayloadTooLarge);
         }
         let record = match self.connections.get_mut(&connection) {
@@ -329,7 +338,14 @@ impl<T: Transport> Transport for SecureTransport<T> {
                 }
             },
             Some(ConnectionChannel::Closed) => return Err(TransportError::NotConnected),
-            Some(ConnectionChannel::Plaintext) => None,
+            Some(ConnectionChannel::Plaintext) => {
+                if !matches!(wire::is_session_control_for_class(payload, class), Ok(true)) {
+                    let event = self.fail(connection, DisconnectReason::ProtocolViolation);
+                    self.pending.push(event);
+                    return Err(TransportError::ProtocolViolation);
+                }
+                None
+            }
             None => return Err(TransportError::UnknownConnection),
         };
         let result = self
