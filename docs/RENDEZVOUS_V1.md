@@ -92,7 +92,16 @@ does not mistake WebSocket loss for gameplay disconnection. Pending/unactivated
 bindings are revoked on cleanup. The caller may explicitly `release_route(peer)`
 after established connection cleanup or a security decision. That operation can
 close a live GNS route on its next poll, so it is never automatic for an active
-route. Retained bindings still consume the finite 64-route cap until released.
+route. The standalone `poll()` retains this explicit-owner contract. Production
+runtime uses `poll_with_peer_connections` and `reclaim_unavailable_routes`:
+unavailable bindings with neither an owned native handle (including Connecting)
+nor queued inbound signals are released. Reconciliation runs between control
+messages, before another bind can exhaust the finite 64-route cap, and after
+native polling to reclaim ICE failures before Connected. The bounded route table
+itself tracks unavailable peers; no additional unbounded peer history is kept.
+HostReady retains its installed route through delivery of that poll's events,
+even when control loss follows RoomJoined in the same batch, so the owner can
+start connect_peer before reconciling native ownership.
 v1 has no resume; create a new adapter/backend after owner-managed cleanup.
 
 Production `EndpointUrl::production` requires `wss://.../v1/ws`, WebPKI-validated
@@ -217,7 +226,16 @@ Disconnected or PeerUnavailable never closes the existing GNS connection or
 revokes its active route. Pending ICE remains governed by GNS's own connection
 deadline. Existing Ready gameplay continues; host code is removed and control
 status becomes Unavailable with a localized warning that new players cannot join.
-Routes are released only after actual game connection removal. No resume is added.
+Unavailable routes are released once native handles and pending inbound signals
+are gone, including peers that never became Connected. An owned Connecting handle
+or a received Signal awaiting native admission keeps the route. Departure of one
+live connection also preserves a Pending sibling for the same peer. No resume is added.
+
+During Hosting/ICE/gameplay, server Backpressure and RateLimited are nonfatal:
+the control socket, Available status and host code remain usable. A later actual
+Disconnected still marks control Unavailable, and protocol errors still shut down
+the control plane. Before RoomCreated/HostReady, typed establishment failures are
+unchanged.
 
 Cancel/Leave/Menu stop the adapter worker asynchronously, explicitly close game
 connections, then drop bootstrap/sync/secure channels, backend and pending owned

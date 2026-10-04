@@ -2,7 +2,12 @@ use super::*;
 mod smoke;
 use crate::network::gns::rendezvous::protocol::{AuthorityId, MemberId, RoomId};
 use crate::network::runtime::tests as fixtures;
-use std::{cell::RefCell, collections::VecDeque, rc::Rc, sync::Mutex};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, VecDeque},
+    rc::Rc,
+    sync::Mutex,
+};
 
 #[derive(Default)]
 struct ControlState {
@@ -11,11 +16,59 @@ struct ControlState {
     joins: Vec<String>,
     stopped: bool,
     released: Vec<PeerId>,
+    routes: BTreeMap<PeerId, bool>,
+    pending_signals: BTreeSet<PeerId>,
 }
 struct Control(Rc<RefCell<ControlState>>);
 impl ControlPlane for Control {
-    fn poll(&mut self) -> Vec<RendezvousEvent> {
-        self.0.borrow_mut().events.drain(..).collect()
+    fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent> {
+        let events: Vec<_> = self.0.borrow_mut().events.drain(..).collect();
+        self.reclaim_unavailable_routes(has_peer);
+        let mut announced_host = None;
+        for event in &events {
+            {
+                let mut state = self.0.borrow_mut();
+                match event {
+                    RendezvousEvent::PeerJoined { peer_id, .. }
+                    | RendezvousEvent::HostReady { peer_id, .. } => {
+                        assert!(state.routes.len() < crate::network::gns::rendezvous::MAX_ROUTES);
+                        state.routes.insert(*peer_id, true);
+                        if matches!(event, RendezvousEvent::HostReady { .. }) {
+                            announced_host = Some(*peer_id);
+                        }
+                    }
+                    RendezvousEvent::PeerUnavailable { peer_id } => {
+                        state.routes.insert(*peer_id, false);
+                    }
+                    RendezvousEvent::RoomClosed | RendezvousEvent::Disconnected(_) => {
+                        state
+                            .routes
+                            .values_mut()
+                            .for_each(|available| *available = false);
+                    }
+                    _ => {}
+                }
+            }
+            self.reclaim_unavailable_routes(&|peer| has_peer(peer) || announced_host == Some(peer));
+        }
+        events
+    }
+    fn reclaim_unavailable_routes(&mut self, has_peer: &dyn Fn(PeerId) -> bool) {
+        let unused: Vec<_> = self
+            .0
+            .borrow()
+            .routes
+            .iter()
+            .filter_map(|(&peer, &available)| {
+                (!available && !has_peer(peer) && !self.has_pending_signal(peer)).then_some(peer)
+            })
+            .collect();
+        for peer in unused {
+            self.release_route(peer);
+        }
+    }
+    fn has_pending_signal(&self, peer: PeerId) -> bool {
+        self.0.borrow().pending_signals.contains(&peer)
     }
     fn create_room(&mut self) -> Result<(), RendezvousError> {
         self.0.borrow_mut().creates += 1;
@@ -29,7 +82,10 @@ impl ControlPlane for Control {
         self.0.borrow_mut().stopped = true;
     }
     fn release_route(&mut self, peer: PeerId) {
-        self.0.borrow_mut().released.push(peer);
+        let mut state = self.0.borrow_mut();
+        state.routes.remove(&peer);
+        state.pending_signals.remove(&peer);
+        state.released.push(peer);
     }
 }
 // Deliberately implements only Transport, plus the private peer establishment seam.
@@ -38,6 +94,7 @@ struct PeerOnly {
     inner: fixtures::Fake,
     calls: Rc<RefCell<Vec<PeerId>>>,
     dropped: Rc<RefCell<bool>>,
+    handles: Rc<RefCell<BTreeMap<ConnectionId, PeerId>>>,
 }
 impl Drop for PeerOnly {
     fn drop(&mut self) {
@@ -46,7 +103,24 @@ impl Drop for PeerOnly {
 }
 impl Transport for PeerOnly {
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
-        self.inner.poll(events)
+        let start = events.len();
+        self.inner.poll(events)?;
+        for event in &events[start..] {
+            match event {
+                TransportEvent::Connected { connection } => {
+                    self.handles
+                        .borrow_mut()
+                        .entry(*connection)
+                        .or_insert(peer());
+                }
+                TransportEvent::Disconnected { connection, .. }
+                | TransportEvent::ConnectionFailed { connection, .. } => {
+                    self.handles.borrow_mut().remove(connection);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
     fn send(
         &mut self,
@@ -57,6 +131,7 @@ impl Transport for PeerOnly {
         self.inner.send(id, class, payload)
     }
     fn close(&mut self, id: ConnectionId, reason: DisconnectReason) -> Result<(), TransportError> {
+        self.handles.borrow_mut().remove(&id);
         self.inner.close(id, reason)
     }
     fn reliable_egress(&self, id: ConnectionId) -> Result<ReliableEgress, TransportError> {
@@ -69,10 +144,15 @@ impl Transport for PeerOnly {
 impl PeerTransport for PeerOnly {
     fn connect_peer(&mut self, peer: PeerId) -> Result<ConnectionId, TransportError> {
         self.calls.borrow_mut().push(peer);
-        self.inner.connect("127.0.0.1:10000".parse().unwrap())
+        let connection = self.inner.connect("127.0.0.1:10000".parse().unwrap())?;
+        self.handles.borrow_mut().insert(connection, peer);
+        Ok(connection)
     }
-    fn remote_peer(&self, _: ConnectionId) -> Option<PeerId> {
-        Some(peer())
+    fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId> {
+        self.handles.borrow().get(&connection).copied()
+    }
+    fn has_peer(&self, peer: PeerId) -> bool {
+        self.handles.borrow().values().any(|&p| p == peer)
     }
 }
 fn peer() -> PeerId {
@@ -124,6 +204,7 @@ fn backend(id: u64, bus: &Arc<Mutex<fixtures::Bus>>) -> PeerOnly {
         },
         calls: default(),
         dropped: default(),
+        handles: default(),
     }
 }
 fn control() -> (Control, Rc<RefCell<ControlState>>) {
@@ -247,6 +328,204 @@ fn rendezvous_host_control_loss_before_room_created_is_failure() {
     assert_eq!(driver.status().failure, Some(NetworkFailureKind::Timeout));
 }
 #[test]
+fn rendezvous_unconnected_peer_churn_releases_routes() {
+    let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+    let (control, state) = control();
+    let mut driver =
+        RendezvousRuntimeDriver::host(backend(0, &bus), control, host_options(), prepared());
+    let mut app = fixtures::app();
+    fixtures::host_world(&mut app);
+    state.borrow_mut().events.extend([welcome(), created()]);
+    for n in 10..110 {
+        let peer_id = PeerId::from_bytes([n; 16]);
+        state.borrow_mut().events.extend([
+            RendezvousEvent::PeerJoined {
+                peer_id,
+                member_id: MemberId([n; 16]),
+            },
+            RendezvousEvent::PeerUnavailable { peer_id },
+        ]);
+        RuntimeDriver::poll(&mut driver, app.world_mut());
+        assert!(state.borrow().released.contains(&peer_id));
+        assert!(driver.active);
+        assert_eq!(driver.status().phase, RuntimePhase::Hosting);
+    }
+}
+#[test]
+fn rendezvous_host_pending_failure_reclaims_route_without_a_connected_event() {
+    for loss in [
+        RendezvousEvent::PeerUnavailable { peer_id: peer() },
+        RendezvousEvent::RoomClosed,
+        RendezvousEvent::Disconnected(RendezvousError::Network),
+    ] {
+        let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+        let (control, state) = control();
+        let backend = backend(0, &bus);
+        let handles = backend.handles.clone();
+        let pending = ConnectionId::new(901);
+        handles.borrow_mut().insert(pending, peer());
+        let mut driver =
+            RendezvousRuntimeDriver::host(backend, control, host_options(), prepared());
+        let mut app = fixtures::app();
+        fixtures::host_world(&mut app);
+        state.borrow_mut().events.extend([
+            welcome(),
+            created(),
+            RendezvousEvent::PeerJoined {
+                peer_id: peer(),
+                member_id: MemberId([9; 16]),
+            },
+            loss,
+        ]);
+        RuntimeDriver::poll(&mut driver, app.world_mut());
+        assert!(driver.runtime.as_ref().unwrap().live.is_empty());
+        assert!(state.borrow().released.is_empty());
+        assert!(bus.lock().unwrap().closed.is_empty());
+        bus.lock().unwrap().inbox.entry(0).or_default().push_back(
+            TransportEvent::ConnectionFailed {
+                connection: pending,
+                reason: DisconnectReason::BackendConnectionTimeout,
+            },
+        );
+        RuntimeDriver::poll(&mut driver, app.world_mut());
+        assert_eq!(state.borrow().released, [peer()]);
+        assert!(handles.borrow().is_empty());
+        assert!(driver.active);
+    }
+}
+#[test]
+fn rendezvous_departed_live_connection_preserves_a_pending_sibling() {
+    let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+    let (control, state) = control();
+    let backend = backend(0, &bus);
+    let departed = ConnectionId::new(900);
+    let pending = ConnectionId::new(901);
+    let handles = backend.handles.clone();
+    handles
+        .borrow_mut()
+        .extend([(departed, peer()), (pending, peer())]);
+    let mut driver = RendezvousRuntimeDriver::host(backend, control, host_options(), prepared());
+    driver.runtime.as_mut().unwrap().live.insert(departed);
+    state.borrow_mut().events.extend([
+        welcome(),
+        created(),
+        RendezvousEvent::PeerUnavailable { peer_id: peer() },
+    ]);
+    bus.lock()
+        .unwrap()
+        .inbox
+        .entry(0)
+        .or_default()
+        .push_back(TransportEvent::Disconnected {
+            connection: departed,
+            reason: DisconnectReason::RemoteClosed,
+        });
+    let mut app = fixtures::app();
+    fixtures::host_world(&mut app);
+    RuntimeDriver::poll(&mut driver, app.world_mut());
+    assert!(driver.runtime.as_ref().unwrap().live.is_empty());
+    assert_eq!(handles.borrow().len(), 1);
+    assert!(state.borrow().released.is_empty());
+    bus.lock()
+        .unwrap()
+        .inbox
+        .entry(0)
+        .or_default()
+        .push_back(TransportEvent::ConnectionFailed {
+            connection: pending,
+            reason: DisconnectReason::ConnectionProblem,
+        });
+    RuntimeDriver::poll(&mut driver, app.world_mut());
+    assert_eq!(state.borrow().released, [peer()]);
+}
+#[test]
+fn rendezvous_transient_server_errors_preserve_control_during_hosting_and_ice() {
+    for host in [true, false] {
+        let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+        let (control, state) = control();
+        let mut driver = if host {
+            RendezvousRuntimeDriver::host(backend(0, &bus), control, host_options(), prepared())
+        } else {
+            RendezvousRuntimeDriver::join(backend(1, &bus), control, join_options(), limits())
+        };
+        state
+            .borrow_mut()
+            .events
+            .extend([welcome(), if host { created() } else { ready() }]);
+        driver.poll_control(Instant::now());
+        let phase = driver.status().phase;
+        let code = driver.status().room_code.clone();
+        for error in [ErrorCode::Backpressure, ErrorCode::RateLimited] {
+            state
+                .borrow_mut()
+                .events
+                .push_back(RendezvousEvent::ServerError(error));
+            driver.poll_control(Instant::now());
+            assert!(!state.borrow().stopped);
+            assert_eq!(
+                driver.status().rendezvous_control,
+                Some(RendezvousControlStatus::Available)
+            );
+            assert_eq!(driver.status().phase, phase);
+            assert_eq!(driver.status().room_code, code);
+        }
+        state
+            .borrow_mut()
+            .events
+            .push_back(RendezvousEvent::PeerJoined {
+                peer_id: PeerId::from_bytes([8; 16]),
+                member_id: MemberId([8; 16]),
+            });
+        driver.poll_control(Instant::now());
+        assert!(driver.active && !state.borrow().stopped);
+        state
+            .borrow_mut()
+            .events
+            .push_back(RendezvousEvent::Disconnected(RendezvousError::Network));
+        driver.poll_control(Instant::now());
+        assert_eq!(
+            driver.status().rendezvous_control,
+            Some(RendezvousControlStatus::Unavailable)
+        );
+        assert!(driver.active);
+    }
+}
+#[test]
+fn rendezvous_protocol_errors_remain_terminal_and_establishment_errors_remain_failures() {
+    for established in [false, true] {
+        let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+        let (control, state) = control();
+        let mut driver =
+            RendezvousRuntimeDriver::host(backend(0, &bus), control, host_options(), prepared());
+        state.borrow_mut().events.push_back(welcome());
+        if established {
+            state.borrow_mut().events.push_back(created());
+        }
+        driver.poll_control(Instant::now());
+        state
+            .borrow_mut()
+            .events
+            .push_back(RendezvousEvent::ServerError(if established {
+                ErrorCode::ProtocolViolation
+            } else {
+                ErrorCode::RateLimited
+            }));
+        driver.poll_control(Instant::now());
+        if established {
+            assert!(state.borrow().stopped && driver.active);
+            assert!(driver.status().room_code.is_none());
+            assert_eq!(
+                driver.status().rendezvous_control,
+                Some(RendezvousControlStatus::Unavailable)
+            );
+        } else {
+            assert!(!driver.active);
+            assert_eq!(driver.status().phase, RuntimePhase::Failed);
+            assert_eq!(driver.status().failure, Some(NetworkFailureKind::Capacity));
+        }
+    }
+}
+#[test]
 fn rendezvous_control_loss_during_ice_does_not_close_or_revoke_game_connection() {
     let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
     let (control, state) = control();
@@ -267,6 +546,29 @@ fn rendezvous_control_loss_during_ice_does_not_close_or_revoke_game_connection()
         driver.status().rendezvous_control,
         Some(RendezvousControlStatus::Unavailable)
     );
+    assert!(state.borrow().released.is_empty());
+    assert!(bus.lock().unwrap().closed.is_empty());
+}
+#[test]
+fn rendezvous_host_ready_and_control_loss_in_one_batch_still_start_pending_ice() {
+    let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+    let (control, state) = control();
+    let mut driver =
+        RendezvousRuntimeDriver::join(backend(1, &bus), control, join_options(), limits());
+    state
+        .borrow_mut()
+        .events
+        .extend([welcome(), ready(), RendezvousEvent::RoomClosed]);
+    driver.poll_control(Instant::now());
+    assert_eq!(driver.stage, Stage::PeerConnecting);
+    assert!(driver.active);
+    assert!(driver
+        .runtime
+        .as_ref()
+        .unwrap()
+        .transport
+        .backend()
+        .has_peer(peer()));
     assert!(state.borrow().released.is_empty());
     assert!(bus.lock().unwrap().closed.is_empty());
 }

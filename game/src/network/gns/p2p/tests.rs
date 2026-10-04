@@ -640,10 +640,13 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
         .unwrap();
     let mut ids = Vec::new();
     for n in 10..14 {
+        assert!(!backend.has_peer(PeerId::from_bytes([n; 16])));
         let id = backend
             .connect_peer(PeerId::from_bytes([n; 16]), 0)
             .unwrap();
         assert_eq!(backend.origin(id), Some(Origin::Route(bad)));
+        assert!(backend.has_peer(PeerId::from_bytes([n; 16])));
+        assert!(!backend.connections[&id].connected);
         ids.push(id);
     }
     assert_eq!(
@@ -654,12 +657,14 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
         .connect_peer(PeerId::from_bytes([20; 16]), 0)
         .unwrap();
     backend.close(ids[0], DisconnectReason::Requested).unwrap();
+    assert!(!backend.has_peer(PeerId::from_bytes([10; 16])));
     backend
         .connect_peer(PeerId::from_bytes([14; 16]), 0)
         .unwrap();
     let mut events = Vec::new();
     backend.maintain(Instant::now() + CONNECTING_TIMEOUT, &mut events);
     assert!(backend.connections.is_empty());
+    assert!(!backend.has_peer(PeerId::from_bytes([20; 16])));
     assert_eq!(backend.origin(healthy), None);
     // Rotating peer IDs or closing sockets does not replenish account history.
     assert_eq!(
@@ -672,6 +677,7 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
     mailbox.revoke_peer(PeerId::from_bytes([20; 16]));
     events.clear();
     backend.poll(&mut events).unwrap();
+    assert!(!backend.has_peer(PeerId::from_bytes([20; 16])));
     assert!(events.iter().any(|e| matches!(e, TransportEvent::ConnectionFailed { connection, reason: DisconnectReason::Requested } if *connection == healthy)));
     assert_eq!(
         backend.connect_peer(PeerId::from_bytes([20; 16]), 0),

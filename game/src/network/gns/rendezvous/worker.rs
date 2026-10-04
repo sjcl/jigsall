@@ -84,6 +84,10 @@ impl Worker {
     pub fn pop(&mut self) -> Option<ServerMessage> {
         self.events.try_recv().ok()
     }
+    #[cfg(test)]
+    pub(super) fn queued_events(&self) -> usize {
+        self.events.len()
+    }
     pub fn shutdown(&mut self) {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());

@@ -556,3 +556,151 @@ async fn adapter_drop_cleans_pending_authorization_and_preserves_active_binding(
     assert!(mailbox.origin(PeerId::from_bytes(id(5))).is_err());
     assert!(mailbox.origin(PeerId::from_bytes(id(7))).is_ok());
 }
+
+#[tokio::test]
+async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
+    let (url, task) = fixture(|mut socket| async move {
+        for n in 80..86 {
+            emit(
+                &mut socket,
+                ServerMessage::AuthorizePeer {
+                    join_id: JoinId(id(n + 100)),
+                    peer_id: protocol::PeerId(id(n)),
+                    member_id: MemberId(id(n + 70)),
+                },
+            )
+            .await;
+            emit(
+                &mut socket,
+                ServerMessage::PeerJoined {
+                    peer_id: protocol::PeerId(id(n)),
+                    member_id: MemberId(id(n + 70)),
+                },
+            )
+            .await;
+            emit(
+                &mut socket,
+                ServerMessage::PeerUnavailable {
+                    peer_id: protocol::PeerId(id(n)),
+                },
+            )
+            .await;
+        }
+        for n in 80..86 {
+            assert_eq!(
+                receive(&mut socket).await,
+                ClientMessage::AuthorizeAck {
+                    join_id: JoinId(id(n + 100)),
+                }
+            );
+        }
+        let _ = socket.next().await;
+    })
+    .await;
+    let mut a = adapter(url);
+    a.authority = Some(AuthorityId(id(1)));
+    let room = RoomBinding {
+        room: RoomId(id(2)),
+        member: MemberId(id(3)),
+    };
+    a.phase = Phase::Host(room);
+    for n in 10..70 {
+        a.bind(PeerId::from_bytes(id(n)), MemberId(id(n)), room, None)
+            .unwrap();
+    }
+    timeout(Duration::from_secs(3), async {
+        while a.io.queued_events() != 18 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let events = a.poll_with_peer_connections(|p| (10..70).contains(&p.to_bytes()[0]));
+    assert_eq!(events.len(), 12);
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, RendezvousEvent::Disconnected(_))));
+    assert_eq!(a.routes.len(), 60);
+    a.bind(PeerId::from_bytes(id(90)), MemberId(id(160)), room, None)
+        .unwrap();
+    assert!(a.signaling.origin(PeerId::from_bytes(id(90))).is_ok());
+    finish(&mut a).await;
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn owner_reconciliation_preserves_native_and_queued_inbound_until_they_are_gone() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url =
+        EndpointUrl::loopback_for_test(&format!("ws://{}/v1/ws", listener.local_addr().unwrap()))
+            .unwrap();
+    let mut a = adapter(url);
+    a.authority = Some(AuthorityId(id(1)));
+    let room = RoomBinding {
+        room: RoomId(id(2)),
+        member: MemberId(id(3)),
+    };
+    a.phase = Phase::Host(room);
+    for n in 5..8 {
+        a.bind(PeerId::from_bytes(id(n)), MemberId(id(n + 10)), room, None)
+            .unwrap();
+    }
+    let queued = PeerId::from_bytes(id(6));
+    let native = PeerId::from_bytes(id(7));
+    a.signaling.receive(queued, &[0, 255, 7]).unwrap();
+    a.control_lost();
+    a.reclaim_unavailable_routes(|p| p == native);
+    assert!(a.signaling.origin(PeerId::from_bytes(id(5))).is_err());
+    assert!(a.has_pending_signal(queued));
+    assert!(a.signaling.origin(native).is_ok());
+    assert_eq!(a.signaling.pop_inbound().unwrap().peer, queued);
+    a.reclaim_unavailable_routes(|p| p == native);
+    assert!(a.signaling.origin(queued).is_err());
+    assert!(a.signaling.origin(native).is_ok());
+    a.reclaim_unavailable_routes(|_| false);
+    assert!(a.routes.is_empty());
+    finish(&mut a).await;
+}
+
+#[tokio::test]
+async fn host_ready_route_survives_control_loss_in_its_delivery_batch() {
+    let (url, task) = fixture(|mut socket| async move {
+        emit(
+            &mut socket,
+            ServerMessage::RoomJoined {
+                room_id: RoomId(id(2)),
+                self_member_id: MemberId(id(3)),
+                host_peer_id: protocol::PeerId(id(5)),
+                host_member_id: MemberId(id(6)),
+            },
+        )
+        .await;
+        emit(&mut socket, ServerMessage::RoomClosed {}).await;
+        let _ = socket.next().await;
+    })
+    .await;
+    let mut a = adapter(url);
+    a.authority = Some(AuthorityId(id(1)));
+    a.phase = Phase::Joining;
+    timeout(Duration::from_secs(3), async {
+        while a.io.queued_events() != 2 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let events = a.poll_with_peer_connections(|_| false);
+    assert!(matches!(
+        events.first(),
+        Some(RendezvousEvent::HostReady { .. })
+    ));
+    assert!(events.contains(&RendezvousEvent::RoomClosed));
+    let host = PeerId::from_bytes(id(5));
+    assert!(a.signaling.origin(host).is_ok());
+    a.reclaim_unavailable_routes(|p| p == host);
+    assert!(a.signaling.origin(host).is_ok());
+    a.reclaim_unavailable_routes(|_| false);
+    assert!(a.signaling.origin(host).is_err());
+    finish(&mut a).await;
+    task.await.unwrap();
+}

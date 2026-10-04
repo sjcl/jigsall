@@ -120,6 +120,12 @@ impl GnsP2p {
     pub fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId> {
         self.connections.get(&connection).map(|c| c.peer)
     }
+    /// Includes owned native Connecting handles, before any Connected event.
+    pub fn has_peer(&self, peer: PeerId) -> bool {
+        self.connections
+            .values()
+            .any(|connection| connection.peer == peer)
+    }
     fn has_capacity(&self) -> bool {
         self.connections.len() < MAX_CONNECTIONS
             && self.connections.values().filter(|c| !c.connected).count() < MAX_CONNECTING

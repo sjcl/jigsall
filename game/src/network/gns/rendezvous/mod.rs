@@ -205,6 +205,25 @@ impl RendezvousAdapter {
         self.routes.remove(&peer);
         self.signaling.revoke_peer(peer);
     }
+    pub(crate) fn has_pending_signal(&self, peer: PeerId) -> bool {
+        self.signaling.has_pending_inbound(peer)
+    }
+    /// The route table is the bounded unavailable-peer set. Native ownership,
+    /// including Connecting handles, belongs to the caller. Queued inbound
+    /// signals keep their route until native admission has processed them.
+    pub fn reclaim_unavailable_routes(&mut self, has_peer: impl Fn(PeerId) -> bool) {
+        let unused: Vec<_> = self
+            .routes
+            .iter()
+            .filter_map(|(&peer, route)| {
+                (!route.available && !has_peer(peer) && !self.has_pending_signal(peer))
+                    .then_some(peer)
+            })
+            .collect();
+        for peer in unused {
+            self.release_route(peer);
+        }
+    }
     pub fn shutdown(&mut self) {
         self.control_lost();
         self.io.shutdown();
@@ -416,8 +435,23 @@ impl RendezvousAdapter {
     /// Call each frame alongside (before) the existing GNS/SecureTransport poll.
     /// Work and returned events per call are bounded; I/O stays on the worker.
     pub fn poll(&mut self) -> Vec<RendezvousEvent> {
+        self.poll_with_owner(None)
+    }
+    /// Production owner reconciliation also runs between control messages, so
+    /// join/leave churn cannot exhaust bind capacity within one poll batch.
+    pub fn poll_with_peer_connections(
+        &mut self,
+        has_peer: impl Fn(PeerId) -> bool,
+    ) -> Vec<RendezvousEvent> {
+        self.poll_with_owner(Some(&has_peer))
+    }
+    fn poll_with_owner(
+        &mut self,
+        has_peer: Option<&dyn Fn(PeerId) -> bool>,
+    ) -> Vec<RendezvousEvent> {
         let mut events = Vec::new();
-        let result = self.poll_inner(&mut events);
+        self.reconcile_announced_peers(has_peer, &events);
+        let result = self.poll_inner(&mut events, has_peer);
         if let Err(error) = result {
             self.io.shutdown();
             self.control_lost();
@@ -433,9 +467,31 @@ impl RendezvousAdapter {
                 self.terminal_reported = true;
             }
         }
+        self.reconcile_announced_peers(has_peer, &events);
         events
     }
-    fn poll_inner(&mut self, events: &mut Vec<RendezvousEvent>) -> Result<(), RendezvousError> {
+    fn reconcile_announced_peers(
+        &mut self,
+        has_peer: Option<&dyn Fn(PeerId) -> bool>,
+        events: &[RendezvousEvent],
+    ) {
+        if let Some(has_peer) = has_peer {
+            // HostReady must retain its installed route through event delivery:
+            // the caller cannot connect_peer until this poll returns, even when
+            // RoomClosed/Disconnected follows RoomJoined in the same batch.
+            self.reclaim_unavailable_routes(|peer| {
+                has_peer(peer)
+                    || events.iter().any(|event| {
+                        matches!(event, RendezvousEvent::HostReady { peer_id, .. } if *peer_id == peer)
+                    })
+            });
+        }
+    }
+    fn poll_inner(
+        &mut self,
+        events: &mut Vec<RendezvousEvent>,
+        has_peer: Option<&dyn Fn(PeerId) -> bool>,
+    ) -> Result<(), RendezvousError> {
         if matches!(self.phase, Phase::Closed) {
             for _ in 0..CHANNEL_CAPACITY {
                 if self.io.pop().is_none() {
@@ -452,6 +508,7 @@ impl RendezvousAdapter {
                 break;
             };
             self.handle(message, events)?;
+            self.reconcile_announced_peers(has_peer, events);
             if !self.flush_deferred()? || matches!(self.phase, Phase::Closed) {
                 return Ok(());
             }

@@ -68,6 +68,21 @@ fn exhausted_global_budget_defers_without_dropping_or_resetting_the_fair_cursor(
     );
 }
 #[test]
+fn pending_inbound_query_preserves_deferred_signals_and_distinguishes_route_peers() {
+    let endpoint = SignalingEndpoint::routed();
+    endpoint.authorize_peer(peer(1), route(1)).unwrap();
+    endpoint.authorize_peer(peer(2), route(1)).unwrap();
+    endpoint.receive(peer(1), &[1]).unwrap();
+    endpoint.0.lock().unwrap().inbound.global = Bucket::per_second(0, 1, Instant::now());
+    assert!(endpoint.pop_inbound().is_none());
+    assert!(endpoint.has_pending_inbound(peer(1)));
+    assert!(!endpoint.has_pending_inbound(peer(2)));
+    assert!(!endpoint.has_pending_inbound(peer(3)));
+    endpoint.0.lock().unwrap().inbound.global = Bucket::per_second(1, 1, Instant::now());
+    assert_eq!(endpoint.pop_inbound().unwrap().peer, peer(1));
+    assert!(!endpoint.has_pending_inbound(peer(1)));
+}
+#[test]
 fn byte_count_size_and_history_bounds_hold_under_many_identities() {
     let now = Instant::now();
     let mut q = Queue::default();

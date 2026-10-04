@@ -33,6 +33,7 @@ pub struct RendezvousJoinOptions {
 pub(super) trait PeerTransport: Transport {
     fn connect_peer(&mut self, peer: PeerId) -> Result<ConnectionId, TransportError>;
     fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId>;
+    fn has_peer(&self, peer: PeerId) -> bool;
 }
 impl PeerTransport for GnsP2p {
     fn connect_peer(&mut self, peer: PeerId) -> Result<ConnectionId, TransportError> {
@@ -41,17 +42,28 @@ impl PeerTransport for GnsP2p {
     fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId> {
         self.remote_peer(connection)
     }
+    fn has_peer(&self, peer: PeerId) -> bool {
+        self.has_peer(peer)
+    }
 }
 pub(super) trait ControlPlane {
-    fn poll(&mut self) -> Vec<RendezvousEvent>;
+    fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent>;
+    fn reclaim_unavailable_routes(&mut self, has_peer: &dyn Fn(PeerId) -> bool);
+    fn has_pending_signal(&self, peer: PeerId) -> bool;
     fn create_room(&mut self) -> Result<(), RendezvousError>;
     fn join_room(&mut self, code: RoomCode) -> Result<(), RendezvousError>;
     fn release_route(&mut self, peer: PeerId);
     fn shutdown(&mut self);
 }
 impl ControlPlane for RendezvousAdapter {
-    fn poll(&mut self) -> Vec<RendezvousEvent> {
-        self.poll()
+    fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent> {
+        self.poll_with_peer_connections(has_peer)
+    }
+    fn reclaim_unavailable_routes(&mut self, has_peer: &dyn Fn(PeerId) -> bool) {
+        self.reclaim_unavailable_routes(has_peer);
+    }
+    fn has_pending_signal(&self, peer: PeerId) -> bool {
+        self.has_pending_signal(peer)
     }
     fn create_room(&mut self) -> Result<(), RendezvousError> {
         self.create_room()
@@ -235,8 +247,10 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RendezvousRuntimeDriver<T, C> 
             RendezvousEvent::ServerError(code) => {
                 let kind = server_error_kind(code);
                 if matches!(self.stage, Stage::Running | Stage::PeerConnecting) {
-                    self.control_lost(kind, code);
-                    self.adapter.shutdown();
+                    if !matches!(code, ErrorCode::Backpressure | ErrorCode::RateLimited) {
+                        self.control_lost(kind, code);
+                        self.adapter.shutdown();
+                    }
                 } else {
                     self.fail(kind, code);
                 }
@@ -254,7 +268,15 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RendezvousRuntimeDriver<T, C> 
         }
     }
     fn poll_control(&mut self, now: Instant) {
-        for event in self.adapter.poll() {
+        let backend = self
+            .runtime
+            .as_ref()
+            .map(|r| r.transport.backend())
+            .or(self.backend.as_ref());
+        let events = self
+            .adapter
+            .poll(&|peer| backend.is_some_and(|b| b.has_peer(peer)));
+        for event in events {
             self.event(event);
             if !self.active {
                 break;
@@ -311,16 +333,18 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RuntimeDriver for RendezvousRu
                 })
                 .collect();
             RuntimeDriver::poll(runtime, world);
-            let remaining: BTreeSet<_> = runtime
-                .live
-                .iter()
-                .filter_map(|&id| runtime.transport.backend().remote_peer(id))
-                .collect();
             for (id, peer) in peers {
-                if !runtime.live.contains(&id) && !remaining.contains(&peer) {
+                if !runtime.live.contains(&id)
+                    && !runtime.transport.backend().has_peer(peer)
+                    && !self.adapter.has_pending_signal(peer)
+                {
                     self.adapter.release_route(peer);
                 }
             }
+            // Native failures before Connected never entered runtime.live.
+            // Reconcile all unavailable bindings after native maintenance too.
+            self.adapter
+                .reclaim_unavailable_routes(&|peer| runtime.transport.backend().has_peer(peer));
             self.active = runtime.active;
             if self.stage == Stage::PeerConnecting
                 && runtime.status.phase != RuntimePhase::Connecting
