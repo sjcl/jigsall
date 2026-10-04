@@ -90,10 +90,10 @@ browser, lobby, NAT traversal, cursor rendering and migration remain future work
 ## Menu entrypoints
 
 The title first offers Single Player or Multiplayer. Single Player offers New
-Game / Load Game; Multiplayer offers Host / Join. Host offers New Game / Load
-Game. A new host switches between Puzzle settings and Multiplayer settings tabs; a
+Puzzle / Continue; Multiplayer offers Host a Game / Join a Game. Hosting offers New
+Puzzle / Continue. A new host switches between Puzzle and Room Settings tabs; a
 loaded host selects a save first, then configures multiplayer settings before
-the load starts. Start & Host initializes/restores the canonical store and waits
+the load starts. Open Room & Play initializes/restores the canonical store and waits
 for the existing RenderReady barrier before calling start_host. It never listens
 while generating the puzzle. Missing encoded image bytes block hosting.
 
@@ -117,7 +117,7 @@ Submission is latched before issuing any start request to suppress repeated
 clicks. A build without gns shows that multiplayer is unavailable and disables
 start controls.
 
-The pause menu separates the listen endpoint from invitation guidance. Wildcard
+The pause menu shows invitation guidance, with the listen endpoint under Connection Help. Wildcard
 bind addresses are never invitation endpoints; loopback is labeled local-only.
 Players need a reachable IP/port, with manual port forwarding where required.
 

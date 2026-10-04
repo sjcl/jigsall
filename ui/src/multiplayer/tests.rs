@@ -72,16 +72,16 @@ fn title_menu_has_mode_then_game_choices_and_multiplayer_has_host_and_join() {
             MenuScreen::Title => {
                 assert!(labels.contains(&"Single Player"));
                 assert!(labels.contains(&"Multiplayer"));
-                assert!(!labels.contains(&"New Game"));
+                assert!(!labels.contains(&"New Puzzle"));
             }
             MenuScreen::SinglePlayer | MenuScreen::Host => {
-                assert!(labels.contains(&"New Game"));
-                assert!(labels.contains(&"Load Game"));
+                assert!(labels.contains(&"New Puzzle"));
+                assert!(labels.contains(&"Continue"));
             }
             MenuScreen::Multiplayer => {
-                assert!(labels.contains(&"Host"));
-                assert!(labels.contains(&"Join"));
-                assert!(!labels.contains(&"New Game"));
+                assert!(labels.contains(&"Host a Game"));
+                assert!(labels.contains(&"Join a Game"));
+                assert!(!labels.contains(&"New Puzzle"));
             }
             _ => unreachable!(),
         }
@@ -131,7 +131,7 @@ fn actual_join_setup_draws_only_connection_status_and_no_image_or_piece_controls
             })
             .collect();
         assert!(labels.contains(&"Cancel"));
-        assert!(!labels.contains(&"New Game"));
+        assert!(!labels.contains(&"New Puzzle"));
         assert!(!labels.contains(&"Select Image"));
         assert!(!labels
             .iter()
@@ -176,10 +176,10 @@ fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switc
                 _ => None,
             })
             .collect();
-        assert!(labels.contains(&"New multiplayer game"));
-        assert!(labels.contains(&"Puzzle settings"));
-        assert!(labels.contains(&"Multiplayer settings"));
-        assert_eq!(labels.contains(&"Listen IP address and port"), network_tab);
+        assert!(labels.contains(&"Multiplayer Puzzle"));
+        assert!(labels.contains(&"Puzzle"));
+        assert!(labels.contains(&"Room Settings"));
+        assert_eq!(labels.contains(&"Accept connections at"), network_tab);
         assert_eq!(labels.contains(&"Select Image"), !network_tab);
         assert_eq!(
             world.resource::<MultiplayerUi>().host.password.as_str(),
@@ -470,9 +470,12 @@ fn wildcard_listen_address_is_never_presented_as_an_invitation() {
             _ => None,
         })
         .collect();
-    assert!(labels
-        .iter()
-        .any(|text| text.contains("Listening on: 0.0.0.0:27015")));
+    assert!(labels.contains(
+        &i18n
+            .format("multiplayer-invite-port", &[("port", 27015u32.into())])
+            .as_str()
+    ));
+    assert!(!labels.iter().any(|text| text.contains("0.0.0.0")));
     assert!(!labels
         .iter()
         .any(|text| text.contains("Address to share with players: 0.0.0.0")));

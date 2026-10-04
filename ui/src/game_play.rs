@@ -16,6 +16,8 @@ pub fn draw_game_ui(
     mut capture: ResMut<GameUiPointerCapture>,
     persistence: Res<PersistenceState>,
     network: Res<puzzella_game::network::runtime::NetworkStatus>,
+    sub_state: Res<State<GameSubState>>,
+    mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
     let _span = info_span!("draw_game_ui").entered();
 
@@ -43,8 +45,10 @@ pub fn draw_game_ui(
                     )],
                 ),
             );
-            ui.separator();
-            paint_player_count(ui, &roster, &i18n);
+            if roster.len() > 1 || network.role.is_some() {
+                ui.separator();
+                paint_player_count(ui, &roster, &i18n);
+            }
             match network.role {
                 Some(puzzella_game::network::runtime::RuntimeRole::Host) => {
                     ui.label(i18n.text("multiplayer-hosting"));
@@ -59,37 +63,60 @@ pub fn draw_game_ui(
             paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();
-            let binding_label = |action| {
-                let label = bindings.current.binding(action).label();
-                if label.is_empty() {
-                    i18n.text("keys-unassigned")
-                } else {
-                    label
-                }
-            };
-            ui.label(i18n.format(
-                "game-drag-hint",
-                &[
-                    ("left", binding_label(KeyAction::RotateLeft).as_str().into()),
-                    (
-                        "right",
-                        binding_label(KeyAction::RotateRight).as_str().into(),
-                    ),
-                ],
-            ));
-            ui.separator();
-            ui.label(i18n.format(
-                "game-tab-hint",
-                &[(
-                    "keys",
-                    binding_label(KeyAction::ShowPlayers).as_str().into(),
-                )],
-            ));
+            ui.menu_button(i18n.text("game-controls"), |ui| {
+                paint_controls(ui, &bindings, &i18n);
+            });
+            if ui
+                .add_enabled(
+                    *sub_state.get() == GameSubState::Playing,
+                    egui::Button::new(i18n.text("game-menu")),
+                )
+                .clicked()
+            {
+                next_sub_state.set(GameSubState::Paused);
+            }
         });
     });
     capture.over_hud = ctx
         .pointer_interact_pos()
         .is_some_and(|point| panel.response.rect.contains(point));
+}
+
+fn paint_controls(ui: &mut egui::Ui, bindings: &KeyBindingsState, i18n: &Localization) {
+    ui.set_max_width(360.0_f32.min(ui.ctx().content_rect().width() - 32.0));
+    let binding_label = |action| {
+        let label = bindings.current.binding(action).label();
+        if label.is_empty() {
+            i18n.text("keys-unassigned")
+        } else {
+            label
+        }
+    };
+    ui.label(i18n.format(
+        "game-drag-hint",
+        &[
+            ("left", binding_label(KeyAction::RotateLeft).as_str().into()),
+            (
+                "right",
+                binding_label(KeyAction::RotateRight).as_str().into(),
+            ),
+        ],
+    ));
+    ui.label(i18n.text("completion-navigation"));
+    ui.label(i18n.format(
+        "game-select-hint",
+        &[(
+            "keys",
+            binding_label(KeyAction::MultiSelect).as_str().into(),
+        )],
+    ));
+    ui.label(i18n.format(
+        "game-tab-hint",
+        &[(
+            "keys",
+            binding_label(KeyAction::ShowPlayers).as_str().into(),
+        )],
+    ));
 }
 
 fn paint_autosave_status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Localization) {

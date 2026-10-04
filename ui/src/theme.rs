@@ -123,11 +123,8 @@ pub fn frame() -> egui::Frame {
         .inner_margin(24)
 }
 
-pub fn section(ui: &mut egui::Ui, number: &str, title: impl Into<String>) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(number).size(11.0).color(ACCENT));
-        ui.label(egui::RichText::new(title).size(17.0).strong());
-    });
+pub fn section(ui: &mut egui::Ui, title: impl Into<String>) {
+    ui.label(egui::RichText::new(title).size(17.0).strong());
     ui.add_space(4.0);
 }
 

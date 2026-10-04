@@ -420,13 +420,6 @@ pub(crate) fn paint_host_status(ui: &mut egui::Ui, status: &NetworkStatus, i18n:
     let Some(address) = status.address else {
         return;
     };
-    theme::hint(
-        ui,
-        i18n.format(
-            "multiplayer-listening",
-            &[("address", address.to_string().as_str().into())],
-        ),
-    );
     if address.ip().is_unspecified() {
         theme::hint(
             ui,
@@ -446,7 +439,7 @@ pub(crate) fn paint_host_status(ui: &mut egui::Ui, status: &NetworkStatus, i18n:
             ),
         );
     }
-    theme::hint(ui, i18n.text("multiplayer-reachable-hint"));
+    paint_connection_help(ui, true, Some(address), i18n);
 }
 
 pub(crate) fn paint_connection_fields(
@@ -458,7 +451,6 @@ pub(crate) fn paint_connection_fields(
 ) {
     theme::section(
         ui,
-        "MP",
         i18n.text(if host {
             "multiplayer-host-settings"
         } else {
@@ -507,15 +499,46 @@ pub(crate) fn paint_connection_fields(
     // that state each frame so closing/submitting leaves only the owned secret.
     password.state.clear_undoer();
     password.state.store(ui.ctx(), password.response.id);
-    theme::hint(ui, i18n.text("multiplayer-password-hint"));
+    theme::hint(
+        ui,
+        i18n.text(if host {
+            "multiplayer-password-hint"
+        } else {
+            "multiplayer-join-password-hint"
+        }),
+    );
     if !draft.password.is_empty()
         && !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&draft.password.len())
     {
         ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-password"));
     }
-    if host {
-        theme::hint(ui, i18n.text("multiplayer-reachable-hint"));
-    }
+    paint_connection_help(ui, host, None, i18n);
+}
+
+fn paint_connection_help(
+    ui: &mut egui::Ui,
+    host: bool,
+    address: Option<SocketAddr>,
+    i18n: &Localization,
+) {
+    egui::CollapsingHeader::new(i18n.text("multiplayer-network-details"))
+        .id_salt(("connection_help", host))
+        .show(ui, |ui| {
+            if let Some(address) = address {
+                theme::hint(
+                    ui,
+                    i18n.format(
+                        "multiplayer-listening",
+                        &[("address", address.to_string().as_str().into())],
+                    ),
+                );
+            }
+            theme::hint(ui, i18n.text("multiplayer-address-details"));
+            if host {
+                theme::hint(ui, i18n.text("multiplayer-bind-details"));
+            }
+            theme::hint(ui, i18n.text("multiplayer-reachable-hint"));
+        });
 }
 
 pub(crate) fn paint_join(

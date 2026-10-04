@@ -163,15 +163,8 @@ pub fn draw_game_setup_ui(
                             ),
                         );
                     });
-                } else {
-                    theme::hint(
-                        ui,
-                        i18n.text(if multiplayer.host_setup && multiplayer.host_settings_tab {
-                            "multiplayer-puzzle-tab-hint"
-                        } else {
-                            "setup-select-hint"
-                        }),
-                    );
+                } else if multiplayer.host_setup && multiplayer.host_settings_tab {
+                    theme::hint(ui, i18n.text("multiplayer-puzzle-tab-hint"));
                 }
                 if multiplayer.host_setup
                     && !multiplayer.host_settings_tab
@@ -237,7 +230,7 @@ fn image_section(
     registry: &ExternalFileRegistry,
     i18n: &Localization,
 ) -> bool {
-    theme::section(ui, "01", i18n.text("setup-image"));
+    theme::section(ui, i18n.text("setup-image"));
     let width = ui.available_width();
     let compact = ui.ctx().content_rect().height() < 640.0;
     let label = if config.image_path.is_empty() {
@@ -334,13 +327,8 @@ mod tests;
 
 fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localization) {
     ui.spacing_mut().item_spacing.y = 8.0;
-    theme::section(ui, "02", i18n.text("setup-pieces"));
+    theme::section(ui, i18n.text("setup-pieces"));
     ui.horizontal_wrapped(|ui| {
-        ui.selectable_value(
-            &mut config.piece_mode,
-            PieceMode::SquarePieces,
-            i18n.text("setup-aspect-ratio"),
-        );
         ui.selectable_value(
             &mut config.piece_mode,
             PieceMode::TargetCount,
@@ -350,6 +338,11 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
             &mut config.piece_mode,
             PieceMode::ManualGrid,
             i18n.text("setup-manual-grid"),
+        );
+        ui.selectable_value(
+            &mut config.piece_mode,
+            PieceMode::SquarePieces,
+            i18n.text("setup-aspect-ratio"),
         );
     });
     ui.add_space(8.0);
@@ -362,10 +355,8 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
                     .suffix("x")
                     .fixed_decimals(1),
             );
-            theme::hint(ui, i18n.text("setup-balanced-hint"));
         }
         PieceMode::TargetCount => {
-            ui.label(i18n.text("setup-target-pieces"));
             ui.add(egui::Slider::new(&mut config.target_piece_count, 4..=10000).logarithmic(true));
             theme::hint(ui, i18n.text("setup-proportions-hint"));
             ui.horizontal_wrapped(|ui| {
@@ -384,24 +375,20 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
             ui.add(egui::Slider::new(&mut config.grid_size.0, 2..=1000).logarithmic(true));
             ui.label(i18n.text("setup-rows"));
             ui.add(egui::Slider::new(&mut config.grid_size.1, 2..=1000).logarithmic(true));
-            theme::hint(
-                ui,
-                i18n.format(
-                    "setup-custom-grid",
-                    &[("count", (config.grid_size.0 * config.grid_size.1).into())],
-                ),
-            );
         }
     }
     ui.add_space(12.0);
-    theme::section(ui, "03", i18n.text("setup-tuning"));
-    ui.horizontal(|ui| {
-        ui.label(i18n.text("setup-seed"));
-        ui.add(egui::DragValue::new(&mut config.seed).speed(1));
-    });
-    theme::hint(ui, i18n.text("setup-seed-hint"));
-    ui.add_space(4.0);
-    ui.label(i18n.text("setup-snap-distance"));
-    ui.add(egui::Slider::new(&mut config.snap_distance, 1.0..=100.0).suffix(" px"));
-    theme::hint(ui, i18n.text("setup-snap-hint"));
+    egui::CollapsingHeader::new(i18n.text("setup-tuning"))
+        .id_salt("puzzle_tuning")
+        .show(ui, |ui| {
+            ui.label(i18n.text("setup-snap-distance"));
+            ui.add(egui::Slider::new(&mut config.snap_distance, 1.0..=100.0));
+            theme::hint(ui, i18n.text("setup-snap-hint"));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(i18n.text("setup-seed"));
+                ui.add(egui::DragValue::new(&mut config.seed).speed(1));
+            });
+            theme::hint(ui, i18n.text("setup-seed-hint"));
+        });
 }

@@ -13,7 +13,11 @@ fn main() {
     let mut source = String::from("const CATALOGS: &[(&str, &str)] = &[\n");
     for path in files {
         let locale = path.file_stem().unwrap().to_str().unwrap();
-        source.push_str(&format!("({locale:?}, include_str!({:?})),\n", path));
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        // Shared build output must not embed another worktree's absolute path.
+        source.push_str(&format!(
+            "({locale:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/i18n/\", {filename:?}))),\n"
+        ));
     }
     source.push_str("];\n");
     fs::write(

@@ -140,14 +140,9 @@ pub fn draw_save_dialogs(
                                             )],
                                         ),
                                     );
-                                    theme::hint(
-                                        ui,
-                                        if state.current_save.is_some() {
-                                            i18n.text("save-update-hint")
-                                        } else {
-                                            i18n.text("save-create-hint")
-                                        },
-                                    );
+                                    if state.current_save.is_some() {
+                                        theme::hint(ui, i18n.text("save-update-hint"));
+                                    }
                                 });
                             });
                         });

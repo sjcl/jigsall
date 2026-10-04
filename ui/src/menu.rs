@@ -215,10 +215,13 @@ pub fn draw_menu_ui(
                                     };
                                     multiplayer.navigate(parent);
                                 }
-                                ui.add_space(4.0);
-                                if theme::danger_button(ui, i18n.text("menu-exit"), width).clicked()
-                                {
-                                    exit.write(AppExit::Success);
+                                if multiplayer.screen == MenuScreen::Title {
+                                    ui.add_space(4.0);
+                                    if theme::danger_button(ui, i18n.text("menu-exit"), width)
+                                        .clicked()
+                                    {
+                                        exit.write(AppExit::Success);
+                                    }
                                 }
                             },
                         );

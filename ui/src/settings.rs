@@ -138,11 +138,20 @@ fn paint_player_settings(
     });
     ui.set_width(ui.available_width());
     ui.label(i18n.text("settings-player-name"));
-    let response = ui.add(egui::TextEdit::singleline(input).desired_width(f32::INFINITY));
-    ui.label(egui::RichText::new(i18n.text("settings-player-name-help")).small());
+    let (response, save_clicked) = ui
+        .horizontal(|ui| {
+            let response = ui.add(
+                egui::TextEdit::singleline(input)
+                    .hint_text(i18n.text("game-default-player"))
+                    .desired_width((ui.available_width() - 110.0).max(40.0)),
+            );
+            let save_clicked = ui.button(i18n.text("settings-player-name-save")).clicked();
+            (response, save_clicked)
+        })
+        .inner;
+    theme::hint(ui, i18n.text("settings-player-name-help"));
     let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-    if (ui.button(i18n.text("settings-player-name-save")).clicked() || enter) && state.commit(input)
-    {
+    if (save_clicked || enter) && state.commit(input) {
         *input = state
             .current
             .display_name
@@ -478,7 +487,7 @@ fn paint_settings(
                         action = Some(DisplaySettingsAction::Keep);
                     }
                 } else {
-                    if theme::button(ui, i18n.text("common-back-title"), width, false).clicked() {
+                    if theme::button(ui, i18n.text("common-close"), width, false).clicked() {
                         action = Some(dialog.close());
                     }
                     if show_apply {
@@ -524,18 +533,31 @@ fn paint_image_settings(
     i18n: &Localization,
 ) {
     ui.set_width(ui.available_width());
-    ui.label(i18n.text("settings-texture-budget"));
-    if let Some(bytes) = limits.gpu_memory_bytes {
-        theme::hint(
-            ui,
-            i18n.format(
-                "settings-texture-gpu-memory",
-                &[("mib", (bytes / (1024 * 1024)).to_string().as_str().into())],
-            ),
+    egui::CollapsingHeader::new(i18n.text("settings-texture-budget"))
+        .id_salt("image_settings_details")
+        .show(ui, |ui| {
+            paint_image_budget(ui, settings, limits, i18n);
+        });
+    // Keep failures visible even when the advanced controls are closed.
+    if let Some(error) = &settings.error {
+        let (key, reason) = match error {
+            ImageSettingsError::Read(reason) => ("settings-texture-read-failed", reason),
+            ImageSettingsError::Save(reason) => ("settings-texture-save-failed", reason),
+        };
+        ui.colored_label(
+            theme::DANGER,
+            i18n.format(key, &[("reason", reason.as_str().into())]),
         );
-    } else {
-        theme::hint(ui, i18n.text("settings-texture-gpu-unknown"));
     }
+}
+
+fn paint_image_budget(
+    ui: &mut egui::Ui,
+    settings: &mut ImageSettingsState,
+    limits: &PuzzleImageLimits,
+    i18n: &Localization,
+) {
+    theme::hint(ui, i18n.text("settings-texture-budget-hint"));
     let mut budget = settings.current.texture_budget;
     let mut automatic = matches!(budget, TextureBudget::Auto { .. });
     if ui
@@ -549,6 +571,17 @@ fn paint_image_settings(
                 mib: settings.current.budget_mib(limits),
             }
         };
+    }
+    if let Some(bytes) = limits.gpu_memory_bytes {
+        theme::hint(
+            ui,
+            i18n.format(
+                "settings-texture-gpu-memory",
+                &[("mib", (bytes / (1024 * 1024)).to_string().as_str().into())],
+            ),
+        );
+    } else {
+        theme::hint(ui, i18n.text("settings-texture-gpu-unknown"));
     }
     match &mut budget {
         TextureBudget::Auto { percent } => {
@@ -600,19 +633,8 @@ fn paint_image_settings(
         ui,
         i18n.format("settings-texture-limit", &[("edge", max_edge.into())]),
     );
-    theme::hint(ui, i18n.text("settings-texture-budget-hint"));
     theme::hint(ui, i18n.text("settings-texture-budget-scope"));
     theme::hint(ui, i18n.text("settings-texture-budget-next-load"));
-    if let Some(error) = &settings.error {
-        let (key, reason) = match error {
-            ImageSettingsError::Read(reason) => ("settings-texture-read-failed", reason),
-            ImageSettingsError::Save(reason) => ("settings-texture-save-failed", reason),
-        };
-        ui.colored_label(
-            theme::DANGER,
-            i18n.format(key, &[("reason", reason.as_str().into())]),
-        );
-    }
 }
 
 fn paint_autosave_settings(
@@ -627,15 +649,18 @@ fn paint_autosave_settings(
     let enable_changed = ui
         .checkbox(&mut enabled, i18n.text("settings-autosave-enabled"))
         .changed();
-    ui.label(i18n.text("settings-autosave-interval"));
     let interval_changed = ui
-        .add_enabled(
-            enabled,
-            egui::DragValue::new(&mut minutes)
-                .range(1..=60)
-                .suffix(format!(" {}", i18n.text("settings-autosave-minutes"))),
-        )
-        .changed();
+        .horizontal_wrapped(|ui| {
+            ui.label(i18n.text("settings-autosave-interval"));
+            ui.add_enabled(
+                enabled,
+                egui::DragValue::new(&mut minutes)
+                    .range(1..=60)
+                    .suffix(format!(" {}", i18n.text("settings-autosave-minutes"))),
+            )
+            .changed()
+        })
+        .inner;
     if enable_changed || interval_changed {
         state.set_interval(if enabled {
             NonZeroU32::new(minutes)
@@ -643,18 +668,21 @@ fn paint_autosave_settings(
             None
         });
     }
-    ui.label(i18n.text("settings-autosave-limit"));
     let mut limit = state.current.max_saves_per_game.get();
     if ui
-        .add_enabled(
-            enabled,
-            egui::DragValue::new(&mut limit).range(1..=u32::MAX),
-        )
-        .changed()
+        .horizontal_wrapped(|ui| {
+            ui.label(i18n.text("settings-autosave-limit"))
+                .on_hover_text(i18n.text("settings-autosave-limit-hint"));
+            ui.add_enabled(
+                enabled,
+                egui::DragValue::new(&mut limit).range(1..=u32::MAX),
+            )
+            .changed()
+        })
+        .inner
     {
         state.set_max_saves_per_game(NonZeroU32::new(limit).expect("positive save limit"));
     }
-    theme::hint(ui, i18n.text("settings-autosave-limit-hint"));
     theme::hint(ui, i18n.text("settings-autosave-hint"));
     if let Some(error) = &state.error {
         let (key, reason) = match error {

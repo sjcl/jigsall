@@ -130,19 +130,6 @@ pub fn draw_generation_progress_ui(
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0);
 
-                // 進捗率を計算
-                let progress_ratio = match progress.generation_phase {
-                    GenerationPhase::NotStarted => 0.0,
-                    GenerationPhase::GeneratingState => 0.0,
-                    GenerationPhase::UploadingGpu => {
-                        0.8 + (progress.pieces_created as f32 / progress.total_pieces.max(1) as f32
-                            * 0.2)
-                    }
-                    GenerationPhase::Completed => 1.0,
-                    GenerationPhase::Failed => 0.0,
-                };
-
-                // フェーズ名
                 let phase_text = match progress.generation_phase {
                     GenerationPhase::NotStarted => i18n.text("generation-starting"),
                     GenerationPhase::GeneratingState => i18n.text("generation-state"),
@@ -151,27 +138,18 @@ pub fn draw_generation_progress_ui(
                     GenerationPhase::Failed => i18n.text("generation-failed"),
                 };
 
-                // プログレスバー（フェーズに応じて適切な数値を表示）
-                let (current_count, label) = match progress.generation_phase {
-                    GenerationPhase::GeneratingState => (0, "generation-pieces"),
-                    GenerationPhase::UploadingGpu => (progress.pieces_created, "generation-pieces"),
-                    _ => (0, "generation-items"),
-                };
-
-                let progress_bar = egui::ProgressBar::new(progress_ratio)
-                    .text(i18n.format(
-                        label,
-                        &[
-                            ("current", current_count.min(progress.total_pieces).into()),
-                            ("total", progress.total_pieces.into()),
-                        ],
-                    ))
-                    .desired_width(400.0);
-
-                ui.add(progress_bar);
-                ui.label(i18n.format("generation-phase", &[("phase", phase_text.as_str().into())]));
                 if let Some(error) = &progress.error {
-                    ui.colored_label(egui::Color32::RED, i18n.generation_error(error));
+                    ui.colored_label(theme::DANGER, i18n.text("generation-failed"));
+                    egui::CollapsingHeader::new(i18n.text("common-details"))
+                        .id_salt("generation_error_details")
+                        .show(ui, |ui| {
+                            ui.label(i18n.generation_error(error));
+                        });
+                } else {
+                    if progress.is_generating {
+                        ui.spinner();
+                    }
+                    ui.label(phase_text);
                 }
                 if ui.button(i18n.text("common-return-title")).clicked() {
                     next_state.set(AppState::Menu);

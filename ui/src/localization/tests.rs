@@ -71,6 +71,16 @@ fn contract(source: &str) -> BTreeMap<String, BTreeSet<String>> {
 
 #[test]
 fn catalogs_have_identical_keys_arguments_and_every_message_resolves() {
+    for (id, expected) in [
+        ("en-US", include_str!("../../i18n/en-US.ftl")),
+        ("ja", include_str!("../../i18n/ja.ftl")),
+    ] {
+        assert_eq!(
+            CATALOGS.iter().find(|(locale, _)| *locale == id).unwrap().1,
+            expected,
+            "catalog {id} must come from the current worktree"
+        );
+    }
     let canonical = contract(CATALOGS.iter().find(|(id, _)| *id == "en-US").unwrap().1);
     let mut i18n = english();
     for (id, source) in CATALOGS {
@@ -109,7 +119,7 @@ fn fallback_reports_missing_keys_and_format_errors_without_panicking() {
     i18n.bundles
         .insert(Locale::JA, bundle(Locale::JA, "settings-title = 設定\n"));
     i18n.set_preference(LanguagePreference::Locale(Locale::JA));
-    assert_eq!(i18n.text("menu-new-game"), "New Game");
+    assert_eq!(i18n.text("menu-new-game"), "New Puzzle");
     assert_eq!(i18n.text("unknown-key"), "[unknown-key]");
     assert_eq!(
         i18n.text("settings-display-confirm"),
@@ -133,7 +143,7 @@ fn fallback_reports_missing_keys_and_format_errors_without_panicking() {
     );
     assert_eq!(
         i18n.text("menu-new-game"),
-        "New Game",
+        "New Puzzle",
         "broken translation falls back"
     );
 }

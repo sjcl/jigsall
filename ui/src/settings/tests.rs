@@ -105,7 +105,16 @@ fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
             .drop_without_applying_deltas();
         }
     };
-    click(&mut settings, "Automatic (based on GPU memory capacity)");
+    let output = render(&mut settings, vec![]);
+    assert!(!has_text(&output, &english().text("settings-texture-auto")));
+    assert!(!settings.is_save_pending());
+    output.drop_without_applying_deltas();
+    click(&mut settings, &english().text("settings-texture-budget"));
+    // Finish the expanding animation before interacting with the controls.
+    for _ in 0..30 {
+        render(&mut settings, vec![]).drop_without_applying_deltas();
+    }
+    click(&mut settings, &english().text("settings-texture-auto"));
     assert_eq!(
         settings.current.texture_budget,
         TextureBudget::Manual { mib: 1638 }
@@ -130,7 +139,7 @@ fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
         settings.current.texture_budget,
         TextureBudget::Manual { mib: 4096 }
     );
-    click(&mut settings, "Automatic (based on GPU memory capacity)");
+    click(&mut settings, &english().text("settings-texture-auto"));
     click(&mut settings, "20");
     render(
         &mut settings,
@@ -159,7 +168,7 @@ fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
         settings.current
     );
     let output = render(&mut settings, vec![]);
-    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text.contains("next image selection or save load"))));
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == english().text("settings-texture-budget-next-load"))));
     output.drop_without_applying_deltas();
 }
 
@@ -203,7 +212,7 @@ fn autosave_widgets_persist_disable_enable_interval_and_limit_edits() {
             .drop_without_applying_deltas();
         }
     };
-    click(&mut settings, "Enable autosave");
+    click(&mut settings, &english().text("settings-autosave-enabled"));
     assert_eq!(settings.current.interval_minutes, None);
     crate::preferences::wait_for_save(|| {
         settings.poll_save();
@@ -213,7 +222,7 @@ fn autosave_widgets_persist_disable_enable_interval_and_limit_edits() {
         AutosaveSettingsState::load(Some(path.clone())).current,
         settings.current
     );
-    click(&mut settings, "Enable autosave");
+    click(&mut settings, &english().text("settings-autosave-enabled"));
     assert_eq!(
         settings.current.interval_minutes,
         std::num::NonZeroU32::new(5)
@@ -473,7 +482,7 @@ fn settings_fit_small_window_and_apply_unlimited_through_real_widgets() {
                 "Settings panel exceeds viewport: {panel:?}"
             );
             assert!(viewport.contains(text_position(&output, "Apply")));
-            assert!(viewport.contains(text_position(&output, "Back to Title")));
+            assert!(viewport.contains(text_position(&output, &english().text("common-close"))));
             output.drop_without_applying_deltas();
         }
     }
@@ -497,7 +506,7 @@ fn settings_fit_small_window_and_apply_unlimited_through_real_widgets() {
     };
     assert!(settings.max_fps.is_none());
     assert_eq!(settings.mode, ScreenMode::Windowed);
-    click(&ctx, &mut dialog, "Back to Title");
+    click(&ctx, &mut dialog, &english().text("common-close"));
     assert!(!dialog.open);
 }
 
@@ -558,9 +567,13 @@ fn apply_requires_a_change_and_disables_again_after_applying() {
     let state = app.world().resource::<DisplaySettingsState>();
     assert_eq!(state.notice, Some(DisplaySettingsNotice::Saved));
     assert!(click_with_state(&ctx, &mut dialog, state, &caps, "Apply").is_none());
-    let Some(action @ DisplaySettingsAction::Dismiss) =
-        click_with_state(&ctx, &mut dialog, state, &caps, "Back to Title")
-    else {
+    let Some(action @ DisplaySettingsAction::Dismiss) = click_with_state(
+        &ctx,
+        &mut dialog,
+        state,
+        &caps,
+        &english().text("common-close"),
+    ) else {
         panic!("Closing the dialog must dismiss its notice");
     };
     assert!(!dialog.open);
@@ -777,7 +790,7 @@ fn japanese_settings_fit_small_windows_with_actions_visible() {
                 viewport.contains_rect(panel),
                 "Japanese panel outside viewport {panel:?}"
             );
-            for label in ["設定", "グラフィック", "タイトルへ戻る"] {
+            for label in ["設定", "グラフィック", "閉じる"] {
                 assert!(viewport.contains(text_position(&output, label)));
             }
             assert_eq!(has_text(&output, "適用"), tab == SettingsTab::Graphics);
@@ -887,7 +900,12 @@ fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
     let mut dialog = SettingsDialog::default();
     dialog.open(&DisplaySettingsState::load(None));
     let size = egui::vec2(1280.0, 1100.0);
-    key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
+    key_click(
+        &ctx,
+        &mut dialog,
+        &mut state,
+        &english().text("settings-keys"),
+    );
     key_click(&ctx, &mut dialog, &mut state, "Q");
     assert!(dialog.keys.is_capturing());
     key_frame(
@@ -934,17 +952,27 @@ fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
         state.current
     );
     assert!(!dialog.keys.changed(&state));
-    key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
+    key_click(&ctx, &mut dialog, &mut state, &english().text("keys-reset"));
     assert!(dialog.keys.changed(&state));
-    key_click(&ctx, &mut dialog, &mut state, "Back to Title");
+    key_click(
+        &ctx,
+        &mut dialog,
+        &mut state,
+        &english().text("common-close"),
+    );
     assert!(!dialog.open);
     assert_eq!(
         state.current.binding(KeyAction::RotateLeft).label(),
         "Shift + R / T"
     );
     dialog.open(&DisplaySettingsState::load(None));
-    key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
-    key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
+    key_click(
+        &ctx,
+        &mut dialog,
+        &mut state,
+        &english().text("settings-keys"),
+    );
+    key_click(&ctx, &mut dialog, &mut state, &english().text("keys-reset"));
     key_click(&ctx, &mut dialog, &mut state, "Apply");
     crate::preferences::wait_for_save(|| {
         state.poll_save();
@@ -965,7 +993,12 @@ fn key_capture_consumes_escape_tab_and_enter_without_activating_settings_widgets
     let mut dialog = SettingsDialog::default();
     dialog.open(&DisplaySettingsState::load(None));
     let size = egui::vec2(1280.0, 1100.0);
-    key_click(&ctx, &mut dialog, &mut state, "Key Configuration");
+    key_click(
+        &ctx,
+        &mut dialog,
+        &mut state,
+        &english().text("settings-keys"),
+    );
     for (key, egui_key) in [
         (KeyCode::Escape, egui::Key::Escape),
         (KeyCode::Tab, egui::Key::Tab),
@@ -991,7 +1024,7 @@ fn key_capture_consumes_escape_tab_and_enter_without_activating_settings_widgets
         assert!(dialog.open);
         assert!(!dialog.keys.is_capturing());
         assert_eq!(state.current, KeyBindings::default());
-        key_click(&ctx, &mut dialog, &mut state, "Reset key bindings");
+        key_click(&ctx, &mut dialog, &mut state, &english().text("keys-reset"));
     }
 }
 
@@ -1030,7 +1063,7 @@ fn key_configuration_fits_small_windows_in_both_languages() {
                 "Key panel exceeds viewport: {panel:?}"
             );
             assert!(viewport.contains(text_position(&output, &i18n.text("settings-apply"))));
-            assert!(viewport.contains(text_position(&output, &i18n.text("common-back-title"))));
+            assert!(viewport.contains(text_position(&output, &i18n.text("common-close"))));
             output.drop_without_applying_deltas();
         }
     }
@@ -1208,7 +1241,7 @@ fn native_image_budget_ui_probe() {
             .show(ctx, |ui| {
                 ui.set_width(520.0);
                 theme::card().show(ui, |ui| {
-                    paint_image_settings(ui, &mut settings, &limits, &i18n)
+                    paint_image_budget(ui, &mut settings, &limits, &i18n)
                 });
             });
     }
@@ -1420,6 +1453,82 @@ fn native_settings_ui_probe() {
                     .observe(save_to_disk(screenshot_path("setup-ui-ja.png")));
             }
             17 => {
+                actions.write(DisplaySettingsAction::Apply(DisplaySettings {
+                    resolution: UVec2::new(640, 360),
+                    ..default()
+                }));
+                i18n.set_preference(LanguagePreference::Locale(Locale::EN_US));
+            }
+            18 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("setup-ui-en-small.png")));
+            }
+            19 => {
+                actions.write(DisplaySettingsAction::Revert);
+                i18n.set_preference(LanguagePreference::Locale(Locale::JA));
+                commands.queue(|world: &mut World| {
+                    use puzzella_game::{asset_reader::*, resources::*};
+                    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../assets/menu-icon.png");
+                    let key = world
+                        .resource::<ExternalFileRegistry>()
+                        .register_file(&path);
+                    world.resource_mut::<PuzzleConfig>().image_path = key.clone();
+                    start_thread_image_load(
+                        key,
+                        path,
+                        world.resource::<ImageLoadSender>().tx_results.clone(),
+                        world
+                            .resource::<PuzzleImageLimits>()
+                            .decode_limits(&world.resource::<ImageSettingsState>().current),
+                    );
+                });
+            }
+            20 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("setup-ui-image-ja.png")));
+            }
+            21 => next_app.set(puzzella_game::resources::AppState::InGame),
+            22 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("playing-ui-ja.png")));
+            }
+            23 => {
+                commands.queue(|world: &mut World| {
+                    use puzzella_game::resources::GameSubState;
+                    assert_eq!(
+                        world.resource::<State<GameSubState>>().get(),
+                        &GameSubState::Playing
+                    );
+                    world
+                        .resource_mut::<NextState<GameSubState>>()
+                        .set(GameSubState::Paused);
+                });
+            }
+            24 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("pause-ui-ja.png")));
+            }
+            25 => {
+                commands.queue(|world: &mut World| {
+                    world
+                        .resource_mut::<puzzella_game::resources::GameData>()
+                        .puzzle_completed = true;
+                    world
+                        .resource_mut::<NextState<puzzella_game::resources::AppState>>()
+                        .set(puzzella_game::resources::AppState::GameComplete);
+                });
+            }
+            26 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path("complete-ui-ja.png")));
+            }
+            27 => {
                 exit.write(AppExit::Success);
             }
             _ => {}
@@ -1427,6 +1536,8 @@ fn native_settings_ui_probe() {
         probe.phase += 1;
     }
     let started = std::time::SystemTime::now();
+    let (service, _storage) =
+        puzzella_game::persistence::runtime::PersistenceService::with_storage_requests();
     App::new()
         .add_plugins(DefaultPlugins.set(WinitPlugin {
             run_on_any_thread: true,
@@ -1434,6 +1545,10 @@ fn native_settings_ui_probe() {
         .insert_resource(DisplaySettingsState::load(None))
         .insert_resource(UiPreferences::load(None))
         .insert_resource(KeyBindingsState::load(None))
+        .insert_resource(PlayerSettingsState::load(None))
+        .insert_resource(ImageSettingsState::load(None))
+        .insert_resource(AutosaveSettingsState::load(None))
+        .insert_resource(service)
         .insert_resource(crate::localization::tests::english())
         .insert_resource(WinitSettings::continuous())
         .add_plugins((
@@ -1457,6 +1572,11 @@ fn native_settings_ui_probe() {
         "settings-ui-confirm-ja-small.png",
         "settings-ui-graphics-ja.png",
         "setup-ui-ja.png",
+        "setup-ui-en-small.png",
+        "setup-ui-image-ja.png",
+        "playing-ui-ja.png",
+        "pause-ui-ja.png",
+        "complete-ui-ja.png",
     ] {
         let metadata = std::fs::metadata(screenshot_path(name)).expect("native screenshot saved");
         assert!(metadata.len() > 0);
