@@ -153,7 +153,7 @@ FilesystemStorage は Rust 標準のファイルロックで複数プロセス�
 
 ## Multiplayerの境界と課題
 
-PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。core/sessionはsession identity・画像hash・命令sequence・authority epoch・migrationを、game/multiplayerはsnapshotの検証・復元とplayer単位の保持解放を提供します。GrabGroup / ReleaseGroupも同じ認証済みplayerとreliable control streamを使います。selectionはlocal presentationでありsnapshotには入りません。transport・途中参加のbackend連携・ネットワーク向けレート制限は未実装です。
+PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。core/sessionはsession identity・画像hash・命令sequence・authority epoch・migrationを、game/multiplayerはsnapshotの検証・復元とplayer単位の保持解放を提供します。GrabGroup / ReleaseGroupも同じ認証済みplayerとreliable control streamを使います。selectionはlocal presentationでありsnapshotには入りません。Direct-IP transport、途中参加、レート制限、Host / Join UIは[DIRECT_IP_RUNTIME.md](DIRECT_IP_RUNTIME.md)を参照してください。Host UIはCPU storeとGPUの準備後にlistenし、Join UIは専用接続画面でNetworkStatusを表示します。
 
 transport向けにはcore/protocolのComponentRef / PieceTarget / ProtocolPieceCommandを使用します。minimum memberとexpected sizeでcomponentを参照し、32 componentまでcompact、より多いselectionは対象componentのcount / topology digest付きDenseへ切り替えます。game/multiplayer/protocolのopt-in authority adapterがcurrent connectivity・所有権・placed・enabledを再検証し、Grabで受理した結果だけをSparse / Denseのplayer別contextへ保持します。Denseはcomponent listへ展開せずcanonical bitsetを保持し、受理したmembershipをGrabAccepted ACK / authority event型で返します。既存Move sequenceはmembership不要のbest-effort DragUpdateにも共用し、ReleaseはGrab sequenceとfinal deltaだけで確定します。local PieceCommand / PieceBitSetとGPU経路は維持します。詳細は[MULTIPLAYER_PROTOCOL.md](MULTIPLAYER_PROTOCOL.md)を参照してください。
 

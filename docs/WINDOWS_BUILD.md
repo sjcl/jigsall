@@ -15,7 +15,10 @@ cargo build --locked --release
 .\target\release\puzzella.exe
 ```
 
-タイトルの「New Game」から画像とパズルサイズ・seedを設定してください。通信のHost / Join画面は未実装です。
+タイトルの「シングルプレイ → 新規ゲーム」から画像とパズルサイズ・seedを設定してください。
+`gns`付きビルドでは「マルチプレイ → ホスト → 新規ゲーム / ロード」から通信設定を行い、
+「ゲームを開始してホスト」を押すとパズル準備後に接続を受け付けます。
+参加者は「マルチプレイ → 参加」でIPアドレス・ポートとパスワードを入力します。
 game layerのprogrammatic APIは[Direct-IP runtime](DIRECT_IP_RUNTIME.md)を参照してください。
 
 ## 開発チェック

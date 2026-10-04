@@ -10,7 +10,8 @@ use std::{num::NonZeroU32, sync::Arc};
 #[derive(Resource)]
 pub struct OriginalPuzzleImage {
     pub hash: ImageHash,
-    /// Released only after successful persistence with a live image lease.
+    /// Released after successful persistence with a live image lease, unless
+    /// retained for hosting.
     /// Saving never rereads the source path.
     pub encoded: Option<Arc<[u8]>>,
     /// Held through selection, play, pause and pending persistence requests.
@@ -18,6 +19,8 @@ pub struct OriginalPuzzleImage {
 }
 #[derive(Resource, Default)]
 pub struct PersistenceState {
+    /// Keep encoded source bytes only while preparing/running a user-hosted game.
+    pub retain_image_for_host: bool,
     pub game_id: GameId,
     pub current_save: Option<SaveMetadata>,
     pub current_autosave: Option<SaveMetadata>,
@@ -58,6 +61,7 @@ pub(crate) struct RestoredPuzzle {
     pub store: PieceDataStore,
 }
 struct LoadedPuzzle {
+    encoded: Option<Arc<[u8]>>,
     restored: RestoredPuzzle,
     metadata: SaveMetadata,
     hash: ImageHash,
@@ -81,6 +85,7 @@ enum Request {
     Import(ImageHash, Arc<[u8]>),
     List,
     Load(SaveId, ImageDecodeLimits),
+    LoadForHost(SaveId, ImageDecodeLimits),
     Save {
         game_id: GameId,
         autosave_limit: Option<NonZeroU32>,
@@ -212,6 +217,15 @@ impl PersistenceService {
     }
     pub fn load(&self, state: &mut PersistenceState, id: SaveId, limits: ImageDecodeLimits) {
         self.submit(state, Request::Load(id, limits));
+    }
+    pub fn load_for_host(
+        &self,
+        state: &mut PersistenceState,
+        id: SaveId,
+        limits: ImageDecodeLimits,
+    ) {
+        state.retain_image_for_host = true;
+        self.submit(state, Request::LoadForHost(id, limits));
     }
     pub fn delete(&self, state: &mut PersistenceState, id: SaveId) {
         self.submit(state, Request::Delete(id));
@@ -358,6 +372,7 @@ fn run_request<S: SaveStorage>(
     repository: &Result<SaveRepository<S>, StorageError>,
     request: Request,
 ) -> Reply {
+    let retain_image = matches!(request, Request::LoadForHost(..));
     let repo = || {
         repository
             .as_ref()
@@ -408,7 +423,7 @@ fn run_request<S: SaveStorage>(
                 })
             }),
         ),
-        Request::Load(id, limits) => Reply::Loaded(
+        Request::Load(id, limits) | Request::LoadForHost(id, limits) => Reply::Loaded(
             id,
             repo().and_then(|r| {
                 let loaded = r.load(id)?;
@@ -423,6 +438,7 @@ fn run_request<S: SaveStorage>(
                 let mut store = PieceDataStore::default();
                 loaded.save.checkpoint.install(&mut store)?;
                 Ok(Box::new(LoadedPuzzle {
+                    encoded: retain_image.then(|| Arc::from(loaded.image_bytes)),
                     restored: RestoredPuzzle {
                         definition: loaded.save.checkpoint.definition,
                         store,
@@ -477,7 +493,9 @@ pub(crate) fn poll_results(
                     match result {
                         Ok(lease) => {
                             original.image_lease = Some(lease);
-                            original.encoded = None;
+                            if !state.retain_image_for_host {
+                                original.encoded = None;
+                            }
                         }
                         Err(e) => state.error = Some(PersistenceError::ImageImport(e)),
                     }
@@ -515,7 +533,9 @@ pub(crate) fn poll_results(
                     if let Some(ref mut original) = original {
                         if original.hash == lease.hash {
                             original.image_lease = Some(lease);
-                            original.encoded = None;
+                            if !state.retain_image_for_host {
+                                original.encoded = None;
+                            }
                         }
                     }
                 }
@@ -548,7 +568,7 @@ pub(crate) fn poll_results(
                     });
                     commands.insert_resource(OriginalPuzzleImage {
                         hash: loaded.hash,
-                        encoded: None,
+                        encoded: loaded.encoded,
                         image_lease: Some(loaded.image_lease),
                     });
                     commands.insert_resource(PendingRestore(Some(loaded.restored)));
@@ -909,6 +929,95 @@ mod tests {
 
     fn request_and_wait(app: &mut App, automatic: bool) {
         request_and_wait_with_storage(app, automatic, None);
+    }
+
+    #[test]
+    fn host_images_survive_import_and_saves_but_offline_images_are_released() {
+        for retain in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = save_app(dir.path().to_path_buf());
+            app.world_mut()
+                .resource_mut::<PersistenceState>()
+                .retain_image_for_host = retain;
+            let original = app.world().resource::<OriginalPuzzleImage>();
+            let hash = original.hash;
+            let bytes = original.encoded.as_ref().unwrap().clone();
+            let repo = Ok(SaveRepository::new(FilesystemStorage::new(dir.path())));
+            // Apply a real import reply, including the shared image lease.
+            let imported = run_request(&repo, Request::Import(hash, bytes.clone()));
+            let (tx, rx) = crossbeam::channel::unbounded();
+            let old_rx = std::mem::replace(
+                &mut app.world_mut().resource_mut::<PersistenceService>().rx,
+                rx,
+            );
+            tx.send((0, imported)).unwrap();
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<OriginalPuzzleImage>()
+                    .encoded
+                    .is_some(),
+                retain
+            );
+            assert!(app
+                .world()
+                .resource::<OriginalPuzzleImage>()
+                .image_lease
+                .is_some());
+            app.world_mut().resource_mut::<PersistenceService>().rx = old_rx;
+            // Put the source back so this is also a real successful save/import.
+            app.world_mut()
+                .resource_mut::<OriginalPuzzleImage>()
+                .encoded = Some(bytes.clone());
+            request_and_wait(&mut app, false);
+            assert!(app.world().resource::<PersistenceState>().error.is_none());
+            let image = app.world().resource::<OriginalPuzzleImage>();
+            assert_eq!(image.encoded.is_some(), retain);
+            assert!(image.image_lease.is_some());
+            if retain {
+                assert!(Arc::ptr_eq(image.encoded.as_ref().unwrap(), &bytes));
+            }
+            let id = app
+                .world()
+                .resource::<PersistenceState>()
+                .current_save
+                .as_ref()
+                .unwrap()
+                .id;
+            let limits = ImageDecodeLimits {
+                max_texture_dimension: 128,
+            };
+            let request = if retain {
+                Request::LoadForHost(id, limits)
+            } else {
+                Request::Load(id, limits)
+            };
+            let Reply::Loaded(_, Ok(loaded)) = run_request(&repo, request) else {
+                panic!("load failed");
+            };
+            assert_eq!(loaded.encoded.is_some(), retain);
+            if retain {
+                assert_eq!(loaded.encoded.as_deref().unwrap(), bytes.as_ref());
+            }
+            // Apply the worker's reply through the actual main-thread restore path.
+            app.world_mut().insert_resource(State::new(AppState::Menu));
+            let (tx, rx) = crossbeam::channel::unbounded();
+            app.world_mut().resource_mut::<PersistenceService>().rx = rx;
+            tx.send((0, Reply::Loaded(id, Ok(loaded)))).unwrap();
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<OriginalPuzzleImage>()
+                    .encoded
+                    .is_some(),
+                retain
+            );
+            assert!(app
+                .world()
+                .resource::<OriginalPuzzleImage>()
+                .image_lease
+                .is_some());
+        }
     }
 
     fn request_and_wait_with_storage(

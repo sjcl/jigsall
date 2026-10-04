@@ -478,7 +478,12 @@ impl<T: DirectIpTransport> Runtime<T> {
                         Instant::now(),
                     );
                     self.status.phase = RuntimePhase::Disconnected;
-                    self.status.error = Some(format!("{reason:?}"));
+                    // Keep the specific bootstrap/sync diagnostic when the close
+                    // reason only says that the protocol was rejected.
+                    if self.status.error.is_none() || reason != DisconnectReason::ProtocolViolation
+                    {
+                        self.status.error = Some(format!("{reason:?}"));
+                    }
                     self.active = false;
                 }
             }

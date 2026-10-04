@@ -5183,12 +5183,14 @@ dependencies = [
  "puzzella-core",
  "puzzella-game",
  "puzzella-puzzle",
+ "rand",
  "rfd",
  "serde",
  "serde_json",
  "sys-locale",
  "tempfile",
  "unic-langid",
+ "zeroize",
 ]
 
 [[package]]

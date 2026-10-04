@@ -47,7 +47,7 @@ options. Offline puzzle initialization uses the same preference (None in isolate
 tests). HUD count/overlay read PlayerRoster, retaining localized default names and
 score display. Menu/session teardown clears it. Settings edits apply next session.
 Future Steam integration can validate persona names into PlayerDisplayName without
-changing platform identity, PlayerId or roster APIs. Host/Join screens, rename,
+changing platform identity, PlayerId or roster APIs. In-session rename,
 score replication, Steam and roster resync after divergence remain future work.
 
 Injected runtime tests cover named host/A/B joins and A leave, duplicate names,
@@ -84,9 +84,42 @@ makes the World invalid; hosting also rejects unfinished offline generation.
 UI reads `NetworkStatus`: role, phase, listener/endpoint, assigned local and host
 identity, peer connection states, image readiness/source availability, and error.
 `NetworkSession::authority()` and `replica()` expose read-only session/remote drag
-state. UI need not access native sockets, bootstrap, or sync internals. No Host/Join
-screen, server browser, lobby, NAT traversal, cursor rendering or migration
-is added.
+state. UI need not access native sockets, bootstrap, or sync internals. Server
+browser, lobby, NAT traversal, cursor rendering and migration remain future work.
+
+## Menu entrypoints
+
+The title first offers Single Player or Multiplayer. Single Player offers New
+Game / Load Game; Multiplayer offers Host / Join. Host offers New Game / Load
+Game. A new host switches between Puzzle settings and Multiplayer settings tabs; a
+loaded host selects a save first, then configures multiplayer settings before
+the load starts. Start & Host initializes/restores the canonical store and waits
+for the existing RenderReady barrier before calling start_host. It never listens
+while generating the puzzle. Missing encoded image bytes block hosting.
+
+Host preparation sets PersistenceState.retain_image_for_host: image imports and
+saves retain the shared encoded Arc, and load_for_host returns verified encoded
+bytes from the persistence worker. Offline imports/saves/loads still release
+them. Menu cleanup resets retention and drops the original image.
+
+Join only asks for an IP literal with port and a session password. SocketAddr
+input supports IPv4 and bracketed IPv6 (e.g. [2001:db8::1]:27015), not DNS names.
+The connection screen replaces GameSetup's image/piece controls throughout
+Connecting, Authenticating and Syncing. It shows a spinner with localized status,
+not phase-count percentages or internal enum names. Failure/disconnect shows a
+localized error category; the runtime keeps the diagnostic. Cancel/Back calls
+stop_session so sockets, bootstrap, sync and Bulk ownership are discarded.
+
+UI drafts are memory-only. Password buffers are zeroized when forms close or
+Settings opens, and moved into SessionPassword once on submission. Display names
+come from PlayerSettingsState.current; the forms do not own another name draft.
+Submission is latched before issuing any start request to suppress repeated
+clicks. A build without gns shows that multiplayer is unavailable and disables
+start controls.
+
+The pause menu separates the listen endpoint from invitation guidance. Wildcard
+bind addresses are never invitation endpoints; loopback is labeled local-only.
+Players need a reachable IP/port, with manual port forwarding where required.
 
 ## Frame order and canonical authority
 

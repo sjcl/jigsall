@@ -16,6 +16,8 @@ pub fn draw_in_game_menu_ui(
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
     mut exit: MessageWriter<AppExit>,
+    network_status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
 ) {
     if persistence.title_dialog_open {
         return;
@@ -69,13 +71,18 @@ pub fn draw_in_game_menu_ui(
                         if theme::button(ui, i18n.text("common-return-title"), width, false)
                             .clicked()
                         {
-                            next_state.set(AppState::Menu);
+                            if network_status.role.is_some() {
+                                multiplayer.return_to_title();
+                            } else {
+                                next_state.set(AppState::Menu);
+                            }
                         }
                         if theme::danger_button(ui, i18n.text("pause-exit"), width).clicked() {
                             exit.write(AppExit::Success);
                         }
                     });
                     crate::persistence::status(ui, &persistence, &i18n);
+                    crate::multiplayer::paint_host_status(ui, &network_status, &i18n);
                     ui.add_space(8.0);
                     theme::hint(
                         ui,
@@ -95,7 +102,12 @@ pub fn draw_generation_progress_ui(
     mut contexts: EguiContexts,
     progress: Res<PieceGenerationProgress>,
     mut next_state: ResMut<NextState<AppState>>,
+    multiplayer: Res<crate::multiplayer::MultiplayerUi>,
+    status: Res<puzzella_game::network::runtime::NetworkStatus>,
 ) {
+    if multiplayer.connection_screen(&status) {
+        return;
+    }
     if !progress.is_generating && progress.error.is_none() {
         return;
     }

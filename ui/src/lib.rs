@@ -8,6 +8,7 @@ mod key_config;
 pub mod localization;
 mod menu;
 mod messages;
+mod multiplayer;
 mod overlays;
 mod performance;
 mod persistence;
@@ -28,6 +29,9 @@ impl Plugin for GameUiPlugin {
             .init_resource::<persistence::SaveDialogs>()
             .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()
+            .init_resource::<multiplayer::MultiplayerUi>()
+            .add_systems(First, multiplayer::start_prepared_host)
+            .add_systems(OnEnter(AppState::Menu), multiplayer::reset_on_menu)
             .init_resource::<game_setup::image_picker::ImagePicker>()
             .add_systems(Update, game_setup::image_picker::finish_image_selection)
             .add_systems(
@@ -48,8 +52,19 @@ impl Plugin for GameUiPlugin {
                     menu::draw_menu_ui.run_if(in_state(AppState::Menu)),
                     settings::draw_settings_ui
                         .after(menu::draw_menu_ui)
-                        .run_if(in_state(AppState::Menu)),
+                        .after(game_setup::draw_game_setup_ui)
+                        .run_if(in_state(AppState::Menu).or_else(in_state(AppState::GameSetup))),
                     game_setup::draw_game_setup_ui.run_if(in_state(AppState::GameSetup)),
+                    multiplayer::draw_connection_ui
+                        .after(menu::draw_menu_ui)
+                        .after(game_setup::draw_game_setup_ui),
+                    multiplayer::process_actions
+                        .after(menu::draw_menu_ui)
+                        .after(game_setup::draw_game_setup_ui)
+                        .after(persistence::draw_save_dialogs)
+                        .after(overlays::draw_in_game_menu_ui)
+                        .after(completion::draw_completion_ui)
+                        .after(multiplayer::draw_connection_ui),
                     game_play::draw_game_ui.run_if(in_state(AppState::InGame)),
                     performance::draw_performance_overlay.run_if(in_state(AppState::InGame)),
                     game_play::draw_players_overlay

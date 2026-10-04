@@ -40,6 +40,7 @@ rayon = "1.11"
 lyon = "1.0"
 lyon_tessellation = "1.0"
 crossbeam = "0.8"
+zeroize = "1.9"
 instant = "0.1"
 rstar = "0.12"
 
@@ -64,7 +65,7 @@ puzzella-ui.workspace = true
 
 [features]
 default = []
-gns = ["puzzella-game/gns"]
+gns = ["puzzella-game/gns", "puzzella-ui/gns"]
 cpu-geometry-reference = ["puzzella-game/cpu-geometry-reference"]
 cpu-picking-debug = ["puzzella-game/cpu-picking-debug"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）

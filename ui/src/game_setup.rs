@@ -17,7 +17,16 @@ pub fn draw_game_setup_ui(
     image_error: Option<Res<ImageLoadError>>,
     file_registry: Res<ExternalFileRegistry>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
+    status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    profile: Res<puzzella_game::player_settings::PlayerSettingsState>,
+    original: Option<Res<puzzella_game::persistence::runtime::OriginalPuzzleImage>>,
+    mut settings: ResMut<crate::settings::SettingsDialog>,
+    display: Res<puzzella_game::settings::DisplaySettingsState>,
 ) {
+    if multiplayer.connection_screen(&status) {
+        return;
+    }
     let image_error = image_error
         .as_deref()
         .filter(|error| error.virtual_key == config.image_path);
@@ -37,18 +46,72 @@ pub fn draw_game_setup_ui(
             .is_some_and(|image| image.logical_size.min_element() > 10);
     let mut select_image = false;
     egui::Area::new("new_game_screen".into())
-        .enabled(!image_picker.is_open())
+        .enabled(!image_picker.is_open() && !settings.open)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             theme::frame().show(ui, |ui| {
                 ui.set_width(width);
                 ui.set_max_height((screen.height() - 96.0).max(120.0));
-                theme::heading(ui, i18n.text("menu-new-game"));
+                theme::heading(
+                    ui,
+                    i18n.text(if multiplayer.host_setup {
+                        "multiplayer-new-game"
+                    } else {
+                        "menu-new-game"
+                    }),
+                );
+                if multiplayer.host_setup {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui
+                            .selectable_label(
+                                !multiplayer.host_settings_tab,
+                                i18n.text("multiplayer-puzzle-settings"),
+                            )
+                            .clicked()
+                        {
+                            multiplayer.host_settings_tab = false;
+                        }
+                        if ui
+                            .selectable_label(
+                                multiplayer.host_settings_tab,
+                                i18n.text("multiplayer-host-settings"),
+                            )
+                            .clicked()
+                        {
+                            multiplayer.host_settings_tab = true;
+                        }
+                    });
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .max_height((screen.height() - 312.0).max(80.0))
                     .show(ui, |ui| {
-                        if wide {
+                        if multiplayer.host_setup && multiplayer.host_settings_tab {
+                            crate::multiplayer::paint_connection_fields(
+                                ui,
+                                &mut multiplayer.host,
+                                true,
+                                &profile,
+                                &i18n,
+                            );
+                            if ui
+                                .small_button(i18n.text("multiplayer-name-settings"))
+                                .clicked()
+                            {
+                                multiplayer.host.clear_password();
+                                settings.open(&display);
+                            }
+                            if image_loaded
+                                && original
+                                    .as_ref()
+                                    .is_none_or(|image| image.encoded.is_none())
+                            {
+                                ui.colored_label(
+                                    theme::DANGER,
+                                    i18n.text("multiplayer-error-image"),
+                                );
+                            }
+                        } else if wide {
                             ui.columns(2, |columns| {
                                 select_image = image_section(
                                     &mut columns[0],
@@ -101,22 +164,59 @@ pub fn draw_game_setup_ui(
                         );
                     });
                 } else {
-                    theme::hint(ui, i18n.text("setup-select-hint"));
+                    theme::hint(
+                        ui,
+                        i18n.text(if multiplayer.host_setup && multiplayer.host_settings_tab {
+                            "multiplayer-puzzle-tab-hint"
+                        } else {
+                            "setup-select-hint"
+                        }),
+                    );
+                }
+                if multiplayer.host_setup
+                    && !multiplayer.host_settings_tab
+                    && !multiplayer.host.valid(true)
+                {
+                    theme::hint(ui, i18n.text("multiplayer-setup-required"));
                 }
                 ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 10.0) * 0.5).min(240.0);
                     if theme::button(ui, i18n.text("common-back-title"), button_width, false)
                         .clicked()
                     {
+                        multiplayer.navigate(crate::multiplayer::MenuScreen::Title);
                         next_state.set(AppState::Menu);
                     }
                     ui.add_enabled_ui(
-                        image_loaded && !config.image_path.is_empty() && !select_image,
+                        image_loaded
+                            && !config.image_path.is_empty()
+                            && !select_image
+                            && !multiplayer.submitted
+                            && (!multiplayer.host_setup
+                                || (multiplayer.host.valid(true)
+                                    && original
+                                        .as_ref()
+                                        .is_some_and(|image| image.encoded.is_some())
+                                    && cfg!(feature = "gns"))),
                         |ui| {
-                            if theme::button(ui, i18n.text("setup-start-game"), button_width, true)
-                                .clicked()
+                            if theme::button(
+                                ui,
+                                i18n.text(if multiplayer.host_setup {
+                                    "multiplayer-start-host"
+                                } else {
+                                    "setup-start-game"
+                                }),
+                                button_width,
+                                true,
+                            )
+                            .clicked()
                             {
-                                next_state.set(AppState::InGame);
+                                if multiplayer.host_setup {
+                                    multiplayer.submit_host();
+                                } else {
+                                    multiplayer.submitted = true;
+                                    next_state.set(AppState::InGame);
+                                }
                             }
                         },
                     );

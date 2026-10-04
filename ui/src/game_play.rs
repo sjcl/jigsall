@@ -6,6 +6,7 @@ use puzzella_game::persistence::runtime::PersistenceState;
 use puzzella_game::resources::*;
 
 /// インゲームUI（プレイ中のUI）
+#[allow(clippy::too_many_arguments)]
 pub fn draw_game_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
@@ -14,6 +15,7 @@ pub fn draw_game_ui(
     bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
     persistence: Res<PersistenceState>,
+    network: Res<puzzella_game::network::runtime::NetworkStatus>,
 ) {
     let _span = info_span!("draw_game_ui").entered();
 
@@ -43,6 +45,17 @@ pub fn draw_game_ui(
             );
             ui.separator();
             paint_player_count(ui, &roster, &i18n);
+            match network.role {
+                Some(puzzella_game::network::runtime::RuntimeRole::Host) => {
+                    ui.label(i18n.text("multiplayer-hosting"));
+                }
+                Some(puzzella_game::network::runtime::RuntimeRole::Client)
+                    if network.phase == puzzella_game::network::runtime::RuntimePhase::Ready =>
+                {
+                    ui.label(i18n.text("multiplayer-connected"));
+                }
+                _ => {}
+            }
             paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();

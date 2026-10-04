@@ -107,7 +107,9 @@ FilesystemStorage のプロセス間協調は Rust 標準の `File::try_lock` / 
 
 ## Worker と restore lifecycle
 
-画像選択 worker は元 encoded bytes と hash を確定し、同じ bytes から decode します。受信後 background repository worker が画像の共有ロックを保持して `.puzimg` を import し、成功応答から `OriginalPuzzleImage` へ `ImageLease` を移してから encoded bytes を RAM から解放します。load / Save の成功応答も lease を保持します。lease は選択中・Playing・pause・完成画面で維持し、画像の置き換え・session cleanup で解放します。送信済み Save request も lease の clone を持つため、session cleanup 後の保存待ち中も保護されます。古い generation / 別画像の応答やロード失敗は guard を drop します。import / lock failure 時は bytes を保持して後の Save で再試行できます。Save ボタンは元ファイルを読み直しません。RGBA は既存の render-only Image 方針で GPU upload 後に CPU に保持しません。
+画像選択 worker は元 encoded bytes と hash を確定し、同じ bytes から decode します。受信後 background repository worker が画像の共有ロックを保持して `.puzimg` を import し、成功応答から `OriginalPuzzleImage` へ `ImageLease` を移してから、通常は encoded bytes を RAM から解放します。load / Save の成功応答も lease を保持します。lease は選択中・Playing・pause・完成画面で維持し、画像の置き換え・session cleanup で解放します。送信済み Save request も lease の clone を持つため、session cleanup 後の保存待ち中も保護されます。古い generation / 別画像の応答やロード失敗は guard を drop します。import / lock failure 時は bytes を保持して後の Save で再試行できます。Save ボタンは元ファイルを読み直しません。RGBA は既存の render-only Image 方針で GPU upload 後に CPU に保持しません。
+
+マルチプレイのホスト準備では `PersistenceState.retain_image_for_host` を設定し、import / Save 成功後も encoded bytes の共有 Arc と lease の両方を保持します。ホスト用 `load_for_host` は検証済み encoded bytes と lease を worker から返します。通常ロードは引き続き encoded bytes を保持せず、Menu cleanup は保持設定と元画像を破棄します。
 
 filesystem の list / read / write、codec / checksum / decode / restore 準備は crossbeam channel の worker 上で実行します。`SaveStorage` 自体には Send / Sync 制約を置きません。`PersistenceService::new(storage)` で backend をI/O workerに移す場合だけ Send を要求し、Clone / Sync は要求しません。この汎用経路はI/Oを直列化しますが、別々の foreground / thumbnail worker がchecksum・decode等を行うため、サムネイルのCPU処理は保存・ロードを待たせません。通常のfilesystem経路は独立したhandleを使い、サムネイルのI/Oもforeground workerから分離します。
 

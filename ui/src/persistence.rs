@@ -13,6 +13,7 @@ use thumbnails::SaveThumbnails;
 #[derive(Resource, Default)]
 pub struct SaveDialogs {
     pub load_open: bool,
+    pub host_load: bool,
     pub title: String,
     pending_delete: Option<SaveId>,
     reveal_delete: Option<SaveId>,
@@ -51,6 +52,7 @@ pub fn draw_save_dialogs(
     image: Option<Res<PuzzleImage>>,
     store: Res<PieceDataStore>,
     app_state: Res<State<AppState>>,
+    mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
 ) {
     let texture = if state.title_dialog_open {
         image
@@ -78,6 +80,7 @@ pub fn draw_save_dialogs(
             image_limits.decode_limits(&image_settings.current),
             &mut thumbnails,
             &i18n,
+            &mut multiplayer,
         );
     }
     if state.title_dialog_open
@@ -219,6 +222,7 @@ fn paint_load_dialog(
     image_limits: ImageDecodeLimits,
     thumbnails: &mut SaveThumbnails,
     i18n: &Localization,
+    multiplayer: &mut crate::multiplayer::MultiplayerUi,
 ) {
     let screen = ctx.content_rect();
     let mut visible = Vec::new();
@@ -366,7 +370,21 @@ fn paint_load_dialog(
                     service.delete(state, id);
                 } else {
                     dialogs.loading_save = Some(id);
-                    service.load(state, id, image_limits);
+                    if dialogs.host_load {
+                        let title = state
+                            .entries
+                            .iter()
+                            .find(|entry| entry.id == id)
+                            .and_then(|entry| entry.summary.as_ref().ok())
+                            .map(|summary| summary.metadata.title.as_str().to_owned())
+                            .unwrap_or_default();
+                        multiplayer.navigate(crate::multiplayer::MenuScreen::HostLoadSettings);
+                        multiplayer.selected_save = Some((id, title));
+                        dialogs.load_open = false;
+                        dialogs.loading_save = None;
+                    } else {
+                        service.load(state, id, image_limits);
+                    }
                 }
             }
             status_with_label(

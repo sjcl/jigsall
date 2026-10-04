@@ -18,6 +18,12 @@ fluent-bundle = "0.16"
 unic-langid = "0.9"
 sys-locale = "0.3"
 serde.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+
+[features]
+default = []
+gns = ["puzzella-game/gns"]
 
 [dev-dependencies]
 serde_json = "1"

@@ -94,6 +94,7 @@ fn input_frame(
             },
             thumbnails,
             &english(),
+            &mut crate::multiplayer::MultiplayerUi::default(),
         );
     })
 }
@@ -157,6 +158,7 @@ fn load_cards_show_autosave_next_to_the_timestamp_only_for_autosaves() {
                         },
                         thumbnails,
                         &i18n,
+                        &mut crate::multiplayer::MultiplayerUi::default(),
                     );
                 },
             )
@@ -999,6 +1001,7 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
                         },
                         &mut thumbnails,
                         &i18n,
+                        &mut crate::multiplayer::MultiplayerUi::default(),
                     );
                 },
             )
@@ -1020,6 +1023,7 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
                     },
                     &mut thumbnails,
                     &i18n,
+                    &mut crate::multiplayer::MultiplayerUi::default(),
                 );
             },
         );

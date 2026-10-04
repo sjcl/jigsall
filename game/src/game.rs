@@ -262,6 +262,7 @@ pub(crate) fn cleanup_game(
     file_registry.clear();
     config.image_path.clear();
     persistence.generation = persistence.generation.wrapping_add(1);
+    persistence.retain_image_for_host = false;
     persistence.current_save = None;
     persistence.current_autosave = None;
     persistence.autosaving = false;

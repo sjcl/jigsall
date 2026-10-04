@@ -10,6 +10,7 @@ const MUTED: egui::Color32 = egui::Color32::from_rgb(155, 171, 183);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(172, 197, 174);
 
 /// A quiet result card over the completed puzzle, without clearing its session.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_completion_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
@@ -18,6 +19,8 @@ pub fn draw_completion_ui(
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
+    network_status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -124,7 +127,11 @@ pub fn draw_completion_ui(
                                 )
                                 .clicked()
                             {
-                                next_state.set(AppState::Menu);
+                                if network_status.role.is_some() {
+                                    multiplayer.return_to_title();
+                                } else {
+                                    next_state.set(AppState::Menu);
+                                }
                             }
                             if ui
                                 .add_enabled(
