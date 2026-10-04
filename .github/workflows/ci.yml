@@ -82,7 +82,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067
         with:
           toolchain: ${{ steps.rust-version.outputs.toolchain }}
-          components: clippy
+          components: ${{ runner.os == 'Linux' && 'clippy' || '' }}
 
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
@@ -127,22 +127,41 @@ jobs:
           env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
           cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
 
-      # Reuse dependencies between configurations on each OS. Clippy covers
-      # cargo check and examples; build also links the normal application binary.
+      # Linux covers linting, examples, doctests and both feature configurations.
+      # Windows uses one GNS configuration for platform/runtime and linker checks.
       - name: Clippy (default features)
+        if: runner.os == 'Linux'
         run: cargo clippy --workspace --locked --all-targets -- -D warnings
       - name: Tests and doctests (default features)
+        if: runner.os == 'Linux'
         run: cargo test --workspace --locked
       - name: Build (default features)
+        if: runner.os == 'Linux'
         run: cargo build --workspace --locked
 
       - name: Clippy (all features)
+        if: runner.os == 'Linux'
         run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
       - name: Tests and doctests (all features)
+        if: runner.os == 'Linux'
         run: cargo test --workspace --locked --all-features -- --skip gns_localhost
       # Native GNS uses a process-wide singleton; run its localhost tests serially.
       # Use the workspace to retain the same unified features and compiled artifacts.
       - name: GNS localhost integration tests
+        if: runner.os == 'Linux'
         run: cargo test --workspace --locked --all-features gns_localhost -- --nocapture --test-threads=1
       - name: Build (all features)
+        if: runner.os == 'Linux'
         run: cargo build --workspace --locked --all-features
+
+      # Keep runtime tests on Windows: filesystem semantics and parallel logging
+      # can differ from Linux. Examples and doctests are already covered there.
+      - name: Windows runtime tests (GNS enabled)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --locked --features gns --lib --bins --tests -- --skip gns_localhost
+      - name: Windows GNS localhost integration tests
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --locked --features gns --lib --bins --tests gns_localhost -- --nocapture --test-threads=1
+      - name: Windows application build (GNS enabled)
+        if: runner.os == 'Windows'
+        run: cargo build --workspace --locked --features gns

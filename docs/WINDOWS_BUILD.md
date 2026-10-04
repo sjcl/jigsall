@@ -27,6 +27,12 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --workspace --locked
 ```
 
+CIのLinux jobはdefault / all-features両構成のClippy、example、doctest、build、testを検証します。
+Windows jobは`gns`を有効にした一構成でworkspaceのunit / integration test、
+直列のGNS localhost通信テスト、通常アプリのリンクを検証します。
+ファイルの共有・削除や並列ログ出力など、OSによって差が出る実行時の確認を残し、
+Clippy、example、doctestと追加のfeature構成はLinux jobに集約しています。
+
 ## 依存関係の注意点
 
 Bevy 0.19.1 / bevy_egui 0.42を使用します。Windows向けのwgpu-halはCargo.tomlで29.0.3へ固定しています。29.0.4はgpu-allocator 0.28とWindows COM型が一致しないためです。固定を外す際は、Windowsで再ビルドして互換性を確認してください。
