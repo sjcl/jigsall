@@ -121,7 +121,7 @@ jobs:
           New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.os }}-llvm18
           env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
