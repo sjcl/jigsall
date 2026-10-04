@@ -169,7 +169,7 @@ impl Default for MultiplayerUi {
         Self {
             screen: MenuScreen::Title,
             host_setup: false,
-            host_settings_tab: true,
+            host_settings_tab: false,
             host: ConnectionDraft::new("0.0.0.0:27015"),
             join: ConnectionDraft::new("127.0.0.1:27015"),
             selected_save: None,
