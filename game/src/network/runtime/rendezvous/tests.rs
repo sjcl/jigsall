@@ -2,6 +2,7 @@ use super::*;
 mod smoke;
 use crate::network::gns::rendezvous::protocol::{AuthorityId, MemberId, RoomId};
 use crate::network::runtime::tests as fixtures;
+use crate::{persistence::runtime::OriginalPuzzleImage, resources::AppState};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -326,6 +327,167 @@ fn rendezvous_host_control_loss_before_room_created_is_failure() {
     driver.poll_control(Instant::now());
     assert_eq!(driver.status().phase, RuntimePhase::Failed);
     assert_eq!(driver.status().failure, Some(NetworkFailureKind::Timeout));
+    assert!(driver.status().host_start_failed);
+}
+
+#[test]
+fn rendezvous_pre_room_host_failure_keeps_prepared_world_and_allows_retry() {
+    for welcomed in [false, true] {
+        for failure in [
+            Some(RendezvousEvent::Disconnected(RendezvousError::Network)),
+            Some(RendezvousEvent::ServerError(ErrorCode::Capacity)),
+            Some(RendezvousEvent::ServerError(ErrorCode::ProtocolViolation)),
+            None, // Establishment deadline, even without a control event.
+        ] {
+            let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+            let (control, state) = control();
+            let backend = backend(0, &bus);
+            let dropped = backend.dropped.clone();
+            let mut host = fixtures::app();
+            fixtures::host_world(&mut host);
+            host.world_mut()
+                .resource_mut::<NextState<AppState>>()
+                .set(AppState::InGame);
+            host.update();
+            let epoch = host.world().resource::<PieceDataStore>().epoch;
+            let states = host.world().resource::<PieceDataStore>().states.clone();
+            let original = host
+                .world()
+                .resource::<OriginalPuzzleImage>()
+                .encoded
+                .clone()
+                .unwrap();
+            let handle = host
+                .world_mut()
+                .resource_mut::<Assets<Image>>()
+                .add(Image::default());
+            host.world_mut()
+                .insert_resource(crate::resources::PuzzleImage {
+                    handle: handle.clone(),
+                    logical_size: fixtures::definition().image_size,
+                    texture_size: UVec2::ONE,
+                    opaque: true,
+                });
+            let mut driver =
+                RendezvousRuntimeDriver::host(backend, control, host_options(), prepared());
+            if welcomed {
+                state.borrow_mut().events.push_back(welcome());
+                driver.poll_control(Instant::now());
+            }
+            if let Some(event) = failure {
+                state.borrow_mut().events.push_back(event);
+            } else {
+                driver.deadline = Instant::now();
+            }
+            world::prepare_host_world(host.world_mut(), driver.status());
+            let status = driver.status().clone();
+            let roster = driver.take_roster();
+            world::install_driver(host.world_mut(), Box::new(driver), status, roster);
+            // A queued command must not fall through to offline authority on failure.
+            fixtures::send(&mut host, PieceCommand::Grab(puzzella_core::PieceId(0)));
+            host.update();
+            host.update();
+            let status = host.world().resource::<NetworkStatus>();
+            assert_eq!(status.phase, RuntimePhase::Failed);
+            assert!(status.host_start_failed);
+            assert_eq!(
+                *host.world().resource::<State<AppState>>().get(),
+                AppState::InGame
+            );
+            assert!(matches!(
+                host.world().resource::<NextState<AppState>>(),
+                NextState::Unchanged
+            ));
+            assert!(!host.world().contains_non_send::<NetworkSession>());
+            assert!(state.borrow().stopped && *dropped.borrow());
+            let store = host.world().resource::<PieceDataStore>();
+            assert_eq!(store.epoch, epoch);
+            assert_eq!(store.states.as_ptr(), states.as_ptr());
+            assert!(store.held_by.is_empty());
+            assert_eq!(
+                host.world().resource::<PuzzleDefinition>().seed,
+                fixtures::definition().seed
+            );
+            assert!(Arc::ptr_eq(
+                &original,
+                host.world()
+                    .resource::<OriginalPuzzleImage>()
+                    .encoded
+                    .as_ref()
+                    .unwrap()
+            ));
+            assert_eq!(
+                host.world()
+                    .resource::<crate::resources::PuzzleImage>()
+                    .handle,
+                handle
+            );
+            let options = HostOptions {
+                display_name: None,
+                address: "127.0.0.1:27015".parse().unwrap(),
+                session: host_options().session,
+                host: PlayerId(0),
+                password: fixtures::password(),
+            };
+            host_with_transport(
+                host.world_mut(),
+                fixtures::Fake {
+                    id: 0,
+                    bus: bus.clone(),
+                },
+                options,
+            )
+            .unwrap();
+            assert_eq!(host.world().resource::<PieceDataStore>().epoch, epoch);
+            assert!(!host.world().resource::<NetworkStatus>().host_start_failed);
+            stop_session(host.world_mut());
+        }
+    }
+}
+
+#[test]
+fn rendezvous_join_and_post_room_host_failures_still_return_to_menu() {
+    for host_role in [false, true] {
+        let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+        let (control, state) = control();
+        let mut app = fixtures::app();
+        fixtures::host_world(&mut app);
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::InGame);
+        app.update();
+        let mut driver = if host_role {
+            RendezvousRuntimeDriver::host(backend(0, &bus), control, host_options(), prepared())
+        } else {
+            RendezvousRuntimeDriver::join(backend(1, &bus), control, join_options(), limits())
+        };
+        if host_role {
+            state.borrow_mut().events.extend([welcome(), created()]);
+            driver.poll_control(Instant::now());
+            // An unexpected transition is terminal after RoomCreated too.
+            state.borrow_mut().events.push_back(welcome());
+        } else {
+            state
+                .borrow_mut()
+                .events
+                .push_back(RendezvousEvent::Disconnected(RendezvousError::Network));
+        }
+        let status = driver.status().clone();
+        world::install_driver(app.world_mut(), Box::new(driver), status, default());
+        app.update();
+        assert!(!app.world().resource::<NetworkStatus>().host_start_failed);
+        assert_eq!(
+            *app.world().resource::<State<AppState>>().get(),
+            AppState::Menu
+        );
+        assert!(!app.world().contains_non_send::<NetworkSession>());
+        assert!(state.borrow().stopped);
+        app.update();
+        assert!(matches!(
+            app.world().resource::<NextState<AppState>>(),
+            NextState::Unchanged
+        ));
+    }
 }
 #[test]
 fn rendezvous_unconnected_peer_churn_releases_routes() {

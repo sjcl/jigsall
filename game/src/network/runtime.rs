@@ -150,6 +150,8 @@ pub struct NetworkStatus {
     pub peers: Vec<RuntimePeer>,
     pub error: Option<String>,
     pub failure: Option<NetworkFailureKind>,
+    /// Internet Host failed before RoomCreated; retain the prepared puzzle for retry.
+    pub host_start_failed: bool,
 }
 impl Default for NetworkStatus {
     fn default() -> Self {
@@ -167,6 +169,7 @@ impl Default for NetworkStatus {
             peers: Vec::new(),
             error: None,
             failure: None,
+            host_start_failed: false,
         }
     }
 }

@@ -221,7 +221,12 @@ capacity, timeout, protocol and connection errors map to typed UI categories;
 diagnostics are never parsed for presentation.
 
 **Rendezvous control loss != gameplay disconnect.** Before RoomCreated/HostReady,
-control loss fails establishment. After RoomCreated or connect_peer, RoomClosed,
+control loss fails establishment. An Internet Host failure before RoomCreated
+tears down the network session and returns to Host settings while retaining the
+prepared CPU store, image and render epoch. Retry uses that same generated or
+loaded puzzle and asks for the password again; Cancel returns to Menu and performs
+the normal puzzle cleanup. Join failures retain the normal Menu path.
+After RoomCreated or connect_peer, RoomClosed,
 Disconnected or PeerUnavailable never closes the existing GNS connection or
 revokes its active route. Pending ICE remains governed by GNS's own connection
 deadline. Existing Ready gameplay continues; host code is removed and control

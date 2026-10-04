@@ -199,6 +199,7 @@ pub(crate) struct MultiplayerUi {
     owns_session: bool,
     pending_host: Option<PendingHost>,
     retry_host: Option<HostStartRequest>,
+    prepared_host: bool,
     editing_host_retry: bool,
     retrying: bool,
     pending_join: Option<PendingJoin>,
@@ -220,6 +221,7 @@ impl Default for MultiplayerUi {
             owns_session: false,
             pending_host: None,
             retry_host: None,
+            prepared_host: false,
             editing_host_retry: false,
             retrying: false,
             pending_join: None,
@@ -288,6 +290,15 @@ impl MultiplayerUi {
             }
             Err(error) => self.error = Some(error),
         }
+    }
+    fn recover_prepared_host(&mut self, error: UiError) {
+        self.prepared_host = true;
+        self.editing_host_retry = true;
+        self.connecting = true;
+        self.submitted = false;
+        self.retrying = false;
+        self.host.clear_password();
+        self.error = Some(error);
     }
     fn submit_join(&mut self, profile: &PlayerSettingsState) {
         if self.submitted {
@@ -367,6 +378,7 @@ impl MultiplayerUi {
         self.join.clear_password();
         self.pending_host = None;
         self.retry_host = None;
+        self.prepared_host = false;
         self.retrying = false;
         self.editing_host_retry = false;
         self.pending_join = None;
@@ -455,6 +467,11 @@ pub(crate) fn process_actions(world: &mut World) {
         }
         Action::PrepareHost(host) => {
             world.resource_mut::<MultiplayerUi>().pending_host = Some(host);
+            // Retry the current generated/loaded puzzle without reentering InGame
+            // or loading selected_save again.
+            if world.resource::<MultiplayerUi>().prepared_host {
+                return;
+            }
             world
                 .resource_mut::<PersistenceState>()
                 .retain_image_for_host = true;
@@ -639,7 +656,7 @@ pub(crate) fn start_prepared_host(world: &mut World) {
                     Ok(()) => {
                         ui.host_setup = false;
                     } // RoomCreated ends connection UI.
-                    Err(error) => ui.error = Some(UiError::start(error)),
+                    Err(error) => ui.recover_prepared_host(UiError::start(error)),
                 }
                 return;
             }
@@ -665,6 +682,7 @@ pub(crate) fn start_prepared_host(world: &mut World) {
             ui.connecting = false;
             ui.host_setup = false;
             ui.submitted = false;
+            ui.prepared_host = false;
         }
         Err(error) => {
             if matches!(error, RuntimeStartError::Transport(_)) {
@@ -681,6 +699,7 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
     ui.host_setup = false;
     ui.pending_host = None;
     ui.retry_host = None;
+    ui.prepared_host = false;
     ui.editing_host_retry = false;
     ui.retrying = false;
     if ui.pending_join.take().is_some() {
@@ -920,6 +939,38 @@ fn paint_host_retry(
     profile: &PlayerSettingsState,
     i18n: &Localization,
 ) {
+    if state.prepared_host && state.retry_host.is_none() {
+        let available = state.internet_available;
+        paint_method(ui, state, available, i18n);
+        theme::hint(ui, i18n.text("multiplayer-retry-prepared"));
+        paint_connection_fields(ui, &mut state.host, true, profile, i18n);
+        if let Some(error) = state.error {
+            ui.colored_label(theme::DANGER, i18n.text(error.key()));
+        }
+        let valid = state.host.valid(true)
+            && !state.submitted
+            && cfg!(feature = "gns")
+            && (state.host.method == RuntimeConnectionMethod::DirectIp || available);
+        ui.add_enabled_ui(valid, |ui| {
+            if theme::button(
+                ui,
+                i18n.text("multiplayer-start-host"),
+                ui.available_width(),
+                true,
+            )
+            .clicked()
+            {
+                state.submit_host();
+                if state.submitted {
+                    state.editing_host_retry = false;
+                }
+            }
+        });
+        if theme::button(ui, i18n.text("common-cancel"), ui.available_width(), false).clicked() {
+            state.cancel();
+        }
+        return;
+    }
     ui.label(i18n.text("multiplayer-host-settings"));
     if let Some(name) = &profile.current.display_name {
         theme::hint(
@@ -973,7 +1024,19 @@ pub(crate) fn draw_connection_ui(
     {
         state.connecting = false;
         state.submitted = false;
+        state.prepared_host = false;
         return;
+    }
+    if status.host_start_failed
+        && state.owns_session
+        && state.submitted
+        && state.pending_host.is_none()
+        && state.retry_host.is_none()
+        && state.action.is_none()
+    {
+        state.recover_prepared_host(UiError::failure(
+            status.failure.unwrap_or(NetworkFailureKind::Connection),
+        ));
     }
     if !state.connection_screen(&status) {
         return;
@@ -1004,6 +1067,7 @@ pub(crate) fn draw_connection_ui(
         .show(ctx, |ui| {
             theme::frame().show(ui, |ui| {
                 ui.set_width((screen.width() - 96.0).clamp(160.0, 480.0));
+                ui.set_max_height((screen.height() - 160.0).max(80.0));
                 egui::ScrollArea::vertical()
                     .max_height((screen.height() - 160.0).max(80.0))
                     .show(ui, |ui| {

@@ -180,9 +180,12 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RendezvousRuntimeDriver<T, C> 
             .unwrap_or_default()
     }
     fn fail(&mut self, kind: NetworkFailureKind, error: impl std::fmt::Debug) {
+        let host_start_failed = self.status().role == Some(RuntimeRole::Host)
+            && matches!(self.stage, Stage::ControlConnecting | Stage::CreatingRoom);
         let status = self.status_mut();
         status.set_failure(kind, error);
         status.phase = RuntimePhase::Failed;
+        status.host_start_failed = host_start_failed;
         self.active = false;
     }
     fn control_lost(&mut self, kind: NetworkFailureKind, error: impl std::fmt::Debug) {

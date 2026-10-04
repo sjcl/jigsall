@@ -14,6 +14,132 @@ fn internet(state: &mut MultiplayerUi) {
     state.join.method = RuntimeConnectionMethod::Internet;
     state.internet_available = true;
 }
+
+#[test]
+fn internet_host_failure_returns_to_settings_and_retries_generated_or_loaded_puzzle() {
+    for app_state in [AppState::InGame, AppState::GameComplete] {
+        let (mut app, ctx) = scheduled_screens();
+        configure(app.world_mut());
+        app.world_mut().insert_resource(State::new(app_state));
+        app.world_mut()
+            .insert_resource(State::new(GameCompleteSubState::Summary));
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .initialize(vec![Vec2::new(25.0, 30.0)]);
+        let epoch = app.world().resource::<PieceDataStore>().epoch;
+        let states = app.world().resource::<PieceDataStore>().states.clone();
+        let generation = app.world().resource::<PersistenceState>().generation;
+        let mut state = app.world_mut().resource_mut::<MultiplayerUi>();
+        internet(&mut state);
+        state.screen = MenuScreen::Host;
+        if app_state == AppState::GameComplete {
+            state.selected_save = Some((SaveId(123), "Completed save".into()));
+        }
+        state.submitted = true;
+        state.connecting = true;
+        state.owns_session = true;
+        app.world_mut().insert_resource(NetworkStatus {
+            role: Some(RuntimeRole::Host),
+            connection_method: Some(RuntimeConnectionMethod::Internet),
+            phase: RuntimePhase::Failed,
+            failure: Some(NetworkFailureKind::Connection),
+            error: Some("injected WSS failure".into()),
+            host_start_failed: true,
+            ..default()
+        });
+        render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        let output = render_schedule(&mut app, &ctx, vec![]);
+        let text = labels(&output).join(" ");
+        assert!(text.contains("Room Settings"), "{text}");
+        assert!(text.contains("Your puzzle is ready"), "{text}");
+        assert!(!text.contains("0.0.0.0:27015"));
+        output.drop_without_applying_deltas();
+        let state = app.world().resource::<MultiplayerUi>();
+        assert!(state.editing_host_retry && state.prepared_host);
+        assert_eq!(state.error, Some(UiError::ConnectionFailed));
+        assert!(state.host.password.is_empty());
+        assert!(app.world().resource::<LocalGameplayBlocked>().0);
+        click_label(&mut app, &ctx, "Open Room & Play");
+        assert!(app
+            .world()
+            .resource::<MultiplayerUi>()
+            .pending_host
+            .is_none());
+        *app.world_mut()
+            .resource_mut::<MultiplayerUi>()
+            .host
+            .password = "retry password".into();
+        click_label(&mut app, &ctx, "Open Room & Play");
+        let state = app.world().resource::<MultiplayerUi>();
+        assert!(state.pending_host.is_some() && state.submitted);
+        assert!(!state.editing_host_retry);
+        assert!(state.host.password.is_empty());
+        assert!(matches!(
+            app.world().resource::<NextState<AppState>>(),
+            NextState::Unchanged
+        ));
+        assert_eq!(*app.world().resource::<State<AppState>>().get(), app_state);
+        assert_eq!(app.world().resource::<PieceDataStore>().epoch, epoch);
+        assert_eq!(
+            app.world().resource::<PieceDataStore>().states.as_ptr(),
+            states.as_ptr()
+        );
+        assert_eq!(
+            app.world().resource::<PersistenceState>().generation,
+            generation
+        );
+        assert!(!app.world().resource::<PersistenceState>().busy);
+        // A second asynchronous failure must reopen the settings too.
+        app.world_mut().resource_mut::<MultiplayerUi>().pending_host = None;
+        render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        assert!(app.world().resource::<MultiplayerUi>().editing_host_retry);
+        click_label(&mut app, &ctx, "Cancel");
+        assert!(!app.world().resource::<MultiplayerUi>().prepared_host);
+        assert!(!app.world().resource::<NetworkStatus>().host_start_failed);
+        assert!(matches!(
+            app.world().resource::<NextState<AppState>>(),
+            NextState::Pending(AppState::Menu)
+        ));
+    }
+}
+#[test]
+fn internet_failure_status_does_not_replace_a_direct_listen_retry() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut().insert_resource(NetworkStatus {
+        role: Some(RuntimeRole::Host),
+        connection_method: Some(RuntimeConnectionMethod::Internet),
+        phase: RuntimePhase::Failed,
+        failure: Some(NetworkFailureKind::Timeout),
+        host_start_failed: true,
+        ..default()
+    });
+    let mut state = app.world_mut().resource_mut::<MultiplayerUi>();
+    state.prepared_host = true;
+    state.connecting = true;
+    state.owns_session = true;
+    state.submitted = true;
+    state.error = Some(UiError::ConnectionFailed);
+    state.retry_host = Some(HostStartRequest::new(HostOptions {
+        display_name: None,
+        address: "0.0.0.0:27015".parse().unwrap(),
+        session: puzzella_core::session::SessionDefinition {
+            id: puzzella_core::session::SessionId(42),
+            image_hash: puzzella_core::session::ImageHash([0; 32]),
+        },
+        host: puzzella_core::PlayerId(0),
+        password: SessionPassword::new("test password".into()).unwrap(),
+    }));
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let state = app.world().resource::<MultiplayerUi>();
+    assert_eq!(state.error, Some(UiError::ConnectionFailed));
+    assert!(!state.editing_host_retry);
+    click_label(&mut app, &ctx, "Back");
+    click_label(&mut app, &ctx, "Open Room & Play");
+    let state = app.world().resource::<MultiplayerUi>();
+    assert!(state.retrying && state.retry_host.is_some());
+    assert!(state.pending_host.is_none());
+}
+
 #[test]
 fn internet_scheduled_menu_switches_methods_and_falls_back_without_configuration() {
     let (mut app, ctx) = scheduled_screens();

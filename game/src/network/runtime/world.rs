@@ -337,6 +337,7 @@ fn teardown_session(world: &mut World) {
         status.local_player = None;
         status.host = None;
         status.peers.clear();
+        status.host_start_failed = false;
         if status.phase != RuntimePhase::Failed {
             status.phase = RuntimePhase::Disconnected;
         }
@@ -364,6 +365,7 @@ fn drive(world: &mut World, commands: bool) {
             driver.poll(world);
         }
         if !driver.active() {
+            let host_start_failed = world.resource::<NetworkStatus>().host_start_failed;
             driver.teardown(world);
             session.driver = None;
             *world.resource_mut::<PieceInteraction>() = default();
@@ -371,6 +373,14 @@ fn drive(world: &mut World, commands: bool) {
                 world.get_resource_mut::<crate::selection::PuzzleSelection>()
             {
                 selection.cancel();
+            }
+            if host_start_failed {
+                // The host never admitted gameplay. Drop the session so another
+                // start is possible, but keep the CPU store/image/render epoch.
+                if let Some(mut messages) = world.get_resource_mut::<Messages<ClientCommand>>() {
+                    messages.clear();
+                }
+                return;
             }
             if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
                 next.set(AppState::Menu);
