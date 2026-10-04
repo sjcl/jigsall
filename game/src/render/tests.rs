@@ -461,6 +461,90 @@ fn rendered_pixels(app: &mut App, target: Handle<Image>) -> Vec<u8> {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_delayed_puzzle_image_reaches_playing_with_current_piece_state() {
+    use crate::resources::{
+        AppState, GameData, GameSubState, GenerationPhase, PieceGenerationProgress,
+    };
+    use bevy::ecs::system::RunSystemOnce;
+
+    let (mut app, _, target) = gpu_app(128);
+    let image = app.world_mut().remove_resource::<PuzzleImage>().unwrap();
+    app.world_mut()
+        .insert_resource(definition(UVec2::ONE, 128, 42));
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .initialize(vec![Vec2::ZERO]);
+    let epoch = app.world().resource::<PieceDataStore>().epoch;
+
+    // Joining may install its baseline several frames before image decode ends.
+    for _ in 0..3 {
+        update_gpu(&mut app);
+    }
+    assert!(app.world().resource::<PieceUpload>().initial.is_none());
+    assert!(!app.world().resource::<RenderReady>().is_ready(epoch));
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+    assert!(gpu.buffers.as_ref().unwrap().sort.is_none());
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        let mut state = store.state(PieceId(0)).unwrap();
+        state.position = Vec2::new(20.0, 0.0);
+        store.set_state(PieceId(0), state, puzzella_core::LOCAL_PLAYER);
+    }
+    for _ in 0..3 {
+        update_gpu(&mut app);
+    }
+    app.world_mut().insert_resource(image);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !app.world().resource::<RenderReady>().is_ready(epoch) {
+        update_gpu(&mut app);
+        assert!(
+            Instant::now() < deadline,
+            "delayed puzzle image never became render-ready"
+        );
+    }
+
+    app.insert_resource(PieceGenerationProgress {
+        is_generating: true,
+        total_pieces: 1,
+        pieces_created: 1,
+        generation_phase: GenerationPhase::UploadingGpu,
+        ..default()
+    })
+    .init_resource::<GameData>()
+    .init_resource::<NextState<AppState>>()
+    .init_resource::<NextState<GameSubState>>();
+    app.world_mut()
+        .run_system_once(crate::systems::generate_puzzle_state)
+        .unwrap();
+    let progress = app.world().resource::<PieceGenerationProgress>();
+    assert_eq!(progress.generation_phase, GenerationPhase::Completed);
+    assert!(!progress.is_generating);
+    assert!(matches!(
+        app.world().resource::<NextState<GameSubState>>(),
+        NextState::Pending(GameSubState::Playing)
+    ));
+    // Both drawing and picking must use updates received while decode was pending.
+    let pixels = rendered_pixels(&mut app, target);
+    assert_eq!(&pixels[(64 * 128 + 2) * 4..][..3], &[0, 0, 0]);
+    assert_eq!(&pixels[(64 * 128 + 64) * 4..][..3], &[255, 255, 255]);
+    assert!(pick(
+        &mut app,
+        Rect::new(2.0, 64.0, 3.0, 65.0),
+        SelectionMode::Point
+    )
+    .is_empty());
+    assert_eq!(
+        pick(
+            &mut app,
+            Rect::new(64.0, 64.0, 65.0, 65.0),
+            SelectionMode::Point
+        ),
+        vec![PieceId(0)]
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_drag_transform_and_preview_without_readback() {
     use crate::resources::pieces::{DragTransform, HELD};
     let (mut app, _, target) = gpu_app(128);

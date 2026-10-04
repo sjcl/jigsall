@@ -226,6 +226,18 @@ joining connections receive bounded, rotating `HostSyncCoordinator::pump` work; 
 have no baseline/catch-up pumping.
 Bounded catch-up overflow schedules the existing restart/FIFO baseline path;
 it does not leave a RestartRequired join waiting until timeout.
+Image and baseline transfers receive up to four rotating pump passes per frame,
+within the shared 128 KiB/frame and 4 MiB/s generation budget. This avoids limiting
+large image delivery to a single 32 KiB chunk per rendered frame. Direct-IP GNS
+uses a matching native send rate after authentication instead of its 256 KiB/s
+default. Localhost coverage includes a separate client process and an image larger
+than the reliable queue, verifying transfer, decode and Ready installation.
+
+On 2026-10-04, the Windows release test
+`gns_localhost_runtime_separate_process_image_join` completed in 2.76 seconds with
+a 1600x1600 BMP (about 10 MB). Host and client run in separate headless processes
+and poll at 2 ms intervals; this covers image transfer/decode and Ready, without
+native-window rendering. It is one local test result, not a throughput guarantee.
 
 PostUpdate handles commands after existing egui, camera and piece input. With no
 `NetworkSession`, the established `apply_piece_commands` and legacy snap
@@ -379,6 +391,36 @@ and use the existing procedural renderer upload/RenderReady lifecycle. Protocol
 Ready and image/GPU readiness remain distinct. The client enters InGame only
 after Ready, baseline installation and decoded image availability. Initialization
 continues at UploadingGpu without regenerating or replacing the canonical store.
+Renderer extraction forwards piece and component-root uploads even before
+`PuzzleImage` exists. Baseline installation can precede image decode by several
+frames, while the initial upload snapshot exists for only one frame. Preparing
+GPU buffers independently of the image preserves that snapshot and subsequent
+catch-up updates; drawing and RenderReady still wait for the decoded texture and
+camera. The real-GPU delayed-image regression checks the transition to Playing,
+rendered pixels and picking after a piece update during this wait.
+`gns_localhost_runtime_separate_process_gpu_image_join_reaches_playing` adds
+the normal GamePlugin and an offscreen GPU target to the separate-process
+10 MB image join, and requires Playing, Completed generation and image Ready.
+Both GPU regressions are ignored in ordinary CI and run locally in release mode:
+
+```sh
+cargo test --release --locked -p puzzella-game --features gns gpu_delayed_puzzle_image -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p puzzella-game --features gns gns_localhost_runtime_separate_process_gpu_image_join -- --ignored --nocapture --test-threads=1
+```
+
+2026-10-04 Windows / RTX 5090 / Vulkan release validation reproduced the
+delayed-image RenderReady timeout before the extraction fix. After the fix, both
+new GPU regressions passed; the separate-process GamePlugin client reached
+Playing with the 10 MB image. All 269 ordinary network tests, GNS all-target
+Clippy with `-D warnings`, fmt and the GNS release app build passed.
+The broader ignored GPU suite passed 21 of 25 tests. Its four failures also
+reproduced with the cached release test executable generated at 20:10, before
+this change: two component-preview fixtures fail snapshot validation with
+`OutsidePlayArea`, and two connected-outline fixtures have an internal-edge
+pixel mismatch. These existing failures remain; this is not a claim that the
+entire GPU suite passed. GPU fixtures render offscreen rather than through
+interactive native windows.
+
 The image dimensions must match the negotiated definition. Old image-selection
 and persistence results are invalidated at join start. The previous puzzle's
 preview/grid and save destination are cleared; the new puzzle gets a fresh

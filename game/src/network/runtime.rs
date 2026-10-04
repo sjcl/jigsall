@@ -929,10 +929,23 @@ impl<T: DirectIpTransport> Runtime<T> {
                     joining.rotate_left(pivot);
                 }
                 host.next_pump = joining.get(1).copied().or_else(|| joining.first().copied());
-                for id in joining {
+                // Each pump generates at most one message. Give active transfers
+                // several rotating passes to use the existing host-wide byte/rate
+                // budget even at low frame rates, without pre-generating chunks.
+                for (pass, id) in
+                    (0..4).flat_map(|pass| joining.iter().copied().map(move |id| (pass, id)))
+                {
                     let Role::Host(host) = &mut self.role else {
                         unreachable!()
                     };
+                    if pass != 0
+                        && !matches!(
+                            host.sync.phase(id),
+                            Some(SyncPhase::ImageTransfer | SyncPhase::BaselineTransfer)
+                        )
+                    {
+                        continue;
+                    }
                     let result = {
                         let authority = SyncAuthority {
                             session: self.session.as_ref().unwrap(),
