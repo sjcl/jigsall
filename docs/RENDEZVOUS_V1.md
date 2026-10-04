@@ -63,6 +63,13 @@ only in Host and within a 64-route cap. It creates
 `RouteOrigin::from_authenticated_route(authority_id, room_id, member_id)` and
 calls authorize_peer before queuing AuthorizeAck. PeerJoined must match that
 pending member identity before it becomes active and is exposed to the caller.
+The server enqueues PeerJoined to the host before RoomJoined to the joiner,
+serializing the state commit and both enqueues against concurrent relays.
+Thus each socket receives its activation notification before any Signal,
+including an immediate response from either peer. If the host's activation
+notification cannot be queued, the server never releases the joiner. The adapter
+keeps pending-sender rejection as a check of this authenticated-server contract;
+an early Signal never implicitly activates a route.
 
 Joiner: Welcome → Idle → join_room → Joining → RoomJoined. It installs the host
 route from the server's authority/room/host MemberId, then emits HostReady.
@@ -109,7 +116,7 @@ cargo test --locked -p puzzella-game --features rendezvous gns_localhost -- --no
 ```
 
 Local WS fixtures cover Welcome/create/join, route-before-ACK, HostReady binding,
-opaque inbound/outbound, unknown sender, mismatched member and conflicting origin,
+opaque inbound/outbound, unknown/pending sender, mismatched member and conflicting origin,
 bounded command/event queues and ACK retry, worker shutdown, pending revocation,
 active route preservation and endpoint security. Both repositories parse the
 same canonical golden messages and reject unknown version/type/sender fields.

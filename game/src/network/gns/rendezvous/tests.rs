@@ -317,8 +317,13 @@ async fn join_host_ready_requires_route_binding_and_does_not_bootstrap() {
     task.await.unwrap();
 }
 #[tokio::test]
-async fn unknown_sender_and_mismatched_membership_fail_closed() {
+async fn unknown_pending_senders_and_mismatched_membership_fail_closed() {
     for bad in [
+        // Server-authenticated but still pending: violates v1 activation order.
+        ServerMessage::Signal {
+            from_peer_id: protocol::PeerId(id(5)),
+            payload_base64: "AP8H".into(),
+        },
         ServerMessage::Signal {
             from_peer_id: protocol::PeerId(id(8)),
             payload_base64: "AP8H".into(),

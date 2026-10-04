@@ -364,6 +364,9 @@ impl RendezvousAdapter {
                 payload_base64,
             } => {
                 let id = peer(from_peer_id);
+                // Protocol v1 guarantees PeerJoined (host) / RoomJoined (joiner)
+                // before any Signal on this same FIFO control socket. A pending
+                // route must never be promoted implicitly by an early signal.
                 if !self
                     .routes
                     .get(&id)
