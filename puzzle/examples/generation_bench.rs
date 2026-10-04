@@ -44,6 +44,7 @@ fn main() {
                 grid_size: UVec2::new(columns, rows),
                 image_size: UVec2::new(columns * 100, rows * 100),
                 snap_distance: 50.0,
+                rotation_enabled: false,
             };
             for run in 0..4 {
                 let start = Instant::now();
@@ -95,6 +96,7 @@ fn compare_tolerances() {
         grid_size: UVec2::new(40, 25),
         image_size: UVec2::new(4000, 2500),
         snap_distance: 50.0,
+        rotation_enabled: false,
     };
     let size = Vec2::splat(100.0);
     for (columns, rows) in [(10, 10), (40, 25), (100, 50)] {

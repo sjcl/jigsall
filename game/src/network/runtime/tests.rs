@@ -250,6 +250,7 @@ fn definition() -> PuzzleDefinition {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(128),
         snap_distance: 0.01,
+        rotation_enabled: true,
     }
 }
 fn encoded() -> Arc<[u8]> {

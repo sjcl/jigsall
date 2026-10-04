@@ -214,7 +214,7 @@ impl PieceDataStore {
         read: impl Fn(PieceId) -> GpuPieceState,
         eligible: impl Fn(PieceId, GpuPieceState) -> bool,
     ) -> Option<RotationPlan> {
-        if !self.contains(minimum) || !delta.is_finite() {
+        if !definition.rotation_enabled || !self.contains(minimum) || !delta.is_finite() {
             return None;
         }
         let geometry = definition.geometry();
@@ -337,6 +337,7 @@ impl PieceDataStore {
         members: Option<&PieceBitSet>,
     ) -> Option<Vec<RotationPlan>> {
         if roots.is_empty()
+            || !definition.rotation_enabled
             || definition.validate().is_err()
             || definition.piece_count() != self.len()
         {
@@ -436,7 +437,10 @@ impl PieceDataStore {
         quarter_turns: i8,
         definition: &PuzzleDefinition,
     ) -> bool {
-        if definition.validate().is_err() || definition.piece_count() != self.len() {
+        if !definition.rotation_enabled
+            || definition.validate().is_err()
+            || definition.piece_count() != self.len()
+        {
             return false;
         }
         let Ok(resolved) = target.resolve(&self.connectivity) else {

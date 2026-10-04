@@ -1,7 +1,28 @@
 use bevy_math::Vec2;
-use puzzella_core::PuzzleDefinition;
+use puzzella_core::{PieceId, PuzzleDefinition};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+
+/// Rotation has its own integer hash domain, independent of the position shuffle.
+/// Both halves of the seed and the row-major piece identity participate.
+pub fn initial_rotation(definition: &PuzzleDefinition, id: PieceId) -> u32 {
+    if !definition.rotation_enabled {
+        return 0;
+    }
+    let mix = crate::procedural::mix32;
+    mix(mix(definition.seed as u32 ^ 0x726f_7461) ^ mix((definition.seed >> 32) as u32) ^ mix(id.0))
+        & 3
+}
+
+/// Square slots leave room for either orientation of non-square pieces.
+pub fn placement_piece_size(definition: &PuzzleDefinition) -> Vec2 {
+    let size = definition.image_size.as_vec2() / definition.grid_size.as_vec2();
+    if definition.rotation_enabled {
+        Vec2::splat(size.max_element())
+    } else {
+        size
+    }
+}
 
 /// Deterministic workspace for component pivots, independent of the camera,
 /// texture allocation and window. Geometry may extend beyond this area.
@@ -15,7 +36,7 @@ impl LogicalPlayArea {
         let image = definition.image_size.as_vec2();
         let scatter = placement_half_extents(
             definition.piece_count(),
-            image / definition.grid_size.as_vec2(),
+            placement_piece_size(definition),
             image,
         );
         Ok(Self {
@@ -117,6 +138,30 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    fn initial_rotations_have_stable_vectors_for_both_seed_halves_and_disabled_mode() {
+        let mut definition = PuzzleDefinition {
+            generator_version: puzzella_core::GENERATOR_VERSION,
+            seed: 42,
+            grid_size: bevy_math::UVec2::new(4, 3),
+            image_size: bevy_math::UVec2::new(400, 90),
+            snap_distance: 5.0,
+            rotation_enabled: true,
+        };
+        let rotations = |d: &PuzzleDefinition| {
+            (0..12)
+                .map(|id| initial_rotation(d, PieceId(id)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rotations(&definition), [2, 2, 1, 0, 2, 1, 3, 3, 2, 0, 3, 2]);
+        definition.seed |= 1 << 63;
+        assert_eq!(rotations(&definition), [2, 2, 2, 0, 2, 2, 0, 3, 1, 2, 3, 3]);
+        definition.seed += 1;
+        assert_ne!(rotations(&definition), [2, 2, 2, 0, 2, 2, 0, 3, 1, 2, 3, 3]);
+        definition.rotation_enabled = false;
+        assert_eq!(rotations(&definition), [0; 12]);
+    }
+
+    #[test]
     fn logical_play_area_contains_all_scatter_centers_and_image_scaled_workspace() {
         for (grid, image) in [
             (bevy_math::UVec2::splat(1), bevy_math::UVec2::splat(2)),
@@ -139,6 +184,7 @@ mod tests {
                 grid_size: grid,
                 image_size: image,
                 snap_distance: 5.0,
+                rotation_enabled: false,
             };
             let area = LogicalPlayArea::from_definition(&definition).unwrap();
             let centers = placement_half_extents(

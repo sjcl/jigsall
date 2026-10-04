@@ -15,6 +15,7 @@ fn snapshot() -> GameSnapshot {
             grid_size: UVec2::new(5, 2),
             image_size: UVec2::new(500, 200),
             snap_distance: 5.0,
+            rotation_enabled: true,
         },
         next_z_order: 10,
         pieces: (0..10)
@@ -61,6 +62,29 @@ fn snapshot_roundtrips_json_and_postcard_with_unchanged_wire_order() {
         &snapshot.pieces,
     );
     assert_eq!(wire, postcard::to_allocvec(&original_fields).unwrap());
+}
+
+#[test]
+fn snapshot_rotation_mode_is_required_and_must_match_the_session() {
+    let mut snapshot = snapshot();
+    let mut json = serde_json::to_value(&snapshot).unwrap();
+    json["definition"]
+        .as_object_mut()
+        .unwrap()
+        .remove("rotation_enabled");
+    assert!(serde_json::from_value::<GameSnapshot>(json).is_err());
+    let enabled = snapshot.clone();
+    snapshot.definition.rotation_enabled = false;
+    assert_eq!(
+        snapshot.validate(expected(&enabled)),
+        Err(SnapshotError::WrongDefinition)
+    );
+    snapshot.validate(expected(&snapshot)).unwrap();
+    snapshot.pieces[0].flags = puzzella_core::with_rotation(0, 1);
+    assert_eq!(
+        snapshot.validate(expected(&snapshot)),
+        Err(SnapshotError::RotationDisabled(puzzella_core::PieceId(0)))
+    );
 }
 
 #[test]

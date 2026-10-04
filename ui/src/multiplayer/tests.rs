@@ -829,6 +829,7 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(32),
         snap_distance: 1.0,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(

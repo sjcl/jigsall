@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v9 and snapshot schema 4. `core` has no transport/native dependency.
+wire v10 and snapshot schema 5. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)

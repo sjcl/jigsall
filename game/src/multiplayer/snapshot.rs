@@ -12,7 +12,7 @@ use puzzella_core::{
     PieceConnectivity, PuzzleDefinition, MAX_PIECES,
 };
 use serde::{Deserialize, Serialize};
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 4;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 5;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameSnapshot {
     pub schema_version: u16,

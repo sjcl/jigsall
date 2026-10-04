@@ -14,6 +14,7 @@ fn fixture(
             puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
         ),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(
@@ -964,6 +965,7 @@ fn fractional_closure_accepts_rounding_in_both_axes_without_moving_targets() {
             grid_size: grid,
             image_size: image,
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let mut s = PieceDataStore::default();
         s.initialize(
@@ -1002,6 +1004,7 @@ fn fractional_closure_rejects_a_nearby_different_translation() {
         grid_size: UVec2::new(3, 1),
         image_size: UVec2::new(4096, 20),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut s = PieceDataStore::default();
     s.initialize(
@@ -1026,6 +1029,7 @@ fn closure_validates_every_target_member_against_the_fixed_offset() {
         grid_size: UVec2::splat(3),
         image_size: UVec2::splat(4096),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut s = PieceDataStore::default();
     s.initialize(
@@ -1088,6 +1092,7 @@ fn growing_fractional_cluster_keeps_one_logical_offset_and_scans_boundaries_once
         grid_size: UVec2::splat(100),
         image_size: UVec2::splat(4096),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut s = PieceDataStore::default();
     s.initialize(

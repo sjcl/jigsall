@@ -21,6 +21,7 @@ fn main() {
             grid_size: grid,
             image_size: UVec2::splat(4096),
             snap_distance: 5.0,
+            rotation_enabled: false,
         };
         for run in 0..5 {
             let mut app = App::new();

@@ -55,6 +55,7 @@ impl Host {
                 puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
             ),
             snap_distance: 5.,
+            rotation_enabled: true,
         };
         definition.validate().unwrap();
         let mut store = PieceDataStore::default();

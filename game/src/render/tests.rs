@@ -111,6 +111,7 @@ fn definition(grid: UVec2, size: u32, seed: u64) -> PuzzleDefinition {
         grid_size: grid,
         image_size: UVec2::splat(size),
         snap_distance: 5.0,
+        rotation_enabled: true,
     }
 }
 fn update_gpu(app: &mut App) {

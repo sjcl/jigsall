@@ -16,6 +16,7 @@ fn routers_replay_own_42_and_remote_zero_grab_and_release_on_sparse_and_dense_pa
                     grid_size: UVec2::new(96, 1),
                     image_size: UVec2::new(1920, 20),
                     snap_distance: 5.0,
+                    rotation_enabled: true,
                 };
                 let mut host_store = PieceDataStore::default();
                 host_store.initialize(

@@ -206,6 +206,7 @@ mod tests {
             grid_size: bevy::math::UVec2::new(65, 1),
             image_size: bevy::math::UVec2::new(1300, 20),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         for i in (0..64).rev() {
             let cmd = ProtocolCommandEnvelope {

@@ -132,6 +132,7 @@ fn nonzero_local_drag_rotation_rebases_and_remote_zero_cannot_use_local_adapter(
         grid_size: UVec2::new(2, 1),
         image_size: UVec2::new(40, 20),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     for player in [LOCAL, REMOTE] {
         let mut store = store(2);

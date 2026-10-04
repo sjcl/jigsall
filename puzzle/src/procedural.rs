@@ -424,6 +424,7 @@ mod tests {
             grid_size: UVec2::splat(3),
             image_size: UVec2::new(99, 63),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let size = def.image_size.as_vec2() / def.grid_size.as_vec2();
         for y in 0..63 {

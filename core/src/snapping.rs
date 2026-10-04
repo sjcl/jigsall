@@ -100,6 +100,7 @@ mod tests {
             grid_size: UVec2::new(3, 2),
             image_size: UVec2::splat(100),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         assert_eq!(
             d.neighbors(PieceId(2)),

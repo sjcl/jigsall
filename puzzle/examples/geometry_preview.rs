@@ -18,6 +18,7 @@ fn main() {
         grid_size: grid,
         image_size: UVec2::new(400, 300),
         snap_distance: 50.0,
+        rotation_enabled: false,
     };
     for tolerance in [0.1, 0.2, 0.25] {
         let mut worker = TessellationWorker::with_tolerance(tolerance);

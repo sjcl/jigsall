@@ -125,6 +125,7 @@ mod tests {
             grid_size: UVec2::ONE,
             image_size: UVec2::splat(128),
             snap_distance: 0.01,
+            rotation_enabled: true,
         };
         let mut store = PieceDataStore::default();
         store.initialize(vec![Vec2::splat(100.0)]);

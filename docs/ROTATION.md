@@ -1,5 +1,23 @@
 # 90°単位のcomponent回転
 
+新規ゲームの「ピースの回転を有効にする」トグルで選択します。既定はオフです。
+`PuzzleConfig.rotation_enabled`を開始時に`PuzzleDefinition.rotation_enabled`へ固定し、
+ロード・joinでは保存済み／ホストのdefinitionを使用します。オンではseedの上下32bitと
+row-major PieceIdを独立した整数hash domainへ入れ、初期rotationを0 / 1 / 2 / 3から
+決定します。同じdefinitionで初期位置と向きを再構成できます。形状generatorはv5のままです。
+位置shuffleの乱数列は回転生成に消費しません。長方形を90°回した場合にも初期quadが
+重ならないよう、オンでは長辺を一辺とするsquare slotを使います。カメラの初期表示範囲と
+LogicalPlayAreaにも同じslot寸法を使います。初期state生成は従来のworkerで行います。
+
+オフでは初期rotationは全て0です。回転キーの命令・hover pickを発行せず、HUDから
+回転操作の案内を省きます。authorityはUIと独立して`Rotate` / `RotateDrag`を拒否し、
+0回転／4回転の要求も許可しません。拒否時に位置・rotation・hold・drag delta / basisを
+変更しません。local predictionとreplicaの回転commitも同じゲームルールで拒否します。
+保存／snapshotのvalidationでは、オフのdefinitionに非ゼロrotationが含まれた場合を拒否します。
+
+save formatはv4、snapshot schemaは5、wireはv10です。古いsave v1–v3、snapshot
+schema 1–4、旧wireとの互換性はありません。各pieceのstateは16 bytesを維持します。
+
 Q / Eで選択中のcomponentを反時計回り / 時計回りに90°回転します。
 選択がない場合はカーソル下のピース、またはその結合済みcomponent全体を回転します。
 複数componentはそれぞれ自身の現在position AABB中心をpivotにします。
@@ -81,7 +99,7 @@ rendererはworld quadだけ回転し、SDF / UV / profile / outlineはcanonical 
 visibilityとpick visibilityは奇数rotationでAABB extentを交換します。
 far splatも長辺を回転し、pixel-center snapping、alpha、depth、pick ROIを維持します。
 
-snapshot schema 4は同じfield orderと16-byte recordでrotationを保存します。
+snapshot schema 5はdefinitionにrotation_enabledを追加し、16-byte recordでrotationを保存します。
 validationはrotation統一、剛体変換、placedのrotation 0と正解positionを検証し、
 install時のconnection cacheはDSUから再構築します。ローカルsave codecも同じ
 flagsを保存・検証します。
@@ -104,9 +122,20 @@ rebase後は成功したRotateDragのcontrol番号です。grab_sequenceはgestu
 誤適用せず拒否します。次の最新Transientまたはreliable操作のfinal_deltaで補えます。
 拒否されたRotateDragはcontrol番号だけを消費し、前のbasis / tick / deltaは保持します。
 fingerprintは対象state・rotation・hold・connectivityに加えcontextのGrab / basis / tick /
-zero deltaも検証します。transportは現行のwire version 9のみをdecodeし、互換decoderはありません。
+zero deltaも検証します。transportは現行のwire version 10のみをdecodeし、互換decoderはありません。
 
 ## Cost and verification
+
+2026-10-04、初期回転モードの追加後に`cargo test --workspace --locked`はdoctest込み797件、
+`cargo test --workspace --locked --all-features`はGNS localhost / doctest込み815件が通過しました。
+全target / 全featureのClippy（`-D warnings`）とfmtも通過しました。
+GNSのMSVC検索先は[Windowsビルド手順](WINDOWS_BUILD.md)に従い、そのコマンドの`LIB`に
+生成済み`out/lib`を補いました。共有Cargo cacheとvcpkg作業パスは変更していません。
+追加回帰はseed両半分の固定vector、長方形scatterの非重複とcamera範囲、開始時のrule固定、
+日英UIのトグル操作、無効時のキー／local command／wire request／replica commit拒否、
+拒否後のdrag継続、save／snapshotのmode保持と不正rotation・旧形式の拒否を検証します。
+Windowsのrelease実GPUテスト`gpu_quarter_turn_images_shapes_and_picking_agree`も通過し、
+四方向の画像・形状・point / rectangle pickingの一致を確認しました。
 
 通常frameに追加する処理はGPUのrotation bit decodeと必要なxy交換だけです。
 `DragTransform { members, delta }`、O(1) pointer更新、dirty range upload、

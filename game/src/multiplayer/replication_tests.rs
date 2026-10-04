@@ -72,6 +72,7 @@ impl Simulation {
                 grid_size: UVec2::new(offsets.len() as u32, 1),
                 image_size: UVec2::new(offsets.len() as u32 * 20 + 2048, 2048),
                 snap_distance: 5.0,
+                rotation_enabled: true,
             },
             offsets,
             links,
@@ -408,6 +409,7 @@ fn rounded_closure_and_multi_root_release_use_the_same_fixed_translation() {
                 UVec2::new(20, 4096)
             },
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let offset = if grid.x == 3 {
             Vec2::new(100.37, 0.0)
@@ -952,6 +954,7 @@ fn dense_million_piece_remote_context_retains_mask_and_scalar_presentation() {
         grid_size: UVec2::splat(1000),
         image_size: UVec2::splat(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut s = Simulation::with_definition(d, &vec![Vec2::splat(1000.0); count], &[]);
     let mut members = PieceBitSet::new(count);
@@ -1034,6 +1037,7 @@ fn dense_release_replay_and_stale_topology_preserve_target_specific_validation()
         grid_size: UVec2::splat(64),
         image_size: UVec2::splat(1280),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let offsets: Vec<_> = (0..count)
         .map(|id| Vec2::splat(1000.0 + id as f32 * 0.25))
@@ -1407,6 +1411,7 @@ fn restored_replica_with_different_dsu_root_replays_connected_snap_identically()
         grid_size: UVec2::new(3, 2),
         image_size: UVec2::new(60, 40),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let offsets = [100.0, 100.0, 104.0, 180.0, 100.0, 104.0].map(|x| Vec2::new(x, 100.0));
     let mut s = Simulation::with_definition(definition, &offsets, &[(1, 4), (1, 0)]);
@@ -1466,6 +1471,57 @@ fn empty_acceptance_is_reliable_but_rejected_commands_publish_nothing() {
     assert_eq!(s.session.cursor(), cursor);
     s.release(B, 1, 0, Vec2::ZERO, false);
     s.assert_equal();
+}
+
+#[test]
+fn disabled_rotation_rejects_replica_commits_before_piece_mutation() {
+    for dragging in [false, true] {
+        let mut s = Simulation::new(&[Vec2::splat(1000.); 2], &[]);
+        let command = if dragging {
+            s.grab(A, 0, &[0, 1]);
+            ProtocolPieceCommand::RotateDrag {
+                grab_sequence: 0,
+                through_tick: None,
+                final_delta: Vec2::new(10., 20.),
+                quarter_turns: 1,
+            }
+        } else {
+            let mut mask = PieceBitSet::new(2);
+            mask.fill();
+            ProtocolPieceCommand::Rotate {
+                target: PieceTarget::from_selection(&s.store.connectivity, &mask).unwrap(),
+                quarter_turns: 1,
+            }
+        };
+        let event = s
+            .command(
+                A,
+                ClientCommandSequence::Control(u64::from(dragging)),
+                command,
+                true,
+            )
+            .authority_event
+            .unwrap();
+        let mut definition = s.definition.clone();
+        definition.rotation_enabled = false;
+        for peer in &mut s.peers {
+            let before = peer.store.states.clone();
+            let cursor = peer.session.cursor();
+            assert_eq!(
+                peer.replica.apply_event(
+                    &mut peer.session,
+                    &mut peer.store,
+                    HOST,
+                    &event,
+                    Some(&definition),
+                    puzzella_core::LOCAL_PLAYER,
+                ),
+                Err(ReplicationError::Diverged)
+            );
+            assert_eq!(peer.store.states, before);
+            assert_eq!(peer.session.cursor(), cursor);
+        }
+    }
 }
 
 fn rotate_event(

@@ -139,6 +139,9 @@ impl CheckpointView<'_> {
             if state.flags & !SNAPSHOT_FLAGS != 0 {
                 return Err(CheckpointError::InvalidFlags(id));
             }
+            if !self.definition.rotation_enabled && decode_rotation(state.flags) != 0 {
+                return Err(CheckpointError::RotationDisabled(id));
+            }
             if state.flags & SNAPSHOT_PLACED != 0
                 && (decode_rotation(state.flags) != 0
                     || state.position != self.definition.correct_position(id))
@@ -261,6 +264,7 @@ pub enum CheckpointError {
     OutsidePlayArea(PieceId),
     InvalidZOrder(PieceId),
     InvalidFlags(PieceId),
+    RotationDisabled(PieceId),
     InvalidBorderConnection(PieceId),
     InconsistentComponent(PieceId),
     InvalidPlacedPosition(PieceId),

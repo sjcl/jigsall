@@ -48,6 +48,8 @@ pub struct PuzzleDefinition {
     pub grid_size: UVec2,
     pub image_size: UVec2,
     pub snap_distance: f32,
+    /// Frozen game rule: seeded initial quarter turns and rotation commands.
+    pub rotation_enabled: bool,
 }
 impl PuzzleDefinition {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -299,6 +301,7 @@ mod tests {
             grid_size: UVec2::ONE,
             image_size: UVec2::splat(MAX_PUZZLE_IMAGE_DIMENSION),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         assert!(definition.validate().is_ok());
         for image_size in [
@@ -328,6 +331,7 @@ mod tests {
                 grid_size,
                 image_size,
                 snap_distance: 5.0,
+                rotation_enabled: true,
             };
             let geometry = d.geometry();
             for id in 0..d.piece_count() as u32 {
@@ -351,6 +355,7 @@ mod tests {
             grid_size: UVec2::splat(2),
             image_size: UVec2::splat(100),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         assert!(definition.validate().is_ok());
         for old_version in [2, 3, 4] {

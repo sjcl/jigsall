@@ -94,6 +94,7 @@ fn sparse_and_dense_ordering_match_v1_for_duplicates_merges_and_float_bits() {
         grid_size: UVec2::splat(64),
         image_size: UVec2::new(2048, 4096),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let applied = AppliedCommand {
         released: 1000,

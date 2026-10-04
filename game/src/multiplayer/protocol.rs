@@ -27,6 +27,7 @@ pub enum ProtocolCommandError {
     NoActiveDrag,
     WrongDragContext,
     InvalidDefinition,
+    RotationDisabled,
     InvalidRebaseTick,
     InconsistentDragTarget,
 }
@@ -308,6 +309,13 @@ impl ProtocolDragContexts {
             .accept_command(envelope)
             .map_err(ProtocolCommandError::Sequence)?;
         let player = authenticated_player;
+        if matches!(
+            envelope.command,
+            ProtocolPieceCommand::Rotate { .. } | ProtocolPieceCommand::RotateDrag { .. }
+        ) && definition.is_some_and(|d| !d.rotation_enabled)
+        {
+            return Err(ProtocolCommandError::RotationDisabled);
+        }
         match &envelope.command {
             ProtocolPieceCommand::RotateDrag {
                 grab_sequence,

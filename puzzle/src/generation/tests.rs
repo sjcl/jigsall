@@ -9,6 +9,7 @@ fn definition(seed: u64) -> PuzzleDefinition {
         grid_size: UVec2::new(4, 3),
         image_size: UVec2::new(800, 600),
         snap_distance: 50.0,
+        rotation_enabled: true,
     }
 }
 

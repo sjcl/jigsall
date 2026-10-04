@@ -20,7 +20,7 @@ Settings の一般タブで有効・無効、間隔（1–60分）、ゲーム�
 PieceDataStore + PuzzleDefinition + ImageHash
                 ↓ 明示的 capture（committed canonical state のみ）
         PuzzleCheckpoint
-          ├── GameSnapshot（session / cursor、schema 4）
+          ├── GameSnapshot（session / cursor、schema 5）
           └── PuzzleSave（SaveMetadata）
                   ↓ SaveCodec / PuzImage
                  bytes
@@ -29,7 +29,7 @@ PieceDataStore + PuzzleDefinition + ImageHash
               FilesystemStorage
 ```
 
-`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、serialized fields・field order・16-byte piece layoutを維持し、schema versionは4です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
+`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、schema versionは5です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
 
 通常 Save と multiplayer snapshot は、active local / remote drag の有無に関係なく、その時点までに確定済みの canonical state を保存します。capture は `states.position` を読み、表示用の `drag.delta` を加算せず、現在の Drag を cancel / Release しません。restore では hold / holder identity / drag membership / transient delta を破棄します。`RotateDrag` で既に commit / rebase 済みの位置と回転、および Grab で更新済みの Z は保存し、rebase 後の未確定移動だけを破棄します。Grab 開始時の state に巻き戻す履歴は持ちません。migration / recovery も Drag の終了を待ちません。
 
@@ -39,7 +39,7 @@ PieceDataStore + PuzzleDefinition + ImageHash
 
 全整数・f32 bits は little endian。Rust の memory layout を書き出しません。未知 format version はそれぞれ拒否します。`GENERATOR_VERSION` は形状の互換性であり、save/container version や multiplayer schema と独立です。generator migration は未実装で、対応外 generator は専用エラーになります。将来の migration は codec での definition 読み取りと共通 validation の間に追加できます。
 
-### `.puzsave` version 3
+### `.puzsave` version 4
 
 | 順序 | フィールド | 幅 |
 | --- | --- | --- |
@@ -55,15 +55,16 @@ PieceDataStore + PuzzleDefinition + ImageHash
 | 10 | next_z_order / piece count / placed_count cache | 各 u32 |
 | 11 | is_autosave（0=手動、1=自動、他の値は拒否） | u8 |
 | 12 | GameId | u128 |
-| 13 | SHA-256 of all preceding header bytes | 32 bytes |
-| 14 | row-major piece states | 各 16 bytes |
-| 15 | SHA-256 of all preceding file bytes | 32 bytes |
+| 13 | rotation_enabled（0=回転なし、1=回転あり、他の値は拒否） | u8 |
+| 14 | SHA-256 of all preceding header bytes | 32 bytes |
+| 15 | row-major piece states | 各 16 bytes |
+| 16 | SHA-256 of all preceding file bytes | 32 bytes |
 
-piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は placed=1、connected right=2、connected down=4、bit 9–10はrotationです。他の bits は拒否します。header 長は `189 + title UTF-8 bytes`、ファイル長は `221 + title UTF-8 bytes + 16 × N` です。100万ピースで state は 16,000,000 bytes。header は最大509 bytesです。
+piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は placed=1、connected right=2、connected down=4、bit 9–10はrotationです。回転なしのゲームでは非ゼロrotationも拒否します。他の bits は拒否します。header 長は `190 + title UTF-8 bytes`、ファイル長は `222 + title UTF-8 bytes + 16 × N` です。100万ピースで state は 16,000,000 bytes。header は最大510 bytesです。
 
 `placed_count` は一覧用の非 authority cache です。encode 時に state から計算し、完全 decode 時に state から再計算して cache と一致を確認します。progress / completion / GameData は従来どおり install 時に state から再構築します。
 
-一覧と更新元 metadata の取得は `read_range(key, 0, 509)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大25,450 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
+一覧と更新元 metadata の取得は `read_range(key, 0, 510)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大25,500 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
 
 Load Game の各カードには元画像のサムネイルを表示します。一覧の header から ImageHash を取得し、画像枠がスクロールの表示領域に入ったときだけ専用 worker に読み込みを要求します。サムネイルは保存・一覧・ロードの request queue と worker を共有しません。通常の filesystem 経路では同じ保存先の独立した storage handle を使い、元画像の読み込み・SHA-256検証・フルサイズ decode・縮小をサムネイル worker 上で行います。縦横比を保って最大224×224 pixelsに縮小したRGBAだけをUIへ返します。初回とcache eviction後には元画像全体の処理が必要ですが、この処理の完了待ちをロードや保存のworkerに持ち込みません。
 
@@ -71,7 +72,7 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 
 完全 load はファイル全体の checksum、header、exact state length を検証してから state 領域を確保し、共通 checkpoint validation を行います。body のみの破損は一覧では検出せず、load の失敗をその entry に表示します。truncation・過大 length・trailing bytes・checksum 不一致・invalid state はエラーです。最大1000×1000 piecesです。
 
-ゲームIDの追加によりversion 3に変更しました。version 1・2と以前の試作layoutは拒否し、読み込み互換・migrationは提供しません。一覧にはすべての対応saveの進捗を表示します。
+回転モードの追加によりversion 4に変更しました。version 1・2・3と以前の試作layoutは拒否し、読み込み互換・migrationは提供しません。一覧にはすべての対応saveの進捗を表示します。
 
 ### `.puzimg` version 1
 

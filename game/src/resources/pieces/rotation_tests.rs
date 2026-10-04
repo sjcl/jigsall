@@ -16,6 +16,7 @@ fn fixture(grid: UVec2) -> (PuzzleDefinition, PieceDataStore) {
             puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
         ),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     definition.validate().unwrap();
     let mut store = PieceDataStore::default();
@@ -45,6 +46,23 @@ fn rotate(store: &mut PieceDataStore, d: &PuzzleDefinition, ids: &[u32], turns: 
             puzzella_core::LOCAL_PLAYER,
         )
         .rotated
+}
+
+#[test]
+fn disabled_rotation_rejects_local_commands_and_prediction() {
+    let (mut definition, mut store) = fixture(UVec2::new(2, 1));
+    definition.rotation_enabled = false;
+    let before = store.states.clone();
+    let target =
+        PieceTarget::Component(ComponentRef::from_member(&store.connectivity, PieceId(0)).unwrap());
+    for turns in [-1, 0, 1, 4] {
+        assert_eq!(rotate(&mut store, &definition, &[0], turns), 0);
+        assert_eq!(store.states, before);
+        assert!(!store.can_rotate_target(&target, turns, &definition));
+        let mut poses = HashMap::new();
+        store.predict_rotation(&target, turns, &definition, &mut poses);
+        assert!(poses.is_empty());
+    }
 }
 
 fn set_transform(
@@ -485,21 +503,25 @@ fn rotation_at_an_exact_fractional_play_area_edge_keeps_a_legal_pivot() {
     for id in 0..store.len() as u32 {
         set_transform(&mut store, &d, id, 0, Vec2::ZERO);
     }
-    for id in 0..4 {
-        set_transform(&mut store, &d, id, 0, Vec2::new(30_237.455, 0.0));
+    let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&d).unwrap();
+    let center =
+        crate::play_area::component_center((0..3).map(|id| d.correct_position(PieceId(id))))
+            .unwrap();
+    let translation = Vec2::new((area.half_extents.x - center.x) as f32, 0.0);
+    for id in 0..3 {
+        set_transform(&mut store, &d, id, 0, translation);
         if id != 0 {
             store.connectivity.union(PieceId(0), PieceId(id));
         }
     }
-    let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&d).unwrap();
     let pivot =
-        crate::play_area::component_center(store.states[..4].iter().map(|s| s.position)).unwrap();
+        crate::play_area::component_center(store.states[..3].iter().map(|s| s.position)).unwrap();
     assert_eq!(pivot.x, area.half_extents.x);
     PuzzleCheckpoint::capture(&store, &d, ImageHash([0; 32])).unwrap();
     for _ in 0..4 {
-        assert_eq!(rotate(&mut store, &d, &[0], 1), 4);
+        assert_eq!(rotate(&mut store, &d, &[0], 1), 3);
         let center =
-            crate::play_area::component_center(store.states[..4].iter().map(|s| s.position))
+            crate::play_area::component_center(store.states[..3].iter().map(|s| s.position))
                 .unwrap();
         assert!(area.contains(center));
         assert!((center - pivot).abs().max_element() < 0.01);

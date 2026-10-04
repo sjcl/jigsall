@@ -9,6 +9,7 @@ fn app() -> App {
         grid_size: UVec2::new(2, 1),
         image_size: UVec2::new(40, 30),
         snap_distance: 5.,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(

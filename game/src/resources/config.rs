@@ -12,6 +12,7 @@ pub enum PieceMode {
 pub struct PuzzleConfig {
     pub grid_size: (usize, usize),
     pub snap_distance: f32,
+    pub rotation_enabled: bool,
     pub image_path: String,
     pub target_piece_count: usize,
     pub seed: u64,
@@ -27,6 +28,7 @@ impl Default for PuzzleConfig {
             image_path: String::new(), // 空の文字列から開始
             target_piece_count: 100,
             seed: 42,
+            rotation_enabled: false,
             piece_mode: PieceMode::TargetCount,
             target_piece_size: 4.0, // 4x4グリッド相当（16ピース）
         }

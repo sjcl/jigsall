@@ -90,7 +90,7 @@ impl DensePieceStates {
         let display_size = definition.image_size.as_vec2();
         puzzella_puzzle::placement::fill_placement_grid(
             Arc::get_mut(&mut states).unwrap(),
-            display_size / definition.grid_size.as_vec2(),
+            puzzella_puzzle::placement::placement_piece_size(definition),
             display_size,
             definition.seed,
             |position| MaybeUninit::new(GpuPieceState::new(position, PieceId(0))),
@@ -100,6 +100,10 @@ impl DensePieceStates {
         let mut states = unsafe { states.assume_init() };
         for (id, state) in Arc::get_mut(&mut states).unwrap().iter_mut().enumerate() {
             state.z_order = id as u32;
+            state.flags = with_rotation(
+                state.flags,
+                puzzella_puzzle::placement::initial_rotation(definition, PieceId(id as u32)),
+            );
         }
         Self(states)
     }
@@ -1184,6 +1188,7 @@ mod tests {
             grid_size,
             image_size: UVec2::new(4096, 2048),
             snap_distance: 5.0,
+            rotation_enabled: false,
         }
     }
 
@@ -1213,6 +1218,50 @@ mod tests {
                     assert_eq!(*state, GpuPieceState::new(position, PieceId(id as u32)));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn worker_random_rotation_is_reproducible_and_rectangular_slots_remain_disjoint() {
+        use puzzella_puzzle::placement::{initial_rotation, LogicalPlayArea};
+        for grid in [UVec2::new(40, 25), UVec2::new(1000, 1), UVec2::new(1, 1000)] {
+            let mut def = definition(grid, 42);
+            def.rotation_enabled = true;
+            let states = DensePieceStates::generate(&def);
+            assert_eq!(states, DensePieceStates::generate(&def));
+            let size = def.image_size.as_vec2() / grid.as_vec2();
+            let area = LogicalPlayArea::from_definition(&def).unwrap();
+            let mut seen = [false; 4];
+            for (index, state) in states.iter().enumerate() {
+                let rotation = decode_rotation(state.flags);
+                assert_eq!(rotation, initial_rotation(&def, PieceId(index as u32)));
+                assert_eq!(state.z_order, index as u32);
+                assert_eq!(state.flags & !puzzella_core::ROTATION_MASK, ENABLED);
+                assert!(area.contains(state.position.as_dvec2()));
+                seen[rotation as usize] = true;
+                // The procedural quad includes every tab. Swapping axes at 90°
+                // must keep it outside the board and disjoint from other quads.
+                let half = if rotation & 1 == 0 {
+                    size
+                } else {
+                    Vec2::new(size.y, size.x)
+                } * 0.72;
+                assert!((state.position.abs() - half)
+                    .cmpgt(def.image_size.as_vec2() * 0.5)
+                    .any());
+                for other in &states[..index] {
+                    let other_half = if decode_rotation(other.flags) & 1 == 0 {
+                        size
+                    } else {
+                        Vec2::new(size.y, size.x)
+                    } * 0.72;
+                    assert!((state.position - other.position)
+                        .abs()
+                        .cmpgt(half + other_half)
+                        .any());
+                }
+            }
+            assert!(seen.into_iter().all(|v| v));
         }
     }
 

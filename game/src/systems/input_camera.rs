@@ -85,8 +85,16 @@ fn camera_zoom_settings(
     {
         let display_size = definition.image_size.as_vec2();
         let piece_size = display_size / definition.grid_size.as_vec2();
-        let centers = placement_half_extents(definition.piece_count(), piece_size, display_size);
-        let piece_half = piece_size * 0.5 + Vec2::splat(piece_size.min_element() * MAX_TAB_DEPTH);
+        let centers = placement_half_extents(
+            definition.piece_count(),
+            puzzella_puzzle::placement::placement_piece_size(definition),
+            display_size,
+        );
+        let mut piece_half =
+            piece_size * 0.5 + Vec2::splat(piece_size.min_element() * MAX_TAB_DEPTH);
+        if definition.rotation_enabled {
+            piece_half = Vec2::splat(piece_half.max_element());
+        }
         framing_size = framing_size.max((centers + piece_half) * 2.0);
     }
     let aspect_margin =
@@ -397,6 +405,7 @@ mod tests {
             grid_size,
             image_size,
             snap_distance: 5.0,
+            rotation_enabled: true,
         })
         .init_resource::<GameData>();
         app.world_mut()
@@ -449,18 +458,15 @@ mod tests {
             let piece_size = image_size.as_vec2() / grid_size.as_vec2();
             let piece_half =
                 piece_size * 0.5 + Vec2::splat(piece_size.min_element() * MAX_TAB_DEPTH);
-            let positions = puzzella_puzzle::placement::generate_placement_grid(
-                grid_size.x as usize,
-                grid_size.y as usize,
-                piece_size.x,
-                piece_size.y,
-                image_size.x as f32,
-                image_size.y as f32,
-                42,
-            );
-            assert!(positions
-                .iter()
-                .all(|position| (position.abs() + piece_half).cmple(visible_half).all()));
+            let states = DensePieceStates::generate(app.world().resource::<PuzzleDefinition>());
+            for state in states.iter() {
+                let half = if puzzella_core::decode_rotation(state.flags) & 1 == 0 {
+                    piece_half
+                } else {
+                    Vec2::new(piece_half.y, piece_half.x)
+                };
+                assert!((state.position.abs() + half).cmple(visible_half).all());
+            }
         }
     }
 

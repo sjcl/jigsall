@@ -32,6 +32,7 @@ fn definition() -> PuzzleDefinition {
         grid_size: UVec2::new(2, 2),
         image_size: UVec2::splat(200),
         snap_distance: 5.0,
+        rotation_enabled: true,
     }
 }
 fn fixture() -> PieceDataStore {
@@ -445,7 +446,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         invalid.cursor = wrong_cursor;
         cases.push((invalid, SnapshotError::WrongCursor));
     }
-    for schema in [1, 2, SNAPSHOT_SCHEMA_VERSION + 1] {
+    for schema in [1, 2, 3, 4, SNAPSHOT_SCHEMA_VERSION + 1] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = schema;
         cases.push((invalid, SnapshotError::UnsupportedSchema(schema)));

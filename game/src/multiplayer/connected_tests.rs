@@ -21,6 +21,7 @@ fn fixture(placed: bool) -> (PuzzleDefinition, PieceDataStore) {
         grid_size: UVec2::new(4, 2),
         image_size: UVec2::new(80, 40),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(
@@ -116,6 +117,7 @@ fn snapshot_render_edges_are_derived_from_authority_including_sparse_cycles() {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(40),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut source = PieceDataStore::default();
     source.initialize(
@@ -185,7 +187,7 @@ fn invalid_edges_offsets_partial_placement_and_old_schema_are_atomic() {
     let mut invalid = GameSnapshot::capture(&placed, &d, SESSION, expected(&d).cursor).unwrap();
     invalid.pieces[1].flags &= !SNAPSHOT_PLACED;
     cases.push((invalid, SnapshotError::InconsistentComponent(PieceId(1))));
-    for version in [1, 2, 3, 5] {
+    for version in [1, 2, 3, 4, 6] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = version;
         cases.push((invalid, SnapshotError::UnsupportedSchema(version)));
@@ -293,6 +295,7 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
         grid_size: UVec2::splat(1000),
         image_size: UVec2::splat(4096),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut source = PieceDataStore::default();
     source.initialize(
@@ -368,6 +371,7 @@ fn assert_snapshot_root_independence(image_size: UVec2, fractional: Vec2) {
         grid_size: UVec2::new(2, 4),
         image_size,
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut source = PieceDataStore::default();
     source.initialize(
@@ -439,6 +443,7 @@ fn fixed_offset_snap_closure_and_board_priority_survive_snapshot_restore() {
             grid_size: UVec2::new(4, 1),
             image_size: UVec2::new(80, 20),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let mut source = PieceDataStore::default();
         source.initialize(
@@ -487,6 +492,7 @@ fn fractional_closure_is_identical_after_restore_and_preserves_target_positions(
         grid_size: UVec2::new(3, 1),
         image_size: UVec2::new(4096, 20),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut source = PieceDataStore::default();
     source.initialize(

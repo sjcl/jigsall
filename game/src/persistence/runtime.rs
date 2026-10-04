@@ -615,6 +615,7 @@ mod tests {
             grid_size: UVec2::new(2, 1),
             image_size: UVec2::new(MAX_PUZZLE_IMAGE_DIMENSION, 16),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let mut store = PieceDataStore::default();
         store.initialize(
@@ -753,6 +754,7 @@ mod tests {
             grid_size: UVec2::splat(2),
             image_size: UVec2::splat(2),
             snap_distance: 1.0,
+            rotation_enabled: true,
         };
         let mut store = PieceDataStore::default();
         store.initialize(
@@ -1354,6 +1356,7 @@ mod tests {
             grid_size: UVec2::ONE,
             image_size: UVec2::new(16384, 10923),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let mut store = PieceDataStore::default();
         store.initialize(vec![Vec2::ZERO]);

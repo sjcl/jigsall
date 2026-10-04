@@ -164,6 +164,7 @@ fn million_selection_cpu_benchmark() {
                 },
                 image_size: UVec2::splat(4096),
                 snap_distance: 5.0,
+                rotation_enabled: true,
             };
             let start = Instant::now();
             let result = store.apply_command(
@@ -207,6 +208,7 @@ fn connected_definition(count: usize) -> PuzzleDefinition {
         },
         image_size: UVec2::splat(4096),
         snap_distance: 5.0,
+        rotation_enabled: true,
     }
 }
 

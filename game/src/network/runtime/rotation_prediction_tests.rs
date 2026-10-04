@@ -22,6 +22,7 @@ fn local_rotation_million_store_small_and_dense_boundaries_and_idle_zero_uploads
         grid_size: UVec2::splat(1000),
         image_size: UVec2::splat(1000),
         snap_distance: 0.01,
+        rotation_enabled: true,
     };
     let mut app = App::new();
     app.init_resource::<PieceDataStore>()
@@ -137,6 +138,7 @@ fn local_rotation_scope_epoch_inactive_and_rejection_restore_overrides() {
             grid_size: UVec2::ONE,
             image_size: UVec2::splat(128),
             snap_distance: 0.01,
+            rotation_enabled: true,
         };
         let mut session = session();
         let mut interaction = PieceInteraction::default();
@@ -219,6 +221,7 @@ fn local_rotation_old_gesture_ack_and_cancel_do_not_rebase_new_prediction() {
         grid_size: UVec2::new(2, 1),
         image_size: UVec2::splat(128),
         snap_distance: 0.01,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(vec![Vec2::splat(100.0), Vec2::new(200.0, 100.0)]);

@@ -51,7 +51,12 @@ pub fn handle_piece_input(
             command,
         });
     }
-    if input.window_focused && !over_ui && !keyboard_captured && !released {
+    if definition.as_ref().is_some_and(|d| d.rotation_enabled)
+        && input.window_focused
+        && !over_ui
+        && !keyboard_captured
+        && !released
+    {
         let turns =
             i8::from(bindings.just_pressed(KeyAction::RotateLeft, &keys, presses.as_deref()))
                 - i8::from(bindings.just_pressed(
@@ -332,6 +337,7 @@ mod tests {
             grid_size: UVec2::new(2, 1),
             image_size: UVec2::new(200, 100),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let area =
             puzzella_puzzle::placement::LogicalPlayArea::from_definition(&definition).unwrap();
@@ -376,6 +382,7 @@ mod tests {
             grid_size: UVec2::new(2, 1),
             image_size: UVec2::new(200, 100),
             snap_distance: 10.0,
+            rotation_enabled: true,
         });
         // Grab off-center, then move and release in one frame.
         pointer_frame(&mut app, Vec2::new(107.0, 103.0), true, false);
@@ -731,6 +738,57 @@ mod rotation_input_tests {
     use super::*;
 
     #[test]
+    fn disabled_rotation_keys_emit_no_commands_or_hover_pick_for_selection_or_drag() {
+        for mode in 0..3 {
+            let mut app = super::tests::input_app();
+            app.insert_resource(PuzzleDefinition {
+                generator_version: GENERATOR_VERSION,
+                seed: 42,
+                grid_size: UVec2::new(2, 1),
+                image_size: UVec2::new(120, 40),
+                snap_distance: 5.0,
+                rotation_enabled: false,
+            });
+            if mode != 0 {
+                app.world_mut()
+                    .resource_mut::<PieceDataStore>()
+                    .selected_pieces
+                    .fill();
+            }
+            if mode == 2 {
+                super::tests::pointer_frame(&mut app, Vec2::new(100., 100.), true, false);
+            }
+            let mut input = app.world_mut().resource_mut::<InputState>();
+            input.window_focused = true;
+            input.cursor_screen_position = Some(Vec2::new(100., 100.));
+            let before = app.world().resource::<PieceDataStore>().states.clone();
+            let mut reader = bevy::ecs::message::MessageCursor::<ClientCommand>::default();
+            reader.clear(app.world().resource::<Messages<ClientCommand>>());
+            for key in [KeyCode::KeyQ, KeyCode::KeyE] {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(key);
+                app.update();
+                assert_eq!(
+                    reader
+                        .read(app.world().resource::<Messages<ClientCommand>>())
+                        .count(),
+                    0
+                );
+                assert_eq!(app.world().resource::<PieceDataStore>().states, before);
+                assert!(app
+                    .world()
+                    .resource::<crate::selection::PuzzleSelection>()
+                    .latest
+                    .is_none());
+                let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+                keys.release(key);
+                keys.clear();
+            }
+        }
+    }
+
+    #[test]
     fn q_e_rotate_selection_and_focus_ui_and_gestures_gate_commands() {
         let mut app = super::tests::input_app();
         app.world_mut().insert_resource(PuzzleDefinition {
@@ -739,6 +797,7 @@ mod rotation_input_tests {
             grid_size: UVec2::new(2, 1),
             image_size: UVec2::new(120, 40),
             snap_distance: 5.0,
+            rotation_enabled: true,
         });
         app.world_mut()
             .resource_mut::<PieceDataStore>()
@@ -834,6 +893,7 @@ mod local_identity_tests {
             grid_size: UVec2::new(2, 1),
             image_size: UVec2::new(80, 40),
             snap_distance: 5.0,
+            rotation_enabled: true,
         });
         pointer_frame(&mut app, Vec2::new(100.0, 100.0), true, false);
         assert_eq!(

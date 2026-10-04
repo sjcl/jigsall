@@ -31,6 +31,7 @@ fn checkpoint(bytes: &[u8]) -> PuzzleCheckpoint {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(2),
         snap_distance: 12.5,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(
@@ -177,7 +178,7 @@ fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
     let encoded = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         encoded.len(),
-        221 + save.metadata.title.as_str().len() + 16 * 4
+        222 + save.metadata.title.as_str().len() + 16 * 4
     );
     let restored = SaveCodec::decode(&encoded).unwrap();
     assert_eq!(save, restored);
@@ -217,7 +218,7 @@ fn autosave_flag_round_trips_in_full_save_and_list_header_and_rejects_invalid_va
             is_autosave
         );
         let header_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
-        bytes[header_len - 49] = 2;
+        bytes[header_len - 50] = 2;
         resign_header(&mut bytes);
         resign(&mut bytes);
         assert_eq!(
@@ -256,7 +257,7 @@ fn million_piece_save_keeps_sixteen_byte_records_and_restores_directly() {
     let bytes = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         bytes.len(),
-        16_000_000 + 221 + save.metadata.title.as_str().len()
+        16_000_000 + 222 + save.metadata.title.as_str().len()
     );
     let decoded = SaveCodec::decode(&bytes).unwrap();
     assert_eq!(save, decoded);
@@ -1025,7 +1026,7 @@ fn snapshot_serialized_field_order_preserves_dense_records() {
     assert!(!json.contains("checkpoint"));
     assert_eq!(serde_json::from_str::<GameSnapshot>(&json).unwrap(), wire);
     assert_eq!(wire.clone().into_checkpoint(), c);
-    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 4);
+    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 5);
 }
 
 #[test]
@@ -1179,7 +1180,7 @@ fn fifty_million_piece_previews_read_only_bounded_headers() {
     }
     let mut header = SaveCodec::encode(&save()).unwrap();
     let t = save().metadata.title.as_str().len();
-    let header_len = 189 + t;
+    let header_len = 190 + t;
     let length = header_len as u64 + 16_000_000 + 32;
     header.truncate(header_len);
     header[14..22].copy_from_slice(&length.to_le_bytes());
@@ -1422,12 +1423,12 @@ fn exhausted_revision_does_not_publish_or_wrap() {
     assert_eq!(storage.blobs.lock().unwrap()[&key], encoded);
 }
 #[test]
-fn save_format_three_is_the_only_supported_layout() {
+fn save_format_four_is_the_only_supported_layout() {
     let original = SaveCodec::encode(&save()).unwrap();
-    assert_eq!(SAVE_FORMAT_VERSION, 3);
-    assert_eq!(&original[8..10], &3u16.to_le_bytes());
+    assert_eq!(SAVE_FORMAT_VERSION, 4);
+    assert_eq!(&original[8..10], &4u16.to_le_bytes());
     assert_eq!(SaveCodec::decode(&original).unwrap(), save());
-    for version in [0u16, 1, 2, 9] {
+    for version in [0u16, 1, 2, 3, 9] {
         let mut bytes = original.clone();
         bytes[8..10].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
@@ -1545,4 +1546,66 @@ fn rotated_save_codec_keeps_sixteen_byte_records_and_restores_components() {
     loaded.checkpoint.install(&mut restored).unwrap();
     assert_eq!(&*restored.states, &*store.states);
     assert!(restored.connectivity.same_component(PieceId(1), PieceId(3)));
+}
+
+#[test]
+fn rotation_mode_roundtrips_and_disabled_rotated_checkpoints_are_rejected() {
+    use crate::checkpoint::CheckpointError;
+    for enabled in [false, true] {
+        let mut save = save();
+        save.checkpoint.definition.rotation_enabled = enabled;
+        let mut source = PieceDataStore::default();
+        source.initialize_dense(crate::resources::DensePieceStates::generate(
+            &save.checkpoint.definition,
+        ));
+        save.checkpoint = PuzzleCheckpoint::capture(
+            &source,
+            &save.checkpoint.definition,
+            save.checkpoint.image_hash,
+        )
+        .unwrap();
+        let bytes = SaveCodec::encode(&save).unwrap();
+        let loaded = SaveCodec::decode(&bytes).unwrap();
+        assert_eq!(loaded, save);
+        assert_eq!(
+            SaveCodec::decode_header(&bytes, bytes.len() as u64)
+                .unwrap()
+                .definition
+                .rotation_enabled,
+            enabled
+        );
+        let mut restored = PieceDataStore::default();
+        loaded.checkpoint.install(&mut restored).unwrap();
+        assert_eq!(restored.states, source.states);
+
+        let header_len = u32::from_le_bytes(bytes[10..14].try_into().unwrap()) as usize;
+        let mut invalid = bytes.clone();
+        invalid[header_len - 33] = 2;
+        resign_header(&mut invalid);
+        resign(&mut invalid);
+        assert!(matches!(
+            SaveCodec::decode(&invalid),
+            Err(SaveError::CorruptSave("Invalid rotation flag"))
+        ));
+
+        save.checkpoint.definition.rotation_enabled = false;
+        save.checkpoint.pieces[0].flags =
+            puzzella_core::with_rotation(save.checkpoint.pieces[0].flags, 1);
+        let before = restored.states.clone();
+        assert_eq!(
+            save.checkpoint.install(&mut restored),
+            Err(CheckpointError::RotationDisabled(PieceId(0)))
+        );
+        assert_eq!(restored.states, before);
+        assert!(SaveCodec::encode(&save).is_err());
+
+        let mut invalid = bytes;
+        invalid[header_len - 33] = 0;
+        let flag_offset = header_len + 12;
+        invalid[flag_offset..flag_offset + 4]
+            .copy_from_slice(&puzzella_core::with_rotation(0, 1).to_le_bytes());
+        resign_header(&mut invalid);
+        resign(&mut invalid);
+        assert!(SaveCodec::decode(&invalid).is_err());
+    }
 }

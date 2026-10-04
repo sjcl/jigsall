@@ -326,6 +326,7 @@ fn definition() -> PuzzleDefinition {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(100),
         snap_distance: 5.0,
+        rotation_enabled: true,
     }
 }
 #[test]

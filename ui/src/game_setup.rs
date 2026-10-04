@@ -382,6 +382,9 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
         }
     }
     ui.add_space(12.0);
+    ui.checkbox(&mut config.rotation_enabled, i18n.text("setup-rotation"))
+        .on_hover_text(i18n.text("setup-rotation-hint"));
+    ui.add_space(4.0);
     egui::CollapsingHeader::new(i18n.text("setup-tuning"))
         .id_salt("puzzle_tuning")
         .show(ui, |ui| {

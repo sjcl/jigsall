@@ -8,6 +8,7 @@ fn fixture() -> (PuzzleDefinition, PieceDataStore, PieceBitSet) {
         grid_size: UVec2::new(4, 1),
         image_size: UVec2::new(80, 30),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     let mut store = PieceDataStore::default();
     store.initialize(
@@ -49,6 +50,22 @@ fn rotate_drag(
         Some(d),
         puzzella_core::LOCAL_PLAYER,
     )
+}
+
+#[test]
+fn disabled_rotation_rejects_drag_without_committing_delta_or_rebasing() {
+    let (mut definition, mut store, members) = fixture();
+    definition.rotation_enabled = false;
+    let states = store.states.clone();
+    let delta = store.drag.delta;
+    for turns in [-1, 0, 1, 4] {
+        let result = rotate_drag(&mut store, &definition, &members, turns);
+        assert_eq!(result, AppliedCommand::default());
+        assert_eq!(store.states, states);
+        assert_eq!(store.drag.delta, delta);
+        assert_eq!(store.drag.members, *members.words());
+        assert!(store.dirty_pieces.is_empty());
+    }
 }
 
 #[test]

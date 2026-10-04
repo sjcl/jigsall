@@ -285,6 +285,7 @@ fn pending_release_reliable_cancellation_and_late_transient_keep_canonical_posit
         grid_size: UVec2::new(2, 1),
         image_size: UVec2::new(128, 64),
         snap_distance: 0.01,
+        rotation_enabled: true,
     };
     let mut authority = session();
     let mut peer = session();

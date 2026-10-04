@@ -236,6 +236,7 @@ fn initialize_game(
         grid_size: UVec2::new(config.grid_size.0 as u32, config.grid_size.1 as u32),
         image_size: image.logical_size,
         snap_distance: config.snap_distance,
+        rotation_enabled: config.rotation_enabled,
     };
     if let Err(error) = definition.validate() {
         progress.error = Some(GenerationError::InvalidDefinition(error.into()));
@@ -356,6 +357,7 @@ mod tests {
             grid_size: UVec2::splat(2),
             image_size: UVec2::splat(128),
             snap_distance: 0.01,
+            rotation_enabled: true,
         };
         world.insert_resource(definition.clone());
         world.insert_resource(State::new(AppState::InGame));
@@ -509,6 +511,38 @@ mod tests {
     }
 
     #[test]
+    fn new_game_freezes_the_configured_rotation_rule() {
+        use bevy::ecs::system::RunSystemOnce;
+        for enabled in [false, true] {
+            let mut app = App::new();
+            app.init_resource::<LocalPlayerId>()
+                .insert_resource(PuzzleConfig {
+                    rotation_enabled: enabled,
+                    ..default()
+                })
+                .insert_resource(PuzzleImage {
+                    handle: default(),
+                    logical_size: UVec2::new(100, 60),
+                    texture_size: UVec2::new(100, 60),
+                    opaque: true,
+                })
+                .init_resource::<GameData>()
+                .init_resource::<PlayerRoster>()
+                .init_resource::<PieceGenerationProgress>()
+                .init_resource::<PieceDataStore>()
+                .init_resource::<PersistenceState>();
+            app.world_mut().run_system_once(initialize_game).unwrap();
+            app.world_mut()
+                .resource_mut::<PuzzleConfig>()
+                .rotation_enabled = !enabled;
+            assert_eq!(
+                app.world().resource::<PuzzleDefinition>().rotation_enabled,
+                enabled
+            );
+        }
+    }
+
+    #[test]
     fn returning_to_menu_clears_image_load_failure_and_external_paths() {
         let (service, _requests) = PersistenceService::with_storage_requests();
         let mut app = App::new();
@@ -650,6 +684,7 @@ mod tests {
                 grid_size: UVec2::splat(2),
                 image_size: UVec2::splat(2),
                 snap_distance: 0.5,
+                rotation_enabled: true,
             };
             let pieces = (0..4)
                 .map(|index| SnapshotPieceState {
@@ -1141,6 +1176,7 @@ mod local_identity_tests {
                 grid_size: UVec2::new(2, 1),
                 image_size: UVec2::new(40, 20),
                 snap_distance: 5.0,
+                rotation_enabled: true,
             };
             let mut source = PieceDataStore::default();
             source.initialize(vec![Vec2::splat(100.0); 2]);

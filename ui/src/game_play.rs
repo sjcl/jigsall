@@ -11,6 +11,7 @@ pub fn draw_game_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     game_state: Res<GameData>,
+    definition: Option<Res<puzzella_core::PuzzleDefinition>>,
     roster: Res<PlayerRoster>,
     bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
@@ -64,7 +65,12 @@ pub fn draw_game_ui(
 
             ui.separator();
             ui.menu_button(i18n.text("game-controls"), |ui| {
-                paint_controls(ui, &bindings, &i18n);
+                paint_controls(
+                    ui,
+                    &bindings,
+                    &i18n,
+                    definition.as_ref().is_some_and(|d| d.rotation_enabled),
+                );
             });
             if ui
                 .add_enabled(
@@ -82,7 +88,12 @@ pub fn draw_game_ui(
         .is_some_and(|point| panel.response.rect.contains(point));
 }
 
-fn paint_controls(ui: &mut egui::Ui, bindings: &KeyBindingsState, i18n: &Localization) {
+fn paint_controls(
+    ui: &mut egui::Ui,
+    bindings: &KeyBindingsState,
+    i18n: &Localization,
+    rotation_enabled: bool,
+) {
     ui.set_max_width(360.0_f32.min(ui.ctx().content_rect().width() - 32.0));
     let binding_label = |action| {
         let label = bindings.current.binding(action).label();
@@ -92,16 +103,20 @@ fn paint_controls(ui: &mut egui::Ui, bindings: &KeyBindingsState, i18n: &Localiz
             label
         }
     };
-    ui.label(i18n.format(
-        "game-drag-hint",
-        &[
-            ("left", binding_label(KeyAction::RotateLeft).as_str().into()),
-            (
-                "right",
-                binding_label(KeyAction::RotateRight).as_str().into(),
-            ),
-        ],
-    ));
+    if rotation_enabled {
+        ui.label(i18n.format(
+            "game-drag-hint",
+            &[
+                ("left", binding_label(KeyAction::RotateLeft).as_str().into()),
+                (
+                    "right",
+                    binding_label(KeyAction::RotateRight).as_str().into(),
+                ),
+            ],
+        ));
+    } else {
+        ui.label(i18n.text("game-drag-only-hint"));
+    }
     ui.label(i18n.text("completion-navigation"));
     ui.label(i18n.format(
         "game-select-hint",

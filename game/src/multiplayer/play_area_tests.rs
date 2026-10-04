@@ -30,6 +30,7 @@ impl Fixture {
             grid_size,
             image_size: UVec2::splat(16_384),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let mut store = PieceDataStore::default();
         store.initialize(
@@ -204,6 +205,7 @@ fn area_edge_is_accepted_and_next_float_outside_is_rejected() {
 #[test]
 fn displayed_f32_rounding_cannot_publish_a_pivot_outside_a_fractional_edge() {
     let mut f = Fixture::new(165);
+    f.definition.rotation_enabled = false;
     f.definition.grid_size = UVec2::new(11, 15);
     f.definition.image_size = UVec2::new(6276, 10697);
     let positions = puzzella_puzzle::placement::generate_placement_grid(

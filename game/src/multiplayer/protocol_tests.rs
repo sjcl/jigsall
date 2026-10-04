@@ -27,6 +27,7 @@ fn join_capture_checks_authority_context_scalar_membership_and_overlap_invariant
         grid_size: UVec2::new(6, 1),
         image_size: UVec2::new(600, 100),
         snap_distance: 5.,
+        rotation_enabled: true,
     };
     fixture.grab(0, fixture.target(&[0]));
     let capture =
@@ -73,6 +74,7 @@ impl Fixture {
             grid_size: UVec2::new(width as u32, count.div_ceil(width) as u32),
             image_size: UVec2::splat(16_384),
             snap_distance: 5.0,
+            rotation_enabled: true,
         };
         let mut store = PieceDataStore::default();
         store.initialize(
@@ -162,6 +164,79 @@ impl Fixture {
             panic!("Expected sparse context")
         };
         refs
+    }
+}
+
+#[test]
+fn disabled_rotation_rejects_wire_requests_without_mutating_state_or_drag_context() {
+    use crate::network::wire::{self, WireMessage};
+    for dragging in [false, true] {
+        for turns in [-1, 0, 1, 4] {
+            let mut f = Fixture::new(4);
+            f.definition.rotation_enabled = false;
+            if dragging {
+                f.grab(0, f.target(&[0, 1]));
+                f.apply(&Fixture::update(0, 1, Vec2::new(10., 20.)))
+                    .unwrap();
+            }
+            let command = if dragging {
+                ProtocolPieceCommand::RotateDrag {
+                    grab_sequence: 0,
+                    through_tick: Some(1),
+                    final_delta: Vec2::new(30., 40.),
+                    quarter_turns: turns,
+                }
+            } else {
+                ProtocolPieceCommand::Rotate {
+                    target: f.target(&[0, 1]),
+                    quarter_turns: turns,
+                }
+            };
+            let message = WireMessage::ClientCommand(Fixture::envelope(
+                A,
+                ClientCommandSequence::Control(u64::from(dragging)),
+                command,
+            ));
+            let bytes = wire::encode(&message).unwrap();
+            let WireMessage::ClientCommand(envelope) =
+                wire::decode_for_class(&bytes, message.class()).unwrap()
+            else {
+                panic!()
+            };
+            let before = f.store.states.clone();
+            let drag = f.drag().cloned();
+            let cursor = f.session.cursor();
+            let dirty = f.store.dirty_pieces.clone();
+            assert!(matches!(
+                f.contexts.apply_replicated(
+                    &mut f.session,
+                    &mut f.store,
+                    A,
+                    &envelope,
+                    Some(&f.definition),
+                    puzzella_core::LOCAL_PLAYER,
+                ),
+                Err(ProtocolCommandError::RotationDisabled)
+            ));
+            assert_eq!(f.store.states, before);
+            assert_eq!(f.drag(), drag.as_ref());
+            assert_eq!(f.session.cursor(), cursor);
+            assert_eq!(f.store.dirty_pieces, dirty);
+            if dragging {
+                // Rejection consumes only the control sequence, retaining the
+                // old basis for subsequent legitimate movement and release.
+                f.apply(&Fixture::update(0, 2, Vec2::new(50., 60.)))
+                    .unwrap();
+                f.apply(&Fixture::release(2, 0, Vec2::new(50., 60.)))
+                    .unwrap();
+                assert!(f.store.held_by.is_empty());
+                assert!(f
+                    .store
+                    .states
+                    .iter()
+                    .all(|s| puzzella_core::decode_rotation(s.flags) == 0));
+            }
+        }
     }
 }
 
@@ -622,6 +697,7 @@ fn snapshot_restore_preserves_stable_refs_and_invalidates_active_contexts() {
         grid_size: UVec2::new(4, 2),
         image_size: UVec2::new(80, 40),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     for id in 0..8 {
         f.store.states[id].position = d.correct_position(PieceId(id as u32)) + Vec2::splat(100.0);
@@ -680,6 +756,7 @@ fn migration_freezes_updates_and_new_epoch_cannot_reuse_a_drag() {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(40),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     for id in 0..4 {
         f.store.states[id].position = d.correct_position(PieceId(id as u32)) + Vec2::splat(50.0);
@@ -728,6 +805,7 @@ fn protocol_dispatch_preserves_relative_z_compaction_and_final_board_snap() {
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(40),
         snap_distance: 5.0,
+        rotation_enabled: true,
     };
     for id in 0..4 {
         f.store.states[id].position = d.correct_position(PieceId(id as u32)) + Vec2::splat(100.0);
