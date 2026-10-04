@@ -12,8 +12,8 @@ plus a new epoch; save/load use checkpoint only; both discard
 drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
 
 Networking is opt-in under `game::network`. It does not install systems into the
-single-player schedule or implement the Host/Join menu,
-interpolation, prediction, or migration orchestration.
+offline authority path. The game runtime and UI provide Direct IP and optional
+Internet Room Code entrypoints; migration orchestration remains separate.
 Commands use the core authority, replication, cursor and topology semantics with
 wire v11 and snapshot schema 5. `core` has no transport/native dependency.
 
@@ -29,7 +29,7 @@ SecureTransport<T> (PAKE-derived application AEAD, sequences, replay protection)
         ↓
 Transport (opaque Puzzella identities, byte messages, lifecycle events)
         ├ Direct-IP open-source GameNetworkingSockets (gns feature)
-        ├ custom-signaled GNS P2P / native ICE (gns feature, foundation only)
+        ├ custom-signaled GNS P2P / native ICE (gns foundation; rendezvous runtime)
         └ future Steamworks ISteamNetworkingSockets
 ```
 
@@ -48,9 +48,8 @@ Entering Menu resets `LocalPlayerId` to its offline default. Snapshot installati
 may replace `PieceDataStore` but leaves the independent identity resource intact.
 It is excluded from checkpoints, snapshots, save files, puzzle definitions, and
 wire messages. The password bootstrap now exposes the host-assigned identity via
-`ClientBootstrap::assigned_player()` after secure channel establishment. A future runtime
-join will set `LocalPlayerId` from that value and pass it to the routers;
-runtime/input/UI integration is still outside this change. This identity is
+`ClientBootstrap::assigned_player()` after secure channel establishment. The runtime
+join sets `LocalPlayerId` from that value and passes it to the routers. This identity is
 independent of SteamID.
 
 `Transport` exposes `poll`, `send` and `close`. `ConnectionId` and `ListenerId` are
@@ -1089,3 +1088,30 @@ Delegating Transport implementations must forward origin, reliable_egress and
 mark_ready; unavailable egress telemetry fails closed for Bulk. The client shares
 the delivery policy and frees its receiver/declared budget on failure; waits for a
 host-side transfer slot use the global bound rather than a short response timer.
+
+## Runtime entrypoints and Room Code UI
+
+`start_host` / `start_join` retain Direct IP establishment with SocketAddr options.
+`DirectIpDriver` owns listener lifecycle and explicit close/drain; common
+Runtime<T: Transport> owns secured bootstrap, sync and gameplay only.
+`rendezvous` adds separate `start_rendezvous_host` / `start_rendezvous_join` options
+and a driver owning RendezvousAdapter + GnsP2p. UI uses only requests, cancel and
+NetworkStatus. Both use shared World preparation and the host CPU/GPU readiness
+barrier; no piece/render path is added for control-plane work.
+
+RendezvousRuntimeConfig is an optional resource of EndpointUrl + IceConfig, with
+no credentials or room code and no external endpoint defaults. Without it Internet
+is disabled; gns-only builds retain Direct IP and default builds retain neither
+native/WebSocket dependency. Runtime and foundation share P2P_VIRTUAL_PORT (0).
+
+RoomCreated exposes only a host routing code. HostReady installs a route, then
+connect_peer obtains ConnectionId before ClientBootstrap creation. Connected
+starts mandatory password SPAKE2; Authenticated starts image/baseline/catch-up;
+Ready still requires the existing commit. These states are distinct.
+
+Rendezvous control loss != gameplay disconnect: active GNS peers and pending ICE
+survive RoomClosed/Disconnected/PeerUnavailable, with separate Unavailable status.
+Pre-room/pre-HostReady failures terminate setup. Only actual game close releases
+active routes. Cancel/Leave stop control worker, explicitly close game connections,
+then destroy secure/bootstrap/sync/password/backend state. See
+[RENDEZVOUS_V1.md](RENDEZVOUS_V1.md) for configuration, UI and two-process runtime smoke.

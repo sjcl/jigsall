@@ -3,7 +3,7 @@ use super::*;
 use crate::{persistence::runtime::OriginalPuzzleImage, resources::*};
 use bevy::ecs::message::MessageCursor;
 
-trait RuntimeDriver {
+pub(super) trait RuntimeDriver {
     fn poll(&mut self, world: &mut World);
     fn commands(&mut self, world: &mut World, commands: Vec<ClientCommand>);
     fn teardown(&mut self, world: &mut World);
@@ -73,7 +73,12 @@ fn menu_pending(world: &World) -> bool {
             )
         })
 }
-fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, mut runtime: Runtime<T>) {
+pub(super) fn install_driver(
+    world: &mut World,
+    driver: Box<dyn RuntimeDriver>,
+    status: NetworkStatus,
+    roster: PlayerRoster,
+) {
     world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
@@ -86,16 +91,83 @@ fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, mut runtime
         presentation.reset(store.epoch, store.len());
     }
     world.insert_resource(presentation);
-    world.insert_resource(std::mem::take(&mut runtime.roster));
-    world.insert_resource(runtime.status.clone());
+    world.insert_resource(roster);
+    world.insert_resource(status);
     let reader = world
         .get_resource::<Messages<ClientCommand>>()
         .map(Messages::get_cursor_current)
         .unwrap_or_default();
     world.insert_non_send(NetworkSession {
-        driver: Some(Box::new(runtime)),
+        driver: Some(driver),
         reader,
     });
+}
+fn prepare_host(
+    world: &World,
+    session: SessionDefinition,
+) -> Result<PreparedHost, RuntimeStartError> {
+    if network_active(world) {
+        return Err(RuntimeStartError::AlreadyActive);
+    }
+    let definition = world
+        .get_resource::<PuzzleDefinition>()
+        .cloned()
+        .ok_or(RuntimeStartError::DefinitionUnavailable)?;
+    if definition.validate().is_err()
+        || world.get_resource::<PieceDataStore>().is_none_or(|store| {
+            store.len() != definition.piece_count() || !store.held_by.is_empty()
+        })
+        || world
+            .get_resource::<PieceGenerationProgress>()
+            .is_some_and(|progress| progress.is_generating || progress.receiver.is_some())
+        || world
+            .get_resource::<PuzzleImage>()
+            .is_some_and(|image| image.logical_size != definition.image_size)
+        || menu_pending(world)
+    {
+        return Err(RuntimeStartError::InvalidWorld);
+    }
+    let image = world
+        .get_resource::<OriginalPuzzleImage>()
+        .and_then(|original| original.encoded.clone());
+    if world
+        .get_resource::<OriginalPuzzleImage>()
+        .is_some_and(|original| original.hash != session.image_hash)
+    {
+        return Err(RuntimeStartError::ImageHashMismatch);
+    }
+    PreparedHost::new(definition, image, session)
+}
+pub(super) fn prepare_host_world(world: &mut World, status: &NetworkStatus) {
+    world.insert_resource(LocalPlayerId(status.local_player.unwrap()));
+    world.insert_resource(SessionHostId(status.host.unwrap()));
+    if let Some(mut persistence) =
+        world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
+    {
+        persistence.generation = persistence.generation.wrapping_add(1);
+        persistence.busy = false;
+        persistence.autosaving = false;
+        persistence.capture = None;
+    }
+}
+fn prepare_join_limits(world: &World) -> Result<ImageDecodeLimits, RuntimeStartError> {
+    if network_active(world) {
+        return Err(RuntimeStartError::AlreadyActive);
+    }
+    if menu_pending(world) {
+        return Err(RuntimeStartError::InvalidWorld);
+    }
+    let limits = world
+        .get_resource::<PuzzleImageLimits>()
+        .ok_or(RuntimeStartError::InvalidWorld)?;
+    let settings = world
+        .get_resource::<crate::image_settings::ImageSettingsState>()
+        .ok_or(RuntimeStartError::InvalidWorld)?;
+    let image_limits = limits.decode_limits(&settings.current);
+    if image_limits.max_texture_dimension == 0 {
+        return Err(RuntimeStartError::InvalidWorld);
+    }
+    Ok(image_limits)
 }
 /// Host the current World store. Missing encoded bytes remain unavailable.
 pub fn host_with_transport<T: DirectIpTransport + 'static>(
@@ -119,52 +191,14 @@ impl HostStartRequest {
             .options
             .as_ref()
             .ok_or(RuntimeStartError::AlreadyActive)?;
-        let definition = world
-            .get_resource::<PuzzleDefinition>()
-            .cloned()
-            .ok_or(RuntimeStartError::DefinitionUnavailable)?;
-        if definition.validate().is_err()
-            || world.get_resource::<PieceDataStore>().is_none_or(|store| {
-                store.len() != definition.piece_count() || !store.held_by.is_empty()
-            })
-            || world
-                .get_resource::<PieceGenerationProgress>()
-                .is_some_and(|progress| progress.is_generating || progress.receiver.is_some())
-            || world
-                .get_resource::<PuzzleImage>()
-                .is_some_and(|image| image.logical_size != definition.image_size)
-            || menu_pending(world)
-        {
-            return Err(RuntimeStartError::InvalidWorld);
-        }
-        let image = world
-            .get_resource::<OriginalPuzzleImage>()
-            .and_then(|original| original.encoded.clone());
-        if world
-            .get_resource::<OriginalPuzzleImage>()
-            .is_some_and(|original| original.hash != options.session.image_hash)
-        {
-            return Err(RuntimeStartError::ImageHashMismatch);
-        }
-        let runtime = Runtime::host_request(
-            backend,
-            &mut self.options,
-            definition,
-            image,
-            Instant::now(),
-        )?;
-        let address = runtime.status.address.unwrap();
-        world.insert_resource(LocalPlayerId(runtime.status.local_player.unwrap()));
-        world.insert_resource(SessionHostId(runtime.status.host.unwrap()));
-        if let Some(mut persistence) =
-            world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
-        {
-            persistence.generation = persistence.generation.wrapping_add(1);
-            persistence.busy = false;
-            persistence.autosaving = false;
-            persistence.capture = None;
-        }
-        install_driver(world, runtime);
+        let prepared = prepare_host(world, options.session)?;
+        let mut driver =
+            DirectIpDriver::host_request(backend, &mut self.options, prepared, Instant::now())?;
+        let address = driver.status.address.unwrap();
+        prepare_host_world(world, &driver.status);
+        let status = driver.status.clone();
+        let roster = std::mem::take(&mut driver.runtime.roster);
+        install_driver(world, Box::new(driver), status, roster);
         Ok(address)
     }
     #[cfg(feature = "gns")]
@@ -183,23 +217,15 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     backend: T,
     options: JoinOptions,
 ) -> Result<(), RuntimeStartError> {
-    if network_active(world) {
-        return Err(RuntimeStartError::AlreadyActive);
-    }
-    if menu_pending(world) {
-        return Err(RuntimeStartError::InvalidWorld);
-    }
-    let limits = world
-        .get_resource::<PuzzleImageLimits>()
-        .ok_or(RuntimeStartError::InvalidWorld)?;
-    let settings = world
-        .get_resource::<crate::image_settings::ImageSettingsState>()
-        .ok_or(RuntimeStartError::InvalidWorld)?;
-    let image_limits = limits.decode_limits(&settings.current);
-    if image_limits.max_texture_dimension == 0 {
-        return Err(RuntimeStartError::InvalidWorld);
-    }
-    let runtime = Runtime::client(backend, options, image_limits)?;
+    let image_limits = prepare_join_limits(world)?;
+    let mut driver = DirectIpDriver::client(backend, options, image_limits)?;
+    prepare_join_world(world);
+    let status = driver.status.clone();
+    let roster = std::mem::take(&mut driver.runtime.roster);
+    install_driver(world, Box::new(driver), status, roster);
+    Ok(())
+}
+pub(super) fn prepare_join_world(world: &mut World) {
     world.init_resource::<PieceDataStore>();
     world.init_resource::<PieceInteraction>();
     world.init_resource::<LocalPlayerId>();
@@ -254,8 +280,6 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
         next.set(AppState::GameSetup);
     }
-    install_driver(world, runtime);
-    Ok(())
 }
 #[cfg(feature = "gns")]
 pub fn start_host(
@@ -305,6 +329,9 @@ fn teardown_session(world: &mut World) {
     if let Some(mut status) = world.get_resource_mut::<NetworkStatus>() {
         status.role = None;
         status.address = None;
+        status.connection_method = None;
+        status.room_code = None;
+        status.rendezvous_control = None;
         status.image = ImageReadiness::Unavailable;
         status.image_source = HostImageSource::Unavailable;
         status.local_player = None;
@@ -377,7 +404,7 @@ fn restore_cursors(
         resource.set_changed();
     }
 }
-impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
+impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
     fn poll(&mut self, world: &mut World) {
         let (presentation, cursor_revision) = take_cursors(world);
         self.cursors.presentation = presentation;
@@ -448,10 +475,10 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
         let mut presentation = world
             .remove_resource::<remote_drag::RemoteDragPresentation>()
             .unwrap_or_default();
-        if let Some(mut store) = world.get_resource_mut::<PieceDataStore>() {
-            self.teardown(&mut store);
-            presentation.reset(store.epoch, store.len());
-        }
+        world.init_resource::<PieceDataStore>();
+        let mut store = world.resource_mut::<PieceDataStore>();
+        self.teardown(&mut store);
+        presentation.reset(store.epoch, store.len());
         world.insert_resource(presentation);
     }
     fn active(&self) -> bool {
@@ -474,7 +501,7 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
         }
     }
 }
-impl<T: DirectIpTransport> Runtime<T> {
+impl<T: Transport> Runtime<T> {
     fn install_world(&mut self, world: &mut World) {
         if self.status.role == Some(RuntimeRole::Host) {
             self.status.image = if !world.contains_resource::<PuzzleImage>() {
@@ -576,4 +603,50 @@ impl<T: DirectIpTransport> Runtime<T> {
             }
         }
     }
+}
+
+#[cfg(feature = "rendezvous")]
+pub fn start_rendezvous_host(
+    world: &mut World,
+    options: RendezvousHostOptions,
+) -> Result<(), RuntimeStartError> {
+    let prepared = prepare_host(world, options.session)?;
+    let config = world
+        .get_resource::<RendezvousRuntimeConfig>()
+        .cloned()
+        .ok_or(RuntimeStartError::InternetUnavailable)?;
+    let (backend, adapter) = super::super::gns::rendezvous::RendezvousAdapter::new(
+        config.endpoint,
+        super::super::gns::rendezvous::P2P_VIRTUAL_PORT,
+        config.ice,
+    )
+    .map_err(RuntimeStartError::Rendezvous)?;
+    let mut driver = rendezvous::RendezvousRuntimeDriver::host(backend, adapter, options, prepared);
+    prepare_host_world(world, driver.status());
+    let status = driver.status().clone();
+    let roster = driver.take_roster();
+    install_driver(world, Box::new(driver), status, roster);
+    Ok(())
+}
+#[cfg(feature = "rendezvous")]
+pub fn start_rendezvous_join(
+    world: &mut World,
+    options: RendezvousJoinOptions,
+) -> Result<(), RuntimeStartError> {
+    let limits = prepare_join_limits(world)?;
+    let config = world
+        .get_resource::<RendezvousRuntimeConfig>()
+        .cloned()
+        .ok_or(RuntimeStartError::InternetUnavailable)?;
+    let (backend, adapter) = super::super::gns::rendezvous::RendezvousAdapter::new(
+        config.endpoint,
+        super::super::gns::rendezvous::P2P_VIRTUAL_PORT,
+        config.ice,
+    )
+    .map_err(RuntimeStartError::Rendezvous)?;
+    let driver = rendezvous::RendezvousRuntimeDriver::join(backend, adapter, options, limits);
+    prepare_join_world(world);
+    let status = driver.status().clone();
+    install_driver(world, Box::new(driver), status, PlayerRoster::default());
+    Ok(())
 }

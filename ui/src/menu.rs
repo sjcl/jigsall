@@ -19,7 +19,14 @@ pub fn draw_menu_ui(
     profile: Res<puzzella_game::player_settings::PlayerSettingsState>,
     status: Res<puzzella_game::network::runtime::NetworkStatus>,
     mut multiplayer: ResMut<MultiplayerUi>,
+    #[cfg(feature = "rendezvous")] rendezvous_config: Option<
+        Res<puzzella_game::network::runtime::RendezvousRuntimeConfig>,
+    >,
 ) {
+    #[cfg(feature = "rendezvous")]
+    let internet_available = rendezvous_config.is_some();
+    #[cfg(not(feature = "rendezvous"))]
+    let internet_available = false;
     if multiplayer.connection_screen(&status) {
         return;
     }
@@ -97,6 +104,12 @@ pub fn draw_menu_ui(
                                             }),
                                         );
                                         if host {
+                                            multiplayer::paint_method(
+                                                ui,
+                                                &mut multiplayer,
+                                                internet_available,
+                                                &i18n,
+                                            );
                                             theme::hint(ui, i18n.text("multiplayer-host-hint"));
                                             if !cfg!(feature = "gns") {
                                                 theme::hint(
@@ -135,6 +148,12 @@ pub fn draw_menu_ui(
                                     }
                                     MenuScreen::Multiplayer => {
                                         theme::heading(ui, i18n.text("menu-multiplayer"));
+                                        multiplayer::paint_method(
+                                            ui,
+                                            &mut multiplayer,
+                                            internet_available,
+                                            &i18n,
+                                        );
                                         if theme::button(
                                             ui,
                                             i18n.text("multiplayer-host"),
@@ -157,6 +176,12 @@ pub fn draw_menu_ui(
                                         }
                                     }
                                     MenuScreen::Join => {
+                                        multiplayer::paint_method(
+                                            ui,
+                                            &mut multiplayer,
+                                            internet_available,
+                                            &i18n,
+                                        );
                                         if !cfg!(feature = "gns") {
                                             theme::hint(ui, i18n.text("multiplayer-unavailable"));
                                         }
@@ -168,6 +193,12 @@ pub fn draw_menu_ui(
                                         );
                                     }
                                     MenuScreen::HostLoadSettings => {
+                                        multiplayer::paint_method(
+                                            ui,
+                                            &mut multiplayer,
+                                            internet_available,
+                                            &i18n,
+                                        );
                                         if let Some((_, title)) = &multiplayer.selected_save {
                                             ui.label(title);
                                         }

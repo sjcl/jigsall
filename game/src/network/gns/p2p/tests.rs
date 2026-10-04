@@ -1,4 +1,5 @@
 use super::*;
+use crate::network::gns::P2P_VIRTUAL_PORT;
 use crate::network::{
     auth::SessionPassword,
     bootstrap::{ClientBootstrap, ConnectionState, HostBootstrap},
@@ -129,16 +130,19 @@ fn gns_p2p_child() {
     #[cfg(feature = "rendezvous")]
     let mut backend = if let Ok(url) = std::env::var("PUZZELLA_P2P_RENDEZVOUS") {
         let endpoint = super::super::rendezvous::EndpointUrl::loopback_for_test(&url).unwrap();
-        let (backend, adapter) =
-            super::super::rendezvous::RendezvousAdapter::new(endpoint, 0, IceConfig::default())
-                .unwrap();
+        let (backend, adapter) = super::super::rendezvous::RendezvousAdapter::new(
+            endpoint,
+            P2P_VIRTUAL_PORT,
+            IceConfig::default(),
+        )
+        .unwrap();
         rendezvous = Some(adapter);
         backend
     } else {
-        GnsP2p::new_routed(0, IceConfig::default()).unwrap()
+        GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap()
     };
     #[cfg(not(feature = "rendezvous"))]
-    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
+    let mut backend = GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     emit(Frame::Peer(backend.peer_id().to_bytes()));
     let (tx, rx) = mpsc::sync_channel(256);
@@ -224,7 +228,11 @@ fn gns_p2p_child() {
     let mut connection = if host {
         None
     } else {
-        Some(backend.connect_peer(PeerId::from_bytes(remote), 0).unwrap())
+        Some(
+            backend
+                .connect_peer(PeerId::from_bytes(remote), P2P_VIRTUAL_PORT)
+                .unwrap(),
+        )
     };
     let records = Arc::new(Mutex::new(Vec::new()));
     let mut transport = SecureTransport::new(Observed {
@@ -614,7 +622,7 @@ static BACKEND_TEST_LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
     let _guard = BACKEND_TEST_LOCK.lock().unwrap();
-    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
+    let mut backend = GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     let bad = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [3; 16]);
     let other = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [4; 16]);

@@ -1,6 +1,8 @@
 use super::*;
 use crate::localization::{LanguagePreference, Locale};
 use bevy::ecs::system::RunSystemOnce;
+#[cfg(feature = "rendezvous")]
+mod internet;
 mod native;
 
 fn screen_world() -> (World, Entity, egui::Context) {
@@ -390,9 +392,11 @@ fn registered_screens_exclude_hud_roster_performance_pause_completion_and_save_d
             let mut ui = app.world_mut().resource_mut::<MultiplayerUi>();
             ui.connecting = true;
             ui.error = error;
-            ui.pending_host = error.is_none().then(|| PendingHost {
-                address: "127.0.0.1:27015".parse().unwrap(),
-                password: SessionPassword::new("test password".into()).unwrap(),
+            ui.pending_host = error.is_none().then(|| {
+                PendingHost::Direct(PendingDirectHost {
+                    address: "127.0.0.1:27015".parse().unwrap(),
+                    password: SessionPassword::new("test password".into()).unwrap(),
+                })
             });
             render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
             let output = render_schedule(&mut app, &ctx, vec![]);
@@ -1022,10 +1026,11 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
         ..default()
     });
     world.resource_mut::<PlayerSettingsState>().commit("Alice");
-    world.resource_mut::<MultiplayerUi>().pending_host = Some(PendingHost {
-        address: "127.0.0.1:0".parse().unwrap(),
-        password: SessionPassword::new("test password".into()).unwrap(),
-    });
+    world.resource_mut::<MultiplayerUi>().pending_host =
+        Some(PendingHost::Direct(PendingDirectHost {
+            address: "127.0.0.1:0".parse().unwrap(),
+            password: SessionPassword::new("test password".into()).unwrap(),
+        }));
     start_prepared_host(&mut world);
     assert_eq!(
         world.resource::<NetworkStatus>().phase,

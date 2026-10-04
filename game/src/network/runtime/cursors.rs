@@ -1,6 +1,6 @@
 use super::*;
 
-impl<T: DirectIpTransport> Runtime<T> {
+impl<T: Transport> Runtime<T> {
     pub(super) fn route_cursor(
         &mut self,
         event: &TransportEvent,

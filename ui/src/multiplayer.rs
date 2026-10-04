@@ -8,7 +8,8 @@ use puzzella_game::{
         auth::{SessionPassword, MAX_PASSWORD_BYTES, MIN_PASSWORD_BYTES},
         runtime::{
             HostOptions, HostStartRequest, JoinOptions, NetworkFailureKind, NetworkStatus,
-            RuntimePhase, RuntimeRole, RuntimeStartError,
+            RendezvousControlStatus, RuntimeConnectionMethod, RuntimePhase, RuntimeRole,
+            RuntimeStartError,
         },
         syncing::SyncPhase,
     },
@@ -33,6 +34,9 @@ pub(crate) enum MenuScreen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UiError {
     Address,
+    RoomCode,
+    RoomNotFound,
+    InternetUnavailable,
     Resolution,
     Password,
     WrongPassword,
@@ -47,6 +51,9 @@ pub(crate) enum UiError {
 impl UiError {
     pub(crate) fn key(self) -> &'static str {
         match self {
+            Self::RoomCode => "multiplayer-error-room-code",
+            Self::RoomNotFound => "multiplayer-error-room-not-found",
+            Self::InternetUnavailable => "multiplayer-internet-unavailable",
             Self::Address => "multiplayer-error-address",
             Self::Resolution => "multiplayer-error-resolution",
             Self::Password => "multiplayer-error-password",
@@ -67,6 +74,7 @@ impl UiError {
             NetworkFailureKind::Capacity => Self::ServerFull,
             NetworkFailureKind::Protocol => Self::ProtocolMismatch,
             NetworkFailureKind::Image => Self::ImageUnavailable,
+            NetworkFailureKind::RoomNotFound => Self::RoomNotFound,
             NetworkFailureKind::Connection => Self::ConnectionFailed,
         }
     }
@@ -77,6 +85,11 @@ impl UiError {
                 Self::PuzzleUnavailable
             }
             RuntimeStartError::ImageHashMismatch => Self::ImageUnavailable,
+            RuntimeStartError::InternetUnavailable => Self::InternetUnavailable,
+            #[cfg(feature = "rendezvous")]
+            RuntimeStartError::Rendezvous(error) => {
+                Self::failure(NetworkFailureKind::rendezvous(&error))
+            }
             RuntimeStartError::Transport(error) => {
                 Self::failure(NetworkFailureKind::transport(&error))
             }
@@ -86,6 +99,8 @@ impl UiError {
 
 pub(crate) struct ConnectionDraft {
     pub address: String,
+    pub room_code: String,
+    pub method: RuntimeConnectionMethod,
     // No serialization, Debug, or Clone; dropping/replacing a draft wipes its buffer.
     pub password: Zeroizing<String>,
 }
@@ -93,12 +108,16 @@ impl ConnectionDraft {
     fn new(address: &str) -> Self {
         Self {
             address: address.into(),
+            room_code: String::new(),
+            method: RuntimeConnectionMethod::DirectIp,
             password: Zeroizing::new(String::new()),
         }
     }
     pub fn valid(&self, host: bool) -> bool {
-        valid_address(&self.address, host)
-            && (MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&self.password.len())
+        (match self.method {
+            RuntimeConnectionMethod::DirectIp => valid_address(&self.address, host),
+            RuntimeConnectionMethod::Internet => host || valid_room_code(&self.room_code),
+        }) && (MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&self.password.len())
     }
     fn take_password(&mut self) -> Result<SessionPassword, UiError> {
         SessionPassword::new(std::mem::take(&mut *self.password)).map_err(|_| UiError::Password)
@@ -108,6 +127,19 @@ impl ConnectionDraft {
     }
 }
 
+fn valid_room_code(value: &str) -> bool {
+    #[cfg(feature = "rendezvous")]
+    {
+        value
+            .parse::<puzzella_game::network::runtime::RoomCode>()
+            .is_ok()
+    }
+    #[cfg(not(feature = "rendezvous"))]
+    {
+        let _ = value;
+        false
+    }
+}
 fn parse_bind_address(value: &str) -> Result<SocketAddr, UiError> {
     let address: SocketAddr = value.trim().parse().map_err(|_| UiError::Address)?;
     if address.port() == 0 || address.ip().to_canonical().is_multicast() {
@@ -135,12 +167,19 @@ struct PendingJoin {
     display_name: Option<puzzella_core::PlayerDisplayName>,
 }
 
-struct PendingHost {
+struct PendingDirectHost {
     address: SocketAddr,
     password: SessionPassword,
 }
+enum PendingHost {
+    Direct(PendingDirectHost),
+    #[cfg(feature = "rendezvous")]
+    Internet(SessionPassword),
+}
 enum Action {
     Join(JoinRequest),
+    #[cfg(feature = "rendezvous")]
+    JoinInternet(puzzella_game::network::runtime::RendezvousJoinOptions),
     PrepareHost(PendingHost),
     Cancel,
 }
@@ -155,6 +194,7 @@ pub(crate) struct MultiplayerUi {
     pub selected_save: Option<(SaveId, String)>,
     pub submitted: bool,
     pub error: Option<UiError>,
+    pub internet_available: bool,
     connecting: bool,
     owns_session: bool,
     pending_host: Option<PendingHost>,
@@ -175,6 +215,7 @@ impl Default for MultiplayerUi {
             selected_save: None,
             submitted: false,
             error: None,
+            internet_available: false,
             connecting: false,
             owns_session: false,
             pending_host: None,
@@ -201,9 +242,34 @@ impl MultiplayerUi {
     pub fn connection_screen(&self, status: &NetworkStatus) -> bool {
         self.connecting
             || (status.role == Some(RuntimeRole::Client) && status.phase != RuntimePhase::Ready)
+            || (status.role == Some(RuntimeRole::Host) && status.phase == RuntimePhase::Connecting)
     }
     pub fn submit_host(&mut self) {
         if self.submitted {
+            return;
+        }
+        if self.host.method == RuntimeConnectionMethod::Internet
+            && (!cfg!(feature = "rendezvous") || !self.internet_available)
+        {
+            self.error = Some(UiError::InternetUnavailable);
+            return;
+        }
+        #[cfg(feature = "rendezvous")]
+        if self.host.method == RuntimeConnectionMethod::Internet {
+            if !self.internet_available {
+                self.error = Some(UiError::InternetUnavailable);
+                return;
+            }
+            match self.host.take_password() {
+                Ok(password) => {
+                    self.submitted = true;
+                    self.connecting = true;
+                    self.owns_session = true;
+                    self.error = None;
+                    self.action = Some(Action::PrepareHost(PendingHost::Internet(password)));
+                }
+                Err(error) => self.error = Some(error),
+            }
             return;
         }
         match parse_bind_address(&self.host.address).and_then(|address| {
@@ -216,13 +282,60 @@ impl MultiplayerUi {
                 self.connecting = true;
                 self.owns_session = true;
                 self.error = None;
-                self.action = Some(Action::PrepareHost(PendingHost { address, password }));
+                self.action = Some(Action::PrepareHost(PendingHost::Direct(
+                    PendingDirectHost { address, password },
+                )));
             }
             Err(error) => self.error = Some(error),
         }
     }
     fn submit_join(&mut self, profile: &PlayerSettingsState) {
         if self.submitted {
+            return;
+        }
+        if self.join.method == RuntimeConnectionMethod::Internet {
+            if !cfg!(feature = "rendezvous") || !self.internet_available {
+                self.error = Some(UiError::InternetUnavailable);
+                return;
+            }
+            if !valid_room_code(&self.join.room_code) {
+                self.error = Some(UiError::RoomCode);
+                return;
+            }
+        }
+        #[cfg(feature = "rendezvous")]
+        if self.join.method == RuntimeConnectionMethod::Internet {
+            if !self.internet_available {
+                self.error = Some(UiError::InternetUnavailable);
+                return;
+            }
+            let room = self
+                .join
+                .room_code
+                .parse::<puzzella_game::network::runtime::RoomCode>()
+                .map_err(|_| UiError::RoomCode);
+            match room.and_then(|room_code| {
+                self.join
+                    .take_password()
+                    .map(|password| (room_code, password))
+            }) {
+                Ok((room_code, password)) => {
+                    self.join.room_code = room_code.to_string();
+                    self.submitted = true;
+                    self.connecting = true;
+                    self.owns_session = true;
+                    self.error = None;
+                    self.action = Some(Action::JoinInternet(
+                        puzzella_game::network::runtime::RendezvousJoinOptions {
+                            display_name: profile.current.display_name.clone(),
+                            room_code,
+                            password,
+                            cached_image: None,
+                        },
+                    ));
+                }
+                Err(error) => self.error = Some(error),
+            }
             return;
         }
         match self
@@ -299,6 +412,10 @@ pub(crate) fn process_actions(world: &mut World) {
             let screen = ui.screen;
             let host_address = std::mem::take(&mut ui.host.address);
             let join_address = std::mem::take(&mut ui.join.address);
+            let room_code = std::mem::take(&mut ui.join.room_code);
+            let host_method = ui.host.method;
+            let join_method = ui.join.method;
+            let internet_available = ui.internet_available;
             *world.resource_mut::<MultiplayerUi>() = MultiplayerUi {
                 screen,
                 ..default()
@@ -306,7 +423,19 @@ pub(crate) fn process_actions(world: &mut World) {
             let mut ui = world.resource_mut::<MultiplayerUi>();
             ui.host.address = host_address;
             ui.join.address = join_address;
+            ui.join.room_code = room_code;
+            ui.host.method = host_method;
+            ui.join.method = join_method;
+            ui.internet_available = internet_available;
             puzzella_game::network::runtime::stop_session(world);
+        }
+        #[cfg(feature = "rendezvous")]
+        Action::JoinInternet(options) => {
+            if let Err(error) =
+                puzzella_game::network::runtime::start_rendezvous_join(world, options)
+            {
+                world.resource_mut::<MultiplayerUi>().error = Some(UiError::start(error));
+            }
         }
         Action::Join(request) => {
             if let Some(address) = request.address.socket_addr() {
@@ -466,7 +595,8 @@ pub(crate) fn start_prepared_host(world: &mut World) {
         ui.error = Some(UiError::ImageUnavailable);
         return;
     };
-    #[allow(unused_mut)] // Only the native backend consumes the request.
+    use puzzella_core::session::{SessionDefinition, SessionId};
+    #[allow(unused_mut)]
     let mut request = if world.resource::<MultiplayerUi>().retrying {
         world
             .resource_mut::<MultiplayerUi>()
@@ -474,25 +604,54 @@ pub(crate) fn start_prepared_host(world: &mut World) {
             .take()
             .unwrap()
     } else {
-        let host = world
+        let pending = world
             .resource_mut::<MultiplayerUi>()
             .pending_host
             .take()
             .unwrap();
-        use puzzella_core::session::{SessionDefinition, SessionId};
+        let session = SessionDefinition {
+            id: SessionId(rand::random()),
+            image_hash,
+        };
+        let host = world.resource::<LocalPlayerId>().0;
+        let display_name = world
+            .resource::<PlayerSettingsState>()
+            .current
+            .display_name
+            .clone();
+        #[cfg(feature = "rendezvous")]
+        let direct = match pending {
+            PendingHost::Direct(direct) => direct,
+            #[cfg(feature = "rendezvous")]
+            PendingHost::Internet(password) => {
+                let result = puzzella_game::network::runtime::start_rendezvous_host(
+                    world,
+                    puzzella_game::network::runtime::RendezvousHostOptions {
+                        display_name,
+                        session,
+                        host,
+                        password,
+                    },
+                );
+                let mut ui = world.resource_mut::<MultiplayerUi>();
+                ui.retrying = false;
+                match result {
+                    Ok(()) => {
+                        ui.host_setup = false;
+                    } // RoomCreated ends connection UI.
+                    Err(error) => ui.error = Some(UiError::start(error)),
+                }
+                return;
+            }
+        };
+        #[cfg(not(feature = "rendezvous"))]
+        let PendingHost::Direct(direct) = pending;
         HostStartRequest::new(HostOptions {
-            address: host.address,
-            password: host.password,
-            display_name: world
-                .resource::<PlayerSettingsState>()
-                .current
-                .display_name
-                .clone(),
-            host: world.resource::<LocalPlayerId>().0,
-            session: SessionDefinition {
-                id: SessionId(rand::random()),
-                image_hash,
-            },
+            address: direct.address,
+            password: direct.password,
+            display_name,
+            host,
+            session,
         })
     };
     #[cfg(feature = "gns")]
@@ -550,6 +709,11 @@ pub(crate) fn paint_host_status(ui: &mut egui::Ui, status: &NetworkStatus, i18n:
     if status.role != Some(RuntimeRole::Host) {
         return;
     }
+    if status.connection_method == Some(RuntimeConnectionMethod::Internet) {
+        paint_room_code(ui, status, i18n);
+        paint_control_warning(ui, status, i18n);
+        return;
+    }
     let Some(address) = status.address else {
         return;
     };
@@ -600,22 +764,41 @@ pub(crate) fn paint_connection_fields(
         ui,
         i18n.format("multiplayer-player-name", &[("name", name.as_str().into())]),
     );
-    ui.label(i18n.text(if host {
-        "multiplayer-bind-address"
-    } else {
-        "multiplayer-server-address"
-    }));
-    ui.add(egui::TextEdit::singleline(&mut draft.address).desired_width(f32::INFINITY));
-    theme::hint(
-        ui,
-        i18n.text(if host {
-            "multiplayer-bind-hint"
-        } else {
-            "multiplayer-address-hint"
-        }),
-    );
-    if !valid_address(&draft.address, host) {
-        ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-address"));
+    match draft.method {
+        RuntimeConnectionMethod::DirectIp => {
+            ui.label(i18n.text(if host {
+                "multiplayer-bind-address"
+            } else {
+                "multiplayer-server-address"
+            }));
+            ui.add(egui::TextEdit::singleline(&mut draft.address).desired_width(f32::INFINITY));
+            theme::hint(
+                ui,
+                i18n.text(if host {
+                    "multiplayer-bind-hint"
+                } else {
+                    "multiplayer-address-hint"
+                }),
+            );
+            if !valid_address(&draft.address, host) {
+                ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-address"));
+            }
+        }
+        RuntimeConnectionMethod::Internet if host => {
+            theme::hint(ui, i18n.text("multiplayer-room-code-hint"))
+        }
+        RuntimeConnectionMethod::Internet => {
+            ui.label(i18n.text("multiplayer-room-code"));
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.room_code)
+                    .id_salt("multiplayer-room-code")
+                    .desired_width(f32::INFINITY),
+            );
+            draft.room_code.make_ascii_uppercase();
+            if !draft.room_code.is_empty() && !valid_room_code(&draft.room_code) {
+                ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-room-code"));
+            }
+        }
     }
     ui.label(i18n.text("multiplayer-password"));
     let mut password = egui::TextEdit::singleline(&mut *draft.password)
@@ -645,7 +828,9 @@ pub(crate) fn paint_connection_fields(
     {
         ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-password"));
     }
-    paint_connection_help(ui, host, None, i18n);
+    if draft.method == RuntimeConnectionMethod::DirectIp {
+        paint_connection_help(ui, host, None, i18n);
+    }
 }
 
 fn paint_connection_help(
@@ -685,7 +870,10 @@ pub(crate) fn paint_join(
     if let Some(error) = state.error {
         ui.colored_label(theme::DANGER, i18n.text(error.key()));
     }
-    let valid = state.join.valid(false) && !state.submitted && cfg!(feature = "gns");
+    let valid = state.join.valid(false)
+        && !state.submitted
+        && cfg!(feature = "gns")
+        && (state.join.method == RuntimeConnectionMethod::DirectIp || state.internet_available);
     ui.add_enabled_ui(valid, |ui| {
         if theme::button(
             ui,
@@ -702,6 +890,16 @@ pub(crate) fn paint_join(
 
 fn connection_text(status: &NetworkStatus) -> &'static str {
     match status.phase {
+        RuntimePhase::Connecting
+            if status.connection_method == Some(RuntimeConnectionMethod::Internet)
+                && status.rendezvous_control == Some(RendezvousControlStatus::Available) =>
+        {
+            if status.role == Some(RuntimeRole::Host) {
+                "multiplayer-creating-room"
+            } else {
+                "multiplayer-joining-room"
+            }
+        }
         RuntimePhase::Connecting => "multiplayer-connecting",
         RuntimePhase::Authenticating => "multiplayer-authenticating",
         RuntimePhase::Syncing(
@@ -770,7 +968,9 @@ pub(crate) fn draw_connection_ui(
     mut state: ResMut<MultiplayerUi>,
     profile: Res<PlayerSettingsState>,
 ) {
-    if status.role == Some(RuntimeRole::Client) && status.phase == RuntimePhase::Ready {
+    if (status.role == Some(RuntimeRole::Client) && status.phase == RuntimePhase::Ready)
+        || (status.role == Some(RuntimeRole::Host) && status.phase == RuntimePhase::Hosting)
+    {
         state.connecting = false;
         state.submitted = false;
         return;
@@ -863,3 +1063,61 @@ pub(crate) fn draw_connection_ui(
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn paint_room_code(ui: &mut egui::Ui, status: &NetworkStatus, i18n: &Localization) {
+    if let Some(code) = &status.room_code {
+        ui.label(i18n.text("multiplayer-room-code"));
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(code).monospace().size(24.0).strong());
+            if ui.button(i18n.text("multiplayer-copy")).clicked() {
+                ui.ctx().copy_text(code.clone());
+            }
+        });
+    }
+}
+pub(crate) fn paint_control_warning(
+    ui: &mut egui::Ui,
+    status: &NetworkStatus,
+    i18n: &Localization,
+) {
+    if status.rendezvous_control == Some(RendezvousControlStatus::Unavailable) {
+        theme::hint(ui, i18n.text("multiplayer-control-unavailable"));
+        theme::hint(ui, i18n.text("multiplayer-existing-game-continues"));
+    }
+}
+pub(crate) fn paint_method(
+    ui: &mut egui::Ui,
+    state: &mut MultiplayerUi,
+    available: bool,
+    i18n: &Localization,
+) {
+    state.internet_available = available;
+    let mut method = state.host.method;
+    if !available {
+        method = RuntimeConnectionMethod::DirectIp;
+    }
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(available, |ui| {
+            ui.selectable_value(
+                &mut method,
+                RuntimeConnectionMethod::Internet,
+                i18n.text("multiplayer-internet"),
+            );
+        });
+        ui.selectable_value(
+            &mut method,
+            RuntimeConnectionMethod::DirectIp,
+            i18n.text("multiplayer-direct-ip"),
+        );
+    });
+    if !available {
+        theme::hint(ui, i18n.text("multiplayer-internet-unavailable"));
+    }
+    if state.host.method != method || state.join.method != method {
+        state.host.clear_password();
+        state.join.clear_password();
+        state.error = None;
+        state.host.method = method;
+        state.join.method = method;
+    }
+}

@@ -10,6 +10,7 @@ use crate::network::transport::{RouteOrigin, TransportError};
 use protocol::{AuthorityId, ClientMessage, JoinId, MemberId, RoomCode, RoomId, ServerMessage};
 use std::{collections::BTreeMap, fmt, net::IpAddr};
 
+pub use super::P2P_VIRTUAL_PORT;
 pub const CHANNEL_CAPACITY: usize = 32;
 pub const MAX_ROUTES: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]

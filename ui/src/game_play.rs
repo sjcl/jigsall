@@ -53,6 +53,7 @@ pub fn draw_game_ui(
             match network.role {
                 Some(puzzella_game::network::runtime::RuntimeRole::Host) => {
                     ui.label(i18n.text("multiplayer-hosting"));
+                    crate::multiplayer::paint_room_code(ui, &network, &i18n);
                 }
                 Some(puzzella_game::network::runtime::RuntimeRole::Client)
                     if network.phase == puzzella_game::network::runtime::RuntimePhase::Ready =>
@@ -61,6 +62,7 @@ pub fn draw_game_ui(
                 }
                 _ => {}
             }
+            crate::multiplayer::paint_control_warning(ui, &network, &i18n);
             paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();

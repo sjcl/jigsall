@@ -10,9 +10,14 @@ pub enum NetworkFailureKind {
     Protocol,
     Image,
     Connection,
+    RoomNotFound,
 }
 
 impl NetworkFailureKind {
+    #[cfg(feature = "rendezvous")]
+    pub fn rendezvous(error: &super::super::gns::rendezvous::RendezvousError) -> Self {
+        super::rendezvous::error_kind(error)
+    }
     pub fn transport(error: &TransportError) -> Self {
         match error {
             TransportError::Capacity | TransportError::Backpressure => Self::Capacity,

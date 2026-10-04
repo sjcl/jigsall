@@ -18,17 +18,18 @@ fn poll_at(endpoint: &mut Endpoint, now: Instant) {
         .unwrap();
 }
 fn send_update(client: &mut Endpoint, tick: u64, position: Option<Vec2>) {
-    let session = client.runtime.session.as_ref().unwrap();
+    let session = client.runtime.runtime.session.as_ref().unwrap();
     let msg = WireMessage::CursorUpdate(CursorUpdate {
         session: session.session_definition().id,
         authority_epoch: session.cursor().epoch,
         tick,
         position,
     });
-    let Role::Client(c) = &client.runtime.role else {
+    let Role::Client(c) = &client.runtime.runtime.role else {
         unreachable!()
     };
     client
+        .runtime
         .runtime
         .transport
         .send(
@@ -48,8 +49,8 @@ fn cursor_runtime_authenticated_identity_ordering_full_batch_loss_and_cleanup() 
     join(&mut host, &mut [&mut a, &mut b]);
     a.poll();
     b.poll();
-    let aid = a.runtime.status.local_player.unwrap();
-    let bid = b.runtime.status.local_player.unwrap();
+    let aid = a.runtime.runtime.status.local_player.unwrap();
+    let bid = b.runtime.runtime.status.local_player.unwrap();
     let now = Instant::now();
     for (tick, pos, expected) in [
         (10, 10., 10.),
@@ -64,7 +65,7 @@ fn cursor_runtime_authenticated_identity_ordering_full_batch_loss_and_cleanup() 
     b.runtime.cursor_frame(Some(Vec2::splat(30.)), now);
     poll_at(&mut host, now);
     let states = host.store.states.clone();
-    let authority = host.runtime.session.as_ref().unwrap().cursor();
+    let authority = host.runtime.runtime.session.as_ref().unwrap().cursor();
     bus.lock().unwrap().sent.clear();
     crate::resources::pieces::without_piece_state_access(|| {
         host.runtime.cursor_frame(Some(Vec2::new(20., -20.)), now);
@@ -129,7 +130,10 @@ fn cursor_runtime_authenticated_identity_ordering_full_batch_loss_and_cleanup() 
     assert!(cursor(&host, bid).is_none());
     assert!(cursor(&a, bid).is_none());
     assert_eq!(host.store.states, states);
-    assert_eq!(host.runtime.session.as_ref().unwrap().cursor(), authority);
+    assert_eq!(
+        host.runtime.runtime.session.as_ref().unwrap().cursor(),
+        authority
+    );
     host.runtime.teardown(&mut host.store);
     assert_eq!(host.runtime.cursors.presentation.cursors().count(), 0);
 }
@@ -217,11 +221,11 @@ fn cursor_runtime_ready_gating_batch_recipients_and_best_effort_failure() {
         RuntimePhase::Authenticating,
         RuntimePhase::Syncing(SyncPhase::BaselineTransfer),
     ] {
-        client.runtime.status.phase = phase;
+        client.runtime.runtime.status.phase = phase;
         client.runtime.cursor_frame(Some(Vec2::ONE), now);
     }
     assert!(bus.lock().unwrap().sent.is_empty());
-    client.runtime.status.phase = RuntimePhase::Connecting;
+    client.runtime.runtime.status.phase = RuntimePhase::Connecting;
     host.poll();
     host.runtime.cursor_frame(Some(Vec2::ONE), now);
     assert_eq!(
@@ -234,7 +238,7 @@ fn cursor_runtime_ready_gating_batch_recipients_and_best_effort_failure() {
         0
     );
     join(&mut host, &mut [&mut client]);
-    let id = host.connection(client.runtime.status.local_player.unwrap());
+    let id = host.connection(client.runtime.runtime.status.local_player.unwrap());
     // A Syncing connection can coexist with Ready connections and never receives cursors.
     let mut syncing = Endpoint::client(&bus, 2);
     host.poll();
@@ -251,7 +255,7 @@ fn cursor_runtime_ready_gating_batch_recipients_and_best_effort_failure() {
         .map(|(id, _, _)| *id)
         .collect();
     assert_eq!(sent, vec![id]);
-    let Role::Client(c) = &client.runtime.role else {
+    let Role::Client(c) = &client.runtime.runtime.role else {
         unreachable!()
     };
     let outgoing = c.bootstrap.host_connection();
@@ -264,8 +268,8 @@ fn cursor_runtime_ready_gating_batch_recipients_and_best_effort_failure() {
     client.poll();
     host.poll();
     assert!(client.runtime.active && host.runtime.active);
-    assert!(client.runtime.transport.has_channel(outgoing));
-    assert!(host.runtime.transport.has_channel(id));
+    assert!(client.runtime.runtime.transport.has_channel(outgoing));
+    assert!(host.runtime.runtime.transport.has_channel(id));
 }
 
 #[test]
@@ -275,12 +279,12 @@ fn cursor_snapshot_overtakes_ready_commit_then_next_periodic_snapshot_recovers()
     let mut client = Endpoint::client(&bus, 1);
     for _ in 0..200 {
         host.poll();
-        if host.runtime.roster.len() == 2 {
+        if host.runtime.runtime.roster.len() == 2 {
             break;
         }
         client.poll();
     }
-    assert_eq!(host.runtime.roster.len(), 2);
+    assert_eq!(host.runtime.runtime.roster.len(), 2);
     assert!(!client.ready());
     // ReadyCommit is already encrypted and queued. Deliver Transient before it.
     let commit = bus
@@ -296,12 +300,12 @@ fn cursor_snapshot_overtakes_ready_commit_then_next_periodic_snapshot_recovers()
     client.poll();
     assert!(client.runtime.active);
     assert_eq!(client.runtime.cursors.presentation.cursors().count(), 0);
-    let Role::Client(c) = &client.runtime.role else {
+    let Role::Client(c) = &client.runtime.runtime.role else {
         unreachable!()
     };
     assert_eq!(c.bootstrap.state(), Some(ConnectionState::Syncing));
     assert!(matches!(
-        client.runtime.status.phase,
+        client.runtime.runtime.status.phase,
         RuntimePhase::Syncing(_)
     ));
     bus.lock()
@@ -325,9 +329,9 @@ fn cursor_runtime_unknown_player_before_presence_is_benign_then_left_stays_hidde
     let mut host = Endpoint::host(&bus);
     let mut a = Endpoint::client(&bus, 1);
     join(&mut host, &mut [&mut a]);
-    let aid = a.runtime.status.local_player.unwrap();
+    let aid = a.runtime.runtime.status.local_player.unwrap();
     let connection = host.connection(aid);
-    let session = host.runtime.session.as_ref().unwrap();
+    let session = host.runtime.runtime.session.as_ref().unwrap();
     let msg = |sequence| {
         WireMessage::CursorSnapshot(CursorSnapshot {
             session: session.session_definition().id,
@@ -340,6 +344,7 @@ fn cursor_runtime_unknown_player_before_presence_is_benign_then_left_stays_hidde
         })
     };
     host.runtime
+        .runtime
         .transport
         .send(
             connection,
@@ -358,6 +363,7 @@ fn cursor_runtime_unknown_player_before_presence_is_benign_then_left_stays_hidde
         },
     };
     host.runtime
+        .runtime
         .transport
         .send(
             connection,
@@ -366,6 +372,7 @@ fn cursor_runtime_unknown_player_before_presence_is_benign_then_left_stays_hidde
         )
         .unwrap();
     host.runtime
+        .runtime
         .transport
         .send(
             connection,
@@ -376,6 +383,7 @@ fn cursor_runtime_unknown_player_before_presence_is_benign_then_left_stays_hidde
     a.poll();
     assert_eq!(cursor(&a, PlayerId(999)), Some(Vec2::ONE));
     host.runtime
+        .runtime
         .transport
         .send(
             connection,
@@ -390,6 +398,7 @@ fn cursor_runtime_unknown_player_before_presence_is_benign_then_left_stays_hidde
     a.poll();
     assert!(cursor(&a, PlayerId(999)).is_none());
     host.runtime
+        .runtime
         .transport
         .send(
             connection,
@@ -492,6 +501,7 @@ fn cursor_runtime_stationary_world_resource_stays_unchanged_and_host_broadcast_r
         host.runtime.cursor_frame(Some(Vec2::ONE), at);
     }
     let host_ids: BTreeSet<_> = host
+        .runtime
         .runtime
         .connections
         .peers()

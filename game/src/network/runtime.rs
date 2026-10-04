@@ -1,5 +1,15 @@
-//! One owner for Direct-IP bootstrap, sync, gameplay, and connection teardown.
+//! Shared bootstrap, sync, gameplay and teardown after transport establishment.
 //! The CPU store is borrowed from the game World; no parallel gameplay state exists.
+mod direct;
+use direct::DirectIpDriver;
+#[cfg(feature = "rendezvous")]
+mod rendezvous;
+#[cfg(feature = "rendezvous")]
+pub use super::gns::rendezvous::protocol::RoomCode;
+#[cfg(feature = "rendezvous")]
+pub use rendezvous::{RendezvousHostOptions, RendezvousJoinOptions, RendezvousRuntimeConfig};
+#[cfg(feature = "rendezvous")]
+pub use world::{start_rendezvous_host, start_rendezvous_join};
 mod bridge;
 mod cursors;
 mod failure;
@@ -79,6 +89,17 @@ pub struct JoinOptions {
     pub cached_image: Option<Arc<[u8]>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeConnectionMethod {
+    DirectIp,
+    Internet,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendezvousControlStatus {
+    Connecting,
+    Available,
+    Unavailable,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeRole {
     Host,
     Client,
@@ -121,6 +142,9 @@ pub struct NetworkStatus {
     pub local_player: Option<PlayerId>,
     pub host: Option<PlayerId>,
     pub address: Option<SocketAddr>,
+    pub connection_method: Option<RuntimeConnectionMethod>,
+    pub room_code: Option<String>,
+    pub rendezvous_control: Option<RendezvousControlStatus>,
     pub image: ImageReadiness,
     pub image_source: HostImageSource,
     pub peers: Vec<RuntimePeer>,
@@ -135,6 +159,9 @@ impl Default for NetworkStatus {
             local_player: None,
             host: None,
             address: None,
+            connection_method: None,
+            room_code: None,
+            rendezvous_control: None,
             image: ImageReadiness::Unavailable,
             image_source: HostImageSource::Unavailable,
             peers: Vec::new(),
@@ -150,6 +177,9 @@ pub enum RuntimeStartError {
     InvalidWorld,
     ImageHashMismatch,
     Transport(TransportError),
+    InternetUnavailable,
+    #[cfg(feature = "rendezvous")]
+    Rendezvous(super::gns::rendezvous::RendezvousError),
 }
 impl std::fmt::Display for RuntimeStartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -185,7 +215,6 @@ struct DecodedImage {
 struct Runtime<T> {
     roster: PlayerRoster,
     transport: SecureTransport<T>,
-    listener: Option<ListenerId>,
     connections: SessionConnections,
     live: BTreeSet<ConnectionId>,
     role: Role,
@@ -225,46 +254,57 @@ fn publish_presence(
     Ok(failures)
 }
 
-impl<T: DirectIpTransport> Runtime<T> {
-    #[cfg(test)]
-    fn host(
-        backend: T,
-        options: HostOptions,
+struct HostRuntimeOptions {
+    display_name: Option<puzzella_core::PlayerDisplayName>,
+    session: SessionDefinition,
+    host: PlayerId,
+    password: SessionPassword,
+}
+struct ClientRuntimeOptions {
+    display_name: Option<puzzella_core::PlayerDisplayName>,
+    password: SessionPassword,
+    cached_image: Option<Arc<[u8]>>,
+}
+struct PreparedHost {
+    definition: PuzzleDefinition,
+    image: Option<Arc<[u8]>>,
+    sync: HostSyncCoordinator,
+}
+impl PreparedHost {
+    fn new(
         definition: PuzzleDefinition,
         image: Option<Arc<[u8]>>,
-        now: Instant,
+        session: SessionDefinition,
     ) -> Result<Self, RuntimeStartError> {
-        Self::host_request(backend, &mut Some(options), definition, image, now)
-    }
-    fn host_request(
-        backend: T,
-        options: &mut Option<HostOptions>,
-        definition: PuzzleDefinition,
-        image: Option<Arc<[u8]>>,
-        now: Instant,
-    ) -> Result<Self, RuntimeStartError> {
-        let request = options.as_ref().ok_or(RuntimeStartError::AlreadyActive)?;
-        let verified_image = image
+        let verified = image
             .as_ref()
-            .map(|bytes| super::bulk::VerifiedPuzzleImage::verify(bytes.clone(), request.session))
+            .map(|bytes| super::bulk::VerifiedPuzzleImage::verify(bytes.clone(), session))
             .transpose()
             .map_err(|_| RuntimeStartError::ImageHashMismatch)?;
         let mut sync = HostSyncCoordinator::default();
-        if let Some(image) = verified_image {
+        if let Some(image) = verified {
             sync.set_image(image);
         }
-        let mut transport = SecureTransport::new(backend);
-        let listener = transport
-            .listen(request.address)
-            .map_err(RuntimeStartError::Transport)?;
-        let address = match transport.listener_address(listener) {
-            Ok(address) => address,
-            Err(error) => {
-                let _ = transport.close_listener(listener);
-                return Err(RuntimeStartError::Transport(error));
-            }
-        };
-        let options = options.take().unwrap();
+        Ok(Self {
+            definition,
+            image,
+            sync,
+        })
+    }
+}
+impl<T: Transport> Runtime<T> {
+    fn host_with_transport(
+        backend: T,
+        options: HostRuntimeOptions,
+        prepared: PreparedHost,
+        now: Instant,
+    ) -> Self {
+        let transport = SecureTransport::new(backend);
+        let PreparedHost {
+            definition,
+            image,
+            sync,
+        } = prepared;
         let metadata = SessionMetadata {
             definition: options.session,
             host: options.host,
@@ -275,10 +315,9 @@ impl<T: DirectIpTransport> Runtime<T> {
         } else {
             HostImageSource::Unavailable
         };
-        Ok(Self {
+        Self {
             transport,
             roster: PlayerRoster::host_only(options.host, options.display_name),
-            listener: Some(listener),
             connections: Default::default(),
             live: Default::default(),
             role: Role::Host(Box::new(HostState {
@@ -308,25 +347,22 @@ impl<T: DirectIpTransport> Runtime<T> {
                 phase: RuntimePhase::Hosting,
                 local_player: Some(options.host),
                 host: Some(options.host),
-                address: Some(address),
+                connection_method: Some(RuntimeConnectionMethod::DirectIp),
                 image_source,
                 ..default()
             },
-        })
+        }
     }
-    fn client(
+    fn client_with_connection(
         backend: T,
-        options: JoinOptions,
+        connection: ConnectionId,
+        options: ClientRuntimeOptions,
         image_limits: ImageDecodeLimits,
-    ) -> Result<Self, RuntimeStartError> {
-        let mut transport = SecureTransport::new(backend);
-        let connection = transport
-            .connect(options.address)
-            .map_err(RuntimeStartError::Transport)?;
-        Ok(Self {
+    ) -> Self {
+        let transport = SecureTransport::new(backend);
+        Self {
             transport,
             roster: PlayerRoster::default(),
-            listener: None,
             connections: Default::default(),
             live: BTreeSet::from([connection]),
             role: Role::Client(Box::new(ClientState {
@@ -351,10 +387,10 @@ impl<T: DirectIpTransport> Runtime<T> {
             status: NetworkStatus {
                 role: Some(RuntimeRole::Client),
                 phase: RuntimePhase::Connecting,
-                address: Some(options.address),
+                connection_method: Some(RuntimeConnectionMethod::DirectIp),
                 ..default()
             },
-        })
+        }
     }
     fn fail(&mut self, error: RuntimeFailure) {
         self.status.failure = Some(error.kind);
@@ -1149,9 +1185,6 @@ impl<T: DirectIpTransport> Runtime<T> {
                 client.bootstrap.host_connection(),
                 DisconnectReason::Requested,
             );
-        }
-        if let Some(listener) = self.listener.take() {
-            let _ = self.transport.close_listener(listener);
         }
         let players: std::collections::HashSet<_> =
             store.held_by.iter().map(|(_, &player)| player).collect();

@@ -271,3 +271,16 @@ settings-player-name-empty = 表示名を入力してください。
 settings-player-name-chars = 32文字以内で入力してください。
 settings-player-name-bytes = 名前が長すぎます。短くしてください。
 settings-player-name-control = 名前に使えない文字が含まれています。
+
+multiplayer-internet = インターネット
+multiplayer-direct-ip = Direct IP
+multiplayer-room-code = ルームコード
+multiplayer-copy = コピー
+multiplayer-room-code-hint = ホスト開始後にルームコードが作成されます。
+multiplayer-creating-room = ルームを作成中…
+multiplayer-joining-room = ルームに参加中…
+multiplayer-error-room-code = 有効な10文字のルームコードを入力してください。I・L・O・Uは使用しません。
+multiplayer-error-room-not-found = ルームが見つかりません。コードを確認して再試行してください。
+multiplayer-internet-unavailable = インターネット接続は未設定です。マルチプレイ対応ビルドではDirect IPを使用できます。
+multiplayer-control-unavailable = ルームサービスに接続できません。
+multiplayer-existing-game-continues = 現在のゲーム接続は継続しています。新しいプレイヤーは参加できません。

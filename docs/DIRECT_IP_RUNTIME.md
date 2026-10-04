@@ -144,16 +144,17 @@ makes the World invalid; hosting also rejects unfinished offline generation.
 UI reads `NetworkStatus`: role, phase, listener/endpoint, assigned local and host
 identity, peer connection states, image readiness/source availability, and error.
 `failure: Option<NetworkFailureKind>` carries Authentication, Timeout, Capacity,
-Protocol, Image or Connection separately from the diagnostic `error` string.
+Protocol, Image, Connection or RoomNotFound separately from the diagnostic `error` string.
 Presentation must use the typed category, never parse diagnostic text.
 `NetworkSession::authority()` and `replica()` expose read-only session/remote drag
 state. UI need not access native sockets, bootstrap, or sync internals. Server
-browser, lobby, NAT traversal, cursor rendering and migration remain future work.
+browser, lobby, public NAT verification and migration remain future work.
+Internet Room Code establishment is documented in [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
 
 ## Menu entrypoints
 
 The title first offers Single Player or Multiplayer. Single Player offers New
-Puzzle / Continue; Multiplayer offers Host a Game / Join a Game. Hosting offers New
+Puzzle / Continue; Multiplayer offers Internet / Direct IP, then Host a Game / Join a Game. Hosting offers New
 Puzzle / Continue. A new host switches between Puzzle and Room Settings tabs; a
 loaded host selects a save first, then configures multiplayer settings before
 the load starts. Open Room & Play initializes/restores the canonical store and waits
@@ -507,3 +508,26 @@ Arcs, both FIFOs/slots, catch-up retention and candidates while host gameplay
 continues. Client failures invalidate receiver storage immediately. See the
 [complete ownership/resource table](NETWORK_TRANSPORT.md#bounded-connection-and-join-lifecycle)
 for release conditions and the meaning of progress.
+
+## Shared runtime and Internet establishment
+
+The Direct IP API retains its existing meaning and options. Its driver owns the
+listener token and explicitly closes it on failure, Cancel and Menu; SecureTransport
+retains listener-close event draining. HostStartRequest still owns a password for
+same-puzzle address retries. SocketAddr listen/connect remains DirectIpTransport
+only. Common Runtime now requires only Transport for secured bootstrap, sync,
+gameplay, presentation, decode and connection teardown.
+
+Under `rendezvous`, separate start_rendezvous_host/join entrypoints read the optional
+RendezvousRuntimeConfig resource. The RendezvousRuntimeDriver owns adapter/control
+stages and keeps ClientBootstrap absent until HostReady -> connect_peer -> ConnectionId.
+RoomCreated publishes a host Room Code; Connected still needs SPAKE2; Authenticated
+still needs image/baseline/catch-up and Ready commit. Direct IP and Internet share
+World preparation without changing join's old-puzzle replacement semantics.
+
+NetworkStatus adds connection_method, host room_code and separate rendezvous_control;
+address remains Direct IP only. Rendezvous control loss is not gameplay disconnect:
+Running/Ready and pending native ICE survive control loss, while code/status warn
+that new players cannot join. Pre-room/pre-HostReady loss fails establishment.
+The UI never touches signaling/backend internals. Internet fields, code copying,
+configuration, ownership and local test commands are in [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
