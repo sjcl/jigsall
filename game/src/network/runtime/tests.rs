@@ -1099,6 +1099,61 @@ fn failure_before_connected_blocks_offline_commands_then_menu_releases_session()
 }
 
 #[test]
+fn ready_host_connection_loss_keeps_its_category_after_menu_cleanup() {
+    for reason in [
+        DisconnectReason::RemoteClosed,
+        DisconnectReason::ConnectionProblem,
+        DisconnectReason::BackendFailure,
+        DisconnectReason::BackendConnectionTimeout,
+    ] {
+        let mut pair = Pair::new();
+        pair.ready();
+        let host_connection = pair.host.world().resource::<NetworkStatus>().peers[0].connection;
+        let mut bus = pair.bus.lock().unwrap();
+        let connection = bus.routes[&host_connection].1;
+        bus.inbox
+            .entry(1)
+            .or_default()
+            .push_back(TransportEvent::Disconnected { connection, reason });
+        drop(bus);
+        pair.client.update();
+        let status = pair.client.world().resource::<NetworkStatus>();
+        assert_eq!(status.phase, RuntimePhase::Disconnected);
+        assert_eq!(
+            status.failure,
+            Some(NetworkFailureKind::ConnectionLost),
+            "{reason:?}"
+        );
+        assert_eq!(status.error, Some(format!("{reason:?}")));
+        pair.client.update();
+        let status = pair.client.world().resource::<NetworkStatus>();
+        assert_eq!(status.role, None);
+        assert_eq!(status.failure, Some(NetworkFailureKind::ConnectionLost));
+    }
+}
+
+#[test]
+fn ready_client_send_failure_reports_connection_loss() {
+    let mut pair = Pair::new();
+    pair.ready();
+    let host_connection = pair.host.world().resource::<NetworkStatus>().peers[0].connection;
+    let mut bus = pair.bus.lock().unwrap();
+    let connection = bus.routes[&host_connection].1;
+    bus.fail.insert(connection);
+    drop(bus);
+    send(&mut pair.client, PieceCommand::Grab(PieceId(0)));
+    pair.client.update();
+    let status = pair.client.world().resource::<NetworkStatus>();
+    assert_eq!(status.phase, RuntimePhase::Failed);
+    assert_eq!(status.failure, Some(NetworkFailureKind::ConnectionLost));
+    assert!(status
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("injected send failure"));
+}
+
+#[test]
 fn ready_disconnect_cancels_once_and_late_same_connection_message_cannot_apply() {
     let mut pair = Pair::new();
     pair.ready();

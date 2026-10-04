@@ -52,6 +52,7 @@ multiplayer-error-wrong-password = パスワードを確認できませんでし
 multiplayer-error-timeout = 応答がありません。アドレスを確認して、もう一度参加してください。
 multiplayer-error-full = 今は参加できません。少し待ってから試してください。
 multiplayer-error-connection = 接続できませんでした。アドレスとネットワークを確認して、もう一度試してください。
+multiplayer-error-connection-lost = ホストとの接続が失われました。ネットワークやホストの状態を確認して、もう一度参加してください。
 multiplayer-error-protocol = ゲームデータを読み取れませんでした。全員が同じバージョンを使っているか確認してください。
 multiplayer-error-image = 画像を用意できませんでした。部屋を開く場合は、画像を選び直してください。
 multiplayer-error-puzzle = パズルを準備できませんでした。別の画像や保存したパズルを選んでください。

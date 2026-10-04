@@ -39,6 +39,7 @@ pub(crate) enum UiError {
     Timeout,
     ServerFull,
     ConnectionFailed,
+    ConnectionLost,
     ProtocolMismatch,
     ImageUnavailable,
     PuzzleUnavailable,
@@ -54,6 +55,7 @@ impl UiError {
             Self::Timeout => "multiplayer-error-timeout",
             Self::ServerFull => "multiplayer-error-full",
             Self::ConnectionFailed => "multiplayer-error-connection",
+            Self::ConnectionLost => "multiplayer-error-connection-lost",
             Self::ProtocolMismatch => "multiplayer-error-protocol",
             Self::ImageUnavailable => "multiplayer-error-image",
             Self::PuzzleUnavailable => "multiplayer-error-puzzle",
@@ -68,6 +70,7 @@ impl UiError {
             NetworkFailureKind::Protocol => Self::ProtocolMismatch,
             NetworkFailureKind::Image => Self::ImageUnavailable,
             NetworkFailureKind::Connection => Self::ConnectionFailed,
+            NetworkFailureKind::ConnectionLost => Self::ConnectionLost,
         }
     }
     fn start(error: RuntimeStartError) -> Self {

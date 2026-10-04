@@ -187,10 +187,12 @@ at most four workers may remain outstanding, including timed-out/cancelled ones.
 The connection screen replaces GameSetup's image/piece controls throughout
 Connecting, Authenticating and Syncing. It shows a spinner with localized status,
 not phase-count percentages or internal enum names. Failure/disconnect shows a
-localized error category; the runtime keeps the diagnostic. The shared GameplayUi
-condition excludes the HUD, roster, performance, pause, completion and save/settings
-dialogs while the connection screen is visible. It runs after the connection screen
-so Ready can restore the normal UI in the same pass.
+localized error category; the runtime keeps the diagnostic. Connection failures
+and timeouts after the client reaches Ready use a separate connection-lost message;
+initial connection/authentication/sync failures retain their specific categories.
+The shared GameplayUi condition excludes the HUD, roster, performance, pause,
+completion and save/settings dialogs while the connection screen is visible. It
+runs after the connection screen so Ready can restore the normal UI in the same pass.
 
 The UI updates the game-owned LocalGameplayBlocked before Update and after egui
 actions. Local picking, rotation, camera controls and gameplay menu shortcuts are

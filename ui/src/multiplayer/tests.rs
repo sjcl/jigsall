@@ -843,10 +843,55 @@ fn typed_network_failures_map_to_readable_error_categories() {
         (NetworkFailureKind::Timeout, UiError::Timeout),
         (NetworkFailureKind::Capacity, UiError::ServerFull),
         (NetworkFailureKind::Connection, UiError::ConnectionFailed),
+        (NetworkFailureKind::ConnectionLost, UiError::ConnectionLost),
         (NetworkFailureKind::Protocol, UiError::ProtocolMismatch),
         (NetworkFailureKind::Image, UiError::ImageUnavailable),
     ] {
         assert_eq!(UiError::failure(kind), category);
+    }
+}
+
+#[test]
+fn connection_failure_and_loss_show_distinct_messages_in_both_languages() {
+    let (mut app, ctx) = scheduled_screens();
+    for locale in [Locale::EN_US, Locale::JA] {
+        app.world_mut()
+            .resource_mut::<Localization>()
+            .set_preference(LanguagePreference::Locale(locale));
+        for phase in [RuntimePhase::Failed, RuntimePhase::Disconnected] {
+            for (kind, key, other_key) in [
+                (
+                    NetworkFailureKind::Connection,
+                    "multiplayer-error-connection",
+                    "multiplayer-error-connection-lost",
+                ),
+                (
+                    NetworkFailureKind::ConnectionLost,
+                    "multiplayer-error-connection-lost",
+                    "multiplayer-error-connection",
+                ),
+            ] {
+                // Menu teardown has already cleared the role and player identities.
+                app.world_mut().insert_resource(NetworkStatus {
+                    phase,
+                    failure: Some(kind),
+                    error: Some("transport diagnostic".into()),
+                    ..default()
+                });
+                app.world_mut().resource_mut::<MultiplayerUi>().owns_session = true;
+                app.world_mut().run_system_once(reset_on_menu).unwrap();
+                render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+                let output = render_schedule(&mut app, &ctx, vec![]);
+                let i18n = app.world().resource::<Localization>();
+                let text = labels(&output);
+                assert!(text.contains(&i18n.text(key).as_str()));
+                assert!(!text.contains(&i18n.text(other_key).as_str()));
+                assert!(!text
+                    .iter()
+                    .any(|text| text.contains("transport diagnostic")));
+                output.drop_without_applying_deltas();
+            }
+        }
     }
 }
 

@@ -357,7 +357,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         })
     }
     fn fail(&mut self, error: RuntimeFailure) {
-        self.status.failure = Some(error.kind);
+        self.status.failure = Some(self.status.classify_failure(error.kind));
         self.status.error = Some(error.diagnostic);
         self.status.phase = RuntimePhase::Failed;
         self.active = false;
@@ -526,7 +526,6 @@ impl<T: DirectIpTransport> Runtime<T> {
                         &mut self.connections,
                         Instant::now(),
                     );
-                    self.status.phase = RuntimePhase::Disconnected;
                     // Keep the specific bootstrap/sync diagnostic when the close
                     // reason only says that the protocol was rejected.
                     if self.status.error.is_none() || reason != DisconnectReason::ProtocolViolation
@@ -534,6 +533,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                         self.status
                             .set_failure(NetworkFailureKind::disconnect(reason), reason);
                     }
+                    self.status.phase = RuntimePhase::Disconnected;
                     self.active = false;
                 }
             }
