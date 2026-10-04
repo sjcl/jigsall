@@ -73,7 +73,9 @@ impl RemotePresentationBridge {
             }
             ProtocolAuthorityEvent::DragRotationCommitted(commit) => {
                 if let Some(drag) = drag {
-                    self.delta(commit.player, drag.delta);
+                    if let Some(&slot) = self.slots.get(&commit.player) {
+                        self.state.rebase(slot, drag.delta);
+                    }
                 }
             }
             ProtocolAuthorityEvent::ReleaseCommitted(commit) => self.release(commit.player),
@@ -83,7 +85,7 @@ impl RemotePresentationBridge {
     }
     pub fn delta(&mut self, player: PlayerId, delta: Vec2) {
         if let Some(&slot) = self.slots.get(&player) {
-            self.state.set_delta(slot, delta);
+            self.state.set_target(slot, delta);
         }
     }
     fn release(&mut self, player: PlayerId) {
@@ -211,6 +213,61 @@ mod tests {
             replica.remote_drags(&peer_session, &peer_store),
         );
         assert_eq!(presentation.state.offset(PieceId(0)), update.delta);
+        assert_eq!(presentation.state.target(PieceId(0)), update.delta);
+        let initialized = replica
+            .remote_drag(&peer_session, &peer_store, remote)
+            .unwrap()
+            .clone();
+        let canonical = peer_store.states.clone();
+        let cursor = peer_session.cursor();
+        let next = contexts
+            .apply_replicated(
+                &mut session,
+                &mut store,
+                remote,
+                &command(
+                    ClientCommandSequence::Move {
+                        after_control_sequence: 0,
+                        tick: 15,
+                    },
+                    ProtocolPieceCommand::DragUpdate {
+                        delta: Vec2::new(40.0, -10.0),
+                    },
+                ),
+                Some(&definition),
+                host,
+            )
+            .unwrap()
+            .drag_update
+            .unwrap();
+        replica
+            .apply_drag_update(&peer_session, &peer_store, host, &next)
+            .unwrap();
+        presentation.delta(remote, next.delta);
+        presentation.state.advance(1.0 / 60.0);
+        let displayed = presentation.state.offset(PieceId(0));
+        assert_ne!(displayed, next.delta);
+        assert_eq!(presentation.state.target(PieceId(0)), next.delta);
+        assert_eq!(peer_store.states, canonical);
+        assert_eq!(peer_session.cursor(), cursor);
+        // Loss is allowed; duplicate/stale/wrong-context packets cannot retarget.
+        for (mut rejected, expected) in [
+            (next.clone(), ReplicationError::DuplicateUpdate),
+            (update.clone(), ReplicationError::StaleUpdate),
+            (next.clone(), ReplicationError::WrongDragContext),
+        ] {
+            rejected.delta = Vec2::splat(-999.0);
+            if expected == ReplicationError::WrongDragContext {
+                rejected.grab_sequence += 1;
+            }
+            let result = replica.apply_drag_update(&peer_session, &peer_store, host, &rejected);
+            if result.is_ok() {
+                presentation.delta(remote, rejected.delta);
+            }
+            assert_eq!(result, Err(expected));
+            assert_eq!(presentation.state.target(PieceId(0)), next.delta);
+            assert_eq!(presentation.state.offset(PieceId(0)), displayed);
+        }
         let rotated = contexts
             .apply_replicated(
                 &mut session,
@@ -220,8 +277,8 @@ mod tests {
                     ClientCommandSequence::Control(1),
                     ProtocolPieceCommand::RotateDrag {
                         grab_sequence: 0,
-                        final_delta: update.delta,
-                        through_tick: Some(3),
+                        final_delta: next.delta,
+                        through_tick: Some(15),
                         quarter_turns: 1,
                     },
                 ),
@@ -247,11 +304,40 @@ mod tests {
             &peer_store,
         );
         assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
+        assert_eq!(presentation.state.target(PieceId(0)), Vec2::ZERO);
         assert_eq!(
             replica.apply_drag_update(&peer_session, &peer_store, host, &ahead),
             Err(ReplicationError::WrongDragContext)
         );
         assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
+        presentation.state.advance(1.0 / 60.0);
+        assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
+        let rebased = contexts
+            .apply_replicated(
+                &mut session,
+                &mut store,
+                remote,
+                &command(
+                    ClientCommandSequence::Move {
+                        after_control_sequence: 1,
+                        tick: 100,
+                    },
+                    ProtocolPieceCommand::DragUpdate {
+                        delta: Vec2::new(6.0, 7.0),
+                    },
+                ),
+                Some(&definition),
+                host,
+            )
+            .unwrap()
+            .drag_update
+            .unwrap();
+        replica
+            .apply_drag_update(&peer_session, &peer_store, host, &rebased)
+            .unwrap();
+        presentation.delta(remote, rebased.delta);
+        presentation.state.advance(1.0 / 60.0);
+        assert_ne!(presentation.state.offset(PieceId(0)), rebased.delta);
         let cancel = contexts
             .cancel_replicated(&mut session, &mut store, remote)
             .unwrap()
@@ -275,5 +361,128 @@ mod tests {
         );
         assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
         assert!(presentation.slots.is_empty());
+        assert_eq!(presentation.state.target(PieceId(0)), Vec2::ZERO);
+        presentation.state.advance(1.0);
+        assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
+        // Release is also an immediate boundary, even with unconsumed display lag.
+        let grabbed = contexts
+            .apply_replicated(
+                &mut session,
+                &mut store,
+                remote,
+                &command(
+                    ClientCommandSequence::Control(2),
+                    ProtocolPieceCommand::Grab {
+                        target: PieceTarget::Component(ComponentRef {
+                            member: PieceId(0),
+                            expected_size: 1,
+                        }),
+                    },
+                ),
+                Some(&definition),
+                host,
+            )
+            .unwrap()
+            .authority_event
+            .unwrap();
+        replica
+            .apply_event(
+                &mut peer_session,
+                &mut peer_store,
+                host,
+                &grabbed,
+                Some(&definition),
+                local,
+            )
+            .unwrap();
+        presentation.synchronize(&peer_session, &peer_store);
+        presentation.event(
+            local,
+            &grabbed.event,
+            replica.remote_drag(&peer_session, &peer_store, remote),
+            &peer_store,
+        );
+        let moving = contexts
+            .apply_replicated(
+                &mut session,
+                &mut store,
+                remote,
+                &command(
+                    ClientCommandSequence::Move {
+                        after_control_sequence: 2,
+                        tick: 101,
+                    },
+                    ProtocolPieceCommand::DragUpdate {
+                        delta: Vec2::new(-2.0, 3.0),
+                    },
+                ),
+                Some(&definition),
+                host,
+            )
+            .unwrap()
+            .drag_update
+            .unwrap();
+        replica
+            .apply_drag_update(&peer_session, &peer_store, host, &moving)
+            .unwrap();
+        presentation.delta(remote, moving.delta);
+        presentation.state.advance(1.0 / 60.0);
+        assert_ne!(presentation.state.offset(PieceId(0)), moving.delta);
+        let released = contexts
+            .apply_replicated(
+                &mut session,
+                &mut store,
+                remote,
+                &command(
+                    ClientCommandSequence::Control(3),
+                    ProtocolPieceCommand::Release {
+                        grab_sequence: 2,
+                        final_delta: moving.delta,
+                    },
+                ),
+                Some(&definition),
+                host,
+            )
+            .unwrap()
+            .authority_event
+            .unwrap();
+        replica
+            .apply_event(
+                &mut peer_session,
+                &mut peer_store,
+                host,
+                &released,
+                Some(&definition),
+                local,
+            )
+            .unwrap();
+        presentation.event(local, &released.event, None, &peer_store);
+        assert_eq!(
+            replica.apply_drag_update(&peer_session, &peer_store, host, &moving),
+            Err(ReplicationError::MissingDragContext)
+        );
+        assert!(presentation.slots.is_empty());
+        assert_eq!(presentation.state.target(PieceId(0)), Vec2::ZERO);
+        presentation.state.advance(1.0);
+        assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
+        // Same-piece allocation after Cancel starts at its own exact current delta.
+        presentation.grab(local, PlayerId(3), &initialized, &peer_store);
+        assert_eq!(presentation.state.offset(PieceId(0)), initialized.delta);
+        presentation.delta(PlayerId(3), Vec2::splat(50.0));
+        presentation.state.advance(1.0 / 60.0);
+        let new_session = AuthoritySession::new(
+            SessionDefinition {
+                id: SessionId(11),
+                ..session_definition
+            },
+            host,
+            AuthorityCursor::new(0, 0),
+        );
+        presentation.synchronize(&new_session, &peer_store);
+        assert!(presentation.slots.is_empty());
+        assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
+        assert_eq!(presentation.state.target(PieceId(0)), Vec2::ZERO);
+        presentation.state.advance(1.0);
+        assert_eq!(presentation.state.offset(PieceId(0)), Vec2::ZERO);
     }
 }

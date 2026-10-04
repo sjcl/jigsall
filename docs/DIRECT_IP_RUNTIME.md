@@ -87,13 +87,30 @@ queued releases/rotations sampled in the previous basis are adjusted once.
 Rejected host controls retain the old pointer basis and consumed sequence history.
 Remote Reliable route errors follow the existing close/resync contract.
 
+### Remote Transient smoothing
+
+Host and clients share the bounded remote presentation bridge. An accepted
+Transient replaces only the latest target; the replica/authority context keeps
+that exact network delta. CPU presentation uses `Time<Real>` in Last, after
+network poll/commands and before upload preparation/extraction. Displayed delta
+converges exponentially without prediction or extrapolation, over at most 64
+slots. Packet ticks are sequence ordering, never a clock or sample interval.
+
+Grab and reconciled Ready initialization set displayed and target to the current
+context delta immediately. Reliable drag rotation rebases both to the new basis;
+Release/Cancel discard the slot and all smoothing state immediately. Slot reuse,
+scope/epoch changes and session teardown cannot retain old offsets. Local active
+and pending-release feedback stay immediate. Tuning, exact-settle conditions and
+the 512-byte active / zero-byte settled delta upload are documented in
+[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation).
+
 ### Local Release presentation while awaiting authority
 
 | State | Position used for presentation | Canonical position |
 | --- | --- | --- |
 | Local active drag | Accepted local COW membership plus current pointer delta | Last Reliable authority commit |
 | Local pending release | Same accepted membership plus frozen Release `final_delta` | Unchanged until `ReleaseCommitted` |
-| Remote transient drag | Existing piece-to-slot mapping plus remote Transient delta | Last Reliable authority commit |
+| Remote transient drag | Existing piece-to-slot mapping plus displayed delta smoothed toward the latest accepted Transient target | Last Reliable authority commit |
 | Canonical authority position | CPU `PieceDataStore.states` | Used for snap, placement, connectivity, progress and snapshots |
 
 After sending Release, the client retains the final presentation, but canonical
@@ -221,6 +238,25 @@ tests. Local validation follows repository and task-specific instructions.
 No runtime FPS or cross-GPU/OS bit identity is claimed by these tests.
 Remote drag GPU rendering uses the existing bounded slot presentation path; see
 [ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation).
+
+Remote smoothing adds four math regressions in `resources/remote_drag.rs` for
+equal elapsed time at different frame divisions, burst/latest-target reversal,
+no overshoot, exact settling/hitches and Reliable rebase/reset. Its 1M mapping
+regression runs 9,999 accepted target/frame updates under the canonical-access
+guard, preserving mapping allocation, membership Arc, mapping revision and
+upload ranges. Runtime Worlds verify host/peer smoothing before Last upload,
+unchanged canonical/replica state, real-time advance while virtual time is paused,
+lagged rotation/release/cancellation and slot reuse. Final-reconciliation tests
+also cover exact Ready initialization, duplicate/stale/old-basis/late drops and
+scope reset. The GPU regression now checks intermediate display pixels and
+readback deltas, active 512-byte and settled zero-byte uploads.
+
+2026-10-04 Windows validation for remote smoothing: release workspace default
+tests (716 including doctests), all-feature tests (733 including all localhost
+GNS tests and doctests), all-feature Clippy with `-D warnings`, default workspace
+check, fmt and the extended real-GPU remote presentation test passed. The native
+all-feature test link emitted its existing library-export notice and non-fatal
+Tracy `SymInitialize` diagnostic; profiler symbol resolution was not validated.
 
 2026-10-04 initial Windows validation for pending local Release: workspace default tests
 (691 including doctests), all-feature tests (692 including doctests, excluding

@@ -55,6 +55,14 @@ release時のreadbackはcomponent maskではなくdirect hit maskの4 * ceil(N/3
 
 Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_position`をmain / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
 
+remote Transientのaccepted deltaはCPU presentationのtargetで、GPUの共有512-byte tableには`Time<Real>`で指数平滑化したdisplayed deltaを渡します。normal / far描画、main / point / rectangleのvisibilityとvertexはすべてこの同じ表示位置を使い、targetを直接参照するshader経路はありません。Reliable Grab / Ready / drag rotationは両deltaを即時一致させ、Release / Cancelは直ちにslotを破棄します。prediction / extrapolationは行いません。smoothing frameは最大64 slotだけを更新し、canonical / remote mapping uploadは0 bytes、delta uploadは最大512 bytes、exact settle後の次frameは0 bytesです。
+
+2026-10-04、Windowsのrelease実GPUテストでsmoothingを追加検証しました。normal / farの途中display位置を描画し、target位置との区別とremote-heldのpoint / rectangle除外を確認しました。テスト時だけdelta bufferへCOPY_SRCを付け、3回のactive frameでGPUの値がCPU displayed deltaと一致することをreadbackしました。各frameのcanonical / remote mapping / local membership / root / selection uploadは0 bytes、remote deltaは512 bytes、exact settle後の次frameは0 bytesでした。通常runtimeのbuffer usageとshaderは変更していません。
+
+```sh
+cargo test --workspace --release --locked gpu_remote_presentation -- --ignored --nocapture --test-threads=1
+```
+
 2026-10-04、Windows / RTX 5090 / Vulkan（NVIDIA 610.88）でremote presentationを検証しました。canonical位置が画面外にある2つのheld pieceを異なるslot deltaで画面内へ移し、normal / farの描画とculling、point / rectangleのHELD除外を確認しました。scalar更新はcanonical state upload / remote mapping uploadが0 bytes、delta uniformが512 bytes、idleでは両remote uploadが0 bytesです。Release相当のmapping clearと同epochのsession reset後にoffsetが残らないことも確認しました。100万pieceのfar zoom回帰テストではremote mapping bufferが4,000,000 bytes、delta bufferが512 bytesで、camera / idleのremote uploadが0 bytesです。
 
 ```sh

@@ -99,16 +99,73 @@ fn gpu_remote_presentation_normal_far_culling_picking_and_scalar_uploads() {
             bytemuck::cast_slice::<u32, u8>(&[slots[0], slots[1], 0, 0])
         );
         let canonical = app.world().resource::<PieceDataStore>().states.clone();
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            Duration::from_secs_f64(1.0 / 60.0),
+        ));
         app.world_mut()
             .resource_mut::<RemoteDragPresentation>()
-            .set_delta(slots[0], Vec2::new(-1032.0, -984.0));
-        update_gpu(&mut app);
-        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
-        assert_eq!(gpu.upload_bytes, 0);
-        assert_eq!(gpu.remote_mapping_upload_bytes, 0);
-        assert_eq!(gpu.remote_mapping_upload_calls, 0);
-        assert_eq!(gpu.remote_delta_upload_bytes, 512);
-        assert_eq!(app.world().resource::<PieceDataStore>().states, canonical);
+            .set_target(slots[0], Vec2::new(-1032.0, -984.0));
+        for _ in 0..3 {
+            update_gpu(&mut app);
+            let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+            assert_eq!(gpu.upload_bytes, 0);
+            assert_eq!(gpu.drag_upload_bytes, 0);
+            assert_eq!(gpu.root_upload_bytes, 0);
+            assert_eq!(gpu.selection_upload_bytes, 0);
+            assert_eq!(gpu.remote_mapping_upload_bytes, 0);
+            assert_eq!(gpu.remote_mapping_upload_calls, 0);
+            assert_eq!(gpu.remote_delta_upload_bytes, 512);
+            let presentation = app.world().resource::<RemoteDragPresentation>();
+            let displayed = presentation.offset(PieceId(0));
+            assert!(displayed.y > -1000.0 && displayed.y < -984.0);
+            assert_eq!(presentation.target(PieceId(0)), Vec2::new(-1032.0, -984.0));
+            let raw = read_buffer(&app, &gpu.buffers.as_ref().unwrap().remote_deltas, 512);
+            assert_eq!(
+                &raw[..8],
+                bytemuck::cast_slice::<f32, u8>(&displayed.to_array())
+            );
+            assert_eq!(app.world().resource::<PieceDataStore>().states, canonical);
+        }
+        // Freeze only fixture frame time to read/pick the intermediate display.
+        let displayed = app
+            .world()
+            .resource::<RemoteDragPresentation>()
+            .offset(PieceId(0));
+        let y = (64.0 - (1000.0 + displayed.y)).floor() as usize;
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            Duration::ZERO,
+        ));
+        let pixels = rendered_pixels(&mut app, target.clone());
+        assert_eq!(
+            &pixels[(y * 128 + 32) * 4..(y * 128 + 32) * 4 + 3],
+            &[255; 3]
+        );
+        if size == 2 {
+            assert_eq!(
+                &pixels[(48 * 128 + 32) * 4..(48 * 128 + 32) * 4 + 3],
+                &[0; 3]
+            );
+        }
+        for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+            assert!(pick(
+                &mut app,
+                Rect::new(32.0, y as f32, 33.0, y as f32 + 1.0),
+                mode
+            )
+            .is_empty());
+        }
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            Duration::from_secs_f64(1.0 / 60.0),
+        ));
+        for _ in 0..20 {
+            update_gpu(&mut app);
+        }
+        assert_eq!(
+            app.world()
+                .resource::<RemoteDragPresentation>()
+                .offset(PieceId(0)),
+            Vec2::new(-1032.0, -984.0)
+        );
         let pixels = rendered_pixels(&mut app, target.clone());
         assert_eq!(
             &pixels[(48 * 128 + 32) * 4..(48 * 128 + 32) * 4 + 3],

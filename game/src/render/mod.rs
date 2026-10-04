@@ -862,7 +862,13 @@ fn prepare_buffers(
                 &device,
                 "remote drag deltas",
                 512,
-                BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+                BufferUsages::UNIFORM
+                    | BufferUsages::COPY_DST
+                    | if cfg!(test) {
+                        BufferUsages::COPY_SRC
+                    } else {
+                        BufferUsages::empty()
+                    },
             ),
             remote_revision: u64::MAX,
             remote_delta_revision: u64::MAX,

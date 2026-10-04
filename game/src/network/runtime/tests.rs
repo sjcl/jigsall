@@ -253,6 +253,8 @@ fn app() -> App {
         .add_sub_state::<GameSubState>()
         .add_message::<ClientCommand>()
         .init_resource::<PieceDataStore>()
+        .init_resource::<remote_drag::RemoteDragUpload>()
+        .add_systems(Last, remote_drag::prepare_remote_drag_upload)
         .init_resource::<PieceInteraction>()
         .init_resource::<LocalPlayerId>()
         .init_resource::<SessionHostId>()
