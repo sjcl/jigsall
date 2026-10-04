@@ -1026,7 +1026,7 @@ fn snapshot_serialized_field_order_preserves_dense_records() {
     assert!(!json.contains("checkpoint"));
     assert_eq!(serde_json::from_str::<GameSnapshot>(&json).unwrap(), wire);
     assert_eq!(wire.clone().into_checkpoint(), c);
-    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 5);
+    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 1);
 }
 
 #[test]
@@ -1423,12 +1423,12 @@ fn exhausted_revision_does_not_publish_or_wrap() {
     assert_eq!(storage.blobs.lock().unwrap()[&key], encoded);
 }
 #[test]
-fn save_format_four_is_the_only_supported_layout() {
+fn save_format_one_is_the_only_supported_layout() {
     let original = SaveCodec::encode(&save()).unwrap();
-    assert_eq!(SAVE_FORMAT_VERSION, 4);
-    assert_eq!(&original[8..10], &4u16.to_le_bytes());
+    assert_eq!(SAVE_FORMAT_VERSION, 1);
+    assert_eq!(&original[8..10], &1u16.to_le_bytes());
     assert_eq!(SaveCodec::decode(&original).unwrap(), save());
-    for version in [0u16, 1, 2, 3, 9] {
+    for version in [0u16, 2, 3, 4, 9] {
         let mut bytes = original.clone();
         bytes[8..10].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
@@ -1445,10 +1445,16 @@ fn save_format_four_is_the_only_supported_layout() {
     let mut abandoned = b"PUZSAVE\0".to_vec();
     abandoned.extend_from_slice(&1u16.to_le_bytes());
     abandoned.extend_from_slice(&save().metadata.id.0.to_le_bytes());
-    abandoned.resize(220, 0);
+    abandoned.resize(original.len(), 0);
     resign(&mut abandoned);
-    assert!(SaveCodec::decode(&abandoned).is_err());
-    assert!(SaveCodec::decode_header(&abandoned, abandoned.len() as u64).is_err());
+    assert!(matches!(
+        SaveCodec::decode(&abandoned),
+        Err(SaveError::CorruptSave(_))
+    ));
+    assert!(matches!(
+        SaveCodec::decode_header(&abandoned, abandoned.len() as u64),
+        Err(SaveError::CorruptSave(_))
+    ));
 }
 #[test]
 fn proxy_transfers_the_same_blob_allocation_to_owner_backend() {

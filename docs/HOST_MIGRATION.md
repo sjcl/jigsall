@@ -1,5 +1,7 @@
 # Host Migration 基盤
 
+2026-10-04追記: 初回リリースのsnapshot schemaは1（開発時schema 5と同じlayout）、generatorはv1（開発時v5と同じ生成結果）です。本書の旧schemaやgenerator番号は開発時の記録で、互換decoderは提供しません。現在の構成は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
+
 ## Baseline と変更範囲
 
 作業開始時のHEAD: `7d85e57a3ac5e6375f192b1f698e036f77200849`
@@ -9,7 +11,7 @@
 初回実装では元checkoutのgenerator v5化とshape/renderer系の並行作業を保持した。
 その後、`master` の `4fec6dc5fa3a960d69ad7ffe866fcacc3014f07c`
 (`perf: move multi-drag transforms and selection previews to GPU`) へrebaseした。
-現在はmasterのgenerator v5とGPU drag/preview基盤を含む。
+現在はgenerator v1（開発時v5）とGPU drag/preview基盤を含む。
 snapshotは版番号を固定せず、現在の `PuzzleDefinition.validate()` に委譲する。
 host migrationの変更は既存GPU hot pathやgeneratorへ追加処理を接続しない。
 

@@ -1,5 +1,7 @@
 # generator v5の識別性評価の強化
 
+2026-10-04追記: 本書の開発時generator v5は、初回リリースのgenerator v1と同じアルゴリズムです。以下の測定値と既存benchmarksは当時のv5表記を維持します。現在のexampleが新しく生成するCSV・SVG・回答記録はgenerator v1を使用し、ブラウザ保存先もv1用です。旧v5の回答記録は移行しません。
+
 形状定義の基準は`2a9d23b85cf3f1c4324a47b28047255039209d6c`です。`puzzle/src/procedural.rs`、`game/src/render/puzzle_shape.wgsl`、`core/src/gameplay.rs`は変更していません。hash、decode、SDF、generator version、通常renderer、pickingの挙動はそのままで、test/reference featureとexampleだけに評価・toolを追加しました。
 
 指定した5項目を実装しました。無作為な候補集合でもv5はv4より輪郭距離が大きい一方、**長辺を64 px幅で表示すると、一部の隣接classが同じbinary maskになります**。256 px幅の今回のworst-case評価では全隣接classが分離しました。人間の正答率や回答時間はまだ収集しておらず、それを測るtoolを用意した段階です。

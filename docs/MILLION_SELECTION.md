@@ -1,5 +1,7 @@
 # Million-piece selection / bulk interaction
 
+2026-10-04追記: 初回リリースのsnapshot schemaは1（開発時schema 5と同じlayout）、generatorはv1（開発時v5と同じ生成結果）です。本書の旧schemaやgenerator番号は開発時の記録で、互換decoderは提供しません。現在の構成は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
+
 現行の90°回転とrigid transformの拡張は[ROTATION.md](ROTATION.md)を参照してください。以下の計測は回転追加前のtranslation-only実装に対する記録です。
 
 2026-10-02追記: 本書の測定・schema 2・piece単位のrelease記述はbulk-selection導入時の記録です。永続連結後の現在のauthority、schema 3、追加8 MB、性能比較と維持／変更したinvariantは[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。idle / pointer O(1)、GPU point 4-byte / rectangle bitset、各transition 1 command、dense dirty uploadは維持し、final selection / Grab / Releaseへcomponent expansionと隣接snap探索を追加しました。

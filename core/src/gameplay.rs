@@ -15,8 +15,8 @@ impl std::fmt::Display for PieceId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
-/// Version 5 retains the v4 fillets and decodes distinct macro shape classes.
-pub const GENERATOR_VERSION: u16 = 5;
+/// Release v1 preserves the pre-release v5 shape classes and v4 root fillets.
+pub const GENERATOR_VERSION: u16 = 1;
 
 /// Device-independent upper bound for the puzzle's coordinate system.
 pub const MAX_PUZZLE_IMAGE_DIMENSION: u32 = 16_384;
@@ -427,6 +427,7 @@ mod tests {
 
     #[test]
     fn only_current_shape_version_is_accepted() {
+        assert_eq!(GENERATOR_VERSION, 1);
         let mut definition = PuzzleDefinition {
             generator_version: GENERATOR_VERSION,
             seed: 42,
@@ -436,7 +437,7 @@ mod tests {
             rotation_enabled: true,
         };
         assert!(definition.validate().is_ok());
-        for old_version in [2, 3, 4] {
+        for old_version in [0, 2, 3, 4, 5, 6] {
             definition.generator_version = old_version;
             assert_eq!(
                 definition.validate(),

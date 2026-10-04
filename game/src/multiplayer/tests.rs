@@ -446,7 +446,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         invalid.cursor = wrong_cursor;
         cases.push((invalid, SnapshotError::WrongCursor));
     }
-    for schema in [1, 2, 3, 4, SNAPSHOT_SCHEMA_VERSION + 1] {
+    for schema in [0, 2, 3, 4, 5, 6] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = schema;
         cases.push((invalid, SnapshotError::UnsupportedSchema(schema)));

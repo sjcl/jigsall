@@ -55,13 +55,13 @@ fn target(s: &CursorPresence, id: u64) -> Option<Vec2> {
 fn cursor_wire_roundtrip_class_version_and_golden() {
     let msg = WireMessage::CursorUpdate(update(10, Some(Vec2::new(1.0, -2.0))));
     let expected = vec![
-        0x50, 0x5a, 0x4c, 0x41, 11, 0, 9, 0, 12, 0, 0, 0, 1, 2, 10, 1, 0, 0, 0x80, 0x3f, 0, 0, 0,
+        0x50, 0x5a, 0x4c, 0x41, 1, 0, 9, 0, 12, 0, 0, 0, 1, 2, 10, 1, 0, 0, 0x80, 0x3f, 0, 0, 0,
         0xc0,
     ];
     assert_eq!(wire::encode(&msg).unwrap(), expected);
     let snap = WireMessage::CursorSnapshot(snapshot(20, &[1]));
     let golden = vec![
-        0x50, 0x5a, 0x4c, 0x41, 11, 0, 10, 0, 13, 0, 0, 0, 1, 2, 20, 1, 1, 0, 0, 0x80, 0x3f, 0, 0,
+        0x50, 0x5a, 0x4c, 0x41, 1, 0, 10, 0, 13, 0, 0, 0, 1, 2, 20, 1, 1, 0, 0, 0x80, 0x3f, 0, 0,
         0x80, 0x3f,
     ];
     assert_eq!(wire::encode(&snap).unwrap(), golden);
@@ -80,7 +80,7 @@ fn cursor_wire_roundtrip_class_version_and_golden() {
             wire::decode_for_class(&bytes, MessageClass::Bulk),
             Err(wire::WireError::WrongClass)
         );
-        for version in [9, 10] {
+        for version in [9, 10, 11] {
             let mut old = bytes.clone();
             old[4] = version;
             assert_eq!(
@@ -164,7 +164,7 @@ fn cursor_decode_rejects_oversized_length_before_reading_elements() {
         assert!(wire::encode(&WireMessage::CursorSnapshot(entries.clone())).is_err());
         let payload = postcard::to_allocvec(&entries).unwrap();
         let mut frame = b"PZLA".to_vec();
-        frame.extend_from_slice(&11u16.to_le_bytes());
+        frame.extend_from_slice(&wire::WIRE_VERSION.to_le_bytes());
         frame.extend_from_slice(&[10, 0]);
         frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         frame.extend(payload);

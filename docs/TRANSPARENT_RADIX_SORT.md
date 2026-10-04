@@ -1,5 +1,7 @@
 # 可視数に応じた透明画像の GPU radix sort
 
+2026-10-04追記: 本書のgenerator v5は開発時の番号です。初回リリースでは同じ形状・配置の生成方式をgenerator v1として使用し、以下の性能記録と既存CSVのv5表記は維持します。
+
 2026-10-01。透明画像のfull-capacity bitonic sortを、可視IDだけを対象とした安定radix sortへ変更しました。旧経路の1M時210 dispatchから、radix本体9 dispatch、準備と可視ID圧縮を含めて11 dispatchへ削減しています。capacity全体へのsentinel初期化も削除しました。
 
 ## 処理と描画順

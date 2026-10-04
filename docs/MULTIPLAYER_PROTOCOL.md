@@ -1,6 +1,11 @@
 # Multiplayer command protocol
 
-## Display metadata and session roster (wire v11)
+For the first release, GameSnapshot uses schema 1 with the pre-release schema 5
+layout, and generator v1 preserves the pre-release v5 algorithm. References below
+to snapshot schemas 3/4 describe development history; pre-release compatibility is
+not provided. See [ARCHITECTURE.md](ARCHITECTURE.md) for the current format.
+
+## Display metadata and session roster (wire v1)
 
 PlayerId is the protocol/ownership identity. PlayerDisplayName is a validated,
 optional display string; duplicate names are valid. Platform account identity is
@@ -626,10 +631,10 @@ Transient or a reliable final_delta repairs presentation. Successful rebases alo
 advance the sequence tracker's move basis; rejected reliable rebases consume their
 control number while leaving states, holds and the previous basis intact.
 
-Wire version 5 and fixed golden frames cover all rotation commands/events, signed
-turns, optional floors, field order and enum indices, plus DragCancelled. Earlier
-pre-release wire versions are rejected without a legacy decoder; snapshot schema 4
-and its 16-byte records are unchanged.
+Pre-release wire version 5 introduced golden frames for all rotation commands/events,
+signed turns, optional floors, field order and enum indices, plus DragCancelled.
+The current release wire version is 1; pre-release compatibility is not provided.
+Snapshot schema 4 and its 16-byte records were unchanged by those commands.
 
 ## Reliable lifecycle cancellation
 

@@ -5,8 +5,8 @@ GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId orde
 Its transactional install can continue existing authority events without a new
 Grab. The opt-in Syncing runtime connects image preparation, generation-bound
 Bulk baseline transfer, Reliable catch-up, full authoritative active-drag
-reconciliation and the final ACK/Ready commit handoff. Wire v8 adds finalization
-and Ready control variants; generic Bulk framing, SecureTransport, GNS
+reconciliation and the final ACK/Ready commit handoff. Pre-release wire v8 added
+finalization and Ready control variants; generic Bulk framing, SecureTransport, GNS
 and rate limiting retain their existing designs. Migration uses snapshot only
 plus a new epoch; save/load use checkpoint only; both discard
 drags. See [JOIN_IN_PROGRESS.md](JOIN_IN_PROGRESS.md) for the CPU contract.
@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v11 and snapshot schema 5. `core` has no transport/native dependency.
+wire v1 and snapshot schema 1. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
@@ -524,7 +524,7 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v11
+## Wire v1
 
 ### World-space remote cursors
 
@@ -576,7 +576,7 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 11 |
+| 4..6 | u16 wire version, little-endian, currently 1 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl, 8 Presence, 9 CursorUpdate, 10 CursorSnapshot |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -589,37 +589,39 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v11 Postcard field order and enum representation are part of the wire contract.
+The v1 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
-Version 5 appends DragCancelled as authority event variant index 4, after
-DragRotationCommitted. Its only fields are player and grab_sequence. It consumes
+During development, pre-release version 5 appended DragCancelled as authority event
+variant index 4, after DragRotationCommitted. Its only fields are player and grab_sequence. It consumes
 one authority cursor, does not resend a target, commits no delta and performs no
 snap. Existing event indices and payload field order are unchanged. It retains
-version 4's mandatory PAKE-derived AEAD and encrypted SecureChannelReady,
+pre-release version 4's mandatory PAKE-derived AEAD and encrypted SecureChannelReady,
 Rotate / RotationCommitted, RotateDrag / DragRotationCommitted and the
-RemoteDragUpdate basis sequence. Version 6 replaces kind 5's opaque bytes with
-typed Start/Chunk/Finish/Abort. Gameplay payload layouts remain unchanged; only
-their version header advances. Version 7 adds SyncControl kind 7 on Reliable Control,
+RemoteDragUpdate basis sequence. Pre-release version 6 replaced kind 5's opaque
+bytes with typed Start/Chunk/Finish/Abort. Gameplay payload layouts remained
+unchanged; only their version header advanced. Pre-release version 7 added
+SyncControl kind 7 on Reliable Control,
 including generation-bound baseline offers, catch-up events and ACKs. Bulk fields
-and gameplay layouts remain unchanged. Version 8 appends SyncControl indices
-11 Finalize, 12 FinalizeAck and 13 ReadyCommit. All three carry SyncFinalization
+and gameplay layouts remained unchanged. Pre-release version 8 appended SyncControl
+indices 11 Finalize, 12 FinalizeAck and 13 ReadyCommit. All three carry SyncFinalization
 (generation u64, AuthorityCursor, revision u64); Finalize additionally carries a
 bounded FinalDragSet (Vec of player, grab_sequence, basis_sequence, Option last_tick,
 Vec2 delta), in canonical PlayerId order, capped at 64. No targets are repeated.
-Version 9 appends ClientProfile at SyncControl index 14, extends ReadyCommit
-with RosterSnapshot (revision, bounded canonical players), and adds Presence kind 8
+Pre-release version 9 appended ClientProfile at SyncControl index 14, extended
+ReadyCommit with RosterSnapshot (revision, bounded canonical players), and added Presence kind 8
 on Reliable Control / Gameplay. Presence indices are 0 PlayerJoined (revision,
 RosterPlayer) and 1 PlayerLeft (revision, PlayerId). RosterPlayer carries PlayerId
 then Option<PlayerDisplayName>. Existing gameplay payloads remain unchanged.
-Version 11 adds CursorUpdate kind 9 and CursorSnapshot kind 10 on Transient.
-Gameplay and checkpoint payloads remain unchanged.
-Only version 11 is decoded; pre-release versions 1 through 10 and future versions
-are rejected without a compatibility decoder.
-WIRE_VERSION also binds PAKE context, HKDF application keys and secure record AAD
-to v11. No cryptographic design change is made.
-Fixed v11 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+Pre-release version 11 added CursorUpdate kind 9 and CursorSnapshot kind 10 on
+Transient. Gameplay and checkpoint payloads remained unchanged.
+For the first release, the existing pre-release v11 schema is numbered v1.
+Only version 1 is decoded; other version numbers are rejected. Pre-release builds,
+including the earlier v1 prototype, are not supported; no compatibility decoder
+is provided. WIRE_VERSION also binds PAKE context, HKDF application keys and secure
+record AAD to v1. Payload layouts and the cryptographic design are unchanged.
+Fixed v1 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
 AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl, including

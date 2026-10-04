@@ -121,7 +121,7 @@ cascading publication failure and immediate join/leave after queued ReadyCommit.
 one secured transport, bootstrap, sync coordinator/router, Ready connections,
 authority session, host drag contexts or client replica, and local command sender.
 It borrows the existing World `PieceDataStore`; there is no second store or
-per-piece network Entity. The wire version is 11, snapshot schema 5, and join
+per-piece network Entity. The wire version is 1, snapshot schema 1, and join
 baseline schema 1.
 
 ## Programmatic entrypoints
@@ -374,7 +374,7 @@ Offline release continues to use immediate local authority without ACK state.
 
 Pending idle frames share the same 125,000-byte bitset for 1M members and update
 only scalar/Arc presentation state. They do not inspect canonical pieces, rebuild
-membership or request canonical uploads. Wire version 11, snapshot schema 5,
+membership or request canonical uploads. Wire version 1, snapshot schema 1,
 JoinBaseline schema 1 and the 16-byte GpuPieceState are unchanged.
 
 ## Joining World and image lifecycle

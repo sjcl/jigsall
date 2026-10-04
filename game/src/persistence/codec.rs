@@ -5,7 +5,7 @@ use bevy::math::{UVec2, Vec2};
 use puzzella_core::{PuzzleDefinition, GENERATOR_VERSION};
 use sha2::{Digest, Sha256};
 
-pub const SAVE_FORMAT_VERSION: u16 = 4;
+pub const SAVE_FORMAT_VERSION: u16 = 1;
 pub const PUZIMG_FORMAT_VERSION: u16 = 1;
 const SAVE_MAGIC: &[u8; 8] = b"PUZSAVE\0";
 const IMAGE_MAGIC: &[u8; 8] = b"PUZIMG\0\0";

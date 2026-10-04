@@ -187,7 +187,7 @@ fn invalid_edges_offsets_partial_placement_and_old_schema_are_atomic() {
     let mut invalid = GameSnapshot::capture(&placed, &d, SESSION, expected(&d).cursor).unwrap();
     invalid.pieces[1].flags &= !SNAPSHOT_PLACED;
     cases.push((invalid, SnapshotError::InconsistentComponent(PieceId(1))));
-    for version in [1, 2, 3, 4, 6] {
+    for version in [0, 2, 3, 4, 5, 6] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = version;
         cases.push((invalid, SnapshotError::UnsupportedSchema(version)));

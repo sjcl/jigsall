@@ -1,6 +1,6 @@
 # Puzzella のアーキテクチャ
 
-2026-10-01。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、procedural GPU rendererへ移行しました。現在はv4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v5です。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
+2026-10-04。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、procedural GPU rendererへ移行しました。現在は開発時v4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v1（開発時v5）です。初回リリース向けにgeneratorとsnapshot schemaをそれぞれ5→1に整理し、生成結果とsnapshotのlayoutは維持しています。開発中の形式との互換性や移行は提供しません。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 ## Workspaceと責務
 
@@ -77,7 +77,7 @@ cursorの通常処理は最大64 remote playersのsmoothing / instance描画で�
 component・piece GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
 snapshot / checkpoint / JoinBaseline / catch-up / save / autosaveから完全に分離します。
 disconnect / PlayerLeftは即削除、session / epoch / baseline / Ready replacementとteardownは
-全resetです。wire v11の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
+全resetです。wire v1の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
 詳細は[runtime](DIRECT_IP_RUNTIME.md#remote-cursor-presence)と
 [transport](NETWORK_TRANSPORT.md#world-space-remote-cursors)を参照してください。
 
@@ -169,7 +169,7 @@ uploadします。既存state bufferをmain / far / visibility / point / rectang
 64 queued controls + 1 in-flight controlに制限され、各controlはO(k)のplanner処理です。
 1M対象なら一時pose map / plan / uploadも対象数に比例しますが、1piece操作でcanonicalの
 16MBをCOW copyしません。ordinary pointer/camera、pending ACK idle frameはpose mapを
-走査/再構築せず、state/membership uploadは0 bytesです。wire 11、snapshot schema 5、
+走査/再構築せず、state/membership uploadは0 bytesです。wire 1、snapshot schema 1、
 JoinBaseline schema 1、GpuPieceState 16 bytesを維持します。
 
 Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変わった場合だけmaskをuploadします。selected outlineはfragmentで専用bitsetを参照し、dense stateのflagsとdirty rangeを変更しません。初回state uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。dirty bitsetのset bitsをID順にiterateして連続rangeへまとめ、ID Vecの展開・sortは不要です。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate / selected / membership uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
@@ -224,9 +224,9 @@ target / displayed / smoothing ageと64-bit active maskはmappingから独立し
 
 client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipを構築し、displayed == target == reconciled deltaへ即時初期化します。初回Transientを待たず、過去のdragをzeroからanimationさせず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、join baseline / new session、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・両delta・smoothing stateをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
 
-`presentation.wgsl::presentation_position`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v11、`GpuPieceState` 16 bytes、snapshot schema 5、join baseline schema 1は変更しません。
+`presentation.wgsl::presentation_position`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v1、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
 
-接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 5のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
+接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 
 rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root bufferは4 bytes / piece、CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootをrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、preview_active == 0ならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
@@ -236,9 +236,9 @@ opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけを
 
 ## Persistent save の境界
 
-ローカル進捗保存は `PieceDataStore / PuzzleDefinition → PuzzleCheckpoint → PuzzleSave → SaveCodec → SaveRepository → SaveStorage → FilesystemStorage` の流れです。画像は選択時の original encoded bytes を SHA-256 で識別し、再エンコードしない `.puzimg` を save 間で共有します。進捗 `.puzsave` v4 は 16 bytes/piece の明示的 little-endian codec と全体 / header checksum を使い、ランダム SaveId で保存します。新規ゲームにはUUID v4のGameIdを発行し、すべての手動保存・オートセーブとそのロードで引き継ぎます。オートセーブは同じGameIdの最新指定件数（既定1件）を保持し、新しい保存の成功後に古い履歴を削除します。最大510 bytesの header とファイル長だけで一覧とローテーション対象を判別し、非 authority の placed_count cache は完全 load 時に state と照合します。旧 format の互換コードは持たず、対応 version は4だけです。更新 request は読み込んだ revision を保持し、現在の header と不一致なら Conflict として publish 前に拒否します。ユーザータイトルは validation を持つ metadata で、filename / identity には使いません。
+ローカル進捗保存は `PieceDataStore / PuzzleDefinition → PuzzleCheckpoint → PuzzleSave → SaveCodec → SaveRepository → SaveStorage → FilesystemStorage` の流れです。画像は選択時の original encoded bytes を SHA-256 で識別し、再エンコードしない `.puzimg` を save 間で共有します。進捗 `.puzsave` v1 は 16 bytes/piece の明示的 little-endian codec と全体 / header checksum を使い、ランダム SaveId で保存します。新規ゲームにはUUID v4のGameIdを発行し、すべての手動保存・オートセーブとそのロードで引き継ぎます。オートセーブは同じGameIdの最新指定件数（既定1件）を保持し、新しい保存の成功後に古い履歴を削除します。最大510 bytesの header とファイル長だけで一覧とローテーション対象を判別し、非 authority の placed_count cache は完全 load 時に state と照合します。旧 format の互換コードは持たず、対応 version は1だけです。更新 request は読み込んだ revision を保持し、現在の header と不一致なら Conflict として publish 前に拒否します。ユーザータイトルは validation を持つ metadata で、filename / identity には使いません。
 
-`GameSnapshot` schema 5は16-byte piece layoutを保持し、borrowed checkpoint view を通じて同じ capture / validation / install を使います。restore は DSU / 接続 GPU cache / placed_count を再構築し、GameData の progress / completion を同期します。load worker が準備した store を直接採用するため、random 初期配置は生成しません。既存 epoch / RenderReady による GPU 準備待ちの後だけ Playing / GameComplete へ遷移します。disk I/O、decode、codec は worker/channel に分離し、O(N) capture は明示 Save 時だけです。通常 play に新しい piece 数比例の処理や per-piece Entity / persistent Vec は追加しません。
+`GameSnapshot` schema 1は16-byte piece layoutを保持し、borrowed checkpoint view を通じて同じ capture / validation / install を使います。restore は DSU / 接続 GPU cache / placed_count を再構築し、GameData の progress / completion を同期します。load worker が準備した store を直接採用するため、random 初期配置は生成しません。既存 epoch / RenderReady による GPU 準備待ちの後だけ Playing / GameComplete へ遷移します。disk I/O、decode、codec は worker/channel に分離し、O(N) capture は明示 Save 時だけです。通常 play に新しい piece 数比例の処理や per-piece Entity / persistent Vec は追加しません。
 
 保存先は OS user application data 以下で、logical key を storage に渡します。画像を先に保存し、save は temporary file の sync と atomic replace で publish します。通常 Save は共有画像の存在だけを確認し、import / load で画像全体の hash を検証します。SaveStorage は Send / Sync を要求せず、filesystem は worker で動かします。メニューのサムネイルは専用queue / workerと独立したfilesystem handleで読み込み・検証・decodeし、保存・ロードのworkerを占有しません。ImageHashで共有する最大64件の成功texture cacheをメニュー退出・session変更後も保持します。将来の Steam Cloud は handle を所有 thread に保持し、両workerからのStorageRequestsのoperationを非同期 API に dispatch、callback から返信する executor を追加します。StorageProxy を使う repository / codec / restore 準備は worker 上で継続します。write は encoded Vec の所有権を移譲し、proxy による全 blob コピーを避けます。Steam Cloud 自体は未実装です。形式・layout・failure / worker lifecycle の詳細は [PERSISTENCE.md](PERSISTENCE.md) を参照してください。
 
@@ -250,6 +250,6 @@ PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed
 
 transport向けにはcore/protocolのComponentRef / PieceTarget / ProtocolPieceCommandを使用します。minimum memberとexpected sizeでcomponentを参照し、32 componentまでcompact、より多いselectionは対象componentのcount / topology digest付きDenseへ切り替えます。game/multiplayer/protocolのopt-in authority adapterがcurrent connectivity・所有権・placed・enabledを再検証し、Grabで受理した結果だけをSparse / Denseのplayer別contextへ保持します。Denseはcomponent listへ展開せずcanonical bitsetを保持し、受理したmembershipをGrabAccepted ACK / authority event型で返します。既存Move sequenceはmembership不要のbest-effort DragUpdateにも共用し、ReleaseはGrab sequenceとfinal deltaだけで確定します。local PieceCommand / PieceBitSetとGPU経路は維持します。詳細は[MULTIPLAYER_PROTOCOL.md](MULTIPLAYER_PROTOCOL.md)を参照してください。
 
-snapshot schema 5は16-byte stateのflagsへPLACED / CONNECTED_RIGHT / CONNECTED_DOWN / rotation（bit 9–10）を保存します。root IDはprotocolへ保存せず、install時に隣接edgeからDSUを再構成します。schema 1 / 2 / 3 / 4、境界外edge、placedの誤座標、component内のrotation / rigid transform / placed不一致は変更前に拒否します。restoreはpositions / Z / connectivity / placedを保ち、holds / selection / dragをresetします。disconnectはcomponent全体のholdだけを解放し、位置とsnapを変更しません。
+snapshot schema 1は16-byte stateのflagsへPLACED / CONNECTED_RIGHT / CONNECTED_DOWN / rotation（bit 9–10）を保存します。root IDはprotocolへ保存せず、install時に隣接edgeからDSUを再構成します。schemaの番号が1以外、境界外edge、placedの誤座標、component内のrotation / rigid transform / placed不一致は変更前に拒否します。初期のschema 1を含め、開発中のlayoutとの互換decoderはありません。restoreはpositions / Z / connectivity / placedを保ち、holds / selection / dragをresetします。disconnectはcomponent全体のholdだけを解放し、位置とsnapを変更しません。
 
 GPUは描画と選択の補助で、placed・所有権・snapを決めません。cullingはO(N)、半透明sortは可視数に比例します。選択保持・drag pointer・rectangle previewのCPU処理はO(1)ですが、final selectionの再検証、grab時のZ順保持、release時のsnapとstate commitには明示的な大量処理が残ります。極端な重なりではrasterとpickingの負荷が増えます。異OS/GPU、通常windowの全手動操作は今後の確認対象です。

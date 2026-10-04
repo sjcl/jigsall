@@ -24,7 +24,7 @@ Settings の一般タブで有効・無効、間隔（1–60分）、ゲーム�
 PieceDataStore + PuzzleDefinition + ImageHash
                 ↓ 明示的 capture（committed canonical state のみ）
         PuzzleCheckpoint
-          ├── GameSnapshot（session / cursor、schema 5）
+          ├── GameSnapshot（session / cursor、schema 1）
           └── PuzzleSave（SaveMetadata）
                   ↓ SaveCodec / PuzImage
                  bytes
@@ -33,7 +33,7 @@ PieceDataStore + PuzzleDefinition + ImageHash
               FilesystemStorage
 ```
 
-`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、schema versionは5です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
+`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、schema versionは1です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
 
 通常 Save と multiplayer snapshot は、active local / remote drag の有無に関係なく、その時点までに確定済みの canonical state を保存します。capture は `states.position` を読み、表示用の `drag.delta` を加算せず、現在の Drag を cancel / Release しません。restore では hold / holder identity / drag membership / transient delta を破棄します。`RotateDrag` で既に commit / rebase 済みの位置と回転、および Grab で更新済みの Z は保存し、rebase 後の未確定移動だけを破棄します。Grab 開始時の state に巻き戻す履歴は持ちません。migration / recovery も Drag の終了を待ちません。
 
@@ -41,9 +41,11 @@ PieceDataStore + PuzzleDefinition + ImageHash
 
 ## バイナリ形式
 
+初回リリース向けにgeneratorとsnapshot schemaも5→1に整理しました。generator v1は開発時v5と同じ形状・配置を生成し、snapshot schema 1は開発時schema 5のlayoutを維持します。旧番号の定義・snapshotは拒否し、開発中のlayoutへの互換decoderは提供しません。
+
 全整数・f32 bits は little endian。Rust の memory layout を書き出しません。未知 format version はそれぞれ拒否します。`GENERATOR_VERSION` は形状の互換性であり、save/container version や multiplayer schema と独立です。generator migration は未実装で、対応外 generator は専用エラーになります。将来の migration は codec での definition 読み取りと共通 validation の間に追加できます。
 
-### `.puzsave` version 4
+### `.puzsave` version 1
 
 | 順序 | フィールド | 幅 |
 | --- | --- | --- |
@@ -76,7 +78,7 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 
 完全 load はファイル全体の checksum、header、exact state length を検証してから state 領域を確保し、共通 checkpoint validation を行います。body のみの破損は一覧では検出せず、load の失敗をその entry に表示します。truncation・過大 length・trailing bytes・checksum 不一致・invalid state はエラーです。最大1000×1000 piecesです。
 
-回転モードの追加によりversion 4に変更しました。version 1・2・3と以前の試作layoutは拒否し、読み込み互換・migrationは提供しません。一覧にはすべての対応saveの進捗を表示します。
+初回リリースに向け、開発時のversion 4のlayoutを維持してversion 1に整理しました。対応する番号は1だけです。同じ番号を使っていた初期の試作layoutを含め、開発中のsaveとの読み込み互換・migrationは提供しません。header・全体のchecksumは新しいversionを含めて計算します。一覧にはすべての対応saveの進捗を表示します。
 
 ### `.puzimg` version 1
 

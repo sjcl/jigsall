@@ -1,5 +1,6 @@
 //! Reproducible offline metrics and monochrome fixtures. No runtime debug mode.
 use bevy_math::{UVec2, Vec2};
+use puzzella_core::GENERATOR_VERSION;
 use puzzella_puzzle::{
     fingerprint::{
         decode_v4_reference, sample_profile, worst_case_profiles, EdgeFingerprint,
@@ -176,7 +177,7 @@ fn main() {
     let mut axes = svg(
         1680,
         970,
-        "One axis at a time · other samples fixed at 128 · v5",
+        &format!("One axis at a time · other samples fixed at 128 · v{GENERATOR_VERSION}"),
     );
     for (axis, &count) in counts.iter().enumerate() {
         for class in 0..count {
@@ -208,7 +209,7 @@ fn main() {
         .iter()
         .map(|&r| EdgeSilhouetteDescriptor::v4_reference(r))
         .collect();
-    let v5: Vec<_> = raws
+    let current: Vec<_> = raws
         .iter()
         .map(|&r| EdgeSilhouetteDescriptor::from_raw(r))
         .collect();
@@ -217,9 +218,11 @@ fn main() {
     let mut closest_svg = svg(
         960,
         570,
-        "Nearest distinct EdgeId silhouettes: v4 / v5 (same candidate set)",
+        &format!(
+            "Nearest distinct EdgeId silhouettes: v4 / v{GENERATOR_VERSION} (same candidate set)"
+        ),
     );
-    for (version, descriptors) in [(4, &v4), (5, &v5)] {
+    for (version, descriptors) in [(4, &v4), (GENERATOR_VERSION, &current)] {
         let (d, ious, neighbors) = nearest(descriptors);
         let mut sorted = d.clone();
         sorted.sort_unstable();
@@ -285,7 +288,7 @@ fn main() {
     let mut matching = svg(
         1460,
         1135,
-        "Random shape-only matching: 24 tabs / shuffled complementary blanks (v5)",
+        &format!("Random shape-only matching: 24 tabs / shuffled complementary blanks (v{GENERATOR_VERSION})"),
     );
     let mut key = String::from("tab,blank,raw0,raw1,style,center,width,depth,neck,head,skew\n");
     // A separate RNG stream, independent of any shape parameter.
@@ -336,7 +339,7 @@ fn main() {
     let mut worst = svg(
         1440,
         875,
-        "Worst cases: extreme center / widest width and head / strongest lean (v5)",
+        &format!("Worst cases: extreme center / widest width and head / strongest lean (v{GENERATOR_VERSION})"),
     );
     for style in 1..=6 {
         for case in 0..6 {
@@ -374,7 +377,7 @@ fn main() {
     let mut puzzle = svg(
         1640,
         1070,
-        "1000 monochrome pieces · seed 42 · generator v5",
+        &format!("1000 monochrome pieces · seed 42 · generator v{GENERATOR_VERSION}"),
     );
     for y in 0..grid.y {
         for x in 0..grid.x {

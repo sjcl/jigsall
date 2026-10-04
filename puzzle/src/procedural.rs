@@ -1,4 +1,4 @@
-//! Generator v5. All integer operations and shape equations mirror puzzle_shape.wgsl.
+//! Release generator v1 (pre-release v5). Integer operations and shapes mirror puzzle_shape.wgsl.
 use bevy_math::{UVec2, Vec2};
 use puzzella_core::{PieceId, PuzzleDefinition};
 

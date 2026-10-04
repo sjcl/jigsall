@@ -1,5 +1,7 @@
 # 辺の視覚的識別性の改善（generator v5）
 
+2026-10-04追記: 初回リリースでは本書の開発時generator v5をv1に整理しました。形状・hash・seed・配置の計算は同じです。以下のv4/v5表記、測定値と既存benchmarksは記録当時の番号を維持します。
+
 本書は初期v5の形状変更の記録です。意図的に特徴を選んだ旧matching図も含みます。形状を固定した無作為matching・縦横比・macro軸別の追加評価と人間向けtoolは[EDGE_FINGERPRINT_EVALUATION.md](EDGE_FINGERPRINT_EVALUATION.md)を参照してください。
 
 基準は`7d85e57a3ac5e6375f192b1f698e036f77200849`のgenerator v4です。既存6 styleと解析SDFを保ち、6個の8-bit sampleをmacro classとmicro variationとしてdecodeするgenerator v5へ変更しました。100k辺では55,329種類のmacro signatureを得ました。1024本の輪郭の最近傍Hamming距離は平均7.22から29.96へ約4.15倍になりました。100万opaque entireの描画は3回の中央値0.5133 msで、同条件のv4から+3.36%、0.55 msの目安内です。
@@ -110,7 +112,7 @@ GPUではstyle定数とdepth区間をコンパイル時に畳み込みます。�
 - H/V両方の隣接ピースでraw/fingerprint一致、外周straight、組み立てcoverage=1、画像UV一致を検証しました。
 - 実GPUで36 seed/EdgeId/orientationのrawを整数比較しました。6style×6sample軸×全256 byteと384 worst cases、計9,600 profileのmacro整数一致とdecoded 7値の誤差<1e-6を確認しました。
 - `sd_tab`と`edge_distance`は390 profiles×2 polarity×3 aspect×187地点、計437,580地点で比較し、誤差≤short×1e-5、境界近傍以外の符号一致を確認しました。実rasterとCPU coverage、凸先端/首/凹のpoint/rectangle picking、selection outlineも通しました。
-- `GENERATOR_VERSION=5`です。v4を含む旧definitionを明示的に拒否し、v5の輪郭として読み替えません。
+- 記録当時は`GENERATOR_VERSION=5`です。v4を含む旧definitionを明示的に拒否し、v5の輪郭として読み替えません。
 
 ## 性能とメモリ
 

@@ -1,4 +1,4 @@
-//! Measurements and random fixtures only; generator v5 is never altered here.
+//! Measurements and random fixtures only; release generator v1 (pre-release v5) is unchanged.
 use super::decode_v4_reference;
 use crate::procedural::{
     decode_profile, edge_distance, raw_profile, sd_tab, EdgeId, EdgeOrientation, MAX_TAB_DEPTH,
