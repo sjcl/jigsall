@@ -51,7 +51,8 @@ jobs:
   test:
     name: Build, lint and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # Allow cold Windows/GNS builds to finish and save the dependency cache.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
