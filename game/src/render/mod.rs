@@ -35,6 +35,7 @@ macro_rules! set_viewport {
     }};
 }
 use crossbeam::channel::Sender;
+pub mod remote_cursor;
 use std::{
     collections::HashMap,
     sync::{
@@ -78,6 +79,7 @@ impl RenderReady {
 }
 
 pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
+    remote_cursor::install(app);
     let enabled = app.get_sub_app(RenderApp).is_some();
     let ready = RenderReady {
         enabled,

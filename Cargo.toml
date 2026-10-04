@@ -34,6 +34,7 @@ bevy_log = "0.19.1"
 bevy_math = { version = "0.19.1", features = ["serialize"] }
 bevy_mesh = "0.19.1"
 bevy_egui = "0.42"
+ab_glyph = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 # Keep content-based decoding limited to the formats offered by the image picker.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }

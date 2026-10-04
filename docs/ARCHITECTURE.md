@@ -65,13 +65,16 @@ empty snapshotは初回と全員hiddenへの遷移時に1回だけ送り、visib
 `resources/remote_cursor.rs::RemoteCursorPresentation` はpieceに触れず、最大player数だけの
 target / displayed world positionを持ちます。`Time<Real>` の指数平滑化（25 ms）でtargetへ
 収束し、epsilonまたは250 msでexact settleし、settled frameの変更検知を進めません。
-prediction / extrapolationはありません。`ui/src/remote_cursor.rs` は受信側MainCameraで
-毎frame viewportへ投影し、一定screen sizeのpointer・PlayerId由来の色・roster名を描画します。
-camera pan / zoomに新packetは不要です。描画だけのegui background painterをHUDより先に
-使い、input capture / focusを登録せず、Playing以外では表示しません。
+prediction / extrapolationはありません。`ui/src/remote_cursor.rs` はroster名とlocalized fallbackを
+低頻度にCPU rasterizeして、bounded R8 texture atlasを作ります。既存の日本語font bytesを共有します。
+`render/remote_cursor.rs` はExtractScheduleでdisplayed world positionとatlas revisionを受け取り、
+puzzleの同frameの`clip_from_world` / viewportを共有する専用GPU marker・label passで描画します。
+pan / zoomで新packet・instance upload・atlas rebuildは不要です。logical sizeは一定で、DPI変更時に
+atlasを再生成します。puzzle / selection boxの後、egui HUD / menuの前で、Playing時だけ表示します。
+input capture / focusを登録しません。詳細とboundsは[GPU cursor presentation](REMOTE_CURSOR_GPU.md)を参照してください。
 
-cursorの通常処理は最大約64人のsmoothing / projectionで、100万pieceのstate・membership・
-component・GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
+cursorの通常処理は最大64 remote playersのsmoothing / instance描画で、100万pieceのstate・membership・
+component・piece GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
 snapshot / checkpoint / JoinBaseline / catch-up / save / autosaveから完全に分離します。
 disconnect / PlayerLeftは即削除、session / epoch / baseline / Ready replacementとteardownは
 全resetです。wire v11の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。

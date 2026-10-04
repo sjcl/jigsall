@@ -30,6 +30,10 @@ impl Plugin for GameUiPlugin {
             .init_resource::<preferences::UiPreferences>()
             .add_systems(Startup, preferences::initialize)
             .add_systems(Update, preferences::poll_save)
+            .init_resource::<remote_cursor::LabelAtlasCache>()
+            .init_resource::<puzzella_game::render::remote_cursor::RemoteCursorLabels>()
+            .add_systems(Last, remote_cursor::prepare_label_atlas)
+            .add_systems(OnEnter(AppState::Menu), remote_cursor::reset_label_atlas)
             .init_resource::<persistence::SaveDialogs>()
             .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()
@@ -90,12 +94,6 @@ fn register_screens(app: &mut App) {
                 .after(completion::draw_completion_ui)
                 .after(multiplayer::draw_connection_ui),
             multiplayer::sync_local_gameplay_block.after(multiplayer::process_actions),
-            remote_cursor::draw_remote_cursors
-                .in_set(GameplayUi)
-                .before(game_play::draw_game_ui)
-                .before(performance::draw_performance_overlay)
-                .before(game_play::draw_players_overlay)
-                .run_if(in_state(GameSubState::Playing)),
             game_play::draw_game_ui
                 .in_set(GameplayUi)
                 .run_if(in_state(AppState::InGame)),

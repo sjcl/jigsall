@@ -56,5 +56,6 @@ cpu-geometry-reference = ["puzzella-puzzle/cpu-geometry-reference"]
 cpu-picking-debug = ["puzzella-puzzle/cpu-picking-debug", "dep:rstar"]
 
 [dev-dependencies]
+ab_glyph.workspace = true
 rstar.workspace = true
 puzzella-puzzle = { workspace = true, features = ["cpu-picking-debug"] }

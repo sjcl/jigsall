@@ -5116,6 +5116,7 @@ dependencies = [
 name = "puzzella-game"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "ash",
  "bevy",
  "bevy_egui",

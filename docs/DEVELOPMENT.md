@@ -130,6 +130,7 @@ cargo run --locked --release --features chrome
 | 分野 | 資料 |
 | --- | --- |
 | 現在の構成・責務 | [アーキテクチャ](ARCHITECTURE.md) |
+| Remote cursor の描画・atlas・検証 | [GPU cursor presentation](REMOTE_CURSOR_GPU.md) |
 | 描画移行の方針と結果 | [移行方針](INSTRUCTION.md)、[procedural renderer](PROCEDURAL_RENDERER.md) |
 | GPU 選択・大量選択・透明描画 | [GPU picking](GPU_PICKING.md)、[100 万ピースの選択](MILLION_SELECTION.md)、[radix sort](TRANSPARENT_RADIX_SORT.md) |
 | 形状と識別性 | [v4 の付け根修正](ROOT_TRANSITION.md)、[v5 fingerprint](EDGE_FINGERPRINT.md)、[追加評価](EDGE_FINGERPRINT_EVALUATION.md) |

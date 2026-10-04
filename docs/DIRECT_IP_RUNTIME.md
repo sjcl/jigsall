@@ -38,24 +38,27 @@ and settles exactly within 0.001 world units or after 250 ms. Identical stationa
 heartbeats do not restart settling. Settled smoothing does not mark the resource
 changed. There is no prediction, velocity or extrapolation.
 
-The paint-only egui overlay reads only this resource, PlayerRoster, LocalPlayerId
-and MainCamera projection. Each frame projects displayed world positions through
-the receiving camera, so local pan/zoom needs no packet. Markers stay 15x16 UI
-points, with stable PlayerId palette colors and roster display names (localized
-default-player fallback). Own/unknown/offscreen/nonfinite cursors are skipped.
-It registers no widget, Area, interaction rectangle or keyboard focus and paints
-on the background layer before HUD, below menus/dialogs. It runs only in Playing.
+The dedicated RenderApp marker/label passes extract displayed world positions,
+stable PlayerId palette colors and a revision-coherent label atlas. They use the
+exact camera matrix and physical viewport extracted for the puzzle in that frame.
+Markers stay 15x16 logical pixels; UI-resolved roster names and localized fallbacks
+are rasterized into a shared R8 coverage atlas only when roster/name/locale/session
+or DPI changes. No CPU screen projection or egui cursor painter remains. Own,
+unknown, offscreen and nonfinite cursors are skipped. The passes run after puzzle
+and selection, before egui HUD/menus, only in Playing; they register no input/focus.
+See [GPU cursor presentation](REMOTE_CURSOR_GPU.md) for layout, bounds and upload rules.
 
 Cursor work depends only on bounded player/connection counts: no PieceDataStore
 state scan, membership/component lookup, selection mask, dirty renderer revision
-or GPU upload. It does not enter gameplay authority, checkpoints, GameSnapshot,
+or piece GPU upload. Cursor instance uploads are bounded to 3,072 bytes and atlas
+uploads occur only on rebuild. It does not enter gameplay authority, checkpoints, GameSnapshot,
 JoinBaseline, catch-up events, autosave or persistent/cloud formats. See the
 [transport contract](NETWORK_TRANSPORT.md#world-space-remote-cursors) for exact
 sizes, class/lane and rate budget.
 
 Cursor regressions cover bounded wire/golden fixtures, authenticated identity,
 Ready/Presence reordering, full-set loss recovery, expiry/teardown, 360 Hz send
-limits, time-based settling, camera/HiDPI projection and paint-only input behavior.
+limits, time-based settling, same-frame GPU camera projection and HiDPI sizing.
 A million-piece guard verifies no cursor path accesses piece state or advances
 piece upload revisions. The real GNS localhost runtime fixture also exchanges
 world-space cursors after Ready. These checks do not establish an FPS guarantee.
@@ -148,7 +151,8 @@ Protocol, Image or Connection separately from the diagnostic `error` string.
 Presentation must use the typed category, never parse diagnostic text.
 `NetworkSession::authority()` and `replica()` expose read-only session/remote drag
 state. UI need not access native sockets, bootstrap, or sync internals. Server
-browser, lobby, NAT traversal, cursor rendering and migration remain future work.
+browser, lobby, NAT traversal and migration remain future work. Cursor presentation
+uses the dedicated GPU passes described above.
 
 ## Menu entrypoints
 
