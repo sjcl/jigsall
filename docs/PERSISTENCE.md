@@ -106,6 +106,8 @@ FilesystemStorage のプロセス間協調は Rust 標準の `File::try_lock` / 
 
 `SaveStorage` の lock hook は非 blocking の試行と `StorageGuard` を返します。`StorageProxy` もこの試行だけを owner へ転送し、競合時の再試行待ちは repository worker 上で行います。ロック保持者が次の I/O を待つ間に executor を停止させません。hook の既定値は単一 client の private backend 向けで、複数 client が共有する backend は3つの hook を実装する必要があります。
 
+repository の排他ロックと画像の共有ロックの取得待ちは、各取得につき単調増加時計で30秒を上限とします。競合が続けば `StorageError::LockTimeout` を返し、保存・ロード等の処理中表示を解除してエラーを表示します。手動保存の失敗時はタイトル入力を開いたままにし、オートセーブの失敗は専用のエラー表示に反映します。現在のゲーム状態・保存 metadata は維持し、後で再試行できます。タイムアウトしても他のインスタンスのロックを解除したり、lock file を削除したりしません。
+
 ## Worker と restore lifecycle
 
 画像選択 worker は元 encoded bytes と hash を確定し、同じ bytes から decode します。受信後 background repository worker が画像の共有ロックを保持して `.puzimg` を import し、成功応答から `OriginalPuzzleImage` へ `ImageLease` を移してから、通常は encoded bytes を RAM から解放します。load / Save の成功応答も lease を保持します。lease は選択中・Playing・pause・完成画面で維持し、画像の置き換え・session cleanup で解放します。送信済み Save request も lease の clone を持つため、session cleanup 後の保存待ち中も保護されます。古い generation / 別画像の応答やロード失敗は guard を drop します。import / lock failure 時は bytes を保持して後の Save で再試行できます。Save ボタンは元ファイルを読み直しません。RGBA は既存の render-only Image 方針で GPU upload 後に CPU に保持しません。

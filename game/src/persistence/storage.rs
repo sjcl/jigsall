@@ -55,6 +55,7 @@ pub enum StorageError {
     NotFound(StorageKey),
     Unavailable(String),
     Io(String),
+    LockTimeout,
     TooLarge,
     InvalidRange,
 }
@@ -63,6 +64,7 @@ impl std::fmt::Display for StorageError {
         match self {
             Self::NotFound(_) => write!(f, "Saved data was not found"),
             Self::Unavailable(e) | Self::Io(e) => write!(f, "Storage error: {e}"),
+            Self::LockTimeout => write!(f, "Timed out waiting for access to saved data"),
             Self::TooLarge => write!(f, "Saved data exceeds the supported size"),
             Self::InvalidRange => write!(f, "Invalid storage read range"),
         }

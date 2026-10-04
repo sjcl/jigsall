@@ -1,5 +1,12 @@
 use super::*;
-use std::{collections::HashSet, num::NonZeroU32};
+use std::{
+    collections::HashSet,
+    num::NonZeroU32,
+    time::{Duration, Instant},
+};
+
+const LOCK_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
 pub struct SaveRepository<S: SaveStorage> {
     storage: S,
@@ -54,11 +61,11 @@ impl<S: SaveStorage> SaveRepository<S> {
     pub(crate) fn retain_image(&self, hash: ImageHash) -> Result<ImageLease, SaveError> {
         Ok(ImageLease {
             hash,
-            _guard: wait_for_lock(|| self.storage.try_retain_image(hash))?,
+            _guard: wait_for_lock(|| self.storage.try_retain_image(hash), LOCK_WAIT_TIMEOUT)?,
         })
     }
     fn lock_repository(&self) -> Result<StorageGuard, SaveError> {
-        wait_for_lock(|| self.storage.try_lock_repository())
+        wait_for_lock(|| self.storage.try_lock_repository(), LOCK_WAIT_TIMEOUT)
     }
     /// Caller holds the repository lock through image and save publication.
     fn import_image_unlocked(&self, hash: ImageHash, bytes: &[u8]) -> Result<(), SaveError> {
@@ -466,17 +473,27 @@ impl<S: SaveStorage> SaveRepository<S> {
         Ok(())
     }
 }
-fn wait_for_lock(
+pub(super) fn wait_for_lock(
     mut acquire: impl FnMut() -> Result<Option<StorageGuard>, StorageError>,
+    timeout: Duration,
 ) -> Result<StorageGuard, SaveError> {
+    let started = Instant::now();
     loop {
         if let Some(guard) = acquire()? {
             return Ok(guard);
         }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
         // Only a repository worker waits. Storage executor operations stay
         // nonblocking so another holder can finish I/O and release its lock.
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(LOCK_RETRY_INTERVAL.min(remaining));
+        if started.elapsed() >= timeout {
+            break;
+        }
     }
+    Err(StorageError::LockTimeout.into())
 }
 fn timestamp() -> u64 {
     std::time::SystemTime::now()

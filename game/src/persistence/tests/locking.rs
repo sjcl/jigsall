@@ -1,9 +1,99 @@
 use super::*;
+use crate::persistence::repository::wait_for_lock;
 use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
     time::{Duration, Instant},
 };
+
+#[test]
+fn lock_wait_times_out_without_releasing_the_other_holders_lock() {
+    let directory = tempfile::tempdir().unwrap();
+    let storage = FilesystemStorage::new(directory.path());
+    let hash = image_hash(b"locked image");
+    for image_lock in [false, true] {
+        let holder = if image_lock {
+            storage.try_lock_image(hash)
+        } else {
+            storage.try_lock_repository()
+        }
+        .unwrap()
+        .unwrap();
+        let waiter = storage.clone();
+        let (done, result) = crossbeam::channel::bounded(1);
+        let worker = std::thread::spawn(move || {
+            done.send(wait_for_lock(
+                || {
+                    if image_lock {
+                        waiter.try_retain_image(hash)
+                    } else {
+                        waiter.try_lock_repository()
+                    }
+                },
+                Duration::from_millis(25),
+            ))
+            .unwrap();
+        });
+        let result = result.recv_timeout(Duration::from_secs(5));
+        let still_locked = if image_lock {
+            storage.try_retain_image(hash)
+        } else {
+            storage.try_lock_repository()
+        }
+        .unwrap()
+        .is_none();
+        // Release before asserting so an unbounded wait can still finish.
+        drop(holder);
+        worker.join().unwrap();
+        assert!(matches!(
+            result.unwrap(),
+            Err(SaveError::Storage(StorageError::LockTimeout))
+        ));
+        assert!(still_locked);
+        let guard = wait_for_lock(
+            || {
+                if image_lock {
+                    storage.try_retain_image(hash)
+                } else {
+                    storage.try_lock_repository()
+                }
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        drop(guard);
+    }
+}
+
+#[test]
+fn lock_wait_retries_transient_contention_and_acquires_the_guard() {
+    let mut attempts = 0;
+    let guard = wait_for_lock(
+        || {
+            attempts += 1;
+            Ok((attempts == 3).then(StorageGuard::default))
+        },
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    assert_eq!(attempts, 3);
+    drop(guard);
+}
+
+#[test]
+fn lock_wait_reports_backend_errors_without_retrying() {
+    let mut attempts = 0;
+    let error = StorageError::Io("lock failure".into());
+    let result = wait_for_lock(
+        || {
+            attempts += 1;
+            Err(error.clone())
+        },
+        Duration::from_secs(5),
+    );
+    assert!(matches!(result, Err(SaveError::Storage(actual)) if actual == error));
+    assert_eq!(attempts, 1);
+}
 
 #[test]
 fn shared_image_leases_preserve_unsaved_images_until_the_last_user_releases_them() {

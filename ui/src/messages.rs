@@ -86,6 +86,7 @@ impl Localization {
                 }
                 StorageError::TooLarge => self.text("save-too-large"),
                 StorageError::InvalidRange => self.text("save-invalid-range"),
+                StorageError::LockTimeout => self.text("save-lock-timeout"),
             },
             SaveError::Decode(reason) => self.reason("save-decode-failed", reason),
             SaveError::CounterExhausted => self.text("save-counter-exhausted"),
@@ -136,12 +137,21 @@ mod tests {
         let mut i18n = crate::localization::tests::english();
         let error = DisplaySettingsError::SaveFailed("disk detail".into());
         let notice = PersistenceNotice::Saved;
+        let lock_timeout = SaveError::Storage(StorageError::LockTimeout);
+        assert_eq!(
+            i18n.save_error(&lock_timeout),
+            "Timed out waiting for access to saved data. Close other Puzzella instances and try again."
+        );
         assert_eq!(
             i18n.display_error(&error),
             "Could not save settings: disk detail"
         );
         assert_eq!(i18n.persistence_notice(&notice), "Game saved");
         i18n.set_preference(LanguagePreference::Locale(Locale::JA));
+        assert_eq!(
+            i18n.save_error(&lock_timeout),
+            "保存データのロック待ちがタイムアウトしました。他の Puzzella を閉じてから再試行してください。"
+        );
         assert_eq!(
             i18n.display_error(&error),
             "設定を保存できませんでした：disk detail"

@@ -934,6 +934,63 @@ mod tests {
     }
 
     #[test]
+    fn save_lock_timeout_clears_busy_preserves_metadata_and_allows_retry() {
+        for automatic in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = save_app(directory.path().to_owned());
+            request_and_wait(&mut app, false);
+            request_and_wait(&mut app, true);
+            let (current_save, current_autosave, generation) = {
+                let state = app.world().resource::<PersistenceState>();
+                (
+                    state.current_save.clone(),
+                    state.current_autosave.clone(),
+                    state.generation,
+                )
+            };
+            let (tx, rx) = crossbeam::channel::unbounded();
+            let worker_rx = app.world().resource::<PersistenceService>().rx.clone();
+            app.world_mut().resource_mut::<PersistenceService>().rx = rx;
+            {
+                let mut state = app.world_mut().resource_mut::<PersistenceState>();
+                state.busy = true;
+                state.autosaving = automatic;
+                state.title_dialog_open = !automatic;
+            }
+            tx.send((
+                generation,
+                Reply::Saved(automatic, Err(StorageError::LockTimeout.into())),
+            ))
+            .unwrap();
+            app.update();
+            let state = app.world().resource::<PersistenceState>();
+            assert!(!state.busy);
+            assert!(!state.autosaving);
+            assert_eq!(state.current_save, current_save);
+            assert_eq!(state.current_autosave, current_autosave);
+            assert_eq!(state.title_dialog_open, !automatic);
+            let error = if automatic {
+                assert!(state.error.is_none());
+                &state.autosave_error
+            } else {
+                assert!(state.autosave_error.is_none());
+                &state.error
+            };
+            assert!(matches!(
+                error,
+                Some(PersistenceError::Save(SaveError::Storage(
+                    StorageError::LockTimeout
+                )))
+            ));
+            app.world_mut().resource_mut::<PersistenceService>().rx = worker_rx;
+            request_and_wait(&mut app, automatic);
+            let state = app.world().resource::<PersistenceState>();
+            assert!(state.error.is_none());
+            assert!(state.autosave_error.is_none());
+        }
+    }
+
+    #[test]
     fn host_images_survive_import_and_saves_but_offline_images_are_released() {
         for retain in [false, true] {
             let dir = tempfile::tempdir().unwrap();
