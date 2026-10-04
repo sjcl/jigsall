@@ -4,7 +4,10 @@ use puzzella_ui::GameUiPlugin;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            close_when_requested: false,
+            ..default()
+        }))
         .add_plugins(GameUiPlugin)
         .add_plugins(DirectFileAssetPlugin)
         .add_plugins(GamePlugin)

@@ -2,6 +2,7 @@ use super::*;
 use crate::persistence::{DepartureAction, SaveDialogs};
 use puzzella_core::{session::ImageHash, PuzzleDefinition, GENERATOR_VERSION};
 use puzzella_game::persistence::{SaveError, StorageError};
+mod window_close;
 
 fn paused_game(role: Option<RuntimeRole>, completed: bool) -> (App, egui::Context) {
     let (mut app, ctx) = scheduled_screens();

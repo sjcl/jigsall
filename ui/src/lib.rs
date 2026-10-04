@@ -16,7 +16,8 @@ mod preferences;
 mod remote_cursor;
 mod settings;
 mod theme;
-use bevy::prelude::*;
+mod window_close;
+use bevy::{ecs::schedule::common_conditions::not, prelude::*};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use puzzella_game::resources::{AppState, GameCompleteSubState, GameSubState};
 
@@ -35,6 +36,7 @@ impl Plugin for GameUiPlugin {
             .init_resource::<settings::SettingsDialog>()
             .init_resource::<multiplayer::MultiplayerUi>()
             .init_resource::<puzzella_game::resources::LocalGameplayBlocked>()
+            .add_systems(PreUpdate, window_close::handle_close_requests)
             .add_systems(First, multiplayer::start_prepared_host)
             .add_systems(
                 First,
@@ -59,9 +61,9 @@ impl Plugin for GameUiPlugin {
 fn register_screens(app: &mut App) {
     app.configure_sets(
         EguiPrimaryContextPass,
-        GameplayUi
-            .after(multiplayer::draw_connection_ui)
-            .run_if(multiplayer::connection_screen_hidden),
+        GameplayUi.after(multiplayer::draw_connection_ui).run_if(
+            multiplayer::connection_screen_hidden.or_else(window_close::exit_dialog_pending),
+        ),
     )
     .add_systems(
         EguiPrimaryContextPass,
@@ -82,6 +84,7 @@ fn register_screens(app: &mut App) {
                 .run_if(in_state(AppState::Menu).or_else(in_state(AppState::GameSetup))),
             game_setup::draw_game_setup_ui.run_if(in_state(AppState::GameSetup)),
             multiplayer::draw_connection_ui
+                .run_if(not(window_close::exit_dialog_pending))
                 .after(menu::draw_menu_ui)
                 .after(game_setup::draw_game_setup_ui),
             multiplayer::process_actions

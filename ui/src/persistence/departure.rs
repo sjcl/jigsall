@@ -57,8 +57,54 @@ impl DepartureFlow {
 }
 
 impl SaveDialogs {
+    /// A repeated OS close must not bypass confirmation or restart a save.
+    pub(crate) fn request_window_exit(
+        &mut self,
+        state: &mut PersistenceState,
+        i18n: &Localization,
+    ) {
+        match self.departure {
+            Some(
+                DepartureFlow::Prompt(DepartureAction::Exit)
+                | DepartureFlow::Confirm(DepartureAction::Exit)
+                | DepartureFlow::Saving(DepartureAction::Exit)
+                | DepartureFlow::Ready(DepartureAction::Exit),
+            ) => return,
+            Some(DepartureFlow::Saving(DepartureAction::Title)) => {
+                self.departure = Some(DepartureFlow::Saving(DepartureAction::Exit));
+                return;
+            }
+            Some(DepartureFlow::Ready(DepartureAction::Title)) => {
+                self.departure = Some(DepartureFlow::Ready(DepartureAction::Exit));
+                return;
+            }
+            Some(
+                DepartureFlow::Prompt(DepartureAction::Title)
+                | DepartureFlow::Confirm(DepartureAction::Title),
+            ) => {
+                self.departure = Some(DepartureFlow::Prompt(DepartureAction::Exit));
+                return;
+            }
+            None => {}
+        }
+        if state.title_dialog_open {
+            self.departure = Some(if state.busy && !state.autosaving {
+                DepartureFlow::Saving(DepartureAction::Exit)
+            } else {
+                DepartureFlow::Prompt(DepartureAction::Exit)
+            });
+        } else {
+            self.request_departure(DepartureAction::Exit, None, state, i18n);
+        }
+    }
+
     pub(crate) fn departure_pending(&self) -> bool {
         self.departure.is_some()
+    }
+
+    pub(crate) fn exit_pending(&self) -> bool {
+        self.departure
+            .is_some_and(|flow| matches!(flow.action(), DepartureAction::Exit))
     }
 
     pub(crate) fn request_departure(
