@@ -78,7 +78,7 @@ winresource.workspace = true
 [features]
 default = []
 gns = ["puzzella-game/gns", "puzzella-ui/gns"]
-rendezvous = ["gns", "puzzella-game/rendezvous"]
+rendezvous = ["gns", "puzzella-game/rendezvous", "puzzella-ui/rendezvous"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）
 tracy = ["bevy/trace_tracy"]
 # Chrome Tracingを使用する場合（ブラウザでの分析）

@@ -2,6 +2,9 @@
 use crate::network::transport::TransportError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Shared v1 foundation/runtime virtual port; never a user-entered network port.
+pub const P2P_VIRTUAL_PORT: u16 = 0;
+
 mod direct_ip;
 pub use direct_ip::GnsDirectIp;
 mod p2p;

@@ -4,7 +4,7 @@
 
 <h1 align="center">Puzzella</h1>
 
-任意の画像からパズルを生成する、Rust + Bevy 製のジグソーパズルゲームです。シングルプレイと Direct-IP マルチプレイに対応しています。
+任意の画像からパズルを生成する、Rust + Bevy 製のジグソーパズルゲームです。シングルプレイ、Direct-IP と Room Code によるマルチプレイに対応しています。
 
 <p align="center">
   <a href="#ビルドと起動">ビルドと起動</a> ·
@@ -19,7 +19,7 @@
 - 最大 1000 × 1000（100 万）ピース。分割数、シード値、回転の有無を設定可能
 - ピースの連結、範囲選択、複数ピースの移動、90° 単位の回転
 - 元画像を含むローカル保存・復元とオートセーブ
-- Direct-IP 接続によるマルチプレイ（`gns` feature）
+- Direct-IP 接続（`gns` feature）と Room Code 接続（`rendezvous` feature）のマルチプレイ
 - 日本語・英語 UI、キー割り当て、画面モード・解像度・最大 FPS の設定
 
 対応可能な規模や動作速度は GPU・メモリ・画像・表示範囲によって変わります。画像の読み込み上限と表示用画像のメモリ設定は [遊び方ガイド](docs/PLAYING.md#画像とピース数)を参照してください。
@@ -31,7 +31,7 @@ Bevy でゲームのライフサイクルと描画を、egui で UI を構成し
 - **ゲーム状態**：CPU の `PieceDataStore` を正本とし、入力命令の所有権・座標・スナップを検証してから GPU に変更を反映します。
 - **描画・選択**：procedural GPU renderer と GPU picking を使用します。ピースごとの Mesh・描画 Entity を作らず、16-byte のピース状態から形状を描画します。描画と選択で形状・UV・画像の alpha 判定を共有します。
 - **生成・読み込み**：配置生成と画像デコードは worker で実行します。形状・配置は generator version と seed を含むゲーム定義から再構成します。
-- **P2P 接続基盤**：`rendezvous` feature は WSS room/signaling adapter と GNS native ICE を提供します。room-code の UI/runtime 統合は次段階です。[実装と検証](docs/RENDEZVOUS_V1.md)を参照してください。
+- **Internet 接続**：`rendezvous` feature は Room Code の UI/runtime と WSS signaling・GNS native ICE を提供します。利用には endpoint/ICE の設定が必要です。[実装と検証](docs/RENDEZVOUS_V1.md)を参照してください。
 
 各 crate の責務とデータフローは [アーキテクチャ](docs/ARCHITECTURE.md)、GPU の検証条件と計測結果は [開発ガイド](docs/DEVELOPMENT.md)を参照してください。
 
@@ -64,7 +64,9 @@ cargo run --locked --release --features gns
 - **ホスト**：「マルチプレイ → 部屋を開く」で新規または保存済みのパズルを選択し、「部屋の設定」でアドレスとパスワードを指定して開始します。
 - **クライアント**：「マルチプレイ → 部屋に参加」で接続先アドレスとパスワードを入力します。画像と進行状態は参加時に転送されます。
 
-参加先は `192.168.1.10:27015` のような IP アドレス、または `example.com:27015` のようなホスト名とポート番号で指定します。ホストの待受けには IP アドレスを使用します。インターネット経由ではルーターのポート開放が必要な場合があります。詳しくはゲーム内の「接続について」、または [接続の案内](docs/PLAYING.md#マルチプレイ)を参照してください。
+Room Code 方式は `cargo run --locked --release --features rendezvous` で有効になります。運用側で WSS endpoint と ICE を設定すると「マルチプレイ → インターネット」から Host/Join を選べます。設定方法は [rendezvous v1](docs/RENDEZVOUS_V1.md#deployment-configuration)を参照してください。
+
+Direct IP の参加先は `192.168.1.10:27015` のような IP アドレス、または `example.com:27015` のようなホスト名とポート番号で指定します。ホストの待受けには IP アドレスを使用します。インターネット経由ではルーターのポート開放が必要な場合があります。詳しくはゲーム内の「接続について」、または [接続の案内](docs/PLAYING.md#マルチプレイ)を参照してください。
 
 ## 基本の操作
 

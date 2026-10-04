@@ -13,8 +13,10 @@ cargo run --locked
 cargo run --locked --release
 # Direct-IP マルチプレイを有効にする
 cargo run --locked --release --features gns
-# rendezvous adapter と headless fixture（room-code UI は未統合）
-cargo test --locked -p puzzella-game --features rendezvous rendezvous
+# Room Code の UI/runtime（WSS endpoint と ICE の運用設定が必要）
+cargo run --locked --release --features rendezvous
+# 外部サーバー不要の rendezvous runtime/UI fixture
+cargo test --workspace --locked --features rendezvous -- --skip gns_localhost
 ```
 
 Windows の MSVC toolchain・Visual Studio Build Tools・SDK と GNS のセットアップは [Windows ビルド手順](WINDOWS_BUILD.md)を参照してください。Linux CI で使うネイティブ依存の一覧は [CI の Install Linux native dependencies](../.github/workflows/ci.yml)にあります。GNS の依存と通信テストは [ネットワーク transport](NETWORK_TRANSPORT.md)にまとめています。

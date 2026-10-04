@@ -13,27 +13,26 @@ use std::{
 };
 
 #[derive(Default)]
-struct Bus {
-    fail_listen: bool,
-    fail_listener_address: bool,
-    listened: Vec<SocketAddr>,
-    closed_listeners: usize,
-    bulk_sent: BTreeMap<ConnectionId, u64>,
-    inbox: BTreeMap<u64, VecDeque<TransportEvent>>,
-    routes: BTreeMap<ConnectionId, (u64, ConnectionId)>,
-    next: u64,
-    drop_transient: bool,
-    hold_authority_control: bool,
-    delayed: Vec<(u64, TransportEvent)>,
-    fail: BTreeSet<ConnectionId>,
-    sent: Vec<(ConnectionId, MessageClass, Vec<u8>)>,
-    closed: Vec<ConnectionId>,
+pub(super) struct Bus {
+    pub(super) fail_listen: bool,
+    pub(super) fail_listener_address: bool,
+    pub(super) listened: Vec<SocketAddr>,
+    pub(super) closed_listeners: usize,
+    pub(super) bulk_sent: BTreeMap<ConnectionId, u64>,
+    pub(super) inbox: BTreeMap<u64, VecDeque<TransportEvent>>,
+    pub(super) routes: BTreeMap<ConnectionId, (u64, ConnectionId)>,
+    pub(super) next: u64,
+    pub(super) drop_transient: bool,
+    pub(super) hold_authority_control: bool,
+    pub(super) delayed: Vec<(u64, TransportEvent)>,
+    pub(super) fail: BTreeSet<ConnectionId>,
+    pub(super) sent: Vec<(ConnectionId, MessageClass, Vec<u8>)>,
+    pub(super) closed: Vec<ConnectionId>,
 }
-struct Fake {
-    id: u64,
-    bus: Arc<Mutex<Bus>>,
+pub(super) struct Fake {
+    pub(super) id: u64,
+    pub(super) bus: Arc<Mutex<Bus>>,
 }
-
 #[test]
 fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time() {
     let now = Instant::now();
@@ -43,7 +42,7 @@ fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time(
         id: SessionId(271),
         image_hash: crate::persistence::image_hash(&bytes),
     };
-    let mut host = Runtime::host(
+    let mut host = DirectIpDriver::host(
         Fake {
             id: 0,
             bus: bus.clone(),
@@ -60,7 +59,7 @@ fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time(
         now,
     )
     .unwrap();
-    let mut client = Runtime::client(
+    let mut client = DirectIpDriver::client(
         Fake {
             id: 1,
             bus: bus.clone(),
@@ -241,10 +240,10 @@ impl DirectIpTransport for Fake {
         Ok(client)
     }
 }
-fn password() -> SessionPassword {
+pub(super) fn password() -> SessionPassword {
     SessionPassword::new("runtime test password".into()).unwrap()
 }
-fn definition() -> PuzzleDefinition {
+pub(super) fn definition() -> PuzzleDefinition {
     PuzzleDefinition {
         generator_version: GENERATOR_VERSION,
         seed: 37,
@@ -254,7 +253,7 @@ fn definition() -> PuzzleDefinition {
         rotation_enabled: true,
     }
 }
-fn encoded() -> Arc<[u8]> {
+pub(super) fn encoded() -> Arc<[u8]> {
     let mut bytes = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         128,
@@ -276,7 +275,7 @@ fn encoded_bmp(size: u32) -> Arc<[u8]> {
     .unwrap();
     bytes.into_inner().into()
 }
-fn app() -> App {
+pub(super) fn app() -> App {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, StatesPlugin))
         .init_state::<AppState>()
@@ -305,7 +304,7 @@ fn app() -> App {
     app.update();
     app
 }
-fn host_world(app: &mut App) -> SessionDefinition {
+pub(super) fn host_world(app: &mut App) -> SessionDefinition {
     let image = encoded();
     let session = SessionDefinition {
         id: SessionId(271),
@@ -439,7 +438,7 @@ fn failed_host_request_retries_same_puzzle_and_password_on_another_port_once() {
         RuntimePhase::Ready
     );
 }
-fn send(app: &mut App, command: PieceCommand) {
+pub(super) fn send(app: &mut App, command: PieceCommand) {
     let player = app.world().resource::<LocalPlayerId>().0;
     app.world_mut()
         .resource_mut::<Messages<ClientCommand>>()

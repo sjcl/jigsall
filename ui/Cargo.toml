@@ -25,6 +25,7 @@ zeroize.workspace = true
 [features]
 default = []
 gns = ["puzzella-game/gns"]
+rendezvous = ["gns", "puzzella-game/rendezvous"]
 
 [dev-dependencies]
 serde_json = "1"

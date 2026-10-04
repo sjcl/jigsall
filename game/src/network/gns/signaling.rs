@@ -247,6 +247,20 @@ impl SignalingEndpoint {
             .pop(Instant::now(), false)
             .map(|(_, s)| s)
     }
+    #[cfg(any(feature = "rendezvous", test))]
+    pub(super) fn has_pending_inbound(&self, peer: PeerId) -> bool {
+        let Ok(q) = self.0.lock() else {
+            // An uncertain mailbox must not authorize route revocation.
+            return true;
+        };
+        let Ok(key) = q.key(peer) else {
+            return false;
+        };
+        q.inbound
+            .routes
+            .get(&key)
+            .is_some_and(|route| route.messages.iter().any(|signal| signal.peer == peer))
+    }
     pub(super) fn pop_inbound(&self) -> Option<InboundSignal> {
         // Global exhaustion defers signals; the fair cursor survives frames.
         let (key, signal) = self.0.lock().ok()?.inbound.pop(Instant::now(), true)?;

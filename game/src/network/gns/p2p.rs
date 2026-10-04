@@ -65,6 +65,8 @@ impl Drop for Lease {
 /// Wrap this in SecureTransport before passing it to the password bootstrap.
 pub struct GnsP2p {
     connections: BTreeMap<ConnectionId, Connection>,
+    #[cfg(feature = "rendezvous")]
+    retired_peers: std::collections::BTreeSet<PeerId>,
     listener: native::Listener,
     mailbox: SignalingEndpoint,
     peer: PeerId,
@@ -96,6 +98,8 @@ impl GnsP2p {
         let peer = native::local_peer()?;
         Ok(Self {
             connections: BTreeMap::new(),
+            #[cfg(feature = "rendezvous")]
+            retired_peers: Default::default(),
             listener: native::Listener::new(local_virtual_port, &ice)?,
             mailbox,
             peer,
@@ -120,7 +124,23 @@ impl GnsP2p {
     pub fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId> {
         self.connections.get(&connection).map(|c| c.peer)
     }
-    fn has_capacity(&self) -> bool {
+    /// Includes owned native Connecting handles, before any Connected event.
+    pub fn has_peer(&self, peer: PeerId) -> bool {
+        self.connections
+            .values()
+            .any(|connection| connection.peer == peer)
+    }
+    /// Bounded cleanup notifications, including native failures before Connected
+    /// and handles admitted and rejected within the same owner poll.
+    #[cfg(feature = "rendezvous")]
+    pub(crate) fn take_retired_peers(&mut self) -> Vec<PeerId> {
+        std::mem::take(&mut self.retired_peers)
+            .into_iter()
+            .collect()
+    }
+    /// Advisory native headroom, including Connecting/not-Ready handles.
+    /// This does not reserve a handle or consume native admission credits.
+    pub fn has_connection_capacity(&self) -> bool {
         self.connections.len() < MAX_CONNECTIONS
             && self.connections.values().filter(|c| !c.connected).count() < MAX_CONNECTING
             && self.connections.values().filter(|c| !c.ready).count() < MAX_PENDING_CONNECTIONS
@@ -137,7 +157,7 @@ impl GnsP2p {
         let now = Instant::now();
         let origin = self.mailbox.origin(peer)?;
         let pending = self.origin_pending(origin);
-        if !self.has_capacity()
+        if !self.has_connection_capacity()
             || !self.starts.available(1, now)
             || self.admission.admit(origin, pending, now).is_err()
         {
@@ -189,6 +209,10 @@ impl GnsP2p {
         now: Instant,
     ) {
         if let Some(mut c) = self.connections.remove(&id) {
+            #[cfg(feature = "rendezvous")]
+            if self.retired_peers.len() < MAX_CONNECTIONS {
+                self.retired_peers.insert(c.peer);
+            }
             if lifecycle::is_abuse(reason) {
                 self.admission.penalize(c.origin, now);
             }
@@ -322,7 +346,7 @@ impl Transport for GnsP2p {
             // Admission is sampled before GNS; the callback only accepts within
             // that capacity. GNS discards requests for which it returns null.
             // Only new requests spend start credit; stale/duplicate signals do not.
-            let allow = self.has_capacity();
+            let allow = self.has_connection_capacity();
             let admission = native::IncomingAdmission {
                 allow,
                 origin,

@@ -102,6 +102,17 @@ pub enum ClientMessage {
     AuthorizeAck {
         join_id: JoinId,
     },
+    AuthorizeReject {
+        join_id: JoinId,
+    },
+    ConfirmPeer {
+        peer_id: PeerId,
+        member_id: MemberId,
+    },
+    RevokePeer {
+        peer_id: PeerId,
+        member_id: MemberId,
+    },
     Signal {
         to_peer_id: PeerId,
         payload_base64: String,
@@ -211,6 +222,55 @@ fn parse<M: serde::de::DeserializeOwned>(text: &str) -> Result<M, ErrorCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authorization_rejection_requires_only_exact_join_identity() {
+        let valid =
+            r#"{"v":1,"type":"authorize_reject","join_id":"66666666-6666-4666-8666-666666666666"}"#;
+        assert!(matches!(
+            parse_client(valid),
+            Ok(ClientMessage::AuthorizeReject { .. })
+        ));
+        for invalid in [
+            r#"{"v":1,"type":"authorize_reject"}"#.to_owned(),
+            valid.replace(
+                "66666666-6666-4666-8666-666666666666",
+                "00000000-0000-0000-0000-000000000000",
+            ),
+            valid.replace(
+                '}',
+                ",\"peer_id\":\"55555555-5555-4555-8555-555555555555\"}",
+            ),
+            valid.replace('}', ",\"reason\":\"capacity\"}"),
+        ] {
+            assert_eq!(parse_client(&invalid), Err(ErrorCode::InvalidMessage));
+        }
+    }
+    #[test]
+    fn lifecycle_requires_exact_typed_identity_without_authority_fields() {
+        for kind in ["confirm_peer", "revoke_peer"] {
+            let valid = format!(
+                r#"{{"v":1,"type":"{kind}","peer_id":"55555555-5555-4555-8555-555555555555","member_id":"77777777-7777-4777-8777-777777777777"}}"#
+            );
+            assert!(parse_client(&valid).is_ok());
+            for invalid in [
+                valid.replace(
+                    ",\"member_id\":\"77777777-7777-4777-8777-777777777777\"",
+                    "",
+                ),
+                valid.replace(
+                    "77777777-7777-4777-8777-777777777777",
+                    "00000000-0000-0000-0000-000000000000",
+                ),
+                valid.replace(
+                    '}',
+                    ",\"room_id\":\"33333333-3333-4333-8333-333333333333\"}",
+                ),
+                valid.replace('}', ",\"authenticated\":true}"),
+            ] {
+                assert_eq!(parse_client(&invalid), Err(ErrorCode::InvalidMessage));
+            }
+        }
+    }
     #[test]
     fn golden_protocol_v1() {
         for line in include_str!(concat!(

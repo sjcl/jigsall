@@ -27,7 +27,14 @@ pub fn draw_game_setup_ui(
     original: Option<Res<puzzella_game::persistence::runtime::OriginalPuzzleImage>>,
     mut settings: ResMut<crate::settings::SettingsDialog>,
     display: Res<puzzella_game::settings::DisplaySettingsState>,
+    #[cfg(feature = "rendezvous")] rendezvous_config: Option<
+        Res<puzzella_game::network::runtime::RendezvousRuntimeConfig>,
+    >,
 ) {
+    #[cfg(feature = "rendezvous")]
+    let internet_available = rendezvous_config.is_some();
+    #[cfg(not(feature = "rendezvous"))]
+    let internet_available = false;
     if multiplayer.connection_screen(&status) {
         return;
     }
@@ -91,6 +98,12 @@ pub fn draw_game_setup_ui(
                     .max_height((screen.height() - 312.0).max(80.0))
                     .show(ui, |ui| {
                         if multiplayer.host_setup && multiplayer.host_settings_tab {
+                            crate::multiplayer::paint_method(
+                                ui,
+                                &mut multiplayer,
+                                internet_available,
+                                &i18n,
+                            );
                             crate::multiplayer::paint_connection_fields(
                                 ui,
                                 &mut multiplayer.host,

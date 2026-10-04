@@ -1,8 +1,9 @@
 # Rendezvous client v1
 
 `game/src/network/gns/rendezvous/` implements the optional production routing
-adapter for `sjcl/puzzella-rendezvous`. It is independent of Bevy runtime/UI,
-gameplay authority, core, WireMessage, replication and Sync. The server protocol
+adapter for `sjcl/puzzella-rendezvous`. The adapter remains independent of Bevy runtime/UI, gameplay authority, core,
+WireMessage, replication and Sync. The Internet runtime driver now owns it and
+hands established P2P connections to the existing game runtime. The server protocol
 and golden examples are canonical in that repository's `docs/PROTOCOL_V1.md`;
 the mirrored schema is `protocol.rs`, with identical
 `game/tests/fixtures/protocol_v1.jsonl` vectors.
@@ -12,15 +13,15 @@ the mirrored schema is `protocol.rs`, with identical
 `rendezvous` forwards `gns` and optional Tokio/tokio-tungstenite/rustls,
 futures-util, URL and Base64 dependencies. Default still enables neither GNS nor
 WebSocket dependencies. `gns` alone retains the existing Direct IP backend and
-native P2P foundation without the WebSocket client. Root feature forwards both
-game and UI GNS features as before.
+native P2P foundation without the WebSocket client. Root `rendezvous` forwards game and UI Internet features; `gns` alone exposes
+Direct IP. The normal UI reads only start/cancel APIs and NetworkStatus.
 
 ```rust,ignore
-use puzzella_game::network::gns::{IceConfig, rendezvous::{EndpointUrl, RendezvousAdapter}};
+use puzzella_game::network::gns::{IceConfig, rendezvous::{EndpointUrl, RendezvousAdapter, P2P_VIRTUAL_PORT}};
 let url = EndpointUrl::production(configured_wss_url)?;
-let (mut backend, mut adapter) = RendezvousAdapter::new(url, 0, configured_ice)?;
+let (mut backend, mut adapter) = RendezvousAdapter::new(url, P2P_VIRTUAL_PORT, configured_ice)?;
 // Caller polls adapter and backend each frame, starting create/join after Welcome.
-// On HostReady: backend.connect_peer(host_peer_id, remote_virtual_port)?;
+// On HostReady: backend.connect_peer(host_peer_id, P2P_VIRTUAL_PORT)?;
 // Then SecureTransport::new(backend) + existing password bootstrap, owned by caller.
 ```
 
@@ -40,12 +41,21 @@ adapter exchange typed commands/events using separate bounded 32-slot channels;
 there is no unbounded queue. Frame/message limits are 24 KiB, opaque signaling
 is 16 KiB maximum. TLS connection deadline is 10 seconds, writes 2 seconds,
 client Ping/matching-Pong deadline 15/15 seconds. A fixed window bounds inbound
-frames at 512/second. Worker overflow reports Backpressure and closes only the
-control plane; the terminal status uses one bounded slot.
+frames at 512/second. A full event queue holds one additional event and pauses
+worker reads for up to 2 seconds while outgoing commands continue. This avoids
+deadlock when both owner channels fill and allows a room-wide 64-member expiry
+burst to survive between owner polls. A stalled
+owner or frame-rate exhaustion reports Backpressure and closes only the control
+plane; the terminal status uses one bounded slot. Owner poll and shutdown remain
+nonblocking, and cancellation interrupts the worker's event-capacity wait.
 
 `poll()` consumes at most 32 worker events and 32 GNS outbound signals per call.
-It retains at most one unsent command under backpressure, including an ACK; the
-route is installed first and that ACK is retried before reading more messages.
+It retains one unsent ACK/Reject command and one separate unsent Signal under
+backpressure. Required ACK/Reject commands are retried before reading more
+messages; then all Revoke commands precede Confirm commands, followed by deferred
+and new Signals. An unavailable/revoking/released route discards its deferred
+Signal so opaque bytes cannot cross a later PeerId rebinding.
+Up to 64 routes also retain one lifecycle command each until the worker accepts it.
 GNS's own fair bounded signaling mailbox and per-route limits still apply.
 Inbound mailbox congestion emits SignalBackpressure and sheds that signal,
 allowing other routes to continue. Unknown/unavailable senders, conflicting
@@ -63,6 +73,20 @@ only in Host and within a 64-route cap. It creates
 `RouteOrigin::from_authenticated_route(authority_id, room_id, member_id)` and
 calls authorize_peer before queuing AuthorizeAck. PeerJoined must match that
 pending member identity before it becomes active and is exposed to the caller.
+An unavailable/revoking retained PeerId, a full route table, or insufficient
+native connection headroom instead sends AuthorizeReject(join_id). The host room
+and old native binding continue. Identity contradictions (available duplicate
+peer, MemberId/JoinId collision, or self identity) still fail closed, even when
+capacity is exhausted. Native headroom is advisory; GNS retains its per-request
+admission check for total, Connecting and not-Ready handles.
+
+The adapter retains at most 64 rejected transactions separately from native
+routes. The server releases each pending slot immediately, returns Capacity to
+the joiner and emits PeerUnavailable to the host as completion. Server FIFO orders
+an old member's departure before replacement authorization and the rejection's
+completion before further reuse of that PeerId. This completion clears only the
+rejected transaction, even if the old native route has already been reclaimed.
+
 The server enqueues PeerJoined to the host before RoomJoined to the joiner,
 serializing the state commit and both enqueues against concurrent relays.
 Thus each socket receives its activation notification before any Signal,
@@ -91,7 +115,16 @@ does not mistake WebSocket loss for gameplay disconnection. Pending/unactivated
 bindings are revoked on cleanup. The caller may explicitly `release_route(peer)`
 after established connection cleanup or a security decision. That operation can
 close a live GNS route on its next poll, so it is never automatic for an active
-route. Retained bindings still consume the finite 64-route cap until released.
+route. The standalone `poll()` retains this explicit-owner contract. Production
+runtime uses `poll_with_admission` and `reclaim_unavailable_routes`:
+unavailable bindings with neither an owned native handle (including Connecting)
+nor queued inbound signals are released. Reconciliation runs between control
+messages, before another bind can exhaust the finite 64-route cap, and after
+native polling to reclaim ICE failures before Connected. The bounded route table
+itself tracks unavailable peers; no additional unbounded peer history is kept.
+HostReady retains its installed route through delivery of that poll's events,
+even when control loss follows RoomJoined in the same batch, so the owner can
+start connect_peer before reconciling native ownership.
 v1 has no resume; create a new adapter/backend after owner-managed cleanup.
 
 Production `EndpointUrl::production` requires `wss://.../v1/ws`, WebPKI-validated
@@ -171,10 +204,217 @@ paths were preserved; build lock waits were allowed to finish. This is local
 loopback validation; deployed WSS and real Internet NAT combinations remain to
 be tested. Fixture keys are self-signed public test data, never trust roots.
 
-## Next integration
+## Internet runtime and ordinary UI
 
-Real Internet NAT trials still need a deployed WSS endpoint, caller-configured
-STUN + public ICE candidates, runtime Host/Join ownership and SecureTransport/
-bootstrap handoff, then room-code UI. Some NAT/firewall pairs may require TURN;
-TURN/relay is not implemented. UI, Steam account auth/lobbies, matchmaking,
-persistence, resume and rendezvous host migration remain separate work.
+`NetworkSession` owns `RendezvousRuntimeDriver`; UI never polls the adapter or
+accesses GnsP2p, signaling, or route origin. Direct IP still uses `start_host` /
+`start_join`; Internet uses `start_rendezvous_host` / `start_rendezvous_join` with
+separate, owned options. Both use shared private World preparation helpers for
+puzzle/image validation, persistence generation, old-puzzle cleanup, input and
+selection reset, and GameSetup transition. Hosting from UI waits for the existing
+CPU generation and RenderReady barriers before either entrypoint.
+
+Common `Runtime<T: Transport>` owns SecureTransport, bootstrap, sync, presentation,
+commands, decode and game connection teardown. It has no listener token or
+address establishment API. `DirectIpDriver<T: DirectIpTransport>` owns explicit
+listener cleanup, including failed address lookup, Cancel, failure and Menu.
+There is no DirectIpTransport implementation on GnsP2p and no shared address enum.
+
+The small driver stages are ControlConnecting, CreatingRoom, JoiningRoom,
+PeerConnecting and Running. Host constructs its one common runtime/bootstrap
+from one validated puzzle/image and owned password, but does not poll it until
+RoomCreated. Welcome sends CreateRoom; RoomCreated publishes the canonical code
+and Hosting phase. The adapter stays alive to process AuthorizePeer, PeerJoined
+and Signal for subsequent joiners. Both peers use `P2P_VIRTUAL_PORT` (v1: 0).
+
+Join holds only backend and owned request before HostReady. Welcome sends
+JoinRoom; the adapter processes RoomJoined and installs the host route before
+emitting HostReady. The driver calls connect_peer, obtains ConnectionId, wraps
+SecureTransport and only then constructs ClientBootstrap. GNS Connected starts
+mandatory SPAKE2; Authenticated starts the existing image/baseline/catch-up sync;
+only the normal Ready commit assigns gameplay identity. RoomCreated, HostReady,
+Connected, Authenticated and Ready are separate states. A room code is a routing
+identifier, never a password credential.
+
+`NetworkStatus.connection_method` distinguishes Internet/DirectIp; `address` is
+Direct IP only; `room_code` is Internet host only. `rendezvous_control` separately
+reports Connecting/Available/Unavailable. WSS/room/ICE map to Connecting, SPAKE2 to
+Authenticating, then the existing Syncing and Ready phases. Server UnknownRoom,
+capacity, timeout, protocol and connection errors map to typed UI categories;
+diagnostics are never parsed for presentation.
+
+**Rendezvous control loss != gameplay disconnect.** Before RoomCreated/HostReady,
+control loss fails establishment. An Internet Host failure before RoomCreated
+tears down the network session and returns to Host settings while retaining the
+prepared CPU store, image and render epoch. Retry uses that same generated or
+loaded puzzle and asks for the password again; Cancel returns to Menu and performs
+the normal puzzle cleanup. Join failures retain the normal Menu path.
+After RoomCreated or connect_peer, RoomClosed,
+Disconnected or PeerUnavailable never closes the existing GNS connection or
+revokes its active route. Pending ICE remains governed by GNS's own connection
+deadline. Existing Ready gameplay continues; host code is removed and control
+status becomes Unavailable with a localized warning that new players cannot join.
+Unavailable routes are released once native handles and pending inbound signals
+are gone, including peers that never became Connected. An owned Connecting handle
+or a received Signal awaiting native admission keeps the route. Departure of one
+live connection also preserves a Pending sibling for the same peer. No resume is added.
+
+During Hosting/ICE/gameplay, server Backpressure and RateLimited are nonfatal:
+the control socket, Available status and host code remain usable. A later actual
+Disconnected still marks control Unavailable, and protocol errors still shut down
+the control plane. Before RoomCreated/HostReady, typed establishment failures are
+unchanged.
+
+### Game-authenticated membership
+
+The unreleased v1 schema is updated together with `puzzella-rendezvous`.
+AuthorizeAck opens routing, with a fixed 30-second deadline for game authentication.
+The host runtime sends ConfirmPeer(peer_id, member_id) as soon as its existing
+SPAKE2 bootstrap reaches Authenticated (or Syncing in that same poll), before
+Ready/image transfer/baseline/catch-up. No password, PAKE bytes or player identity
+is sent to the server. Only the current room host may confirm the exact
+server-issued MemberId. Established members have no game-auth deadline.
+
+Silent Routed members expire even while answering Ping/Pong; signals cannot renew
+the deadline. Expiry frees the member slot and sends PeerUnavailable to the host.
+Definitive native/auth/bootstrap failure sends RevokePeer when the last native
+handle for that peer is gone, including failures before Connected or within one
+poll. A Pending sibling preserves the member. Native retirement notices and
+unsent lifecycle commands are bounded; per-route commands survive worker channel
+backpressure, with Revoke superseding an unsent Confirm. Revoking routes retain
+their binding until PeerUnavailable and discard in-flight signals. Host
+UnknownTarget/JoinTimeout responses are nonfatal races with server cleanup.
+
+Pending (12-second ACK deadline), Routed (30-second game-auth deadline), and
+Established members all count toward the server's room capacity. These deadlines
+limit unauthenticated occupancy; room codes and anonymous memberships still have
+no account/Sybil guarantee. A Host must poll promptly to send its notifications.
+
+Cancel/Leave/Menu stop the adapter worker asynchronously, explicitly close game
+connections, then drop bootstrap/sync/secure channels, backend and pending owned
+passwords. Direct IP additionally closes its listener through SecureTransport's
+existing event drain. Workers do not access World/GPU and do not block the frame
+thread on join. Frame work remains bounded by adapter/connection caps; there is
+no added piece/component/selection scan or GPU readback.
+
+Multiplayer offers Internet / Direct IP. Internet host reuses puzzle selection and
+asks for the committed player name and password, with no address/port fields.
+The resulting code has Copy buttons in host status/HUD and the pause overlay.
+Internet join asks for Room Code and password, retaining code independently of the
+Zeroizing password draft. Input normalizes ASCII upper case and validates with
+the protocol RoomCode parser (10 Crockford characters, no I/L/O/U aliases).
+Wrong password/Back retains the code and clears secrets. Direct IP retains bind,
+hostname/IP/port, DNS resolution and same-puzzle HostStartRequest address retry.
+All added labels/errors are in the English and Japanese Fluent catalogs.
+
+## Deployment configuration
+
+Under `rendezvous`, explicitly inject `RendezvousRuntimeConfig { endpoint, ice }`
+into the application World. It contains only validated EndpointUrl and IceConfig;
+no password/code is stored there. Without it the Internet option is disabled and
+Direct IP remains usable. No third-party STUN or production URL is supplied.
+The ordinary binary can populate the resource from operator environment:
+
+- `PUZZELLA_RENDEZVOUS_WSS_URL`: production `wss://…/v1/ws`, validated by EndpointUrl.
+- `PUZZELLA_ICE_STUN_SERVERS`: comma-separated caller-configured STUN addresses.
+- `PUZZELLA_ICE_ALLOW_PUBLIC_CANDIDATES`: `true` or `false` (default false).
+
+Missing/invalid WSS configuration disables Internet. Remote plaintext WS and
+certificate bypass are unavailable. Local tests explicitly inject
+`EndpointUrl::loopback_for_test`, private candidates and no STUN. To test the
+actual runtime against the real loopback server, start it as above and run:
+
+```powershell
+$env:PUZZELLA_RENDEZVOUS_SMOKE_URL = 'ws://127.0.0.1:8080/v1/ws'
+cargo test --locked -p puzzella-game --features rendezvous gns_localhost_real_rendezvous_runtime_ready_command_roundtrip -- --ignored --nocapture --test-threads=1
+Remove-Item Env:PUZZELLA_RENDEZVOUS_SMOKE_URL
+```
+
+This ignored test uses two independent native GNS processes, the public runtime
+Host/Join entrypoints, code creation, native ICE, mandatory SPAKE2, image decode,
+baseline/catch-up, Ready, Grab/Release roundtrip and session teardown. Regular CI
+uses local transport/control seams for the same driver state machine and scheduled
+egui tests; it needs no external repository or Internet access.
+
+Real Internet NAT trials still require production WSS configuration, caller STUN
+configuration, public candidates, and separate machines behind different NATs.
+Some NAT/firewall pairs may require TURN; TURN/relay is not implemented.
+
+## Runtime/UI verification record (2026-10-05)
+
+Windows x86_64, Rust 1.97.0, LLVM/libclang 18.1.8, shared Cargo/vcpkg paths.
+Foundation base: puzzella `4ac3c3d` / server `8c6900c` (latest fetched
+`codex/rendezvous-v1` at work start). Server protocol is unchanged; only the stale
+TCP-only abuse-source paragraph was corrected to the existing trusted-proxy rules.
+
+| Command / configuration | Result |
+| --- | --- |
+| `cargo fmt --all --check`, `git diff --check` | Passed |
+| `cargo clippy --workspace --locked --all-targets -- -D warnings` | Passed, default |
+| Same Clippy command with `--features rendezvous` | Passed, all targets |
+| `cargo test --workspace --locked` | Passed: game 706, UI 68; workspace/doctests passed |
+| Same test command with `--features gns -- --skip gns_localhost` | Passed: game 720, UI 69; workspace/doctests passed |
+| Same test command with `--features rendezvous -- --skip gns_localhost` | Passed: game 740, UI 78; workspace/doctests passed |
+| `cargo test --workspace --locked --features rendezvous gns_localhost -- --nocapture --test-threads=1` | Passed: game 17, UI 1; ignored cross-repository tests remain opt-in |
+| `cargo test --workspace --locked --features rendezvous gns_localhost_real_rendezvous_runtime_ready_command_roundtrip -- --ignored --nocapture --test-threads=1` | Passed with real loopback server and two native process identities |
+| `cargo build --workspace --locked` | Passed, default |
+| Same build command with `--features gns` | Passed, Direct IP application linked |
+| Same build command with `--features rendezvous` | Passed, Internet application linked |
+
+Seven new regular runtime tests cover code publication, delayed bootstrap creation,
+pre-establishment failure, cancellation/drop, ICE-time control loss, Ready-time
+control loss with command roundtrip, typed errors and config-absent World preservation.
+Nine new UI tests cover method switching/availability, Internet/Direct fields,
+protocol-based code validation, scheduled valid/invalid submission, clipboard command,
+HUD/pause code and warning, secret masking, and wrong-password code retention.
+Existing Direct IP retry, DNS, runtime Ready/commands/cursors and Menu teardown
+regressions passed. Windows CI now also runs the full rendezvous runtime/UI suite.
+
+An initial MSVC LNK1181 was resolved by adding the already-built GNS `out/lib` to
+the command's LIB search path, as documented in WINDOWS_BUILD.md. No Rust build
+cache/vcpkg path was changed, and build lock waits were allowed to complete.
+An initial UI test used the wrong localized button label; it was corrected, and
+the nine Internet UI tests plus the full workspace suite passed afterward.
+This record covers local/headless runtime and scheduled egui checks; it does not
+claim real Internet NAT traversal, cross-OS behavior, GPU frame-rate or visible
+window end-to-end validation.
+
+## Retained-route admission verification (2026-10-05)
+
+An unauthenticated client could reconnect with the PeerId of its unavailable
+native route, causing AuthorizePeer → bind → ProtocolViolation → control_lost.
+Retained-route capacity divergence reached the same fatal boundary. The invariant
+is that local admission shortage rejects only the pending join and preserves the
+room/native connection, while contradictory server-issued identities still fail
+closed. The fix extends the existing v1 control messages with AuthorizeReject,
+keeps bounded rejection completions separate from old routes, and prioritizes
+lifecycle commands above both deferred and new signaling.
+
+The regression `retained_peer_and_full_route_table_reject_without_protocol_failure`
+failed against the original implementation and passes with this patch. Tests in
+`game/src/network/gns/rendezvous/tests/admission.rs` cover retained/revoking peers,
+route retirement before rejection completion, full local route/native capacity,
+130 rejection/reuse cycles, identity contradictions, one-slot command priority,
+obsolete signaling on rebind and a full inbound queue with outgoing control.
+The runtime test checks independent native headroom propagation. Mirrored strict
+parser/golden tests cover AuthorizeReject. Server state and WebSocket tests cover
+immediate resource release, same-PeerId reuse, host authority and cancelled/expired
+authorization races. Existing auth, control-loss and gameplay tests remain controls.
+
+| Verification gate / command | Result |
+| --- | --- |
+| Both repositories: `git diff --check`, Cargo fmt check | Passed |
+| App: `cargo clippy --workspace --locked --all-targets --features rendezvous -- -D warnings` | Passed |
+| Server: `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| App: `cargo test --locked -p puzzella-game --features rendezvous network::gns::rendezvous -- --nocapture` | Passed, 28 adapter/protocol tests |
+| App: `cargo test --workspace --locked --features rendezvous -- --skip gns_localhost` | Passed, workspace/unit/doc tests |
+| Server: `cargo test --locked --quiet` | Passed, 34 unit and 8 WebSocket tests |
+| App: `cargo test --workspace --locked --features rendezvous gns_localhost -- --nocapture --test-threads=1` | Passed, 17 game and 1 UI test |
+| App: `cargo test --workspace --locked --features rendezvous gns_localhost_real_rendezvous -- --ignored --nocapture --test-threads=1` | Passed, 2 real-server/two-process native tests |
+| App: `cargo build --workspace --locked --features rendezvous`; server: `cargo build --locked` | Passed |
+
+Independent read-only candidate review found no concrete remaining bypass or
+regression. Real loopback tests preserve SPAKE2, encrypted Control/Transient/Bulk
+after WS shutdown, and Room Code → Ready → Grab/Release. Both v1 schema copies and
+golden fixtures match. Production NAT/WSS/Caddy, cross-OS, GPU and performance
+trials were not rerun; existing opt-in GPU/benchmark/Caddy tests remain skipped.

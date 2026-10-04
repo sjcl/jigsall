@@ -1,4 +1,5 @@
 use super::*;
+use crate::network::gns::P2P_VIRTUAL_PORT;
 use crate::network::{
     auth::SessionPassword,
     bootstrap::{ClientBootstrap, ConnectionState, HostBootstrap},
@@ -129,16 +130,19 @@ fn gns_p2p_child() {
     #[cfg(feature = "rendezvous")]
     let mut backend = if let Ok(url) = std::env::var("PUZZELLA_P2P_RENDEZVOUS") {
         let endpoint = super::super::rendezvous::EndpointUrl::loopback_for_test(&url).unwrap();
-        let (backend, adapter) =
-            super::super::rendezvous::RendezvousAdapter::new(endpoint, 0, IceConfig::default())
-                .unwrap();
+        let (backend, adapter) = super::super::rendezvous::RendezvousAdapter::new(
+            endpoint,
+            P2P_VIRTUAL_PORT,
+            IceConfig::default(),
+        )
+        .unwrap();
         rendezvous = Some(adapter);
         backend
     } else {
-        GnsP2p::new_routed(0, IceConfig::default()).unwrap()
+        GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap()
     };
     #[cfg(not(feature = "rendezvous"))]
-    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
+    let mut backend = GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     emit(Frame::Peer(backend.peer_id().to_bytes()));
     let (tx, rx) = mpsc::sync_channel(256);
@@ -224,7 +228,11 @@ fn gns_p2p_child() {
     let mut connection = if host {
         None
     } else {
-        Some(backend.connect_peer(PeerId::from_bytes(remote), 0).unwrap())
+        Some(
+            backend
+                .connect_peer(PeerId::from_bytes(remote), P2P_VIRTUAL_PORT)
+                .unwrap(),
+        )
     };
     let records = Arc::new(Mutex::new(Vec::new()));
     let mut transport = SecureTransport::new(Observed {
@@ -372,6 +380,12 @@ fn gns_p2p_child() {
                 assert!(transport.has_channel(id));
                 assert!(connections.player(id).is_none()); // PAKE success != Ready
                 authenticated = true;
+                #[cfg(feature = "rendezvous")]
+                if host {
+                    if let Some(adapter) = &mut rendezvous {
+                        adapter.confirm_peer(PeerId::from_bytes(remote));
+                    }
+                }
                 records.lock().unwrap().clear();
                 emit(Frame::Authenticated);
             }
@@ -614,7 +628,7 @@ static BACKEND_TEST_LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
     let _guard = BACKEND_TEST_LOCK.lock().unwrap();
-    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
+    let mut backend = GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     let bad = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [3; 16]);
     let other = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [4; 16]);
@@ -632,10 +646,13 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
         .unwrap();
     let mut ids = Vec::new();
     for n in 10..14 {
+        assert!(!backend.has_peer(PeerId::from_bytes([n; 16])));
         let id = backend
             .connect_peer(PeerId::from_bytes([n; 16]), 0)
             .unwrap();
         assert_eq!(backend.origin(id), Some(Origin::Route(bad)));
+        assert!(backend.has_peer(PeerId::from_bytes([n; 16])));
+        assert!(!backend.connections[&id].connected);
         ids.push(id);
     }
     assert_eq!(
@@ -646,12 +663,14 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
         .connect_peer(PeerId::from_bytes([20; 16]), 0)
         .unwrap();
     backend.close(ids[0], DisconnectReason::Requested).unwrap();
+    assert!(!backend.has_peer(PeerId::from_bytes([10; 16])));
     backend
         .connect_peer(PeerId::from_bytes([14; 16]), 0)
         .unwrap();
     let mut events = Vec::new();
     backend.maintain(Instant::now() + CONNECTING_TIMEOUT, &mut events);
     assert!(backend.connections.is_empty());
+    assert!(!backend.has_peer(PeerId::from_bytes([20; 16])));
     assert_eq!(backend.origin(healthy), None);
     // Rotating peer IDs or closing sockets does not replenish account history.
     assert_eq!(
@@ -664,6 +683,7 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
     mailbox.revoke_peer(PeerId::from_bytes([20; 16]));
     events.clear();
     backend.poll(&mut events).unwrap();
+    assert!(!backend.has_peer(PeerId::from_bytes([20; 16])));
     assert!(events.iter().any(|e| matches!(e, TransportEvent::ConnectionFailed { connection, reason: DisconnectReason::Requested } if *connection == healthy)));
     assert_eq!(
         backend.connect_peer(PeerId::from_bytes([20; 16]), 0),

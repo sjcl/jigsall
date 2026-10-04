@@ -6,14 +6,14 @@ use puzzella_core::PlayerDisplayName;
 mod cursor_tests;
 
 struct Endpoint {
-    runtime: Runtime<Fake>,
+    runtime: DirectIpDriver<Fake>,
     store: PieceDataStore,
     gesture: PieceInteraction,
 }
 impl Endpoint {
     fn host(bus: &Arc<Mutex<Bus>>) -> Self {
         let bytes = encoded();
-        let runtime = Runtime::host(
+        let runtime = DirectIpDriver::host(
             Fake {
                 id: 0,
                 bus: bus.clone(),
@@ -43,7 +43,7 @@ impl Endpoint {
     }
     fn client(bus: &Arc<Mutex<Bus>>, id: u64) -> Self {
         Self {
-            runtime: Runtime::client(
+            runtime: DirectIpDriver::client(
                 Fake {
                     id,
                     bus: bus.clone(),
@@ -69,10 +69,11 @@ impl Endpoint {
             .unwrap();
     }
     fn roster(&self) -> RosterSnapshot {
-        self.runtime.roster.snapshot()
+        self.runtime.runtime.roster.snapshot()
     }
     fn connection(&self, player: PlayerId) -> ConnectionId {
         self.runtime
+            .runtime
             .connections
             .peers()
             .find(|p| p.player == Some(player))
@@ -80,7 +81,7 @@ impl Endpoint {
             .connection
     }
     fn ready(&self) -> bool {
-        self.runtime.status.phase == RuntimePhase::Ready
+        self.runtime.runtime.status.phase == RuntimePhase::Ready
     }
 }
 fn join(host: &mut Endpoint, peers: &mut [&mut Endpoint]) {
@@ -111,22 +112,23 @@ fn named_direct_ip_host_a_join_b_join_a_leave_converges_with_duplicate_names() {
     assert_eq!(host.roster(), a.roster());
     assert_eq!(host.roster(), b.roster());
     assert_eq!(host.roster().revision, 2);
-    let player = a.runtime.status.local_player.unwrap();
+    let player = a.runtime.runtime.status.local_player.unwrap();
     a.runtime.teardown(&mut a.store);
     host.poll();
     b.poll();
     assert_eq!(host.roster(), b.roster());
     assert_eq!(host.roster().revision, 3);
-    assert!(host.runtime.roster.get(player).is_none());
+    assert!(host.runtime.runtime.roster.get(player).is_none());
     assert_eq!(
         b.runtime
+            .runtime
             .roster
             .players()
             .map(|p| p.display_name.as_ref().unwrap().as_ref())
             .collect::<Vec<_>>(),
         vec!["Host 🧩", "Alice"]
     );
-    assert!(a.runtime.roster.is_empty());
+    assert!(a.runtime.runtime.roster.is_empty());
 }
 
 #[test]
@@ -138,12 +140,12 @@ fn active_drag_disconnect_publishes_cancel_before_left_and_duplicate_is_inert() 
     join(&mut host, &mut [&mut a, &mut b]);
     a.poll();
     b.poll();
-    let player = a.runtime.status.local_player.unwrap();
+    let player = a.runtime.runtime.status.local_player.unwrap();
     let id = host.connection(player);
-    let Role::Host(state) = &mut host.runtime.role else {
+    let Role::Host(state) = &mut host.runtime.runtime.role else {
         unreachable!()
     };
-    let session = host.runtime.session.as_mut().unwrap();
+    let session = host.runtime.runtime.session.as_mut().unwrap();
     let applied = state
         .contexts
         .apply_replicated(
@@ -162,7 +164,7 @@ fn active_drag_disconnect_publishes_cancel_before_left_and_duplicate_is_inert() 
                     }),
                 },
             },
-            host.runtime.definition.as_ref(),
+            host.runtime.runtime.definition.as_ref(),
             PlayerId(0),
         )
         .unwrap();
@@ -178,7 +180,7 @@ fn active_drag_disconnect_publishes_cancel_before_left_and_duplicate_is_inert() 
         .disconnect(id, DisconnectReason::RemoteClosed, None, &mut host.store)
         .unwrap();
     let mut events = Vec::new();
-    b.runtime.transport.poll(&mut events).unwrap();
+    b.runtime.runtime.transport.poll(&mut events).unwrap();
     let messages: Vec<_> = events
         .iter()
         .filter_map(|e| {
@@ -192,19 +194,19 @@ fn active_drag_disconnect_publishes_cancel_before_left_and_duplicate_is_inert() 
     assert!(
         matches!(&messages[..], [WireMessage::AuthorityEvent(e), WireMessage::Presence(PresenceMessage::PlayerLeft {revision: 3, player: p})] if matches!(e.event, ProtocolAuthorityEvent::DragCancelled(_)) && *p == player)
     );
-    let Role::Client(state) = &mut b.runtime.role else {
+    let Role::Client(state) = &mut b.runtime.runtime.role else {
         unreachable!()
     };
     for event in events {
         ClientRouter {
-            roster: &mut b.runtime.roster,
-            local_player: b.runtime.status.local_player.unwrap(),
+            roster: &mut b.runtime.runtime.roster,
+            local_player: b.runtime.runtime.status.local_player.unwrap(),
             host_connection: state.bootstrap.host_connection(),
-            connections: &b.runtime.connections,
+            connections: &b.runtime.runtime.connections,
             replica: &mut state.replica,
-            session: b.runtime.session.as_mut().unwrap(),
+            session: b.runtime.runtime.session.as_mut().unwrap(),
             store: &mut b.store,
-            definition: b.runtime.definition.as_ref(),
+            definition: b.runtime.runtime.definition.as_ref(),
         }
         .route(&event)
         .unwrap();
@@ -218,9 +220,9 @@ fn active_drag_disconnect_publishes_cancel_before_left_and_duplicate_is_inert() 
             &mut host.store,
         )
         .unwrap();
-    assert_eq!(host.runtime.roster.revision(), 3);
+    assert_eq!(host.runtime.runtime.roster.revision(), 3);
     events = Vec::new();
-    b.runtime.transport.poll(&mut events).unwrap();
+    b.runtime.runtime.transport.poll(&mut events).unwrap();
     assert!(events.is_empty());
 }
 
@@ -235,15 +237,15 @@ fn presence_failure_cascade_reaches_every_surviving_ready_peer() {
     a.poll();
     b.poll();
     c.poll();
-    let aid = host.connection(a.runtime.status.local_player.unwrap());
-    let bid = host.connection(b.runtime.status.local_player.unwrap());
+    let aid = host.connection(a.runtime.runtime.status.local_player.unwrap());
+    let bid = host.connection(b.runtime.runtime.status.local_player.unwrap());
     bus.lock().unwrap().fail.insert(bid);
     host.runtime
         .disconnect(aid, DisconnectReason::RemoteClosed, None, &mut host.store)
         .unwrap();
     c.poll();
-    assert_eq!(host.runtime.roster.len(), 2);
-    assert_eq!(host.runtime.roster.revision(), 5);
+    assert_eq!(host.runtime.runtime.roster.len(), 2);
+    assert_eq!(host.runtime.runtime.roster.revision(), 5);
     assert_eq!(host.roster(), c.roster());
 }
 
@@ -276,15 +278,15 @@ fn ready_commit_then_immediate_leave_and_join_converge_in_control_order() {
     let mut b = Endpoint::client(&bus, 2);
     for _ in 0..200 {
         host.poll();
-        if host.runtime.roster.len() == 3 {
+        if host.runtime.runtime.roster.len() == 3 {
             break;
         }
         a.poll();
         b.poll();
     }
-    assert_eq!(host.runtime.roster.len(), 3);
+    assert_eq!(host.runtime.runtime.roster.len(), 3);
     assert!(!b.ready()); // ReadyCommit revision 2 is queued, not yet consumed.
-    let aid = host.connection(a.runtime.status.local_player.unwrap());
+    let aid = host.connection(a.runtime.runtime.status.local_player.unwrap());
     host.runtime
         .disconnect(aid, DisconnectReason::RemoteClosed, None, &mut host.store)
         .unwrap();
@@ -293,7 +295,7 @@ fn ready_commit_then_immediate_leave_and_join_converge_in_control_order() {
     // B now receives ReadyCommit(2), PlayerLeft(3), PlayerJoined(4) in one poll.
     b.poll();
     assert!(b.ready());
-    assert_eq!(host.runtime.roster.revision(), 4);
+    assert_eq!(host.runtime.runtime.roster.revision(), 4);
     assert_eq!(host.roster(), b.roster());
     assert_eq!(host.roster(), c.roster());
 }

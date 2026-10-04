@@ -242,7 +242,11 @@ impl<T: Transport> SecureTransport<T> {
         };
         self.inner.send(connection, class, &record)
     }
-    #[cfg(test)]
+    #[cfg(feature = "rendezvous")]
+    pub(crate) fn backend(&self) -> &T {
+        &self.inner
+    }
+    #[cfg(any(test, feature = "rendezvous"))]
     pub(crate) fn backend_mut(&mut self) -> &mut T {
         &mut self.inner
     }
