@@ -1,5 +1,62 @@
 # Direct-IP game runtime
 
+## Remote cursor presence
+
+The independent `network::cursor` / `runtime::cursors` path samples the already
+world-space InputState.mouse_position after current egui/camera/input handling.
+Clients send CursorUpdate at 20 Hz only while Ready; the host derives sender
+identity from the authenticated Ready SessionConnections mapping. The host
+samples its local cursor without loopback and periodically sends one full
+CursorSnapshot batch to each Ready client. Monotonic per-player ticks and batch
+sequences are separate from authority cursors and never wrap. Loss heals through
+stationary heartbeats and full-set replacement; no reliable cursor resend exists.
+
+Window focus/cursor validity, Playing state and pending state transitions gate
+the cached sample even when paused input systems stop running. None means hidden,
+and a hide bypasses the 50 ms sampler timer. Host expiry is 400 ms; the client
+does not send periodic updates while hidden. A lost hide is repaired by expiry.
+The client also removes presentation when batches stall for 400 ms. Invalid coordinates
+(nonfinite or beyond +/-1,000,000) hide benignly. Cursor send backpressure does
+not fail gameplay. Host remote targets update directly from accepted samples;
+client targets update from full snapshots, with own/unknown roster IDs filtered.
+
+ReadyCommit overtaking is a benign Syncing drop, with recovery on the next 20 Hz
+snapshot. Presence::PlayerJoined may arrive after a cursor batch: unknown IDs
+are ignored until roster registration and another batch. PlayerLeft immediately
+removes presentation; absent roster members cannot reappear in late batches.
+Disconnect also removes the host latest-tick entry. New host/join, baseline/Ready
+replacement, session/authority epoch change, host loss, stop_session and Menu
+cleanup reset all cursor scope, counters, timers and presentation.
+
+`RemoteCursorPresentation` is an independent game resource, storing latest target
+and displayed world positions for at most 65 players. Time<Real> exponential
+smoothing uses a 25 ms time constant, clamps interpolation against overshoot,
+and settles exactly within 0.001 world units or after 250 ms. Identical stationary
+heartbeats do not restart settling. Settled smoothing does not mark the resource
+changed. There is no prediction, velocity or extrapolation.
+
+The paint-only egui overlay reads only this resource, PlayerRoster, LocalPlayerId
+and MainCamera projection. Each frame projects displayed world positions through
+the receiving camera, so local pan/zoom needs no packet. Markers stay 15x16 UI
+points, with stable PlayerId palette colors and roster display names (localized
+default-player fallback). Own/unknown/offscreen/nonfinite cursors are skipped.
+It registers no widget, Area, interaction rectangle or keyboard focus and paints
+on the background layer before HUD, below menus/dialogs. It runs only in Playing.
+
+Cursor work depends only on bounded player/connection counts: no PieceDataStore
+state scan, membership/component lookup, selection mask, dirty renderer revision
+or GPU upload. It does not enter gameplay authority, checkpoints, GameSnapshot,
+JoinBaseline, catch-up events, autosave or persistent/cloud formats. See the
+[transport contract](NETWORK_TRANSPORT.md#world-space-remote-cursors) for exact
+sizes, class/lane and rate budget.
+
+Cursor regressions cover bounded wire/golden fixtures, authenticated identity,
+Ready/Presence reordering, full-set loss recovery, expiry/teardown, 360 Hz send
+limits, time-based settling, camera/HiDPI projection and paint-only input behavior.
+A million-piece guard verifies no cursor path accesses piece state or advances
+piece upload revisions. The real GNS localhost runtime fixture also exchanges
+world-space cursors after Ready. These checks do not establish an FPS guarantee.
+
 ## Player profiles and presence
 
 `PlayerDisplayName` in core is display metadata only: Unicode whitespace trim,
@@ -58,7 +115,7 @@ cascading publication failure and immediate join/leave after queued ReadyCommit.
 one secured transport, bootstrap, sync coordinator/router, Ready connections,
 authority session, host drag contexts or client replica, and local command sender.
 It borrows the existing World `PieceDataStore`; there is no second store or
-per-piece network Entity. The wire version is 10, snapshot schema 5, and join
+per-piece network Entity. The wire version is 11, snapshot schema 5, and join
 baseline schema 1.
 
 ## Programmatic entrypoints
@@ -296,7 +353,7 @@ Offline release continues to use immediate local authority without ACK state.
 
 Pending idle frames share the same 125,000-byte bitset for 1M members and update
 only scalar/Arc presentation state. They do not inspect canonical pieces, rebuild
-membership or request canonical uploads. Wire version 10, snapshot schema 5,
+membership or request canonical uploads. Wire version 11, snapshot schema 5,
 JoinBaseline schema 1 and the 16-byte GpuPieceState are unchanged.
 
 ## Joining World and image lifecycle

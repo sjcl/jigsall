@@ -381,14 +381,38 @@ mod tests {
 
     #[test]
     fn defaults_allow_120_hz_drags_and_maximum_frame_bursts() {
-        use crate::network::secure::record_limit;
+        use crate::network::{
+            secure::{record_limit, RECORD_OVERHEAD},
+            wire::{self, WireMessage},
+        };
+        use bevy::math::Vec2;
+        use puzzella_core::{
+            protocol::RemoteDragUpdate,
+            session::{AuthorityEpoch, SessionId},
+            PlayerId,
+        };
+        // Drag records stay small even though batched cursor snapshots raised
+        // the lane limit. The 120 Hz guarantee concerns actual drag traffic.
+        let drag_bytes = wire::encode(&WireMessage::DragUpdate(RemoteDragUpdate {
+            session: SessionId(u128::MAX),
+            authority_epoch: AuthorityEpoch(u64::MAX),
+            player: PlayerId(u64::MAX),
+            grab_sequence: u64::MAX,
+            basis_sequence: u64::MAX,
+            tick: u64::MAX,
+            delta: Vec2::splat(f32::MAX),
+        }))
+        .unwrap()
+        .len()
+            + RECORD_OVERHEAD;
+        assert!(drag_bytes < DEFAULT_INBOUND_POLICY.transient.minimum_charge as usize);
         let now = Instant::now();
         let mut limiter = InboundRateLimiter::new(now);
         for tick in 0..7200 {
             assert_eq!(
                 limiter.check(
                     MessageClass::Transient,
-                    record_limit(MessageClass::Transient),
+                    drag_bytes,
                     now + Duration::from_nanos(tick * 1_000_000_000 / 120)
                 ),
                 RateDecision::Allow
@@ -402,6 +426,13 @@ mod tests {
                 );
             }
         }
+        let class = MessageClass::Transient;
+        let max_record = record_limit(class);
+        let mut limiter = InboundRateLimiter::new(now);
+        for _ in 0..DEFAULT_INBOUND_POLICY.transient.burst_bytes / max_record as u64 {
+            assert_eq!(limiter.check(class, max_record, now), RateDecision::Allow);
+        }
+        assert_eq!(limiter.check(class, max_record, now), RateDecision::Drop);
     }
 
     #[test]

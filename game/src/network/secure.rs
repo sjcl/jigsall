@@ -217,6 +217,31 @@ impl<T: Transport> SecureTransport<T> {
         let _ = self.inner.close(connection, reason);
         TransportEvent::Disconnected { connection, reason }
     }
+    /// Cursor presence may drop under backend pressure. Seal consumes a fresh
+    /// nonce even on failure; Transient gaps are legal. Lifecycle polling owns
+    /// actual connection loss. This path cannot send plaintext or reliable data.
+    pub(crate) fn send_presentation(
+        &mut self,
+        connection: ConnectionId,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        let class = MessageClass::Transient;
+        if payload.len() > wire::frame_limit(class) {
+            return Err(TransportError::PayloadTooLarge);
+        }
+        let Some(ConnectionChannel::Secure(channel)) = self.connections.get_mut(&connection) else {
+            return Err(TransportError::NotConnected);
+        };
+        let record = match channel.seal(class, payload) {
+            Ok(record) => record,
+            Err(()) => {
+                let event = self.fail(connection, DisconnectReason::ProtocolViolation);
+                self.pending.push(event);
+                return Err(TransportError::ProtocolViolation);
+            }
+        };
+        self.inner.send(connection, class, &record)
+    }
     #[cfg(test)]
     pub(crate) fn backend_mut(&mut self) -> &mut T {
         &mut self.inner

@@ -150,6 +150,8 @@ fn scheduled_screens() -> (App, egui::Context) {
     world.init_resource::<GameData>();
     world.init_resource::<GameUiPointerCapture>();
     world.init_resource::<PlayerRoster>();
+    world.init_resource::<puzzella_game::resources::LocalPlayerId>();
+    world.init_resource::<puzzella_game::resources::remote_cursor::RemoteCursorPresentation>();
     world.init_resource::<PieceDataStore>();
     world.init_resource::<PieceGenerationProgress>();
     world.init_resource::<PerformanceMonitor>();

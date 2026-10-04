@@ -1,6 +1,6 @@
 # Multiplayer command protocol
 
-## Display metadata and session roster (wire v9)
+## Display metadata and session roster (wire v11)
 
 PlayerId is the protocol/ownership identity. PlayerDisplayName is a validated,
 optional display string; duplicate names are valid. Platform account identity is

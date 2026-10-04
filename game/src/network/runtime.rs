@@ -1,6 +1,7 @@
 //! One owner for Direct-IP bootstrap, sync, gameplay, and connection teardown.
 //! The CPU store is borrowed from the game World; no parallel gameplay state exists.
 mod bridge;
+mod cursors;
 mod failure;
 pub use failure::NetworkFailureKind;
 use failure::RuntimeFailure;
@@ -195,6 +196,7 @@ struct Runtime<T> {
     decoded: Option<DecodedImage>,
     bridge: CommandBridge,
     presentation: presentation::RemotePresentationBridge,
+    cursors: super::cursor::CursorPresence,
     status: NetworkStatus,
     baseline_installed: bool,
     render_installed: bool,
@@ -297,6 +299,7 @@ impl<T: DirectIpTransport> Runtime<T> {
             decoded: None,
             bridge: Default::default(),
             presentation: Default::default(),
+            cursors: Default::default(),
             baseline_installed: true,
             render_installed: true,
             active: true,
@@ -341,6 +344,7 @@ impl<T: DirectIpTransport> Runtime<T> {
             decoded: None,
             bridge: Default::default(),
             presentation: Default::default(),
+            cursors: Default::default(),
             baseline_installed: false,
             render_installed: false,
             active: true,
@@ -435,6 +439,9 @@ impl<T: DirectIpTransport> Runtime<T> {
                 continue;
             }
             let player = retained.or_else(|| self.connections.player(connection));
+            if let Some(player) = player {
+                self.cursors.remove(player);
+            }
             let event = TransportEvent::Disconnected { connection, reason };
             let _ = self.transport.close(connection, reason);
             match &mut self.role {
@@ -505,6 +512,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 }
                 Role::Client(client) => {
                     self.roster.clear();
+                    self.cursors.reset();
                     if let Some(sync) = &mut client.sync {
                         sync.invalidate();
                     }
@@ -539,6 +547,8 @@ impl<T: DirectIpTransport> Runtime<T> {
         now: Instant,
     ) -> Result<(), RuntimeFailure> {
         if let Some(session) = &self.session {
+            self.cursors
+                .synchronize(session.session_definition().id, session.cursor().epoch);
             self.presentation.synchronize(session, store);
             self.bridge.synchronize(session, interaction, store);
         }
@@ -601,6 +611,23 @@ impl<T: DirectIpTransport> Runtime<T> {
                     continue;
                 }
             };
+            // Dedicated presentation router, after bootstrap's authenticated Ready gate.
+            // Cursor messages never enter HostRouter/ClientRouter or replication.
+            if outcome == BootstrapOutcome::Gameplay
+                && matches!(&event, TransportEvent::Message { payload, .. } if matches!(payload.get(6), Some(9 | 10)))
+            {
+                if let Err(error) = self.route_cursor(&event, now) {
+                    self.status
+                        .set_failure(NetworkFailureKind::Protocol, &error);
+                    self.disconnect(
+                        connection,
+                        DisconnectReason::ProtocolViolation,
+                        retained,
+                        store,
+                    )?;
+                }
+                continue;
+            }
             match &mut self.role {
                 Role::Host(host) => {
                     let session = self.session.as_mut().unwrap();
@@ -761,6 +788,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                     .map_err(|e| format!("{e:?}"))
                             }),
                             ClientSyncOutcome::BaselineInstalled => {
+                                self.cursors.reset();
                                 self.baseline_installed = true;
                                 self.bridge = default();
                                 *interaction = default();
@@ -768,6 +796,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 store.clear_local_rotation();
                             }
                             ClientSyncOutcome::Ready => {
+                                self.cursors.reset();
                                 self.bridge = default();
                                 *interaction = default();
                                 store.drag = default();
@@ -843,10 +872,23 @@ impl<T: DirectIpTransport> Runtime<T> {
                                             .delta,
                                     );
                                 }
+                                WireMessage::Presence(PresenceMessage::PlayerLeft {
+                                    player,
+                                    ..
+                                }) => {
+                                    self.cursors.remove(player);
+                                }
                                 _ => {}
                             }
                         }
-                    } else if client.bootstrap.state().is_some() {
+                    } else if matches!(
+                        client.bootstrap.state(),
+                        Some(
+                            ConnectionState::TransportConnected
+                                | ConnectionState::Authenticating
+                                | ConnectionState::Securing
+                        )
+                    ) {
                         self.status.phase = RuntimePhase::Authenticating;
                     }
                 }
@@ -1094,6 +1136,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         Ok(())
     }
     fn teardown(&mut self, store: &mut PieceDataStore) {
+        self.cursors.reset();
         self.roster.clear();
         for connection in std::mem::take(&mut self.live) {
             let _ = self

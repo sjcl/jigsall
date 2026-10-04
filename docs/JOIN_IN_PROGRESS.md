@@ -1,6 +1,6 @@
 # Join baseline, bounded catch-up and Ready handoff
 
-`JoinBaseline` schema **1** combines the existing `GameSnapshot` schema **4**
+`JoinBaseline` schema **1** combines the existing `GameSnapshot` schema **5**
 with at most **64** `BaselineDrag` records. This is a transport-independent CPU
 API. `network::syncing` now connects it to authenticated runtime routing and
 generation-bound Bulk transfer, authoritative drag reconciliation and Ready handoff.
@@ -145,7 +145,7 @@ there is no million-entry member-ref list or new permanent per-piece metadata.
 
 GameSnapshot remains canonical persistent state: no HELD, owner, drag delta or
 context fields. SNAPSHOT_SCHEMA_VERSION, PuzzleCheckpoint and save format are
-unchanged. Wire v9 retains DragCancelled as authority event index 4; fixed golden
+unchanged. Wire v11 retains DragCancelled as authority event index 4; fixed golden
 frames preserve earlier payload layouts and update their version header. Join
 overlays are never applied automatically to migration or save/load.
 
@@ -163,8 +163,8 @@ targets.
 It does not use ConnectionId, GNS handles or Steam identities, change HostRouter
 parameters, install Bevy systems, call bootstrap `begin_sync`/`promote_ready`, or
 add wire messages. JOIN_BASELINE_SCHEMA_VERSION **1** and SNAPSHOT_SCHEMA_VERSION
-**4** remain unchanged. The application Syncing protocol uses WIRE_VERSION **9**
-and fixed v9 frames; catch-up semantics and generic Bulk fields are unchanged.
+**5** remain unchanged. The application Syncing protocol uses WIRE_VERSION **11**
+and fixed v11 frames; catch-up semantics and generic Bulk fields are unchanged.
 
 Only after image preparation and verified `ImageReady`, call
 `begin_join(player, session, store, contexts, definition)` between complete
@@ -292,7 +292,7 @@ It detects unrecorded authority gameplay and is **not** a Ready decision.
 `latest_drag_updates` returns latest presentation in ascending PlayerId order;
 the caller must deliver it after the corresponding reliable basis.
 
-Runtime lifecycle (`network::syncing`, wire v9):
+Runtime lifecycle (`network::syncing`, wire v11):
 
 ```text
 Authenticated
@@ -512,7 +512,7 @@ registration cleanup. The actual localhost GNS join test runs SPAKE2, missing-im
 negotiation/verification, baseline, catch-up, reconciliation, final ACK and production
 Ready promotion, then sends and replicates a normal Grab over encrypted Control.
 
-## Bounded Bulk substrate (wire v9, framing unchanged from v6)
+## Bounded Bulk substrate (wire v11, framing unchanged from v6)
 
 `network::bulk` provides `BulkTransferKind::{JoinBaseline, PuzzleImage}`,
 monotonic `TransferId(u64)` and typed Start/Chunk/Finish/Abort under outer wire
@@ -552,4 +552,4 @@ streaming, compression or Steamworks is added. Bevy scheduling, worker image dec
 World installation and disconnect ownership now live in the
 [game runtime](DIRECT_IP_RUNTIME.md).
 See [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md#bounded-bulk-transfer-foundation)
-for the generic framing, receiver error semantics and fixed v9 golden contract.
+for the generic framing, receiver error semantics and fixed v11 golden contract.

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod bootstrap;
 pub mod bulk;
 pub mod client;
+pub mod cursor;
 #[cfg(feature = "gns")]
 pub mod gns;
 pub mod host;

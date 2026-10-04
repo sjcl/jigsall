@@ -15,7 +15,7 @@ LogicalPlayAreaにも同じslot寸法を使います。初期state生成は従�
 変更しません。local predictionとreplicaの回転commitも同じゲームルールで拒否します。
 保存／snapshotのvalidationでは、オフのdefinitionに非ゼロrotationが含まれた場合を拒否します。
 
-save formatはv4、snapshot schemaは5、wireはv10です。古いsave v1–v3、snapshot
+save formatはv4、snapshot schemaは5、wireはv11です。古いsave v1–v3、snapshot
 schema 1–4、旧wireとの互換性はありません。各pieceのstateは16 bytesを維持します。
 
 Q / Eで選択中のcomponentを反時計回り / 時計回りに90°回転します。
@@ -122,7 +122,7 @@ rebase後は成功したRotateDragのcontrol番号です。grab_sequenceはgestu
 誤適用せず拒否します。次の最新Transientまたはreliable操作のfinal_deltaで補えます。
 拒否されたRotateDragはcontrol番号だけを消費し、前のbasis / tick / deltaは保持します。
 fingerprintは対象state・rotation・hold・connectivityに加えcontextのGrab / basis / tick /
-zero deltaも検証します。transportは現行のwire version 10のみをdecodeし、互換decoderはありません。
+zero deltaも検証します。transportは現行のwire version 11のみをdecodeし、互換decoderはありません。
 
 ## Cost and verification
 

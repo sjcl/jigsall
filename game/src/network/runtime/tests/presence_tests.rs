@@ -2,6 +2,9 @@ use super::*;
 use crate::players::{PresenceMessage, RosterSnapshot};
 use puzzella_core::PlayerDisplayName;
 
+#[path = "cursor_tests.rs"]
+mod cursor_tests;
+
 struct Endpoint {
     runtime: Runtime<Fake>,
     store: PieceDataStore,

@@ -24,4 +24,5 @@ pub mod settings_file;
 mod systems;
 #[cfg(test)]
 mod test_logging;
+pub use components::MainCamera;
 pub use game::GamePlugin;

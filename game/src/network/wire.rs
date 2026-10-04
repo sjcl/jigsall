@@ -8,11 +8,12 @@ use puzzella_core::protocol::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 10;
+pub const WIRE_VERSION: u16 = 11;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_SESSION_CONTROL_PAYLOAD: usize = 4096;
-pub const MAX_TRANSIENT_PAYLOAD: usize = 128;
+// Worst-case cursor snapshot is 1,210 Postcard bytes (65 players).
+pub const MAX_TRANSIENT_PAYLOAD: usize = 1280;
 pub const MAX_BULK_WIRE_PAYLOAD: usize = 32 * 1024;
 pub const MAX_WIRE_MESSAGE: usize = HEADER_SIZE + MAX_CONTROL_PAYLOAD;
 const MAGIC: &[u8; 4] = b"PZLA";
@@ -26,6 +27,8 @@ pub enum WireMessage {
     SessionControl(SessionControlMessage),
     SyncControl(SyncControlMessage),
     Presence(crate::players::PresenceMessage),
+    CursorUpdate(super::cursor::CursorUpdate),
+    CursorSnapshot(super::cursor::CursorSnapshot),
 }
 
 impl WireMessage {
@@ -41,7 +44,9 @@ impl WireMessage {
             | Self::SessionControl(_)
             | Self::SyncControl(_)
             | Self::Presence(_) => MessageClass::Control,
-            Self::DragUpdate(_) => MessageClass::Transient,
+            Self::DragUpdate(_) | Self::CursorUpdate(_) | Self::CursorSnapshot(_) => {
+                MessageClass::Transient
+            }
             Self::BulkTransfer(_) => MessageClass::Bulk,
         }
     }
@@ -55,6 +60,8 @@ impl WireMessage {
             Self::SessionControl(_) => 6,
             Self::SyncControl(_) => 7,
             Self::Presence(_) => 8,
+            Self::CursorUpdate(_) => 9,
+            Self::CursorSnapshot(_) => 10,
         }
     }
 }
@@ -92,6 +99,13 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
         WireMessage::DragUpdate(v) => binary(v)?,
         WireMessage::SessionControl(v) => binary(v)?,
         WireMessage::Presence(v) => binary(v)?,
+        WireMessage::CursorUpdate(v) => binary(v)?,
+        WireMessage::CursorSnapshot(v) => {
+            if !v.canonical() {
+                return Err(WireError::MalformedPayload);
+            }
+            binary(v)?
+        }
         WireMessage::SyncControl(v) => {
             if matches!(v, SyncControlMessage::Finalize { drags, .. } if drags.entries.len() > crate::multiplayer::MAX_BASELINE_DRAGS)
             {
@@ -163,7 +177,7 @@ fn checked_payload(frame: &[u8]) -> Result<(u8, MessageClass, &[u8]), WireError>
     }
     let class = match frame[6] {
         1 | 2 | 6 | 7 | 8 => MessageClass::Control,
-        3 | 4 => MessageClass::Transient,
+        3 | 4 | 9 | 10 => MessageClass::Transient,
         5 => MessageClass::Bulk,
         kind => return Err(WireError::UnknownKind(kind)),
     };
@@ -221,6 +235,8 @@ pub fn decode(frame: &[u8]) -> Result<WireMessage, WireError> {
         6 => WireMessage::SessionControl(parse(payload)?),
         7 => WireMessage::SyncControl(parse(payload)?),
         8 => WireMessage::Presence(parse(payload)?),
+        9 => WireMessage::CursorUpdate(parse(payload)?),
+        10 => WireMessage::CursorSnapshot(parse(payload)?),
         _ => unreachable!("kind checked above"),
     };
     if message.class() != class {

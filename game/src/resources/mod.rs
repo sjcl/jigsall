@@ -8,6 +8,7 @@ pub mod images;
 pub mod input;
 pub mod performance;
 pub mod pieces;
+pub mod remote_cursor;
 pub mod remote_drag;
 
 pub use crate::players::{PlayerInfo, PlayerRoster};

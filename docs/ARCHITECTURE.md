@@ -48,6 +48,34 @@ puzzella
 配置・カメラ・LogicalPlayAreaで共有します。オフでは入力・authority・prediction・replicaが
 回転を禁止し、保存／snapshotも非ゼロrotationを拒否します。詳細は[ROTATION.md](ROTATION.md)。
 
+### Remote cursor presentation
+
+Direct-IPのcursorはgame/network限定のsession-only presenceです。
+`network/cursor.rs` と `runtime/cursors.rs` がworld-space CursorUpdate（20 Hzの
+Transient heartbeat）を認証済みReady接続のPlayerIdに対応付け、host自身のsampleと
+合わせて最大65人のvisible setを1つのCursorSnapshotへbatchします。host→各Ready
+clientも20 Hzです。tick / sequenceは単調でwrapせず、旧session / epoch / stale /
+duplicateを無視します。full snapshotから消えたentryはhiddenになり、packet lossは
+次のheartbeat / full snapshotで自己修復します。Syncing中のReadyCommit追い越しと
+roster未登録IDはbenign dropです。名前の正本はPlayerRosterで、名前・色・cameraをwireへ
+送りません。None・pause・focus loss・window外はhidden、hideは即sample、失効は400 msです。
+
+`resources/remote_cursor.rs::RemoteCursorPresentation` はpieceに触れず、最大player数だけの
+target / displayed world positionを持ちます。`Time<Real>` の指数平滑化（25 ms）でtargetへ
+収束し、epsilonまたは250 msでexact settleし、settled frameの変更検知を進めません。
+prediction / extrapolationはありません。`ui/src/remote_cursor.rs` は受信側MainCameraで
+毎frame viewportへ投影し、一定screen sizeのpointer・PlayerId由来の色・roster名を描画します。
+camera pan / zoomに新packetは不要です。描画だけのegui background painterをHUDより先に
+使い、input capture / focusを登録せず、Playing以外では表示しません。
+
+cursorの通常処理は最大約64人のsmoothing / projectionで、100万pieceのstate・membership・
+component・GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
+snapshot / checkpoint / JoinBaseline / catch-up / save / autosaveから完全に分離します。
+disconnect / PlayerLeftは即削除、session / epoch / baseline / Ready replacementとteardownは
+全resetです。wire v11の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
+詳細は[runtime](DIRECT_IP_RUNTIME.md#remote-cursor-presence)と
+[transport](NETWORK_TRANSPORT.md#world-space-remote-cursors)を参照してください。
+
 player一覧の正本は `game/src/players.rs::PlayerRoster` です。`GameData` は進捗専用です。
 display name は core の validated `PlayerDisplayName` で、protocol identity の
 `PlayerId` や将来の platform account ID と独立しています。Direct-IP は ReadyCommit の
@@ -134,7 +162,7 @@ uploadします。既存state bufferをmain / far / visibility / point / rectang
 64 queued controls + 1 in-flight controlに制限され、各controlはO(k)のplanner処理です。
 1M対象なら一時pose map / plan / uploadも対象数に比例しますが、1piece操作でcanonicalの
 16MBをCOW copyしません。ordinary pointer/camera、pending ACK idle frameはpose mapを
-走査/再構築せず、state/membership uploadは0 bytesです。wire 10、snapshot schema 5、
+走査/再構築せず、state/membership uploadは0 bytesです。wire 11、snapshot schema 5、
 JoinBaseline schema 1、GpuPieceState 16 bytesを維持します。
 
 Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変わった場合だけmaskをuploadします。selected outlineはfragmentで専用bitsetを参照し、dense stateのflagsとdirty rangeを変更しません。初回state uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。dirty bitsetのset bitsをID順にiterateして連続rangeへまとめ、ID Vecの展開・sortは不要です。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate / selected / membership uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
@@ -189,7 +217,7 @@ target / displayed / smoothing ageと64-bit active maskはmappingから独立し
 
 client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipを構築し、displayed == target == reconciled deltaへ即時初期化します。初回Transientを待たず、過去のdragをzeroからanimationさせず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、join baseline / new session、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・両delta・smoothing stateをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
 
-`presentation.wgsl::presentation_position`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v10、`GpuPieceState` 16 bytes、snapshot schema 5、join baseline schema 1は変更しません。
+`presentation.wgsl::presentation_position`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v11、`GpuPieceState` 16 bytes、snapshot schema 5、join baseline schema 1は変更しません。
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 5のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 

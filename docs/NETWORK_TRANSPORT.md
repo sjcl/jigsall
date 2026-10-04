@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v10 and snapshot schema 5. `core` has no transport/native dependency.
+wire v11 and snapshot schema 5. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
@@ -318,7 +318,7 @@ fresh OS randomness remain security assumptions; this is not an independent audi
 
 | Class | Messages | GNS lane | Send flags | Priority / weight |
 | --- | --- | --- | --- | --- |
-| Transient | Client DragUpdate command, host RemoteDragUpdate | 0 | UNRELIABLE + NO_NAGLE + NO_DELAY | 0 / 1 |
+| Transient | Client DragUpdate / CursorUpdate, host RemoteDragUpdate / CursorSnapshot | 0 | UNRELIABLE + NO_NAGLE + NO_DELAY | 0 / 1 |
 | Control | Gameplay commands/events, SessionControl handshake, dedicated SyncControl | 1 | RELIABLE | 0 / 4 |
 | Bulk | Syncing PuzzleImage / JoinBaseline transfer framing | 2 | RELIABLE | 1 / 1 |
 
@@ -431,7 +431,48 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v9
+## Wire v11
+
+### World-space remote cursors
+
+`network::cursor` owns session-only presence, independently of gameplay commands,
+authority events, drag contexts, replicas, JoinBaseline and saves. CursorUpdate
+(kind 9) carries session, authority_epoch, monotonic u64 tick and Option<Vec2>
+world position, with no claimed PlayerId. Host routing derives identity from the
+authenticated Ready connection's SessionConnections assignment. CursorSnapshot
+(kind 10) carries session, authority_epoch, monotonic u64 sequence and the complete
+visible set of (PlayerId, Vec2), in ascending unique PlayerId order. The bounded
+deserializer checks the count before reading/allocating entries, with a maximum
+of MAX_ROSTER_PLAYERS = 65 (64 connections plus host). Neither message carries
+names, colors, camera scale or screen coordinates.
+
+Both directions use the existing Transient lane at 20 Hz (50 ms), including
+stationary heartbeats. Each client sends only after RuntimePhase::Ready. The host
+samples its own world cursor directly and sends one full batch per Ready client,
+never one packet per cursor or one broadcast per incoming sample. Authenticated
+and Syncing peers neither contribute nor receive cursors. A full batch replaces
+the receiver's visible set; missing entries hide, and the next batch repairs loss.
+Unknown roster IDs are benignly ignored across Reliable Presence / Transient
+reordering. Syncing clients silently drop snapshots that overtake ReadyCommit;
+the next periodic batch after Ready restores presentation. Old scope, duplicate
+and stale ticks/sequences never change presentation; gaps need no resend/wait.
+Counters stop on exhaustion and never wrap.
+
+Visible-to-hidden sampling bypasses the periodic timer. The host's own hide can
+trigger an immediate full batch; incoming client hides remain periodically batched.
+Hidden clients send no periodic updates; stationary visible cursors heartbeat.
+Lost hides/stalled heartbeats expire at 400 ms on the host. Clients also clear a
+stalled snapshot set after 400 ms. Coordinate validation requires finite axes
+within +/-1,000,000 world units; invalid positions benignly hide that entry.
+Cursor send errors are best-effort drops and do not disconnect gameplay;
+connection failures remain native lifecycle events. Tuning lives in cursor.rs.
+
+The release test serializes the worst-case 65-player fixture with maximum u128
+session and u64 epoch/sequence/IDs: **1,210 payload bytes**, **1,222 plaintext
+frame bytes**, **1,246 secure record bytes**. The Transient payload limit is
+**1,280 bytes**. At 20 Hz, client heartbeats charge 10,240 B/s with the 512-byte
+minimum; maximum batches consume 24,920 B/s per receiving connection. Both fit
+the unchanged 128 KiB/s authenticated budget; pre-auth Transient remains forbidden.
 
 Each inner Puzzella frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
@@ -439,8 +480,8 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 9 |
-| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl, 8 Presence |
+| 4..6 | u16 wire version, little-endian, currently 11 |
+| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl, 8 Presence, 9 CursorUpdate, 10 CursorSnapshot |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
 | 12.. | Postcard 1.x binary serialization of the indicated protocol type, including BulkTransferMessage |
@@ -452,7 +493,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v9 Postcard field order and enum representation are part of the wire contract.
+The v11 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -476,11 +517,13 @@ with RosterSnapshot (revision, bounded canonical players), and adds Presence kin
 on Reliable Control / Gameplay. Presence indices are 0 PlayerJoined (revision,
 RosterPlayer) and 1 PlayerLeft (revision, PlayerId). RosterPlayer carries PlayerId
 then Option<PlayerDisplayName>. Existing gameplay payloads remain unchanged.
-Only version 9 is decoded; pre-release versions 1 through 8 and future versions
+Version 11 adds CursorUpdate kind 9 and CursorSnapshot kind 10 on Transient.
+Gameplay and checkpoint payloads remain unchanged.
+Only version 11 is decoded; pre-release versions 1 through 10 and future versions
 are rejected without a compatibility decoder.
 WIRE_VERSION also binds PAKE context, HKDF application keys and secure record AAD
-to v9. No cryptographic design change is made.
-Fixed v9 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+to v11. No cryptographic design change is made.
+Fixed v11 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
 AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl, including
@@ -504,7 +547,7 @@ restore presentation. This keeps drag updates O(1) with scalar metadata only.
 | --- | --- |
 | Control | 262,144 |
 | SessionControl (Control lane) | 4,096 |
-| Transient | 128 |
+| Transient | 1,280 |
 | Bulk transfer message | 32,768 |
 | Maximum whole plaintext frame | 262,156 (includes header) |
 | Maximum secure outer record | 262,180 (includes sequence/tag) |

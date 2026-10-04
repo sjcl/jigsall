@@ -13,6 +13,7 @@ mod overlays;
 mod performance;
 mod persistence;
 mod preferences;
+mod remote_cursor;
 mod settings;
 mod theme;
 use bevy::prelude::*;
@@ -89,6 +90,12 @@ fn register_screens(app: &mut App) {
                 .after(completion::draw_completion_ui)
                 .after(multiplayer::draw_connection_ui),
             multiplayer::sync_local_gameplay_block.after(multiplayer::process_actions),
+            remote_cursor::draw_remote_cursors
+                .in_set(GameplayUi)
+                .before(game_play::draw_game_ui)
+                .before(performance::draw_performance_overlay)
+                .before(game_play::draw_players_overlay)
+                .run_if(in_state(GameSubState::Playing)),
             game_play::draw_game_ui
                 .in_set(GameplayUi)
                 .run_if(in_state(AppState::InGame)),

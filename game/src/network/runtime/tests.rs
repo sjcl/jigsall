@@ -1547,7 +1547,7 @@ fn rejected_host_rotation_preserves_pointer_basis_and_consumes_control_history()
 
 #[cfg(feature = "gns")]
 #[test]
-fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
+fn gns_localhost_runtime_entrypoints_join_ready_command_and_cursor_roundtrip() {
     let mut host = app();
     let mut client = app();
     let session = host_world(&mut host);
@@ -1682,6 +1682,47 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
             .offset(PieceId(0)),
         Vec2::ZERO
     );
+    // Real encrypted Transient cursor heartbeat/full batch on the native lane.
+    for (app, position) in [
+        (&mut host, Vec2::new(321.0, -123.0)),
+        (&mut client, Vec2::new(-42.0, 84.0)),
+    ] {
+        app.world_mut()
+            .insert_resource(State::new(GameSubState::Playing));
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .reset();
+        app.world_mut().resource_mut::<InputState>().window_focused = true;
+        app.world_mut().resource_mut::<InputState>().mouse_position = Some(position);
+    }
+    loop {
+        host.update();
+        client.update();
+        let host_target = host
+            .world()
+            .resource::<remote_cursor::RemoteCursorPresentation>()
+            .cursors()
+            .find(|(p, _)| *p == player)
+            .map(|(_, c)| c.target_world_position);
+        let client_target = client
+            .world()
+            .resource::<remote_cursor::RemoteCursorPresentation>()
+            .cursors()
+            .find(|(p, _)| *p == PlayerId(0))
+            .map(|(_, c)| c.target_world_position);
+        if host_target == Some(Vec2::new(-42.0, 84.0))
+            && client_target == Some(Vec2::new(321.0, -123.0))
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "runtime GNS cursors timed out");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert!(client
+        .world()
+        .resource::<remote_cursor::RemoteCursorPresentation>()
+        .cursors()
+        .all(|(p, _)| p != player));
     stop_session(client.world_mut());
     stop_session(host.world_mut());
 }
