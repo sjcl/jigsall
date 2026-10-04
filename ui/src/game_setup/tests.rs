@@ -2,6 +2,70 @@ use super::*;
 use crate::localization::{LanguagePreference, Locale};
 
 #[test]
+fn seed_input_preserves_all_u64_digits_during_display_and_paste() {
+    let ctx = egui::Context::default();
+    let render = |seed: &mut u64, events: Vec<egui::Event>, focus: bool| {
+        ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..default()
+            },
+            |ui| {
+                let response = seed_input(ui, seed);
+                if focus {
+                    response.request_focus();
+                } else {
+                    response.surrender_focus();
+                }
+            },
+        )
+    };
+    let select_all = egui::Event::Key {
+        key: egui::Key::A,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::COMMAND,
+    };
+    let mut seed = 9_007_199_254_740_993;
+    for value in [seed, u64::MAX, 0, 42] {
+        seed = value;
+        let output = render(&mut seed, vec![], true);
+        assert!(labels(&output).contains(&value.to_string()));
+        assert_eq!(seed, value, "display must not round the seed");
+        output.drop_without_applying_deltas();
+        let output = render(&mut seed, vec![select_all.clone(), egui::Event::Copy], true);
+        assert!(output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == &value.to_string())
+        }));
+        output.drop_without_applying_deltas();
+    }
+    for value in [u64::MAX, 9_007_199_254_740_993, 0] {
+        render(
+            &mut seed,
+            vec![select_all.clone(), egui::Event::Paste(value.to_string())],
+            true,
+        )
+        .drop_without_applying_deltas();
+        assert_eq!(seed, value, "pasted seed must remain exact");
+    }
+    for invalid in ["", "-1", "18446744073709551616", "not a seed"] {
+        render(
+            &mut seed,
+            vec![select_all.clone(), egui::Event::Paste(invalid.into())],
+            true,
+        )
+        .drop_without_applying_deltas();
+        assert_eq!(seed, 0, "invalid input must not replace the seed");
+    }
+    render(&mut seed, vec![], false).drop_without_applying_deltas();
+    render(&mut seed, vec![], false).drop_without_applying_deltas();
+    let output = render(&mut seed, vec![], false);
+    assert!(labels(&output).contains(&"0".into()));
+    output.drop_without_applying_deltas();
+}
+
+#[test]
 fn rotation_toggle_changes_new_game_config_in_both_locales() {
     let mut i18n = crate::localization::tests::english();
     for locale in [Locale::EN_US, Locale::JA] {

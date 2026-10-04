@@ -394,8 +394,34 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(i18n.text("setup-seed"));
-                ui.add(egui::DragValue::new(&mut config.seed).speed(1));
+                seed_input(ui, &mut config.seed);
             });
             theme::hint(ui, i18n.text("setup-seed-hint"));
         });
+}
+
+fn seed_input(ui: &mut egui::Ui, seed: &mut u64) -> egui::Response {
+    // DragValue converts through f64, which rounds most randomly generated u64 seeds.
+    let id = ui.make_persistent_id("puzzle_seed");
+    let mut text = ui
+        .data_mut(|data| data.remove_temp::<(u64, String)>(id))
+        .filter(|(value, _)| *value == *seed)
+        .map_or_else(|| seed.to_string(), |(_, text)| text);
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut text)
+            .id(id)
+            .font(egui::TextStyle::Monospace)
+            .desired_width(190.0_f32.min(ui.available_width())),
+    );
+    if response.changed() {
+        if let Ok(value) = text.trim().parse::<u64>() {
+            *seed = value;
+        }
+    }
+    // Keep incomplete edits while focused; leaving the field restores the last valid seed.
+    if !response.has_focus() {
+        text = seed.to_string();
+    }
+    ui.data_mut(|data| data.insert_temp(id, (*seed, text)));
+    response
 }
