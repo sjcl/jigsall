@@ -6,6 +6,8 @@ mod direct_ip;
 pub use direct_ip::GnsDirectIp;
 mod p2p;
 pub use p2p::{GnsP2p, IceConfig};
+#[cfg(feature = "rendezvous")]
+pub mod rendezvous;
 pub mod signaling;
 
 // Initialize the process identity before either establishment path creates

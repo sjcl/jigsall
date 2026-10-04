@@ -23,6 +23,10 @@ use std::{
 enum Frame {
     Peer([u8; 16]),
     Start([u8; 16]),
+    RoomCode(String),
+    StartCode(String),
+    ControlStop,
+    ControlGone,
     Signal([u8; 16], Vec<u8>),
     Connected(String),
     Authenticated,
@@ -120,6 +124,20 @@ fn gns_p2p_child() {
         return;
     };
     let host = role == "host";
+    #[cfg(feature = "rendezvous")]
+    let mut rendezvous = None;
+    #[cfg(feature = "rendezvous")]
+    let mut backend = if let Ok(url) = std::env::var("PUZZELLA_P2P_RENDEZVOUS") {
+        let endpoint = super::super::rendezvous::EndpointUrl::loopback_for_test(&url).unwrap();
+        let (backend, adapter) =
+            super::super::rendezvous::RendezvousAdapter::new(endpoint, 0, IceConfig::default())
+                .unwrap();
+        rendezvous = Some(adapter);
+        backend
+    } else {
+        GnsP2p::new_routed(0, IceConfig::default()).unwrap()
+    };
+    #[cfg(not(feature = "rendezvous"))]
     let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     emit(Frame::Peer(backend.peer_id().to_bytes()));
@@ -136,16 +154,73 @@ fn gns_p2p_child() {
             }
         }
     });
-    let Frame::Start(remote) = rx.recv_timeout(Duration::from_secs(10)).unwrap() else {
-        panic!("expected start");
+    let fixture_peer = || {
+        let Frame::Start(remote) = rx.recv_timeout(Duration::from_secs(10)).unwrap() else {
+            panic!("expected start");
+        };
+        // Local foundation fixture binding, never from a peer's signal bytes.
+        let origin = RouteOrigin::from_authenticated_route(
+            [1; 16],
+            [2; 16],
+            [if host { 12 } else { 11 }; 16],
+        );
+        mailbox
+            .authorize_peer(PeerId::from_bytes(remote), origin)
+            .unwrap();
+        remote
     };
-    // Test-only trusted rendezvous binding: account IDs come from fixture role,
-    // never from the self-asserted peer bytes. Gameplay still needs SPAKE2.
-    let origin =
-        RouteOrigin::from_authenticated_route([1; 16], [2; 16], [if host { 12 } else { 11 }; 16]);
-    mailbox
-        .authorize_peer(PeerId::from_bytes(remote), origin)
-        .unwrap();
+    #[cfg(feature = "rendezvous")]
+    let remote = if let Some(adapter) = &mut rendezvous {
+        use super::super::rendezvous::RendezvousEvent;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut welcome = false;
+        let mut code = None;
+        let mut joining = false;
+        'ready: loop {
+            assert!(
+                Instant::now() < deadline,
+                "room handshake timed out ({role})"
+            );
+            while let Ok(frame) = rx.try_recv() {
+                let Frame::StartCode(value) = frame else {
+                    panic!("expected room code");
+                };
+                code = Some(value);
+            }
+            for event in adapter.poll() {
+                match event {
+                    RendezvousEvent::Welcome { .. } => {
+                        welcome = true;
+                        if host {
+                            adapter.create_room().unwrap();
+                        }
+                    }
+                    RendezvousEvent::RoomCreated { room_code, .. } => {
+                        emit(Frame::RoomCode(room_code.to_string()))
+                    }
+                    RendezvousEvent::HostReady { peer_id, .. }
+                    | RendezvousEvent::PeerJoined { peer_id, .. } => {
+                        break 'ready peer_id.to_bytes()
+                    }
+                    other => panic!("room handshake: {other:?}"),
+                }
+            }
+            if !host && welcome && !joining {
+                if let Some(code) = code.take() {
+                    adapter.join_room(code.parse().unwrap()).unwrap();
+                    joining = true;
+                }
+            }
+            std::thread::park_timeout(Duration::from_millis(1));
+        }
+    } else {
+        fixture_peer()
+    };
+    #[cfg(not(feature = "rendezvous"))]
+    let remote = fixture_peer();
+    let Some(Origin::Route(origin)) = mailbox.origin(PeerId::from_bytes(remote)).unwrap() else {
+        panic!("route required");
+    };
     let mut connection = if host {
         None
     } else {
@@ -180,6 +255,10 @@ fn gns_p2p_child() {
     let mut sent = false;
     let mut received = [false; 3];
     let mut reported_receive = false;
+    #[cfg(feature = "rendezvous")]
+    let mut control_stopping = false;
+    #[cfg(feature = "rendezvous")]
+    let mut control_reported = false;
     loop {
         assert!(Instant::now() < deadline, "P2P child timed out ({role})");
         while let Ok(frame) = rx.try_recv() {
@@ -190,6 +269,17 @@ fn gns_p2p_child() {
                 Frame::Exchange => {
                     assert!(authenticated);
                     exchange = true;
+                }
+                #[cfg(feature = "rendezvous")]
+                Frame::ControlStop => {
+                    assert!(authenticated && received.into_iter().all(|x| x));
+                    rendezvous.as_mut().unwrap().shutdown();
+                    control_stopping = true;
+                    exchange = false;
+                    sent = false;
+                    received = [false; 3];
+                    reported_receive = false;
+                    records.lock().unwrap().clear();
                 }
                 Frame::Close => transport
                     .close(connection.unwrap(), DisconnectReason::Requested)
@@ -211,6 +301,29 @@ fn gns_p2p_child() {
                     return;
                 }
                 _ => panic!("unexpected parent frame"),
+            }
+        }
+        #[cfg(feature = "rendezvous")]
+        if let Some(adapter) = &mut rendezvous {
+            for event in adapter.poll() {
+                assert!(
+                    control_stopping
+                        || !matches!(
+                            event,
+                            super::super::rendezvous::RendezvousEvent::Disconnected(_)
+                                | super::super::rendezvous::RendezvousEvent::RoomClosed
+                        ),
+                    "unexpected control loss {event:?}"
+                );
+            }
+            if control_stopping && !control_reported && adapter.worker_finished() {
+                assert_eq!(
+                    mailbox.origin(PeerId::from_bytes(remote)).unwrap(),
+                    Some(Origin::Route(origin))
+                );
+                assert!(transport.has_channel(connection.unwrap()));
+                control_reported = true;
+                emit(Frame::ControlGone);
             }
         }
         let mut events = Vec::new();
@@ -286,7 +399,15 @@ fn gns_p2p_child() {
             reported_receive = true;
             emit(Frame::Received);
         }
-        for _ in 0..MAX_QUEUED_SIGNALS {
+        #[cfg(feature = "rendezvous")]
+        let external_control = rendezvous.is_some();
+        #[cfg(not(feature = "rendezvous"))]
+        let external_control = false;
+        for _ in 0..if external_control {
+            0
+        } else {
+            MAX_QUEUED_SIGNALS
+        } {
             let Some(signal) = mailbox.pop_outbound() else {
                 break;
             };
@@ -295,6 +416,9 @@ fn gns_p2p_child() {
         std::thread::park_timeout(Duration::from_millis(1));
     }
 }
+
+#[cfg(feature = "rendezvous")]
+mod rendezvous_smoke;
 
 struct Process {
     child: Child,
@@ -432,7 +556,7 @@ fn gns_localhost_p2p_native_ice_password_secure_lanes_and_close() {
 fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
     let _guard = BACKEND_TEST_LOCK.lock().unwrap();
     assert!(matches!(
-        GnsP2p::new(
+        GnsP2p::new_unverified_for_test(
             0,
             IceConfig {
                 allow_public_candidates: true,
@@ -441,10 +565,10 @@ fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
         ),
         Err(TransportError::ProtocolViolation)
     ));
-    let mut backend = GnsP2p::new(0, IceConfig::default()).unwrap();
+    let mut backend = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     assert!(matches!(
-        GnsP2p::new(1, IceConfig::default()),
+        GnsP2p::new_unverified_for_test(1, IceConfig::default()),
         Err(TransportError::Capacity)
     ));
     let id = backend
@@ -479,7 +603,7 @@ fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
         mailbox.receive(PeerId::from_bytes([42; 16]), &[1]),
         Err(TransportError::NotConnected)
     );
-    let mut replacement = GnsP2p::new(0, IceConfig::default()).unwrap();
+    let mut replacement = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
     let fresh = replacement
         .connect_peer(PeerId::from_bytes([43; 16]), 0)
         .unwrap();

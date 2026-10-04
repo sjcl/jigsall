@@ -169,3 +169,7 @@ jobs:
       - name: Windows application build (GNS enabled)
         if: runner.os == 'Windows'
         run: cargo build --workspace --locked --features gns
+
+      - name: Windows rendezvous adapter fixtures
+        if: runner.os == 'Windows'
+        run: cargo test --workspace --locked --features rendezvous rendezvous -- --skip gns_localhost
