@@ -811,6 +811,15 @@ fn prepare_buffers(
         queue.write_buffer(&states, 0, bytemuck::cast_slice(initial));
         gpu.upload_bytes = u64::from(count) * 16;
         gpu.upload_calls = 1;
+        for range in frame.upload.ranges.iter() {
+            queue.write_buffer(
+                &states,
+                u64::from(range.start) * 16,
+                bytemuck::cast_slice(&range.states),
+            );
+            gpu.upload_bytes += range.states.len() as u64 * 16;
+            gpu.upload_calls += 1;
+        }
         gpu.buffers = Some(StateBuffers {
             epoch: frame.upload.epoch,
             revision: frame.upload.revision,

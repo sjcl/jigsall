@@ -194,10 +194,32 @@ the 512-byte active / zero-byte settled delta upload are documented in
 
 ### Local Release presentation while awaiting authority
 
+Local Q/E feedback uses the separate sparse `PieceDataStore.local_rotation`
+presentation. `CommandBridge` retains the exact predicted intent on its in-flight
+control and the ordered queued controls, including gesture tokens. Reliable
+reconciliation is **committed prefix + uncommitted predicted suffix**: ClientRouter
+first applies canonical authority state; the bridge retires only the matching
+control and replays the remaining suffix before upload/extraction. A partial ACK
+never rolls accepted display pose back to an earlier local intent.
+
+For RotateDrag, queued deltas use the existing ACK-only basis/pointer rebase.
+Prediction composes a rotated base minus the translation consumed by speculative
+controls with the current scalar local drag delta. Pointer movement stays immediate
+without a membership scan. Release ends the pointer gesture but retains both the
+rotation suffix and frozen pending translation; rotation ACKs rebase both together.
+ReleaseCommitted hands off to the final canonical pose, allowing authority snap.
+
+Partial Grab replaces optimistic membership with exact accepted members; partial
+Rotate acceptance hands accepted components to canonical and corrects rejected
+components. Z/ownership/nonrotation flags always come from the latest CPU state.
+Failure/scope/session cleanup restores affected GPU ranges. Host controls apply
+synchronously and offline controls still use immediate canonical authority.
+
 | State | Position used for presentation | Canonical position |
 | --- | --- | --- |
 | Local active drag | Accepted local COW membership plus current pointer delta | Last Reliable authority commit |
 | Local pending release | Same accepted membership plus frozen Release `final_delta` | Unchanged until `ReleaseCommitted` |
+| Local uncommitted rotation | Sparse predicted position/rotation base composed with active/pending local translation | Last Reliable authority commit; never predicted |
 | Remote transient drag | Existing piece-to-slot mapping plus displayed delta smoothed toward the latest accepted Transient target | Last Reliable authority commit |
 | Canonical authority position | CPU `PieceDataStore.states` | Used for snap, placement, connectivity, progress and snapshots |
 

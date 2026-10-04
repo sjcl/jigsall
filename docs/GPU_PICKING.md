@@ -53,6 +53,14 @@ release時のreadbackはcomponent maskではなくdirect hit maskの4 * ceil(N/3
 
 ## Multi-drag
 
+Local未ACK Rotate / RotateDragはLast/upload準備でcanonical GpuPieceStateへ疎なpose
+overrideを合成します。positionとrotation bitsだけが表示用になり、Z / HELD / ENABLED /
+PLACED / connected-edge cacheは最新canonicalのままです。同じGPU state bufferをmain /
+far / main visibility / pick visibility / point / rectangleが読むため、予測回転の位置・向きと
+選択候補/coverageが一致します。退役/拒否した旧override rangeもcanonicalへrestoreします。
+CPU正本・selection ownership・snapshotはpredictionを参照しません。通常pointer / camera /
+pending ACK frameにはstate overrideの再計算/追加uploadがありません。
+
 Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_position`をmain / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
 
 remote Transientのaccepted deltaはCPU presentationのtargetで、GPUの共有512-byte tableには`Time<Real>`で指数平滑化したdisplayed deltaを渡します。normal / far描画、main / point / rectangleのvisibilityとvertexはすべてこの同じ表示位置を使い、targetを直接参照するshader経路はありません。Reliable Grab / Ready / drag rotationは両deltaを即時一致させ、Release / Cancelは直ちにslotを破棄します。prediction / extrapolationは行いません。smoothing frameは最大64 slotだけを更新し、canonical / remote mapping uploadは0 bytes、delta uploadは最大512 bytes、exact settle後の次frameは0 bytesです。

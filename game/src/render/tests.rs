@@ -1,6 +1,7 @@
 use super::*;
 mod component_preview_tests;
 mod far_zoom_tests;
+mod local_rotation_tests;
 mod outline_tests;
 mod remote_drag_tests;
 mod rotation_tests;

@@ -76,6 +76,7 @@ fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, mut runtime
         .unwrap_or_default();
     if let Some(mut store) = world.get_resource_mut::<PieceDataStore>() {
         store.drag = default();
+        store.clear_local_rotation();
         presentation.reset(store.epoch, store.len());
     }
     world.insert_resource(presentation);

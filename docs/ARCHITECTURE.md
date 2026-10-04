@@ -79,6 +79,57 @@ Direct-IP clientのRelease待ちでは、gesture終了後も`CommandBridge`がac
 
 ## Dirty同期とZ順序
 
+### Local uncommitted rotation presentation
+
+描画poseには4層があります。CPU `PieceDataStore.states` はauthorityがcommitした
+canonical poseです。`store.drag` はlocal active / pending Releaseのmembershipとscalar
+translationです。`store.local_rotation` はlocal未ACK Rotate / RotateDragだけの疎な
+pose overrideです。`RemoteDragPresentation` はremote Transientの平滑化されたtranslation
+です。local回転をremote PlayerId slotへ登録しません。
+
+network clientのQ/Eでは`CommandBridge`の送信待ちcontrolとin-flight controlを順に再生します。
+in-flightはReliable envelopeのControl sequence、送信待ちはqueueの順序、各controlは
+gesture token / target / turns / pointer / deltaで対応します。authority ACKでcanonicalを
+applyした後、matching controlだけをcommitted prefixとしてretireし、残るuncommitted
+predicted suffixを新canonical baseへreplayします。部分ACKでaccepted操作の表示を
+過去のlocal intentへ巻き戻しません。PreUpdateのexclusive network poll内でcanonical
+apply → bridge rebase/retire → presentation再構築を完了し、PostUpdate入力後のlocal
+controlもLast/upload前に反映します。renderer extractionに途中のcanonical-only poseを
+公開しません。
+
+authorityとpredictionは同じ`rotation_plan_with` / `RotationPlan::pose`を使い、component
+pivot、f64 translation、quarter turn、play-areaの丸め補正、canonical座標からの再構成を
+共有します。predictionは`DensePieceStates`をclone/mutateせず、affected PieceIdだけの
+HashMapにposition / rotationを保持します。ownership、Z、connected edges、ENABLED / HELD /
+PLACED、snap、progress、snapshot/save、authority cursorとreplicaはcanonicalのままです。
+
+RotateDragのreplayはqueued controlのACK補正済みdeltaを用います。表示baseから未ACK
+rotationが消費したtranslationを差し引くため、現在の`store.drag.delta`をshaderで一度
+加えるだけでpointerが即時追従します。protocol basis / through_tick / pointer anchorは
+ACKだけで更新します。Release後も同tokenの未ACK回転を保持し、各rotation ACKで補正された
+pending Release deltaと合成します。ReleaseCommittedのcanonical apply後にtranslationと
+回転suffixを解除します。authority snapによる最終補正は表示へ反映します。
+
+Grab ACK前はrequested membersをoptimisticに使えますが、partial GrabAccepted後はexact
+accepted membershipだけを使います。通常Rotateのpartial acceptanceではaccepted componentを
+canonicalへhandoffし、競合でinvalidになったcomponentだけを戻します。tokenが異なる古い
+ACKは新gestureのpointer/presentationをrebaseしません。cancel、rejection、send/protocol
+failure、disconnect、scope/epoch change、baseline/Ready、stop/Menuでoverrideをrestoreします。
+hostは同期canonical applyだけを使い、offlineはprediction queueを使いません。
+
+Lastの`prepare_piece_upload`はdirty rangeのcanonical stateへpositionとrotation bitsだけを
+合成します。退役/拒否時は旧override membershipもdirtyにしてcanonicalへ確実にrestoreします。
+新GPU bufferだけは共有canonical initial Arcを先にuploadし、疎なpresentation rangesを後に
+uploadします。既存state bufferをmain / far / visibility / point / rectangleで共有し、別の
+完全GPU buffer、shader分岐、piece Entity / Meshは追加しません。
+
+回転inputとReliable reconciliationだけがaffected membershipを走査します。replayは最大
+64 queued controls + 1 in-flight controlに制限され、各controlはO(k)のplanner処理です。
+1M対象なら一時pose map / plan / uploadも対象数に比例しますが、1piece操作でcanonicalの
+16MBをCOW copyしません。ordinary pointer/camera、pending ACK idle frameはpose mapを
+走査/再構築せず、state/membership uploadは0 bytesです。wire 9、snapshot schema 4、
+JoinBaseline schema 1、GpuPieceState 16 bytesを維持します。
+
 Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変わった場合だけmaskをuploadします。selected outlineはfragmentで専用bitsetを参照し、dense stateのflagsとdirty rangeを変更しません。初回state uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。dirty bitsetのset bitsをID順にiterateして連続rangeへまとめ、ID Vecの展開・sortは不要です。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate / selected / membership uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
 
 初期ZはID、next_zはpiece_count。Grabでnext_z++を割り当て、グループ内の順序を維持します。shaderは24-bit整数範囲のreverse-Zへ変換します。100万ピースでは約1577万回のfront操作まで再圧縮不要です。上限でのみ順序を保つO(N log N)のslow pathを実行します。

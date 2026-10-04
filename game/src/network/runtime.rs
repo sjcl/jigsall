@@ -37,7 +37,9 @@ use crate::{
 };
 use bevy::prelude::*;
 use bridge::CommandBridge;
-use puzzella_core::{protocol::*, session::*, ClientCommand, PlayerId, PuzzleDefinition};
+use puzzella_core::{
+    protocol::*, session::*, ClientCommand, PieceCommand, PlayerId, PuzzleDefinition,
+};
 #[cfg(test)]
 use std::time::Duration;
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Instant};
@@ -718,11 +720,13 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 self.bridge = default();
                                 *interaction = default();
                                 store.drag = default();
+                                store.clear_local_rotation();
                             }
                             ClientSyncOutcome::Ready => {
                                 self.bridge = default();
                                 *interaction = default();
                                 store.drag = default();
+                                store.clear_local_rotation();
                                 self.status.local_player = client.bootstrap.assigned_player();
                                 self.status.host = Some(self.session.as_ref().unwrap().host());
                                 self.status.phase = RuntimePhase::Ready;
@@ -766,6 +770,14 @@ impl<T: DirectIpTransport> Runtime<T> {
                                     self.bridge
                                         .reconcile(player, &envelope.event, interaction, store)
                                         .map_err(|e| format!("{e:?}"))?;
+                                    // Exclusive PreUpdate: canonical apply + prefix retirement
+                                    // + suffix replay complete before Last/upload/extraction.
+                                    self.bridge.refresh_prediction(
+                                        player,
+                                        self.definition.as_ref(),
+                                        interaction,
+                                        store,
+                                    );
                                 }
                                 WireMessage::DragUpdate(update)
                                     if matches!(
@@ -927,6 +939,13 @@ impl<T: DirectIpTransport> Runtime<T> {
         ) {
             return Ok(());
         }
+        self.bridge.prediction_enabled = matches!(self.role, Role::Client(_));
+        let rotation_input = commands.iter().any(|r| {
+            matches!(
+                r.command,
+                PieceCommand::Rotate { .. } | PieceCommand::RotateDrag { .. }
+            )
+        });
         for request in commands {
             if request.player != player {
                 return Err("local command identity mismatch".into());
@@ -948,6 +967,10 @@ impl<T: DirectIpTransport> Runtime<T> {
             self.send_local(command, store, interaction)?;
         }
         self.bridge.present_release(interaction, store);
+        if rotation_input {
+            self.bridge
+                .refresh_prediction(player, self.definition.as_ref(), interaction, store);
+        }
         if let Some(command) = self
             .bridge
             .drag_update(self.session.as_ref().unwrap(), player, store)
@@ -1038,6 +1061,7 @@ impl<T: DirectIpTransport> Runtime<T> {
             store.clear_player_holds(player);
         }
         store.drag = default();
+        store.clear_local_rotation();
         self.connections = default();
         self.bridge = default();
         self.decode = None;

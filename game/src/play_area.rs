@@ -43,6 +43,17 @@ impl PivotEnvelope {
         roots: impl IntoIterator<Item = PieceId>,
         area: LogicalPlayArea,
     ) -> Option<Self> {
+        Self::from_roots_with_positions(store, roots, area, |id| {
+            store.states[id.0 as usize].position
+        })
+    }
+
+    pub(crate) fn from_roots_with_positions(
+        store: &PieceDataStore,
+        roots: impl IntoIterator<Item = PieceId>,
+        area: LogicalPlayArea,
+        position: impl Fn(PieceId) -> Vec2,
+    ) -> Option<Self> {
         let mut envelope = Self {
             min: DVec2::splat(f64::INFINITY),
             max: DVec2::splat(f64::NEG_INFINITY),
@@ -50,12 +61,8 @@ impl PivotEnvelope {
             max_delta: Vec2::splat(f32::INFINITY),
         };
         for root in roots {
-            let (min, max) = component_bounds(
-                store
-                    .connectivity
-                    .iter_component(root)
-                    .map(|id| store.states[id.0 as usize].position),
-            )?;
+            let (min, max) =
+                component_bounds(store.connectivity.iter_component(root).map(&position))?;
             let pivot = (min + max) * 0.5;
             if !area.contains(pivot) {
                 return None;

@@ -1,4 +1,5 @@
 //! Operation-local rigid rotation plans. Nothing is retained on pointer frames.
+use super::local_rotation::{PredictionDrag, PresentationPose};
 use super::*;
 use bevy::math::DVec2;
 use puzzella_core::{
@@ -20,7 +21,158 @@ struct RotationPlan {
     singleton_center: Option<Vec2>,
 }
 
+impl RotationPlan {
+    fn pose(&self, id: PieceId, definition: &PuzzleDefinition) -> PresentationPose {
+        PresentationPose {
+            position: self.singleton_center.unwrap_or_else(|| {
+                (rotate_quarter(definition.geometry().correct_position(id), self.rotation)
+                    .as_dvec2()
+                    + self.translation)
+                    .as_vec2()
+            }),
+            rotation: self.rotation,
+        }
+    }
+}
+
 impl PieceDataStore {
+    /// Same rigid planner/reconstruction as authority, with a sparse pose view.
+    /// Planning never writes DensePieceStates, owners, topology or drag basis.
+    pub(crate) fn predict_rotation(
+        &self,
+        target: &PieceTarget,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+        poses: &mut HashMap<PieceId, PresentationPose>,
+    ) {
+        let Ok(resolved) = target.resolve(&self.connectivity) else {
+            return;
+        };
+        let roots: Vec<_> = match resolved.target {
+            ResolvedPieceTarget::Sparse(refs) => refs.iter().map(|r| r.member).collect(),
+            ResolvedPieceTarget::Dense(members) => members
+                .iter()
+                .filter(|&id| self.connectivity.minimum_member(id) == id)
+                .collect(),
+        };
+        if add_quarter_turns(0, quarter_turns) == 0 {
+            return;
+        }
+        for root in roots {
+            let plan = self.rotation_plan_with(
+                root,
+                quarter_turns,
+                definition,
+                Vec2::ZERO,
+                |id| self.predicted_state(id, poses),
+                |id, _| {
+                    self.is_selectable(id)
+                        && !self
+                            .drag
+                            .members
+                            .get(id.0 as usize / 32)
+                            .is_some_and(|word| word & (1 << (id.0 % 32)) != 0)
+                },
+            );
+            if let Some(plan) = plan {
+                self.write_predicted_plan(&plan, definition, poses);
+            }
+        }
+    }
+
+    pub(crate) fn predict_drag_rotation(
+        &self,
+        drag: PredictionDrag<'_>,
+        delta: Vec2,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+        poses: &mut HashMap<PieceId, PresentationPose>,
+    ) -> Option<Vec2> {
+        let PredictionDrag {
+            members,
+            player,
+            optimistic_grab,
+        } = drag;
+        if members.bit_len() != self.len()
+            || members.is_empty()
+            || !delta.is_finite()
+            || members
+                .iter()
+                .any(|id| !members.contains(&self.connectivity.minimum_member(id)))
+        {
+            return None;
+        }
+        let mut roots: Vec<_> = members
+            .iter()
+            .filter(|&id| self.connectivity.minimum_member(id) == id)
+            .collect();
+        if optimistic_grab {
+            roots.retain(|&root| {
+                self.connectivity.iter_component(root).all(|id| {
+                    self.states[id.0 as usize].flags & (PLACED | ENABLED) == ENABLED
+                        && self.held_by.get(&id).is_none_or(|owner| *owner == player)
+                })
+            });
+        }
+        let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(definition).ok()?;
+        let pivots = crate::play_area::PivotEnvelope::from_roots_with_positions(
+            self,
+            roots.iter().copied(),
+            area,
+            |id| self.predicted_state(id, poses).position,
+        )?;
+        let delta = pivots.clamp(area, delta);
+        let plans: Vec<_> = roots
+            .iter()
+            .map(|&root| {
+                self.rotation_plan_with(
+                    root,
+                    quarter_turns,
+                    definition,
+                    delta,
+                    |id| self.predicted_state(id, poses),
+                    |id, state| {
+                        state.flags & (PLACED | ENABLED) == ENABLED
+                            && members.contains(&id)
+                            && if optimistic_grab {
+                                self.held_by.get(&id).is_none_or(|owner| *owner == player)
+                            } else {
+                                state.flags & HELD != 0 && self.held_by.get(&id) == Some(&player)
+                            }
+                    },
+                )
+            })
+            .collect::<Option<_>>()?;
+        for plan in plans {
+            self.write_predicted_plan(&plan, definition, poses);
+        }
+        Some(delta)
+    }
+
+    fn predicted_state(
+        &self,
+        id: PieceId,
+        poses: &HashMap<PieceId, PresentationPose>,
+    ) -> GpuPieceState {
+        let mut state = self.states[id.0 as usize];
+        if let Some(pose) = poses.get(&id) {
+            state.position = pose.position;
+            state.flags = with_rotation(state.flags, pose.rotation);
+        }
+        state
+    }
+
+    fn write_predicted_plan(
+        &self,
+        plan: &RotationPlan,
+        definition: &PuzzleDefinition,
+        poses: &mut HashMap<PieceId, PresentationPose>,
+    ) {
+        for id in self.connectivity.iter_component(plan.minimum) {
+            poses.insert(id, plan.pose(id, definition));
+        }
+    }
+
     fn rotation_plan(
         &self,
         minimum: PieceId,
@@ -30,11 +182,43 @@ impl PieceDataStore {
         owner: Option<PlayerId>,
         members: Option<&PieceBitSet>,
     ) -> Option<RotationPlan> {
+        self.rotation_plan_with(
+            minimum,
+            quarter_turns,
+            definition,
+            delta,
+            |id| self.states[id.0 as usize],
+            |id, state| {
+                if let Some(player) = owner {
+                    state.flags & (PLACED | ENABLED | HELD) == (ENABLED | HELD)
+                        && self.held_by.get(&id) == Some(&player)
+                        && members.is_none_or(|mask| mask.contains(&id))
+                } else {
+                    self.is_selectable(id)
+                        && !self
+                            .drag
+                            .members
+                            .get(id.0 as usize / 32)
+                            .is_some_and(|word| word & (1 << (id.0 % 32)) != 0)
+                }
+            },
+        )
+    }
+
+    fn rotation_plan_with(
+        &self,
+        minimum: PieceId,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+        delta: Vec2,
+        read: impl Fn(PieceId) -> GpuPieceState,
+        eligible: impl Fn(PieceId, GpuPieceState) -> bool,
+    ) -> Option<RotationPlan> {
         if !self.contains(minimum) || !delta.is_finite() {
             return None;
         }
         let geometry = definition.geometry();
-        let representative = self.states[minimum.0 as usize];
+        let representative = read(minimum);
         let old_rotation = decode_rotation(representative.flags);
         let old_translation = representative.position
             - rotate_quarter(geometry.correct_position(minimum), old_rotation);
@@ -44,26 +228,14 @@ impl PieceDataStore {
         let mut correct_min = world_min;
         let mut correct_max = world_max;
         for id in self.connectivity.iter_component(minimum) {
-            let state = self.states[id.0 as usize];
+            let state = read(id);
             let correct = geometry.correct_position(id);
-            let in_drag = self
-                .drag
-                .members
-                .get(id.0 as usize / 32)
-                .is_some_and(|word| word & (1 << (id.0 % 32)) != 0);
-            let eligible = if let Some(player) = owner {
-                state.flags & (PLACED | ENABLED | HELD) == (ENABLED | HELD)
-                    && self.held_by.get(&id) == Some(&player)
-                    && members.is_none_or(|mask| mask.contains(&id))
-            } else {
-                self.is_selectable(id) && !in_drag
-            };
             let displayed = if delta == Vec2::ZERO {
                 state.position
             } else {
                 state.position + delta
             };
-            if !eligible
+            if !eligible(id, state)
                 || !displayed.is_finite()
                 || decode_rotation(state.flags) != old_rotation
                 || !matches_transform(state.position, correct, old_rotation, old_translation)
@@ -133,17 +305,12 @@ impl PieceDataStore {
         plans: Vec<RotationPlan>,
         definition: &PuzzleDefinition,
     ) -> AppliedCommand {
-        let geometry = definition.geometry();
         let mut applied = AppliedCommand::default();
         let states = &mut *self.states;
         for plan in plans {
             for id in self.connectivity.iter_component(plan.minimum) {
                 let state = &mut states[id.0 as usize];
-                let position = plan.singleton_center.unwrap_or_else(|| {
-                    (rotate_quarter(geometry.correct_position(id), plan.rotation).as_dvec2()
-                        + plan.translation)
-                        .as_vec2()
-                });
+                let position = plan.pose(id, definition).position;
                 let flags = with_rotation(state.flags, plan.rotation);
                 if position.to_array().map(f32::to_bits)
                     != state.position.to_array().map(f32::to_bits)

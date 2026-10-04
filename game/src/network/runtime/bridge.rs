@@ -8,6 +8,9 @@ use std::sync::Arc;
 #[cfg(test)]
 #[path = "bridge_tests.rs"]
 mod pending_release_tests;
+#[cfg(test)]
+#[path = "rotation_prediction_tests.rs"]
+mod rotation_prediction_tests;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BridgeError {
@@ -80,6 +83,8 @@ struct PendingControl {
     requested: Option<PieceBitSet>,
     pointer: Option<Vec2>,
     token: Arc<()>,
+    /// Exact local intent for this in-flight control, separate from wire basis.
+    predicted: Option<PieceCommand>,
 }
 struct PendingRelease {
     delta: Vec2,
@@ -87,6 +92,7 @@ struct PendingRelease {
 }
 #[derive(Default)]
 pub(super) struct CommandBridge {
+    pub prediction_enabled: bool,
     next_control: Option<u64>,
     started: bool,
     active: Option<LocalDrag>,
@@ -97,6 +103,96 @@ pub(super) struct CommandBridge {
 }
 
 impl CommandBridge {
+    /// Replay the uncommitted suffix only at input / Reliable boundaries. The
+    /// pending envelope identifies the prefix to retire; queued controls retain
+    /// ordering, gesture token and the existing ACK-adjusted protocol deltas.
+    pub fn refresh_prediction(
+        &self,
+        player: PlayerId,
+        definition: Option<&puzzella_core::PuzzleDefinition>,
+        interaction: &PieceInteraction,
+        store: &mut PieceDataStore,
+    ) {
+        if !self.prediction_enabled {
+            return;
+        }
+        let Some(definition) = definition else {
+            store.clear_local_rotation();
+            return;
+        };
+        let current = interaction.network_gesture_token();
+        let mut optimistic_grab = self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.requested.is_some() && Arc::ptr_eq(&p.token, &current));
+        let mut poses = std::collections::HashMap::new();
+        let mut consumed = Vec2::ZERO;
+        let mut drag_members = None;
+        let pending = self
+            .pending
+            .as_ref()
+            .and_then(|p| p.predicted.as_ref().map(|command| (command, &p.token)));
+        for (command, token) in pending
+            .into_iter()
+            .chain(self.queue.iter().map(|(c, _, t)| (c, t)))
+        {
+            match command {
+                PieceCommand::Grab(_) | PieceCommand::GrabGroup { .. }
+                    if Arc::ptr_eq(token, &current) =>
+                {
+                    optimistic_grab = true;
+                }
+                PieceCommand::Rotate {
+                    target,
+                    quarter_turns,
+                } => {
+                    store.predict_rotation(target, *quarter_turns, definition, &mut poses);
+                }
+                PieceCommand::RotateDrag {
+                    members,
+                    delta,
+                    quarter_turns,
+                } if Arc::ptr_eq(token, &current) => {
+                    let active = self
+                        .active
+                        .as_ref()
+                        .filter(|a| Arc::ptr_eq(&a.token, token));
+                    // Until Grab ACK, requested members are optimistic only.
+                    // After ACK, the exact accepted mask always replaces them.
+                    let accepted = active.map_or(members, |a| &a.members);
+                    let optimistic = active.is_none() && optimistic_grab;
+                    if active.is_none() && !optimistic {
+                        continue;
+                    }
+                    if let Some(delta) = store.predict_drag_rotation(
+                        crate::resources::pieces::local_rotation::PredictionDrag {
+                            members: accepted,
+                            player,
+                            optimistic_grab: optimistic,
+                        },
+                        *delta - consumed,
+                        *quarter_turns,
+                        definition,
+                        &mut poses,
+                    ) {
+                        consumed += delta;
+                        drag_members = Some(accepted);
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Keep the protocol/pointer delta scalar hot path. The override is a
+        // rotated base minus consumed translation, so the shader adds it once.
+        if let Some(members) = drag_members {
+            for (id, pose) in &mut poses {
+                if members.contains(id) {
+                    pose.position -= consumed;
+                }
+            }
+        }
+        store.set_local_rotation(poses);
+    }
     pub fn enqueue(
         &mut self,
         command: PieceCommand,
@@ -130,6 +226,7 @@ impl CommandBridge {
     ) {
         let scope = (session.session_id(), session.cursor().epoch, store.epoch);
         if !session.is_active() {
+            store.clear_local_rotation();
             self.clear_release(interaction, store);
             self.active = None;
             self.pending = None;
@@ -138,12 +235,14 @@ impl CommandBridge {
             store.drag = Default::default();
         }
         if let Some(old) = self.scope.filter(|old| *old != scope) {
+            store.clear_local_rotation();
             // A store reinstall in the same authority scope must preserve the
             // sender's consumed Control history, while discarding presentation.
             let same_authority = (old.0, old.1) == (scope.0, scope.1);
             *self = Self {
                 next_control: same_authority.then_some(self.next_control).flatten(),
                 started: same_authority && self.started,
+                prediction_enabled: self.prediction_enabled,
                 ..Default::default()
             };
             *interaction = PieceInteraction::default();
@@ -168,6 +267,17 @@ impl CommandBridge {
             if Arc::ptr_eq(&active.token, &release.token) {
                 store.drag.members = active.members.words().clone();
                 store.drag.delta = release.delta;
+            }
+        } else if self.prediction_enabled {
+            if let Some(pending) = self
+                .pending
+                .as_ref()
+                .filter(|p| Arc::ptr_eq(&p.token, &release.token))
+            {
+                if let Some(requested) = &pending.requested {
+                    store.drag.members = requested.words().clone();
+                    store.drag.delta = release.delta;
+                }
             }
         }
     }
@@ -200,6 +310,12 @@ impl CommandBridge {
             return Ok(None);
         }
         while let Some((command, pointer, token)) = self.queue.pop_front() {
+            let predicted = (self.prediction_enabled
+                && matches!(
+                    &command,
+                    PieceCommand::Rotate { .. } | PieceCommand::RotateDrag { .. }
+                ))
+            .then(|| command.clone());
             let mut requested = None;
             let command = match command {
                 PieceCommand::Grab(id) => {
@@ -294,6 +410,7 @@ impl CommandBridge {
                 requested,
                 pointer,
                 token,
+                predicted,
             });
             return Ok(Some(envelope));
         }
@@ -338,6 +455,7 @@ impl CommandBridge {
         )))
     }
     pub fn reject(&mut self, interaction: &mut PieceInteraction, store: &mut PieceDataStore) {
+        store.clear_local_rotation();
         if let Some(pending) = self.pending.take() {
             match pending.envelope.command {
                 ProtocolPieceCommand::Grab { .. } => {
@@ -373,13 +491,36 @@ impl CommandBridge {
         if event_player != player {
             return Ok(());
         }
-        if matches!(event, ProtocolAuthorityEvent::DragCancelled(_)) {
-            self.clear_release(interaction, store);
+        if let ProtocolAuthorityEvent::DragCancelled(cancel) = event {
+            let Some(active) = self
+                .active
+                .as_ref()
+                .filter(|a| a.grab == cancel.grab_sequence)
+            else {
+                return Ok(());
+            };
+            let token = active.token.clone();
+            if self
+                .release
+                .as_ref()
+                .is_some_and(|r| Arc::ptr_eq(&r.token, &token))
+            {
+                self.clear_release(interaction, store);
+            }
             self.active = None;
-            self.pending = None;
-            self.queue.clear();
-            *interaction = PieceInteraction::default();
-            store.drag = Default::default();
+            if self
+                .pending
+                .as_ref()
+                .is_some_and(|p| Arc::ptr_eq(&p.token, &token))
+            {
+                self.pending = None;
+            }
+            self.queue.retain(|(_, _, t)| !Arc::ptr_eq(t, &token));
+            if Arc::ptr_eq(&interaction.network_gesture_token(), &token) {
+                store.clear_local_rotation();
+                *interaction = PieceInteraction::default();
+                store.drag = Default::default();
+            }
             return Ok(());
         }
         let pending = self

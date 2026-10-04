@@ -104,7 +104,7 @@ rebase後は成功したRotateDragのcontrol番号です。grab_sequenceはgestu
 誤適用せず拒否します。次の最新Transientまたはreliable操作のfinal_deltaで補えます。
 拒否されたRotateDragはcontrol番号だけを消費し、前のbasis / tick / deltaは保持します。
 fingerprintは対象state・rotation・hold・connectivityに加えcontextのGrab / basis / tick /
-zero deltaも検証します。transportはwire version 2のみをdecodeし、互換decoderはありません。
+zero deltaも検証します。transportは現行のwire version 9のみをdecodeし、互換decoderはありません。
 
 ## Cost and verification
 
@@ -114,11 +114,17 @@ component root buffer、idle CPU処理は既存の構造を維持します。
 pointer dragはCPU O(1)、state upload 0、membership upload 0のままです。
 drag rotationは明示的なQ/E時だけO(k)で、rebase後のpointer処理は再びO(1)です。
 回転時は対象memberだけdirtyにし、fragmentedなdirty範囲も隙間を含めずuploadします。
-upload範囲を選ぶoperation-local flag以外のpresentation stateは追加しません。
+network clientの未ACK回転だけは疎なlocal pose overrideを保持します。authorityと同じ
+plannerをcanonical + predicted pose viewへ適用し、controlのcommitted prefixだけを退役して
+残るsuffixを再生します。Q/Qの最初のACKでも表示は180°を維持します。RotateDragは
+protocol basis / anchorを先行更新せず、predictionが消費したdeltaを表示baseから差し引き、
+scalar drag.deltaと合成します。Release待ちも同じsuffixを維持します。詳細・atomicな
+schedule順・GPU restore・4層の責務は[ARCHITECTURE.md](ARCHITECTURE.md#local-uncommitted-rotation-presentation)
+と[Direct-IP runtime](DIRECT_IP_RUNTIME.md#local-release-presentation-while-awaiting-authority)を参照してください。
 
 ```powershell
 cargo test --workspace --lib
-cargo test -p puzzella-game --lib render::tests::rotation_tests -- --ignored --test-threads=1
+cargo test -p puzzella-game --release --locked --lib render::tests::rotation_tests -- --ignored --test-threads=1
 ```
 
 CPUテストはsingletonの4000回転、fractional gridの剛体再構成、pair / L字、
@@ -128,6 +134,34 @@ checkpoint / save / snapshot round-trip、reliable authority / replica / wireを
 抑制、非正方形AABB、viewport端のfar splatを検証します。drag rotationのfixtureは
 回転時の16-byte state upload、membership / root upload 0、回転後pointer frameの
 全upload 0とRelease後のpickingを検証します。
+
+local未ACK回転の回帰はCPU 11件と実GPU 1件を追加しました。通常Q/Q・Q/Q/E、
+pointer A → Q → pointer B → Q → pointer C → Releaseを扱い、authority ACKを別frameで
+1件ずつ配送します。各frameのworld position / orientationとLastのuploadを検査し、
+accepted poseの巻き戻りを検出します。partial Grab（ACK前Releaseも含む）とpartial
+Rotate、snapshot / checkpointのcanonical分離、古いgesture token、reject / cancel /
+send / protocol / disconnect / scope / Menuのcleanupも検証します。1M-piece回帰では
+small / dense回転、canonical Arcの非COW、affected range restore、pending idle frameの
+piece access / state upload 0を検査します。実GPU回帰はnormal / far描画、culling、
+point / rectangle picking、HELD / Z維持、16-byte uploadとoverride解除を確認します。
+
+2026-10-04、baseline `247cba28339c04c965afe5250e1fabd3990d9c07` に対して
+`cargo test --workspace --release --locked` はdoctest込み746件、
+`cargo test --workspace --locked --all-features` はGNS localhost / doctest込み763件が通過しました。
+全target / 全featureのClippy（`-D warnings`）とfmtも通過しました。
+Windows / NVIDIA GeForce RTX 5090 / Vulkanで、次の実GPU選択実行は追加回帰を含む17件が
+通過し、既存4件が失敗しました。
+
+```powershell
+cargo test --workspace --release --locked gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
+```
+
+失敗は`gpu_component_preview_crosses_mask_words_and_preserves_direct_high_bits`と
+`gpu_component_rectangle_preview_matches_final_selection_without_readback`のfixtureによる
+`OutsidePlayArea(PieceId(0))`、`gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads`と
+`gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden`の内部edge色比較です。
+変更前baselineのclean worktreeでも4件すべて同じ失敗を再現しました。今回の回帰とは分けて
+記録し、既存fixture / outlineは変更していません。速度benchmark・他OSの実機検証は未実施です。
 
 drag rebaseのCPU回帰は、singleton / pair / fractional L字の繰り返し回転、独立pivot、
 anchor成功時更新と拒否時維持、同frame Release優先、fragmented memberのexact upload、

@@ -1,4 +1,5 @@
 use super::*;
+mod local_rotation_tests;
 mod pending_release_tests;
 mod presence_tests;
 mod presentation_tests;

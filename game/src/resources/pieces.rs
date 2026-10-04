@@ -39,6 +39,7 @@ pub(crate) const CONNECTED_EDGE_PAIRS: [(u32, u32); 4] = [
 ];
 pub const MAX_Z: u32 = (1 << 24) - 2;
 mod cancellation;
+pub(crate) mod local_rotation;
 mod rotation;
 mod snapping;
 #[repr(C)]
@@ -263,6 +264,8 @@ struct GrabPlan {
 pub struct PieceDataStore {
     pub connectivity: PieceConnectivity,
     pub drag: DragTransform,
+    /// Local uncommitted rotation only; excluded from canonical state/capture.
+    pub local_rotation: local_rotation::LocalRotationPresentation,
     pub states: DensePieceStates,
     pub held_by: PieceOwners,
     pub selected_pieces: PieceBitSet,
@@ -1042,7 +1045,10 @@ pub fn prepare_piece_upload(
         upload.revision += 1;
         upload.definition = definition.as_deref().cloned();
         upload.initial = Some(store.states.clone().into());
-        upload.ranges = Arc::default();
+        // A fresh GPU buffer starts canonical, then receives sparse overrides.
+        let mut ids: Vec<_> = store.local_rotation.poses.keys().copied().collect();
+        ids.sort_unstable();
+        upload.ranges = presentation_ranges(&store, ids.into_iter());
         store.dirty_pieces.clear();
         return;
     }
@@ -1058,7 +1064,7 @@ pub fn prepare_piece_upload(
             // pushes or individual upload records.
             upload.ranges = vec![UploadRange {
                 start: 0,
-                states: store.states.to_vec(),
+                states: store.presentation_slice(0, count),
             }]
             .into();
             store.dirty_pieces.clear();
@@ -1069,7 +1075,7 @@ pub fn prepare_piece_upload(
                 .last_mut()
                 .filter(|r| r.start + r.states.len() as u32 == id.0)
             {
-                range.states.push(store.states[id.0 as usize]);
+                range.states.push(store.presentation_state(id));
             } else {
                 // Bound fragmented bulk updates too. After 128 separate spans,
                 // upload their enclosing span (possibly including unchanged gaps).
@@ -1080,19 +1086,40 @@ pub fn prepare_piece_upload(
                     ranges.clear();
                     ranges.push(UploadRange {
                         start,
-                        states: store.states[start as usize..=end as usize].to_vec(),
+                        states: store.presentation_slice(start as usize, end as usize + 1),
                     });
                     break;
                 }
                 ranges.push(UploadRange {
                     start: id.0,
-                    states: vec![store.states[id.0 as usize]],
+                    states: vec![store.presentation_state(id)],
                 });
             }
         }
         upload.ranges = ranges.into();
         store.dirty_pieces.clear();
     }
+}
+
+fn presentation_ranges(
+    store: &PieceDataStore,
+    ids: impl Iterator<Item = PieceId>,
+) -> Arc<[UploadRange]> {
+    let mut ranges: Vec<UploadRange> = Vec::new();
+    for id in ids {
+        if let Some(range) = ranges
+            .last_mut()
+            .filter(|r| r.start + r.states.len() as u32 == id.0)
+        {
+            range.states.push(store.presentation_state(id));
+        } else {
+            ranges.push(UploadRange {
+                start: id.0,
+                states: vec![store.presentation_state(id)],
+            });
+        }
+    }
+    ranges.into()
 }
 
 fn prepare_component_root_upload(store: &mut PieceDataStore, upload: &mut PieceUpload) {
