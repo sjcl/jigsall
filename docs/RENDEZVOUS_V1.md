@@ -41,15 +41,20 @@ adapter exchange typed commands/events using separate bounded 32-slot channels;
 there is no unbounded queue. Frame/message limits are 24 KiB, opaque signaling
 is 16 KiB maximum. TLS connection deadline is 10 seconds, writes 2 seconds,
 client Ping/matching-Pong deadline 15/15 seconds. A fixed window bounds inbound
-frames at 512/second. A full event queue pauses worker reads for up to 2 seconds,
-so a room-wide 64-member expiry burst survives between owner polls. A stalled
+frames at 512/second. A full event queue holds one additional event and pauses
+worker reads for up to 2 seconds while outgoing commands continue. This avoids
+deadlock when both owner channels fill and allows a room-wide 64-member expiry
+burst to survive between owner polls. A stalled
 owner or frame-rate exhaustion reports Backpressure and closes only the control
 plane; the terminal status uses one bounded slot. Owner poll and shutdown remain
-nonblocking, and cancellation interrupts the worker's pending queue send.
+nonblocking, and cancellation interrupts the worker's event-capacity wait.
 
 `poll()` consumes at most 32 worker events and 32 GNS outbound signals per call.
-It retains at most one unsent ACK/signal command under backpressure; the
-route is installed first and that ACK is retried before reading more messages.
+It retains one unsent ACK/Reject command and one separate unsent Signal under
+backpressure. Required ACK/Reject commands are retried before reading more
+messages; then all Revoke commands precede Confirm commands, followed by deferred
+and new Signals. An unavailable/revoking/released route discards its deferred
+Signal so opaque bytes cannot cross a later PeerId rebinding.
 Up to 64 routes also retain one lifecycle command each until the worker accepts it.
 GNS's own fair bounded signaling mailbox and per-route limits still apply.
 Inbound mailbox congestion emits SignalBackpressure and sheds that signal,
@@ -68,6 +73,20 @@ only in Host and within a 64-route cap. It creates
 `RouteOrigin::from_authenticated_route(authority_id, room_id, member_id)` and
 calls authorize_peer before queuing AuthorizeAck. PeerJoined must match that
 pending member identity before it becomes active and is exposed to the caller.
+An unavailable/revoking retained PeerId, a full route table, or insufficient
+native connection headroom instead sends AuthorizeReject(join_id). The host room
+and old native binding continue. Identity contradictions (available duplicate
+peer, MemberId/JoinId collision, or self identity) still fail closed, even when
+capacity is exhausted. Native headroom is advisory; GNS retains its per-request
+admission check for total, Connecting and not-Ready handles.
+
+The adapter retains at most 64 rejected transactions separately from native
+routes. The server releases each pending slot immediately, returns Capacity to
+the joiner and emits PeerUnavailable to the host as completion. Server FIFO orders
+an old member's departure before replacement authorization and the rejection's
+completion before further reuse of that PeerId. This completion clears only the
+rejected transaction, even if the old native route has already been reclaimed.
+
 The server enqueues PeerJoined to the host before RoomJoined to the joiner,
 serializing the state commit and both enqueues against concurrent relays.
 Thus each socket receives its activation notification before any Signal,
@@ -97,7 +116,7 @@ bindings are revoked on cleanup. The caller may explicitly `release_route(peer)`
 after established connection cleanup or a security decision. That operation can
 close a live GNS route on its next poll, so it is never automatic for an active
 route. The standalone `poll()` retains this explicit-owner contract. Production
-runtime uses `poll_with_peer_connections` and `reclaim_unavailable_routes`:
+runtime uses `poll_with_admission` and `reclaim_unavailable_routes`:
 unavailable bindings with neither an owned native handle (including Connecting)
 nor queued inbound signals are released. Reconciliation runs between control
 messages, before another bind can exhaust the finite 64-route cap, and after
@@ -359,3 +378,43 @@ the nine Internet UI tests plus the full workspace suite passed afterward.
 This record covers local/headless runtime and scheduled egui checks; it does not
 claim real Internet NAT traversal, cross-OS behavior, GPU frame-rate or visible
 window end-to-end validation.
+
+## Retained-route admission verification (2026-10-05)
+
+An unauthenticated client could reconnect with the PeerId of its unavailable
+native route, causing AuthorizePeer → bind → ProtocolViolation → control_lost.
+Retained-route capacity divergence reached the same fatal boundary. The invariant
+is that local admission shortage rejects only the pending join and preserves the
+room/native connection, while contradictory server-issued identities still fail
+closed. The fix extends the existing v1 control messages with AuthorizeReject,
+keeps bounded rejection completions separate from old routes, and prioritizes
+lifecycle commands above both deferred and new signaling.
+
+The regression `retained_peer_and_full_route_table_reject_without_protocol_failure`
+failed against the original implementation and passes with this patch. Tests in
+`game/src/network/gns/rendezvous/tests/admission.rs` cover retained/revoking peers,
+route retirement before rejection completion, full local route/native capacity,
+130 rejection/reuse cycles, identity contradictions, one-slot command priority,
+obsolete signaling on rebind and a full inbound queue with outgoing control.
+The runtime test checks independent native headroom propagation. Mirrored strict
+parser/golden tests cover AuthorizeReject. Server state and WebSocket tests cover
+immediate resource release, same-PeerId reuse, host authority and cancelled/expired
+authorization races. Existing auth, control-loss and gameplay tests remain controls.
+
+| Verification gate / command | Result |
+| --- | --- |
+| Both repositories: `git diff --check`, Cargo fmt check | Passed |
+| App: `cargo clippy --workspace --locked --all-targets --features rendezvous -- -D warnings` | Passed |
+| Server: `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| App: `cargo test --locked -p puzzella-game --features rendezvous network::gns::rendezvous -- --nocapture` | Passed, 28 adapter/protocol tests |
+| App: `cargo test --workspace --locked --features rendezvous -- --skip gns_localhost` | Passed, workspace/unit/doc tests |
+| Server: `cargo test --locked --quiet` | Passed, 34 unit and 8 WebSocket tests |
+| App: `cargo test --workspace --locked --features rendezvous gns_localhost -- --nocapture --test-threads=1` | Passed, 17 game and 1 UI test |
+| App: `cargo test --workspace --locked --features rendezvous gns_localhost_real_rendezvous -- --ignored --nocapture --test-threads=1` | Passed, 2 real-server/two-process native tests |
+| App: `cargo build --workspace --locked --features rendezvous`; server: `cargo build --locked` | Passed |
+
+Independent read-only candidate review found no concrete remaining bypass or
+regression. Real loopback tests preserve SPAKE2, encrypted Control/Transient/Bulk
+after WS shutdown, and Room Code → Ready → Grab/Release. Both v1 schema copies and
+golden fixtures match. Production NAT/WSS/Caddy, cross-OS, GPU and performance
+trials were not rerun; existing opt-in GPU/benchmark/Caddy tests remain skipped.

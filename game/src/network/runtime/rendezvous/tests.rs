@@ -21,10 +21,16 @@ struct ControlState {
     revoked: Vec<PeerId>,
     routes: BTreeMap<PeerId, bool>,
     pending_signals: BTreeSet<PeerId>,
+    native_capacity: bool,
 }
 struct Control(Rc<RefCell<ControlState>>);
 impl ControlPlane for Control {
-    fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent> {
+    fn poll(
+        &mut self,
+        has_peer: &dyn Fn(PeerId) -> bool,
+        native_capacity: bool,
+    ) -> Vec<RendezvousEvent> {
+        self.0.borrow_mut().native_capacity = native_capacity;
         let events: Vec<_> = self.0.borrow_mut().events.drain(..).collect();
         self.reclaim_unavailable_routes(has_peer);
         let mut announced_host = None;
@@ -169,6 +175,9 @@ impl PeerTransport for PeerOnly {
     fn has_peer(&self, peer: PeerId) -> bool {
         self.handles.borrow().values().any(|&p| p == peer)
     }
+    fn has_connection_capacity(&self) -> bool {
+        self.handles.borrow().len() < crate::network::lifecycle::MAX_CONNECTIONS
+    }
     fn take_retired_peers(&mut self) -> Vec<PeerId> {
         std::mem::take(&mut self.retired).into_iter().collect()
     }
@@ -244,6 +253,27 @@ fn limits() -> ImageDecodeLimits {
     }
 }
 
+#[test]
+fn rendezvous_owner_reports_native_capacity_independently_of_route_capacity() {
+    let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+    let backend = backend(0, &bus);
+    let handles = backend.handles.clone();
+    let (control, state) = control();
+    let mut driver = RendezvousRuntimeDriver::host(backend, control, host_options(), prepared());
+    driver.poll_control(Instant::now());
+    assert!(state.borrow().native_capacity);
+    for n in 0..crate::network::lifecycle::MAX_CONNECTIONS {
+        handles
+            .borrow_mut()
+            .insert(ConnectionId::new(n as u64), peer());
+    }
+    driver.poll_control(Instant::now());
+    assert!(!state.borrow().native_capacity);
+    assert!(state.borrow().routes.is_empty());
+    handles.borrow_mut().clear();
+    driver.poll_control(Instant::now());
+    assert!(state.borrow().native_capacity);
+}
 #[test]
 fn rendezvous_host_creates_once_and_exposes_code_only_after_room_created() {
     let bus = Arc::new(Mutex::new(fixtures::Bus::default()));

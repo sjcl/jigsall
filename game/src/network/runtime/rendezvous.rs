@@ -34,6 +34,7 @@ pub(super) trait PeerTransport: Transport {
     fn connect_peer(&mut self, peer: PeerId) -> Result<ConnectionId, TransportError>;
     fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId>;
     fn has_peer(&self, peer: PeerId) -> bool;
+    fn has_connection_capacity(&self) -> bool;
     fn take_retired_peers(&mut self) -> Vec<PeerId>;
 }
 impl PeerTransport for GnsP2p {
@@ -46,12 +47,19 @@ impl PeerTransport for GnsP2p {
     fn has_peer(&self, peer: PeerId) -> bool {
         self.has_peer(peer)
     }
+    fn has_connection_capacity(&self) -> bool {
+        self.has_connection_capacity()
+    }
     fn take_retired_peers(&mut self) -> Vec<PeerId> {
         self.take_retired_peers()
     }
 }
 pub(super) trait ControlPlane {
-    fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent>;
+    fn poll(
+        &mut self,
+        has_peer: &dyn Fn(PeerId) -> bool,
+        native_capacity: bool,
+    ) -> Vec<RendezvousEvent>;
     fn reclaim_unavailable_routes(&mut self, has_peer: &dyn Fn(PeerId) -> bool);
     fn has_pending_signal(&self, peer: PeerId) -> bool;
     fn create_room(&mut self) -> Result<(), RendezvousError>;
@@ -62,8 +70,12 @@ pub(super) trait ControlPlane {
     fn shutdown(&mut self);
 }
 impl ControlPlane for RendezvousAdapter {
-    fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent> {
-        self.poll_with_peer_connections(has_peer)
+    fn poll(
+        &mut self,
+        has_peer: &dyn Fn(PeerId) -> bool,
+        native_capacity: bool,
+    ) -> Vec<RendezvousEvent> {
+        self.poll_with_admission(has_peer, native_capacity)
     }
     fn reclaim_unavailable_routes(&mut self, has_peer: &dyn Fn(PeerId) -> bool) {
         self.reclaim_unavailable_routes(has_peer);
@@ -292,9 +304,10 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RendezvousRuntimeDriver<T, C> 
             .as_ref()
             .map(|r| r.transport.backend())
             .or(self.backend.as_ref());
-        let events = self
-            .adapter
-            .poll(&|peer| backend.is_some_and(|b| b.has_peer(peer)));
+        let events = self.adapter.poll(
+            &|peer| backend.is_some_and(|b| b.has_peer(peer)),
+            backend.is_some_and(PeerTransport::has_connection_capacity),
+        );
         for event in events {
             self.event(event);
             if !self.active {

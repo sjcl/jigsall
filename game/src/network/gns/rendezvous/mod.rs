@@ -134,7 +134,10 @@ pub struct RendezvousAdapter {
     authority: Option<AuthorityId>,
     phase: Phase,
     routes: BTreeMap<PeerId, Bound>,
+    // Server room capacity/FIFO bounds outstanding rejected transactions at 64.
+    rejected: BTreeMap<PeerId, (JoinId, MemberId)>,
     deferred: Option<ClientMessage>,
+    deferred_signal: Option<ClientMessage>,
     terminal_reported: bool,
 }
 fn peer(id: protocol::PeerId) -> PeerId {
@@ -164,7 +167,9 @@ impl RendezvousAdapter {
             authority: None,
             phase: Phase::Welcome,
             routes: BTreeMap::new(),
+            rejected: BTreeMap::new(),
             deferred: None,
+            deferred_signal: None,
             terminal_reported: false,
         })
     }
@@ -205,6 +210,7 @@ impl RendezvousAdapter {
     /// This can terminate a live routed GNS connection; never call merely because
     /// PeerUnavailable, RoomClosed, or Disconnected was observed.
     pub fn release_route(&mut self, peer: PeerId) {
+        self.discard_deferred_signal(peer);
         self.routes.remove(&peer);
         self.signaling.revoke_peer(peer);
     }
@@ -225,6 +231,7 @@ impl RendezvousAdapter {
     /// Retain the bounded notification and routing tombstone until the server
     /// reports PeerUnavailable. Late in-flight signals cannot reopen admission.
     pub fn revoke_peer(&mut self, peer: PeerId) {
+        self.discard_deferred_signal(peer);
         if !matches!(self.phase, Phase::Host(_)) {
             return;
         }
@@ -280,7 +287,6 @@ impl RendezvousAdapter {
     ) -> Result<(), RendezvousError> {
         if id == self.local
             || member == room.member
-            || self.routes.len() >= MAX_ROUTES
             || self.routes.contains_key(&id)
             || self
                 .routes
@@ -288,6 +294,9 @@ impl RendezvousAdapter {
                 .any(|r| r.member == member || pending.is_some() && r.pending == pending)
         {
             return Err(RendezvousError::ProtocolViolation);
+        }
+        if self.routes.len() >= MAX_ROUTES {
+            return Err(TransportError::Capacity.into());
         }
         // `account` in RouteOrigin is a server-issued anonymous membership, not
         // Steam/account authentication or Sybil resistance. Future authenticated
@@ -326,12 +335,23 @@ impl RendezvousAdapter {
             bound.lifecycle = None;
         }
         self.deferred = None;
+        self.deferred_signal = None;
+        self.rejected.clear();
         self.phase = Phase::Closed;
     }
+    #[cfg(test)]
     fn handle(
         &mut self,
         message: ServerMessage,
         events: &mut Vec<RendezvousEvent>,
+    ) -> Result<(), RendezvousError> {
+        self.handle_with_admission(message, events, true)
+    }
+    fn handle_with_admission(
+        &mut self,
+        message: ServerMessage,
+        events: &mut Vec<RendezvousEvent>,
+        native_capacity: bool,
     ) -> Result<(), RendezvousError> {
         match message {
             ServerMessage::Welcome { authority_id } if matches!(self.phase, Phase::Welcome) => {
@@ -362,7 +382,46 @@ impl RendezvousAdapter {
                 let Phase::Host(room) = self.phase else {
                     return Err(RendezvousError::ProtocolViolation);
                 };
-                self.bind(peer(peer_id), member_id, room, Some(join_id))?;
+                let id = peer(peer_id);
+                // Identity contradictions remain fatal, including at capacity.
+                if id == self.local
+                    || member_id == room.member
+                    || self.rejected.contains_key(&id)
+                    || self
+                        .routes
+                        .values()
+                        .any(|r| r.member == member_id || r.pending == Some(join_id))
+                    || self
+                        .rejected
+                        .values()
+                        .any(|&(join, member)| join == join_id || member == member_id)
+                    || self
+                        .routes
+                        .get(&id)
+                        .is_some_and(|r| r.available && !r.revoking)
+                {
+                    return Err(RendezvousError::ProtocolViolation);
+                }
+                let shortage = self.routes.contains_key(&id)
+                    || !native_capacity
+                    || self.routes.len() >= MAX_ROUTES;
+                let bind = if shortage {
+                    Err(TransportError::Capacity.into())
+                } else {
+                    self.bind(id, member_id, room, Some(join_id))
+                };
+                if matches!(
+                    bind,
+                    Err(RendezvousError::Transport(TransportError::Capacity))
+                ) {
+                    if self.rejected.len() >= MAX_ROUTES {
+                        return Err(RendezvousError::ProtocolViolation);
+                    }
+                    self.rejected.insert(id, (join_id, member_id));
+                    self.deferred = Some(ClientMessage::AuthorizeReject { join_id });
+                    return Ok(());
+                }
+                bind?;
                 // Install route BEFORE enqueueing ACK. One retained command is
                 // sufficient to retry bounded channel backpressure on next poll.
                 self.deferred = Some(ClientMessage::AuthorizeAck { join_id });
@@ -406,6 +465,13 @@ impl RendezvousAdapter {
                 if matches!(self.phase, Phase::Host(_) | Phase::Joined(_)) =>
             {
                 let id = peer(peer_id);
+                // This completion belongs to the rejected pending incarnation,
+                // not to an older native route with this same PeerId. Server FIFO
+                // places it before any subsequent authorization reusing the id.
+                if self.rejected.remove(&id).is_some() {
+                    return Ok(());
+                }
+                self.discard_deferred_signal(id);
                 let r = self
                     .routes
                     .get_mut(&id)
@@ -474,29 +540,67 @@ impl RendezvousAdapter {
             Err((error, _)) => Err(error),
         }
     }
-    fn flush_lifecycle(&mut self) -> Result<(), RendezvousError> {
-        for route in self.routes.values_mut() {
-            let Some(message) = route.lifecycle.take() else {
-                continue;
-            };
-            let confirm = matches!(message, ClientMessage::ConfirmPeer { .. });
-            match self.io.send_owned(message) {
-                Ok(()) => {
-                    route.confirmed |= confirm;
+    fn discard_deferred_signal(&mut self, peer: PeerId) {
+        if matches!(&self.deferred_signal, Some(ClientMessage::Signal { to_peer_id, .. }) if to_peer_id.0 == peer.to_bytes())
+        {
+            self.deferred_signal = None;
+        }
+    }
+    fn flush_signal(&mut self) -> Result<bool, RendezvousError> {
+        let Some(message) = self.deferred_signal.take() else {
+            return Ok(true);
+        };
+        let ClientMessage::Signal { to_peer_id, .. } = &message else {
+            return Err(RendezvousError::ProtocolViolation);
+        };
+        if !self
+            .routes
+            .get(&peer(*to_peer_id))
+            .is_some_and(|r| r.active && r.available && !r.revoking)
+        {
+            return Ok(true);
+        }
+        match self.io.send_owned(message) {
+            Ok(()) => Ok(true),
+            Err((RendezvousError::Backpressure, message)) => {
+                self.deferred_signal = Some(message);
+                Ok(false)
+            }
+            Err((error, _)) => Err(error),
+        }
+    }
+    fn flush_lifecycle(&mut self) -> Result<bool, RendezvousError> {
+        for revoke in [true, false] {
+            for route in self.routes.values_mut() {
+                if !route
+                    .lifecycle
+                    .as_ref()
+                    .is_some_and(|m| matches!(m, ClientMessage::RevokePeer { .. }) == revoke)
+                {
+                    continue;
                 }
-                Err((RendezvousError::Backpressure, message)) => {
-                    route.lifecycle = Some(message);
-                    break;
+                let Some(message) = route.lifecycle.take() else {
+                    continue;
+                };
+                let confirm = matches!(message, ClientMessage::ConfirmPeer { .. });
+                match self.io.send_owned(message) {
+                    Ok(()) => {
+                        route.confirmed |= confirm;
+                    }
+                    Err((RendezvousError::Backpressure, message)) => {
+                        route.lifecycle = Some(message);
+                        return Ok(false);
+                    }
+                    Err((error, _)) => return Err(error),
                 }
-                Err((error, _)) => return Err(error),
             }
         }
-        Ok(())
+        Ok(true)
     }
     /// Call each frame alongside (before) the existing GNS/SecureTransport poll.
     /// Work and returned events per call are bounded; I/O stays on the worker.
     pub fn poll(&mut self) -> Vec<RendezvousEvent> {
-        self.poll_with_owner(None)
+        self.poll_with_owner(None, true)
     }
     /// Production owner reconciliation also runs between control messages, so
     /// join/leave churn cannot exhaust bind capacity within one poll batch.
@@ -504,15 +608,25 @@ impl RendezvousAdapter {
         &mut self,
         has_peer: impl Fn(PeerId) -> bool,
     ) -> Vec<RendezvousEvent> {
-        self.poll_with_owner(Some(&has_peer))
+        self.poll_with_owner(Some(&has_peer), true)
+    }
+    /// Native headroom is an advisory snapshot; GNS still admits each request
+    /// independently at its existing native boundary.
+    pub fn poll_with_admission(
+        &mut self,
+        has_peer: impl Fn(PeerId) -> bool,
+        native_capacity: bool,
+    ) -> Vec<RendezvousEvent> {
+        self.poll_with_owner(Some(&has_peer), native_capacity)
     }
     fn poll_with_owner(
         &mut self,
         has_peer: Option<&dyn Fn(PeerId) -> bool>,
+        native_capacity: bool,
     ) -> Vec<RendezvousEvent> {
         let mut events = Vec::new();
         self.reconcile_announced_peers(has_peer, &events);
-        let result = self.poll_inner(&mut events, has_peer);
+        let result = self.poll_inner(&mut events, has_peer, native_capacity);
         if let Err(error) = result {
             self.io.shutdown();
             self.control_lost();
@@ -552,6 +666,7 @@ impl RendezvousAdapter {
         &mut self,
         events: &mut Vec<RendezvousEvent>,
         has_peer: Option<&dyn Fn(PeerId) -> bool>,
+        native_capacity: bool,
     ) -> Result<(), RendezvousError> {
         if matches!(self.phase, Phase::Closed) {
             for _ in 0..CHANNEL_CAPACITY {
@@ -568,13 +683,15 @@ impl RendezvousAdapter {
             let Some(message) = self.io.pop() else {
                 break;
             };
-            self.handle(message, events)?;
+            self.handle_with_admission(message, events, native_capacity)?;
             self.reconcile_announced_peers(has_peer, events);
             if !self.flush_deferred()? || matches!(self.phase, Phase::Closed) {
                 return Ok(());
             }
         }
-        self.flush_lifecycle()?;
+        if !self.flush_lifecycle()? || !self.flush_signal()? {
+            return Ok(());
+        }
         for _ in 0..CHANNEL_CAPACITY {
             let Some(signal) = self.signaling.pop_outbound() else {
                 break;
@@ -589,11 +706,11 @@ impl RendezvousAdapter {
             if signal.payload.is_empty() || signal.payload.len() > MAX_SIGNAL_BYTES {
                 return Err(RendezvousError::ProtocolViolation);
             }
-            self.deferred = Some(ClientMessage::Signal {
+            self.deferred_signal = Some(ClientMessage::Signal {
                 to_peer_id: protocol::PeerId(signal.peer.to_bytes()),
                 payload_base64: protocol::encode_signal(&signal.payload),
             });
-            if !self.flush_deferred()? {
+            if !self.flush_signal()? {
                 break;
             }
         }

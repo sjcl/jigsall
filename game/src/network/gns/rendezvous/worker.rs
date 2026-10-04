@@ -28,6 +28,26 @@ pub(super) struct Worker {
     terminal: Arc<Mutex<Option<RendezvousError>>>,
 }
 impl Worker {
+    #[cfg(test)]
+    pub(super) fn channels_for_test() -> (
+        Self,
+        mpsc::Receiver<ClientMessage>,
+        mpsc::Sender<ServerMessage>,
+    ) {
+        let (commands, rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let (tx, events) = mpsc::channel(CHANNEL_CAPACITY);
+        (
+            Self {
+                commands,
+                events,
+                stop: None,
+                done: Arc::new(AtomicBool::new(false)),
+                terminal: Arc::new(Mutex::new(None)),
+            },
+            rx,
+            tx,
+        )
+    }
     pub fn start(endpoint: EndpointUrl) -> Result<Self, RendezvousError> {
         let (commands, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let (tx, events) = mpsc::channel(CHANNEL_CAPACITY);
@@ -136,8 +156,18 @@ async fn run(
     let mut sequence = 0u64;
     let mut window = Instant::now();
     let mut frames = 0usize;
+    // One held event preserves FIFO while the bounded owner channel is full.
+    // Outgoing commands must still progress to avoid cross-channel deadlock.
+    let mut pending_event = None;
+    let mut event_deadline = Instant::now();
     loop {
         tokio::select! {
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(event_deadline)), if pending_event.is_some() => {
+                return Err(RendezvousError::Backpressure);
+            }
+            permit = events.reserve(), if pending_event.is_some() => {
+                permit.map_err(|_| RendezvousError::Requested)?.send(pending_event.take().unwrap());
+            }
             _ = tick.tick() => {
                 let now = Instant::now();
                 if outstanding.is_some_and(|(_, deadline)| now >= deadline) { return Err(RendezvousError::Timeout); }
@@ -154,7 +184,7 @@ async fn run(
                 if json.len() > MAX_WS_BYTES { return Err(RendezvousError::ProtocolViolation); }
                 timeout(Duration::from_secs(2), sink.send(Message::Text(json.into()))).await.map_err(|_| RendezvousError::Timeout)?.map_err(|_| RendezvousError::Network)?;
             }
-            message = stream.next() => {
+            message = stream.next(), if pending_event.is_none() => {
                 let now = Instant::now();
                 if now.saturating_duration_since(window) >= Duration::from_secs(1) { window = now; frames = 0; }
                 frames += 1;
@@ -162,12 +192,8 @@ async fn run(
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         let message = protocol::parse_server(&text).map_err(|_| RendezvousError::ProtocolViolation)?;
-                        // A room-wide expiry can deliver 64 notifications between
-                        // owner polls. Keep the queue bounded and pause reads;
-                        // a stalled owner still fails within the I/O deadline.
-                        timeout(Duration::from_secs(2), events.send(message)).await
-                            .map_err(|_| RendezvousError::Backpressure)?
-                            .map_err(|_| RendezvousError::Requested)?;
+                        pending_event = Some(message);
+                        event_deadline = now + Duration::from_secs(2);
                     }
                     Some(Ok(Message::Ping(_))) => {
                         timeout(Duration::from_secs(2), sink.flush()).await.map_err(|_| RendezvousError::Timeout)?.map_err(|_| RendezvousError::Network)?;

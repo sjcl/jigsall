@@ -138,7 +138,9 @@ impl GnsP2p {
             .into_iter()
             .collect()
     }
-    fn has_capacity(&self) -> bool {
+    /// Advisory native headroom, including Connecting/not-Ready handles.
+    /// This does not reserve a handle or consume native admission credits.
+    pub fn has_connection_capacity(&self) -> bool {
         self.connections.len() < MAX_CONNECTIONS
             && self.connections.values().filter(|c| !c.connected).count() < MAX_CONNECTING
             && self.connections.values().filter(|c| !c.ready).count() < MAX_PENDING_CONNECTIONS
@@ -155,7 +157,7 @@ impl GnsP2p {
         let now = Instant::now();
         let origin = self.mailbox.origin(peer)?;
         let pending = self.origin_pending(origin);
-        if !self.has_capacity()
+        if !self.has_connection_capacity()
             || !self.starts.available(1, now)
             || self.admission.admit(origin, pending, now).is_err()
         {
@@ -344,7 +346,7 @@ impl Transport for GnsP2p {
             // Admission is sampled before GNS; the callback only accepts within
             // that capacity. GNS discards requests for which it returns null.
             // Only new requests spend start credit; stale/duplicate signals do not.
-            let allow = self.has_capacity();
+            let allow = self.has_connection_capacity();
             let admission = native::IncomingAdmission {
                 allow,
                 origin,

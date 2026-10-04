@@ -1,4 +1,5 @@
 use super::*;
+mod admission;
 use crate::network::transport::Origin;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::{SinkExt, StreamExt};
@@ -71,6 +72,45 @@ where
 fn adapter(url: EndpointUrl) -> RendezvousAdapter {
     RendezvousAdapter::from_routed(url, PeerId::from_bytes(id(9)), SignalingEndpoint::routed())
         .unwrap()
+}
+#[tokio::test]
+async fn retained_peer_and_full_route_table_reject_without_protocol_failure() {
+    for full in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = EndpointUrl::loopback_for_test(&format!(
+            "ws://{}/v1/ws",
+            listener.local_addr().unwrap()
+        ))
+        .unwrap();
+        let mut a = adapter(url);
+        a.authority = Some(AuthorityId(id(1)));
+        let room = RoomBinding {
+            room: RoomId(id(2)),
+            member: MemberId(id(3)),
+        };
+        a.phase = Phase::Host(room);
+        for n in 10..if full { 74 } else { 11 } {
+            a.bind(PeerId::from_bytes(id(n)), MemberId(id(n + 80)), room, None)
+                .unwrap();
+            a.routes
+                .get_mut(&PeerId::from_bytes(id(n)))
+                .unwrap()
+                .available = false;
+        }
+        let target = if full { 80 } else { 10 };
+        assert!(a
+            .handle(
+                ServerMessage::AuthorizePeer {
+                    join_id: JoinId(id(160)),
+                    peer_id: protocol::PeerId(id(target)),
+                    member_id: MemberId(id(180))
+                },
+                &mut Vec::new()
+            )
+            .is_ok());
+        assert!(matches!(a.phase, Phase::Host(_)));
+        finish(&mut a).await;
+    }
 }
 #[tokio::test]
 async fn lifecycle_backpressure_retains_revoke_and_discards_inflight_signal() {
