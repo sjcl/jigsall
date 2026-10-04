@@ -168,12 +168,17 @@ impl Fixture {
 }
 
 #[test]
-fn disabled_rotation_rejects_wire_requests_without_mutating_state_or_drag_context() {
+fn disabled_or_missing_definition_rejects_rotation_without_mutating_state_or_drag_context() {
     use crate::network::wire::{self, WireMessage};
-    for dragging in [false, true] {
+    for (dragging, rotation_enabled, has_definition) in [
+        (false, false, true),
+        (true, false, true),
+        (false, true, false),
+        (true, true, false),
+    ] {
         for turns in [-1, 0, 1, 4] {
             let mut f = Fixture::new(4);
-            f.definition.rotation_enabled = false;
+            f.definition.rotation_enabled = rotation_enabled;
             if dragging {
                 f.grab(0, f.target(&[0, 1]));
                 f.apply(&Fixture::update(0, 1, Vec2::new(10., 20.)))
@@ -213,7 +218,7 @@ fn disabled_rotation_rejects_wire_requests_without_mutating_state_or_drag_contex
                     &mut f.store,
                     A,
                     &envelope,
-                    Some(&f.definition),
+                    has_definition.then_some(&f.definition),
                     puzzella_core::LOCAL_PLAYER,
                 ),
                 Err(ProtocolCommandError::RotationDisabled)

@@ -312,7 +312,7 @@ impl ProtocolDragContexts {
         if matches!(
             envelope.command,
             ProtocolPieceCommand::Rotate { .. } | ProtocolPieceCommand::RotateDrag { .. }
-        ) && definition.is_some_and(|d| !d.rotation_enabled)
+        ) && definition.is_none_or(|d| !d.rotation_enabled)
         {
             return Err(ProtocolCommandError::RotationDisabled);
         }
