@@ -1,8 +1,8 @@
 use crate::{localization::Localization, theme};
 use bevy::prelude::Resource;
 use bevy_egui::egui;
-use puzzella_core::session::ImageHash;
-use puzzella_game::persistence::runtime::{PersistenceError, PersistenceService, ThumbnailReply};
+use jigsall_core::session::ImageHash;
+use jigsall_game::persistence::runtime::{PersistenceError, PersistenceService, ThumbnailReply};
 use std::collections::HashMap;
 
 const CACHE_CAPACITY: usize = 64;

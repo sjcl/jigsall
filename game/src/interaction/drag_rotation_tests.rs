@@ -28,7 +28,7 @@ fn app() -> App {
             members: members.clone(),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
@@ -195,7 +195,7 @@ fn pending_point_and_box_selection_ignore_rotation() {
         frame(),
         &mut store,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert!(interaction.rotation_command(&store, 1).is_none());
     let request = selection.latest.unwrap();
@@ -209,7 +209,7 @@ fn pending_point_and_box_selection_ignore_rotation() {
         frame(),
         &mut store,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert!(matches!(interaction.gesture, Gesture::BoxSelecting { .. }));
     assert!(interaction.rotation_command(&store, -1).is_none());

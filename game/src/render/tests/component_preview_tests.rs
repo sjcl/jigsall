@@ -4,7 +4,7 @@ use crate::{
     resources::pieces::{HELD, PLACED},
     selection::SelectionPayload,
 };
-use puzzella_core::{
+use jigsall_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
     PieceBitSet, PieceCommand, PlayerId,
 };
@@ -235,7 +235,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
     assert_eq!(direct.iter().collect::<Vec<_>>(), [PieceId(0)]);
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .commit_selection(direct, None, puzzella_core::LOCAL_PLAYER);
+        .commit_selection(direct, None, jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         app.world()
             .resource::<PieceDataStore>()
@@ -265,12 +265,12 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
                     owner,
                     &PieceCommand::Grab(PieceId(0)),
                     None,
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .grabbed,
             2
         );
-        store.commit_selection(stale_direct, None, puzzella_core::LOCAL_PLAYER);
+        store.commit_selection(stale_direct, None, jigsall_core::LOCAL_PLAYER);
         assert!(store.selected_pieces.is_empty());
         assert!(store
             .connectivity
@@ -287,7 +287,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
                 owner,
                 &PieceCommand::Release(PieceId(0)),
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .released,
         2
@@ -319,7 +319,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
             owner,
             &PieceCommand::Grab(PieceId(0)),
             Some(&def),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         store.apply_command(
             owner,
@@ -328,7 +328,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
                 position: def.correct_position(PieceId(0)),
             },
             Some(&def),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(
             store
@@ -336,7 +336,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
                     owner,
                     &PieceCommand::Release(PieceId(0)),
                     Some(&def),
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .placed,
             2
@@ -488,7 +488,7 @@ fn gpu_component_preview_crosses_mask_words_and_preserves_direct_high_bits() {
     assert_eq!(mask.iter().collect::<Vec<_>>(), [PieceId(63)]);
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .commit_selection(mask, None, puzzella_core::LOCAL_PLAYER);
+        .commit_selection(mask, None, jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         app.world()
             .resource::<PieceDataStore>()

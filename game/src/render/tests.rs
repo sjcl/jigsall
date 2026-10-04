@@ -24,9 +24,9 @@ use bevy::{
         RenderPlugin,
     },
 };
-use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
-use puzzella_puzzle::fingerprint::{sample_profile, worst_case_profiles, EdgeFingerprint};
-use puzzella_puzzle::procedural::*;
+use jigsall_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_puzzle::fingerprint::{sample_profile, worst_case_profiles, EdgeFingerprint};
+use jigsall_puzzle::procedural::*;
 use std::{
     borrow::Cow,
     sync::Mutex,
@@ -489,7 +489,7 @@ fn gpu_delayed_puzzle_image_reaches_playing_with_current_piece_state() {
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
         let mut state = store.state(PieceId(0)).unwrap();
         state.position = Vec2::new(20.0, 0.0);
-        store.set_state(PieceId(0), state, puzzella_core::LOCAL_PLAYER);
+        store.set_state(PieceId(0), state, jigsall_core::LOCAL_PLAYER);
     }
     for _ in 0..3 {
         update_gpu(&mut app);
@@ -839,7 +839,7 @@ fn gpu_raster_selection() {
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
         let mut s = store.state(PieceId(0)).unwrap();
         s.position.x += 1.0;
-        store.set_state(PieceId(0), s, puzzella_core::LOCAL_PLAYER);
+        store.set_state(PieceId(0), s, jigsall_core::LOCAL_PLAYER);
     }
     update_gpu(&mut app);
     {
@@ -873,8 +873,8 @@ fn gpu_raster_selection() {
             let mut store = app.world_mut().resource_mut::<PieceDataStore>();
             let mut state = store.state(PieceId(1)).unwrap();
             state.placed = !held;
-            state.held_by = held.then_some(puzzella_core::LOCAL_PLAYER);
-            store.set_state(PieceId(1), state, puzzella_core::LOCAL_PLAYER);
+            state.held_by = held.then_some(jigsall_core::LOCAL_PLAYER);
+            store.set_state(PieceId(1), state, jigsall_core::LOCAL_PLAYER);
         }
         assert_eq!(pick(&mut app, rect, SelectionMode::Point), vec![PieceId(0)]);
     }
@@ -1387,7 +1387,7 @@ fn procedural_gpu_benchmark() {
             let mut store = cpu_app.world_mut().resource_mut::<PieceDataStore>();
             let mut s = store.state(PieceId(0)).unwrap();
             s.position.x += 1.0;
-            store.set_state(PieceId(0), s, puzzella_core::LOCAL_PLAYER);
+            store.set_state(PieceId(0), s, jigsall_core::LOCAL_PLAYER);
         }
         let start = Instant::now();
         cpu_app

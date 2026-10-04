@@ -1,8 +1,8 @@
 //! Operation-local component centers and constant-size drag validation.
 use crate::resources::PieceDataStore;
 use bevy::math::{DVec2, Vec2};
-use puzzella_core::{protocol::ActiveDragTarget, PieceBitSet, PieceId};
-use puzzella_puzzle::placement::LogicalPlayArea;
+use jigsall_core::{protocol::ActiveDragTarget, PieceBitSet, PieceId};
+use jigsall_puzzle::placement::LogicalPlayArea;
 
 /// Also used by rotation and checkpoints. Sum in f64, including hostile f32s.
 pub(crate) fn component_center(positions: impl IntoIterator<Item = Vec2>) -> Option<DVec2> {
@@ -228,13 +228,13 @@ impl PieceDataStore {
         &self,
         root: PieceId,
         delta: Vec2,
-        geometry: &puzzella_core::PuzzleGeometry,
+        geometry: &jigsall_core::PuzzleGeometry,
         area: Option<LogicalPlayArea>,
     ) -> Option<Vec2> {
         let representative = self.states[root.0 as usize];
-        let rotation = puzzella_core::decode_rotation(representative.flags);
+        let rotation = jigsall_core::decode_rotation(representative.flags);
         let mut offset = representative.position
-            - puzzella_core::rotate_quarter(geometry.correct_position(root), rotation)
+            - jigsall_core::rotate_quarter(geometry.correct_position(root), rotation)
             + delta;
         let Some(area) = area else {
             return Some(offset);
@@ -250,7 +250,7 @@ impl PieceDataStore {
         let (min, max) = component_bounds(
             self.connectivity
                 .iter_component(root)
-                .map(|id| puzzella_core::rotate_quarter(geometry.correct_position(id), rotation)),
+                .map(|id| jigsall_core::rotate_quarter(geometry.correct_position(id), rotation)),
         )?;
         for _ in 0..=4 {
             let center =
@@ -278,10 +278,10 @@ impl PieceDataStore {
         &self,
         roots: impl IntoIterator<Item = PieceId>,
         delta: Vec2,
-        definition: Option<&puzzella_core::PuzzleDefinition>,
+        definition: Option<&jigsall_core::PuzzleDefinition>,
         area: LogicalPlayArea,
     ) -> bool {
-        let geometry = definition.map(puzzella_core::PuzzleDefinition::geometry);
+        let geometry = definition.map(jigsall_core::PuzzleDefinition::geometry);
         roots.into_iter().all(|root| {
             if let Some(g) = geometry
                 .as_ref()
@@ -303,7 +303,7 @@ impl PieceDataStore {
         &self,
         target: &ActiveDragTarget,
         delta: Vec2,
-        definition: Option<&puzzella_core::PuzzleDefinition>,
+        definition: Option<&jigsall_core::PuzzleDefinition>,
         area: LogicalPlayArea,
     ) -> bool {
         match target {

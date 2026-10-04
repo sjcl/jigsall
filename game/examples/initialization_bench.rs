@@ -1,7 +1,7 @@
-//! cargo run --release --locked -p puzzella-game --example initialization_bench
+//! cargo run --release --locked -p jigsall-game --example initialization_bench
 use bevy::prelude::*;
-use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
-use puzzella_game::resources::{
+use jigsall_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_game::resources::{
     pieces::prepare_piece_upload, DensePieceStates, LocalPlayerId, PieceDataStore, PieceUpload,
 };
 use std::{hint::black_box, time::Instant};

@@ -1,7 +1,7 @@
 //! UI preferences occupy a section of the shared per-user settings.json.
 use crate::localization::{LanguagePreference, Localization};
 use bevy::prelude::*;
-use puzzella_game::settings_file::{SettingsFile, SettingsSection};
+use jigsall_game::settings_file::{SettingsFile, SettingsSection};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::path::PathBuf;

@@ -1,9 +1,9 @@
 //! Replaceable PAKE adapter. Only this module handles pakery types and secrets.
 use super::{session_control::*, wire::WIRE_VERSION};
+use jigsall_core::PlayerId;
 use pakery_core::crypto::{CpaceGroup, Hash};
 use pakery_crypto::{P256Group, Sha512Hash, Spake2P256};
 use pakery_spake2::{PartyA, PartyAState, PartyB, Spake2Output};
-use puzzella_core::PlayerId;
 use std::fmt;
 use zeroize::Zeroizing;
 
@@ -96,7 +96,7 @@ fn scalar(
 }
 
 fn context(hello: &ServerHello) -> Vec<u8> {
-    let mut aad = b"puzzella-session-auth-v1".to_vec();
+    let mut aad = b"jigsall-session-auth-v1".to_vec();
     aad.extend_from_slice(&WIRE_VERSION.to_le_bytes());
     aad.extend_from_slice(&hello.metadata.definition.id.0.to_le_bytes());
     aad.extend_from_slice(&hello.metadata.definition.image_hash.0);
@@ -144,8 +144,8 @@ impl ServerHandshake {
         let binding = context(&hello);
         let (message, state) = PartyA::<Spake2P256>::start(
             &w,
-            b"puzzella-host",
-            b"puzzella-client",
+            b"jigsall-host",
+            b"jigsall-client",
             &binding,
             &mut rand_core::UnwrapErr(getrandom::SysRng),
         )
@@ -187,8 +187,8 @@ impl ClientHandshake {
         let binding = context(hello);
         let (message, state) = PartyB::<Spake2P256>::start(
             &w,
-            b"puzzella-host",
-            b"puzzella-client",
+            b"jigsall-host",
+            b"jigsall-client",
             &binding,
             &mut rand_core::UnwrapErr(getrandom::SysRng),
         )

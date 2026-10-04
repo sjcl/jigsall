@@ -5076,17 +5076,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "puzzella"
+name = "jigsall"
 version = "0.1.0"
 dependencies = [
  "bevy",
- "puzzella-game",
- "puzzella-ui",
+ "jigsall-game",
+ "jigsall-ui",
  "winresource",
 ]
 
 [[package]]
-name = "puzzella-core"
+name = "jigsall-core"
 version = "0.1.0"
 dependencies = [
  "bevy_ecs",
@@ -5096,7 +5096,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "puzzella-game"
+name = "jigsall-game"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -5120,8 +5120,8 @@ dependencies = [
  "pakery-crypto",
  "pakery-spake2",
  "postcard",
- "puzzella-core",
- "puzzella-puzzle",
+ "jigsall-core",
+ "jigsall-puzzle",
  "rand 0.10.3",
  "rand_core 0.10.1",
  "rustls",
@@ -5142,18 +5142,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "puzzella-puzzle"
+name = "jigsall-puzzle"
 version = "0.1.0"
 dependencies = [
  "bevy_log",
  "bevy_math",
- "puzzella-core",
+ "jigsall-core",
  "rand 0.10.3",
  "rand_chacha 0.10.0",
 ]
 
 [[package]]
-name = "puzzella-ui"
+name = "jigsall-ui"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
@@ -5164,9 +5164,9 @@ dependencies = [
  "fluent-bundle",
  "fluent-syntax",
  "image",
- "puzzella-core",
- "puzzella-game",
- "puzzella-puzzle",
+ "jigsall-core",
+ "jigsall-game",
+ "jigsall-puzzle",
  "rand 0.10.3",
  "rfd",
  "serde",

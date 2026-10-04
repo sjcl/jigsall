@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_core::GENERATOR_VERSION;
+use jigsall_core::GENERATOR_VERSION;
 
 const LOCAL: PlayerId = PlayerId(42);
 const REMOTE: PlayerId = PlayerId(0);

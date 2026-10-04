@@ -51,7 +51,7 @@ use crate::{
 };
 use bevy::prelude::*;
 use bridge::CommandBridge;
-use puzzella_core::{
+use jigsall_core::{
     protocol::*, session::*, ClientCommand, PieceCommand, PlayerId, PuzzleDefinition,
 };
 #[cfg(test)]
@@ -59,7 +59,7 @@ use std::time::Duration;
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Instant};
 
 pub struct HostOptions {
-    pub display_name: Option<puzzella_core::PlayerDisplayName>,
+    pub display_name: Option<jigsall_core::PlayerDisplayName>,
     pub address: SocketAddr,
     pub session: SessionDefinition,
     pub host: PlayerId,
@@ -83,7 +83,7 @@ impl HostStartRequest {
     }
 }
 pub struct JoinOptions {
-    pub display_name: Option<puzzella_core::PlayerDisplayName>,
+    pub display_name: Option<jigsall_core::PlayerDisplayName>,
     pub address: SocketAddr,
     pub password: SessionPassword,
     pub cached_image: Option<Arc<[u8]>>,
@@ -210,7 +210,7 @@ struct HostState {
     next_pump: Option<ConnectionId>,
 }
 struct ClientState {
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
     bootstrap: ClientBootstrap,
     sync: Option<ClientSyncRouter>,
     replica: PeerReplicationState,
@@ -269,13 +269,13 @@ fn publish_presence(
 }
 
 struct HostRuntimeOptions {
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
     session: SessionDefinition,
     host: PlayerId,
     password: SessionPassword,
 }
 struct ClientRuntimeOptions {
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
     password: SessionPassword,
     cached_image: Option<Arc<[u8]>>,
 }

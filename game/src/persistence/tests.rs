@@ -8,7 +8,7 @@ use crate::{
     resources::{pieces::*, PieceDataStore},
 };
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -322,9 +322,7 @@ fn restore_uses_shared_dsu_validation_and_resets_presentation() {
     store.initialize(vec![Vec2::ZERO; 4]);
     let epoch = store.epoch;
     store.selected_pieces.insert(PieceId(2));
-    store
-        .held_by
-        .insert(PieceId(2), puzzella_core::LOCAL_PLAYER);
+    store.held_by.insert(PieceId(2), jigsall_core::LOCAL_PLAYER);
     store.drag.members = Arc::from([4]);
     store.drag.delta = Vec2::splat(18.0);
     save.checkpoint.install(&mut store).unwrap();
@@ -352,7 +350,7 @@ fn restore_uses_shared_dsu_validation_and_resets_presentation() {
 
 #[test]
 fn checkpoint_during_drag_captures_canonical_state_and_leaves_drag_untouched() {
-    use puzzella_core::{PieceCommand, LOCAL_PLAYER};
+    use jigsall_core::{PieceCommand, LOCAL_PLAYER};
     let expected = save().checkpoint;
     let mut store = PieceDataStore::default();
     expected.install(&mut store).unwrap();
@@ -391,7 +389,7 @@ fn checkpoint_during_drag_captures_canonical_state_and_leaves_drag_untouched() {
 
 #[test]
 fn save_during_rebased_drag_restores_committed_rotation_and_discards_only_transient_delta() {
-    use puzzella_core::{decode_rotation, PieceBitSet, PieceCommand, LOCAL_PLAYER};
+    use jigsall_core::{decode_rotation, PieceBitSet, PieceCommand, LOCAL_PLAYER};
     let mut save = save();
     let mut store = PieceDataStore::default();
     save.checkpoint.install(&mut store).unwrap();
@@ -514,7 +512,7 @@ fn filesystem_create_update_list_load_delete_deduplicate_and_ignore_temps() {
     assert_eq!(repo.load(first.id).unwrap().save.metadata, updated);
     assert_eq!(repo.load(first.id).unwrap().image_bytes, bytes);
     std::fs::write(
-        dir.path().join("saves").join(".puzzella-ignored.tmp"),
+        dir.path().join("saves").join(".jigsall-ignored.tmp"),
         b"partial",
     )
     .unwrap();
@@ -528,7 +526,7 @@ fn filesystem_create_update_list_load_delete_deduplicate_and_ignore_temps() {
     repo.delete(first.id).unwrap();
     assert!(repo.load(first.id).is_err());
     let image_directory = dir.path().join("images");
-    let temp = image_directory.join(".puzzella-ignored.tmp");
+    let temp = image_directory.join(".jigsall-ignored.tmp");
     let unrelated = image_directory.join("wrong.puzimg");
     std::fs::write(&temp, b"partial").unwrap();
     std::fs::write(&unrelated, b"unrelated").unwrap();
@@ -997,7 +995,7 @@ fn save_identity_must_match_its_storage_key() {
 #[test]
 fn snapshot_serialized_field_order_preserves_dense_records() {
     use crate::multiplayer::*;
-    use puzzella_core::session::{AuthorityCursor, SessionId};
+    use jigsall_core::session::{AuthorityCursor, SessionId};
     let c = save().checkpoint;
     let wire = GameSnapshot {
         schema_version: SNAPSHOT_SCHEMA_VERSION,
@@ -1515,7 +1513,7 @@ fn proxy_transfers_the_same_blob_allocation_to_owner_backend() {
 
 #[test]
 fn rotated_save_codec_keeps_sixteen_byte_records_and_restores_components() {
-    use puzzella_core::{
+    use jigsall_core::{
         protocol::{ComponentRef, PieceTarget},
         PieceCommand, LOCAL_PLAYER,
     };
@@ -1532,7 +1530,7 @@ fn rotated_save_codec_keeps_sixteen_byte_records_and_restores_components() {
                     quarter_turns: 1
                 },
                 Some(&save.checkpoint.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .rotated,
         2
@@ -1596,7 +1594,7 @@ fn rotation_mode_roundtrips_and_disabled_rotated_checkpoints_are_rejected() {
 
         save.checkpoint.definition.rotation_enabled = false;
         save.checkpoint.pieces[0].flags =
-            puzzella_core::with_rotation(save.checkpoint.pieces[0].flags, 1);
+            jigsall_core::with_rotation(save.checkpoint.pieces[0].flags, 1);
         let before = restored.states.clone();
         assert_eq!(
             save.checkpoint.install(&mut restored),
@@ -1609,7 +1607,7 @@ fn rotation_mode_roundtrips_and_disabled_rotated_checkpoints_are_rejected() {
         invalid[header_len - 33] = 0;
         let flag_offset = header_len + 12;
         invalid[flag_offset..flag_offset + 4]
-            .copy_from_slice(&puzzella_core::with_rotation(0, 1).to_le_bytes());
+            .copy_from_slice(&jigsall_core::with_rotation(0, 1).to_le_bytes());
         resign_header(&mut invalid);
         resign(&mut invalid);
         assert!(SaveCodec::decode(&invalid).is_err());

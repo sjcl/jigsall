@@ -1,7 +1,7 @@
 use super::*;
 use crate::multiplayer::{replication::PeerReplicationState, GameSnapshot, SnapshotExpectation};
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{
+use jigsall_core::{
     protocol::{
         DenseTarget, DragCancelled, GrabAccepted, ProtocolCommandEnvelope, ProtocolPieceCommand,
         ReleaseResultFingerprint, RotationCommitted, TargetError,
@@ -38,9 +38,9 @@ impl Host {
             generator_version: GENERATOR_VERSION,
             seed: 42,
             grid_size,
-            image_size: puzzella_core::fit_image_size(
+            image_size: jigsall_core::fit_image_size(
                 grid_size * 200,
-                puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+                jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION,
             ),
             snap_distance: 5.,
             rotation_enabled: true,
@@ -650,7 +650,7 @@ fn logical_bytes_cover_dynamic_targets_rejections_and_fixed_events_without_copyi
         base + 3 * size_of::<ComponentRef>() + 2 * size_of::<RejectedComponentRef>()
     );
     let target = PieceTarget::Dense(DenseTarget {
-        members: PieceBitSet::new(puzzella_core::MAX_PIECES),
+        members: PieceBitSet::new(jigsall_core::MAX_PIECES),
         component_count: 0,
         topology_digest: 0,
     });
@@ -1203,7 +1203,7 @@ fn failed_begin_capture_and_empty_outcome_do_not_change_existing_sync() {
     assert_eq!(coordinator.status(J2), Err(CatchUpError::NotJoining));
     assert_eq!(coordinator.status(JOINER).unwrap(), before);
     let result = super::super::protocol::ProtocolCommandResult::DragUpdated {
-        sequence: puzzella_core::session::CommandSequenceStatus::InOrder,
+        sequence: jigsall_core::session::CommandSequenceStatus::InOrder,
     };
     let outcome = HostCommandOutcome {
         result,

@@ -4,7 +4,7 @@ use crate::{
     players::MAX_ROSTER_PLAYERS,
 };
 use bevy::prelude::*;
-use puzzella_core::PlayerId;
+use jigsall_core::PlayerId;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq)]

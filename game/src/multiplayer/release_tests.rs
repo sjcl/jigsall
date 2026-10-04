@@ -1,6 +1,6 @@
 use super::*;
 use bevy::math::UVec2;
-use puzzella_core::{GENERATOR_VERSION, MAX_PIECES};
+use jigsall_core::{GENERATOR_VERSION, MAX_PIECES};
 
 /// Frozen pre-optimization v1 encoding. Keep independent of the new ordering and
 /// member-hashing helpers; only modest fixtures use this allocation-heavy oracle.
@@ -17,7 +17,7 @@ fn legacy_fingerprint(
     minima.sort_unstable();
     minima.dedup();
     let mut hash = Sha256::new();
-    hash.update(b"puzzella/release-result/v1\0");
+    hash.update(b"jigsall/release-result/v1\0");
     hash.update((minima.len() as u32).to_le_bytes());
     for minimum in minima {
         let state = &store.states[minimum.0 as usize];
@@ -215,7 +215,7 @@ fn million_singletons_and_one_million_member_component_keep_v1_without_id_vector
     // Independently encoded from the frozen v1 fields using Python hashlib/struct.
     assert_eq!(
         fingerprint,
-        ReleaseResultFingerprint(0x460b1de7ba28c2cbde15b5cd1166b022)
+        ReleaseResultFingerprint(0xb58e0f0a4eaba3fc44913a67e9720e37)
     );
     assert_eq!(scratch.minima.sparse.capacity(), 0);
     assert_eq!(
@@ -231,7 +231,7 @@ fn million_singletons_and_one_million_member_component_keep_v1_without_id_vector
     let fingerprint = fingerprint_with_scratch(&store, &roots, None, &applied, &mut scratch);
     assert_eq!(
         fingerprint,
-        ReleaseResultFingerprint(0x89f9dd6f0e5be5eecccbc8f9524ff006)
+        ReleaseResultFingerprint(0x2809af6b1513005cf9e776b25a657ae0)
     );
     assert_eq!(scratch.minima.len(), 1);
     assert_eq!(

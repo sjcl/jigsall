@@ -2,8 +2,8 @@
 #[path = "support/logging.rs"]
 mod logging;
 use bevy_math::Vec2;
-use puzzella_core::GENERATOR_VERSION;
-use puzzella_puzzle::fingerprint::{assessment::*, worst_case_profiles, EdgeFingerprint};
+use jigsall_core::GENERATOR_VERSION;
+use jigsall_puzzle::fingerprint::{assessment::*, worst_case_profiles, EdgeFingerprint};
 use std::{collections::HashMap, fmt::Write, path::Path};
 
 fn svg_path(points: impl IntoIterator<Item = Vec2>) -> String {

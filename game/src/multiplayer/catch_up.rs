@@ -8,7 +8,7 @@ use super::{
     MAX_BASELINE_DRAGS,
 };
 use crate::resources::PieceDataStore;
-use puzzella_core::{
+use jigsall_core::{
     protocol::{
         ComponentRef, PieceTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope,
         RejectedComponentRef, RemoteDragUpdate,

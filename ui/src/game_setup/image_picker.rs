@@ -1,9 +1,9 @@
 use bevy::prelude::*;
 use bevy::tasks::{block_on, poll_once, IoTaskPool, Task};
-use puzzella_game::asset_reader::{start_thread_image_load, ExternalFileRegistry};
-use puzzella_game::image_settings::ImageSettingsState;
-use puzzella_game::persistence::runtime::OriginalPuzzleImage;
-use puzzella_game::resources::{
+use jigsall_game::asset_reader::{start_thread_image_load, ExternalFileRegistry};
+use jigsall_game::image_settings::ImageSettingsState;
+use jigsall_game::persistence::runtime::OriginalPuzzleImage;
+use jigsall_game::resources::{
     ImageLoadError, ImageLoadSender, PuzzleConfig, PuzzleImage, PuzzleImageLimits,
 };
 use std::{future::Future, path::PathBuf};

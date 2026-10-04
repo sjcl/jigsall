@@ -8,7 +8,7 @@
 
 ## Architecture invariants
 
-- `puzzella-core` はゲーム状態・命令検証・snap、`puzzella-puzzle` は形状・配置生成、`puzzella-game` は Bevy のライフサイクル・worker・描画、`puzzella-ui` は egui の画面を担当します。core に描画や UI の責務を持ち込まないでください。
+- `jigsall-core` はゲーム状態・命令検証・snap、`jigsall-puzzle` は形状・配置生成、`jigsall-game` は Bevy のライフサイクル・worker・描画、`jigsall-ui` は egui の画面を担当します。core に描画や UI の責務を持ち込まないでください。
 - ゲーム状態の正本は CPU の `PieceDataStore` です。入力は命令を発行し、authority が所有権・座標・snap・配置を検証します。入力や GPU から正本を直接変更せず、進捗は個別 Entity の数ではなく正本から求めてください。ネットワーク命令は認証済み player、session、sequence と照合し、client が指定した `placed` を信用しないでください。
 - 通常描画は procedural GPU renderer、通常選択は GPU picking を使います。main / point / rectangle で形状・UV・画像 alpha の判定を共有し、元画像の texture を共有してください。ピースごとの Mesh・描画 Entity や旧 batch 再構築方式を通常経路に戻さないでください。CPU 形状・選択の参照実装は feature / test 限定です。
 - 入力は現在の egui 処理と camera 更新の後に扱います。非同期選択の古い応答を無視し、release の最終座標を反映してから snap を処理してください。Ctrl / 矩形選択、相対位置を保つ multi-drag、pause / focus loss 時の保持解放を維持してください。
@@ -33,7 +33,7 @@ Rust の中間ビルドキャッシュは、元リポジトリと worktree の�
 
 ```powershell
 cargo build --workspace --locked --features gns
-cargo test --locked -p puzzella-game --features gns gns_localhost -- --nocapture
+cargo test --locked -p jigsall-game --features gns gns_localhost -- --nocapture
 ```
 
 `--all-features` も同じ設定を使います。設定は元リポジトリとworktreeの両方に適用されます。GNSのvcpkg作業パスは元リポジトリの `target/vcpkg-trees` を使用し、worktreeごとのパスへ切り替えないでください。詳細と別ホストでのセットアップは [Windowsビルド手順](docs/WINDOWS_BUILD.md) を参照してください。

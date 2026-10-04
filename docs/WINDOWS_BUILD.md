@@ -12,7 +12,7 @@ PowerShellでリポジトリへ移動し、lockfileを使用して実行しま�
 cargo run --locked
 # 最適化した実行ファイルを作る場合
 cargo build --locked --release
-.\target\release\puzzella.exe
+.\target\release\jigsall.exe
 ```
 
 タイトルの「シングルプレイ → 新しいパズル」から画像とピース数を選びます。
@@ -27,7 +27,7 @@ Windows向けのビルドでは、ルートの`build.rs`が`assets/icon.ico`を�
 通常の`cargo build`で適用され、配布時にアイコンファイルを同梱する必要はありません。
 Windows以外のターゲットではこの埋め込み処理を行いません。
 
-ウィンドウのタイトルは`Puzzella`です。ウィンドウ生成時に、メニューと共通の
+ウィンドウのタイトルは`Jigsall`です。ウィンドウ生成時に、メニューと共通の
 `assets/menu-icon.png`を埋め込み画像から読み込み、タイトルバーとWindowsのタスクバーのアイコンに設定します。
 この画像も実行ファイルに含まれるため、起動時の作業ディレクトリや外部のアイコンファイルに依存しません。
 
@@ -92,7 +92,7 @@ cargo build --workspace --locked --features gns
 # 最適化した実行ファイル
 cargo build --locked --release --features gns
 # 実際のlocalhost UDP通信を使うテスト
-cargo test --locked -p puzzella-game --features gns gns_localhost -- --nocapture
+cargo test --locked -p jigsall-game --features gns gns_localhost -- --nocapture
 # GNSを含む全featureの開発チェック
 cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 ```

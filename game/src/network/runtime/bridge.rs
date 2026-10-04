@@ -1,7 +1,7 @@
 //! Session-local sender. Membership work happens only at Reliable boundaries.
 use crate::{interaction::PieceInteraction, resources::PieceDataStore};
 use bevy::math::Vec2;
-use puzzella_core::{protocol::*, session::*, PieceBitSet, PieceCommand, PlayerId};
+use jigsall_core::{protocol::*, session::*, PieceBitSet, PieceCommand, PlayerId};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ pub enum BridgeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puzzella_core::PieceId;
+    use jigsall_core::PieceId;
     fn session() -> AuthoritySession {
         AuthoritySession::new(
             SessionDefinition {
@@ -109,7 +109,7 @@ impl CommandBridge {
     pub fn refresh_prediction(
         &self,
         player: PlayerId,
-        definition: Option<&puzzella_core::PuzzleDefinition>,
+        definition: Option<&jigsall_core::PuzzleDefinition>,
         interaction: &PieceInteraction,
         store: &mut PieceDataStore,
     ) {

@@ -149,9 +149,7 @@ fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
                     ClientSyncRouter::start(
                         &mut cb,
                         None,
-                        Some(
-                            puzzella_core::PlayerDisplayName::from_user_input("GNS peer").unwrap(),
-                        ),
+                        Some(jigsall_core::PlayerDisplayName::from_user_input("GNS peer").unwrap()),
                         Instant::now(),
                     )
                     .unwrap(),

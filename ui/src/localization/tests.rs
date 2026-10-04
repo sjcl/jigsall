@@ -224,7 +224,7 @@ fn new_locales_keep_fluent_directionality_isolation() {
 
 #[test]
 fn all_settings_round_trip_in_one_file_without_overwriting_other_sections() {
-    use puzzella_game::{
+    use jigsall_game::{
         keybindings::{KeyAction, KeyBindingsState},
         persistence::autosave::AutosaveSettingsState,
     };

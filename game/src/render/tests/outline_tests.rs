@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::pieces::{DragTransform, CONNECTED_EDGES};
-use puzzella_core::{PieceBitSet, PieceCommand, LOCAL_PLAYER};
+use jigsall_core::{PieceBitSet, PieceCommand, LOCAL_PLAYER};
 
 // Independent CPU reference using the unchanged procedural edge functions.
 pub(super) fn edge_distances(local: Vec2, size: Vec2, profiles: [[u32; 2]; 4]) -> [f32; 4] {
@@ -179,7 +179,7 @@ fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
                 members: members.clone(),
             },
             Some(&def),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         store.drag = DragTransform {
             members: members.words().clone(),

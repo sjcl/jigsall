@@ -201,12 +201,12 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
-cargo test -p puzzella-game --release --locked small_component_release_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked connected_snapping_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked render_only_image_upload_keeps_metadata_and_pixel_values -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked small_component_release_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked connected_snapping_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked render_only_image_upload_keeps_metadata_and_pixel_values -- --ignored --nocapture --test-threads=1
 ```
 
 残る課題はexplicitな大selection / Grab / Releaseのmember列挙、最大4 edges / memberのCPU探索、authority validationとsnapshotのO(N)処理です。board優先でも全memberの配置・dirty更新・unionは必要で、frame latency全体の保証ではありません。回転・分裂、transport、異OS / GPU、RSSは今回の変更に含みません。

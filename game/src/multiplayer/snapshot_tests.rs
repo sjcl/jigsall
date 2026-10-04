@@ -1,6 +1,6 @@
 use super::*;
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{GENERATOR_VERSION, MAX_PIECES};
+use jigsall_core::{GENERATOR_VERSION, MAX_PIECES};
 use serde::de::value::{SeqAccessDeserializer, UnitDeserializer};
 
 fn snapshot() -> GameSnapshot {
@@ -80,10 +80,10 @@ fn snapshot_rotation_mode_is_required_and_must_match_the_session() {
         Err(SnapshotError::WrongDefinition)
     );
     snapshot.validate(expected(&snapshot)).unwrap();
-    snapshot.pieces[0].flags = puzzella_core::with_rotation(0, 1);
+    snapshot.pieces[0].flags = jigsall_core::with_rotation(0, 1);
     assert_eq!(
         snapshot.validate(expected(&snapshot)),
-        Err(SnapshotError::RotationDisabled(puzzella_core::PieceId(0)))
+        Err(SnapshotError::RotationDisabled(jigsall_core::PieceId(0)))
     );
 }
 

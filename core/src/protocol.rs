@@ -94,7 +94,7 @@ fn canonical_mask(
 /// mask's ascending IDs, not DSU roots or an allocated component-reference list.
 fn topology_fingerprint(connectivity: &PieceConnectivity, canonical: &PieceBitSet) -> (u32, u128) {
     let mut hash = Sha256::new();
-    hash.update(b"puzzella/component-topology/v1\0");
+    hash.update(b"jigsall/component-topology/v1\0");
     let mut count = 0u32;
     for id in canonical.iter() {
         if connectivity.minimum_member(id) == id {
@@ -554,7 +554,7 @@ mod tests {
         let full = DenseTarget::from_selection(&c, &selection(4, [1, 2, 3])).unwrap();
         assert_eq!(partial.component_count, 2);
         // Independently computed SHA-256 of the documented domain and LE pairs.
-        assert_eq!(partial.topology_digest, 0x197335a049a92f3aa49e27c07ff76ea7);
+        assert_eq!(partial.topology_digest, 0xa10dd2e2d3ce3f9d6cbfc11e3f6ffab7);
         assert_eq!(partial.topology_digest, full.topology_digest);
         assert_eq!(partial.resolve(&c), Ok(full.members));
 

@@ -1,6 +1,6 @@
 //! Shared atomic host/replica cancellation. No release/snap or delta commit.
 use super::*;
-use puzzella_core::protocol::{ActiveDragTarget, MAX_COMPONENT_REFS};
+use jigsall_core::protocol::{ActiveDragTarget, MAX_COMPONENT_REFS};
 
 impl PieceDataStore {
     /// Validate exact topology, flags and all of this player's ownership before

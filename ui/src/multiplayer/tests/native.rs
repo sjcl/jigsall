@@ -115,21 +115,19 @@ fn native_multiplayer_ui_probe() {
                     ..default()
                 }),
         )
-        .insert_resource(puzzella_game::settings::DisplaySettingsState::load(None))
+        .insert_resource(jigsall_game::settings::DisplaySettingsState::load(None))
         .insert_resource(preferences)
-        .insert_resource(puzzella_game::image_settings::ImageSettingsState::load(
-            None,
-        ))
-        .insert_resource(puzzella_game::persistence::autosave::AutosaveSettingsState::load(None))
+        .insert_resource(jigsall_game::image_settings::ImageSettingsState::load(None))
+        .insert_resource(jigsall_game::persistence::autosave::AutosaveSettingsState::load(None))
         .insert_resource(PlayerSettingsState::load(None))
-        .insert_resource(puzzella_game::keybindings::KeyBindingsState::load(None))
+        .insert_resource(jigsall_game::keybindings::KeyBindingsState::load(None))
         .insert_resource(service)
         .insert_resource(crate::localization::tests::english())
         .insert_resource(WinitSettings::continuous())
         .add_plugins((
             crate::GameUiPlugin,
-            puzzella_game::asset_reader::DirectFileAssetPlugin,
-            puzzella_game::GamePlugin,
+            jigsall_game::asset_reader::DirectFileAssetPlugin,
+            jigsall_game::GamePlugin,
         ))
         .insert_resource(Probe {
             start: Instant::now(),

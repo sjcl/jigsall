@@ -38,7 +38,7 @@ impl PuzzleImageLimits {
             .unwrap_or_else(|| {
                 let edge = self
                     .device_max_dimension
-                    .min(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION);
+                    .min(jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION);
                 u64::from(edge).pow(2) * 4 / (1024 * 1024)
             })
             .max(1)

@@ -7,7 +7,7 @@ pub use api::{
 };
 use bevy::prelude::*;
 use crossbeam::channel::{unbounded, Receiver};
-use puzzella_core::{PieceBitSet, PieceId};
+use jigsall_core::{PieceBitSet, PieceId};
 pub struct PuzzleSelectionPlugin;
 impl Plugin for PuzzleSelectionPlugin {
     fn build(&self, app: &mut App) {

@@ -15,10 +15,10 @@ rust-version = "1.95"
 publish = false
 
 [workspace.dependencies]
-puzzella-core = { path = "core" }
-puzzella-puzzle = { path = "puzzle" }
-puzzella-game = { path = "game" }
-puzzella-ui = { path = "ui" }
+jigsall-core = { path = "core" }
+jigsall-puzzle = { path = "puzzle" }
+jigsall-game = { path = "game" }
+jigsall-ui = { path = "ui" }
 # Expand Bevy's 2d bundle to avoid common_api enabling the HDR decoder.
 bevy = { version = "0.19.1", default-features = false, features = [
     "default_app", "default_platform", "scene", "picking",
@@ -61,7 +61,7 @@ wgpu-types = "29.0.3"
 objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLDevice"] }
 
 [package]
-name = "puzzella"
+name = "jigsall"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -69,16 +69,16 @@ publish.workspace = true
 
 [dependencies]
 bevy.workspace = true
-puzzella-game.workspace = true
-puzzella-ui.workspace = true
+jigsall-game.workspace = true
+jigsall-ui.workspace = true
 
 [build-dependencies]
 winresource.workspace = true
 
 [features]
 default = []
-gns = ["puzzella-game/gns", "puzzella-ui/gns"]
-rendezvous = ["gns", "puzzella-game/rendezvous", "puzzella-ui/rendezvous"]
+gns = ["jigsall-game/gns", "jigsall-ui/gns"]
+rendezvous = ["gns", "jigsall-game/rendezvous", "jigsall-ui/rendezvous"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）
 tracy = ["bevy/trace_tracy"]
 # Chrome Tracingを使用する場合（ブラウザでの分析）

@@ -7,7 +7,7 @@ fn english() -> Localization {
     i18n
 }
 use crate::persistence::{paint_load_dialog, SaveDialogs};
-use puzzella_game::persistence::{
+use jigsall_game::persistence::{
     executor::{StorageOperation, StorageRequests},
     runtime::{PersistenceState, ThumbnailImage},
     SaveError, SaveId, SaveListEntry, SaveMetadata, SaveSummary, SaveTitle, StorageError,
@@ -28,7 +28,7 @@ fn state() -> PersistenceState {
             id: SaveId(index as u128),
             summary: Ok(SaveSummary {
                 metadata: SaveMetadata {
-                    game_id: puzzella_game::persistence::GameId(1),
+                    game_id: jigsall_game::persistence::GameId(1),
                     id: SaveId(index as u128),
                     title: SaveTitle::new(&format!("Puzzle {index}")).unwrap(),
                     revision: 1,
@@ -89,7 +89,7 @@ fn input_frame(
             dialogs,
             state,
             service,
-            puzzella_game::resources::ImageDecodeLimits {
+            jigsall_game::resources::ImageDecodeLimits {
                 max_texture_dimension: 8192,
             },
             thumbnails,
@@ -153,7 +153,7 @@ fn load_cards_show_autosave_next_to_the_timestamp_only_for_autosaves() {
                         dialogs,
                         saves,
                         &service,
-                        puzzella_game::resources::ImageDecodeLimits {
+                        jigsall_game::resources::ImageDecodeLimits {
                             max_texture_dimension: 8192,
                         },
                         thumbnails,
@@ -563,7 +563,7 @@ fn opening_delete_confirmation_scrolls_only_when_needed() {
     }
 }
 
-fn receive(inbox: &StorageRequests) -> puzzella_game::persistence::executor::StorageRequest {
+fn receive(inbox: &StorageRequests) -> jigsall_game::persistence::executor::StorageRequest {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if let Ok(request) = inbox.try_recv() {
@@ -996,7 +996,7 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
                         &mut dialogs,
                         &mut state,
                         &service,
-                        puzzella_game::resources::ImageDecodeLimits {
+                        jigsall_game::resources::ImageDecodeLimits {
                             max_texture_dimension: 8192,
                         },
                         &mut thumbnails,
@@ -1018,7 +1018,7 @@ fn japanese_load_dialog_keeps_actions_inside_small_windows() {
                     &mut dialogs,
                     &mut state,
                     &service,
-                    puzzella_game::resources::ImageDecodeLimits {
+                    jigsall_game::resources::ImageDecodeLimits {
                         max_texture_dimension: 8192,
                     },
                     &mut thumbnails,

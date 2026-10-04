@@ -1,4 +1,4 @@
-#define_import_path puzzella::shape
+#define_import_path jigsall::shape
 
 // Mirror puzzle/src/procedural.rs; changing shape constants changes generator compatibility.
 const ROOT_WIDTH_FACTOR:f32=0.60;

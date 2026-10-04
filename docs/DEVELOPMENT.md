@@ -1,6 +1,6 @@
 # 開発ガイド
 
-[Puzzella の紹介と起動方法](../README.md)に戻る。操作や保存・設定の使い方は [遊び方ガイド](PLAYING.md)、リポジトリの作業方針は [AGENTS.md](../AGENTS.md)を参照してください。
+[Jigsall の紹介と起動方法](../README.md)に戻る。操作や保存・設定の使い方は [遊び方ガイド](PLAYING.md)、リポジトリの作業方針は [AGENTS.md](../AGENTS.md)を参照してください。
 
 ## ビルドと起動
 
@@ -47,11 +47,11 @@ Bevy 0.19.1 / bevy_egui 0.42 を使用します。依存バージョンはルー
 
 | package / ディレクトリ | 責務 |
 | --- | --- |
-| `puzzella` / `src/` | 起動・プラグイン登録 |
-| `puzzella-core` / `core/` | 安定 ID、定義、命令検証、スナップ |
-| `puzzella-puzzle` / `puzzle/` | v1 形状（開発時 v5）の CPU 参照、配置、grid、形状評価用の fingerprint 解析 |
-| `puzzella-game` / `game/` | 状態遷移、入力、dense state、GPU 描画・選択、画像読み込み・worker・通信 |
-| `puzzella-ui` / `ui/` | egui の画面 |
+| `jigsall` / `src/` | 起動・プラグイン登録 |
+| `jigsall-core` / `core/` | 安定 ID、定義、命令検証、スナップ |
+| `jigsall-puzzle` / `puzzle/` | v1 形状（開発時 v5）の CPU 参照、配置、grid、形状評価用の fingerprint 解析 |
+| `jigsall-game` / `game/` | 状態遷移、入力、dense state、GPU 描画・選択、画像読み込み・worker・通信 |
+| `jigsall-ui` / `ui/` | egui の画面 |
 
 ゲーム状態の正本は CPU の `PieceDataStore` です。入力からの命令を authority が検証し、確定した変更を GPU に渡します。
 
@@ -69,7 +69,7 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 
 通常プレイは generator v1 を要求します。初回リリース向けに開発時 v5 の番号を 1 に整理し、形状・hash・seed・初期配置の計算は維持しています。開発時 v4 の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせています。対応する番号は 1 だけで、開発中の定義との互換性や移行は提供しません。旧 v2 の CPU メッシュ生成・CPU picking は削除しました。異 OS / GPU 間の浮動小数点・ラスタライズの bit 一致は保証しません。
 
-`puzzella-puzzle` の `shape-analysis` feature は現行形状の fingerprint 解析と評価 example を有効にします。旧 CPU メッシュ生成・CPU picking の feature と専用 example はありません。通常描画・選択は GPU を使用します。現在の処理の詳細は [アーキテクチャ](ARCHITECTURE.md)を参照してください。
+`jigsall-puzzle` の `shape-analysis` feature は現行形状の fingerprint 解析と評価 example を有効にします。旧 CPU メッシュ生成・CPU picking の feature と専用 example はありません。通常描画・選択は GPU を使用します。現在の処理の詳細は [アーキテクチャ](ARCHITECTURE.md)を参照してください。
 
 ## 検証
 
@@ -109,11 +109,11 @@ cargo build --workspace --locked --all-features
 
 ```sh
 # 実 GPU 検証と 1k〜1M ピースの計測
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
 # 単色 matching / 1000 ピース / worst case / 輪郭識別性
-cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
+cargo run --release --locked -p jigsall-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
 # 無作為 matching・5 縦横比・各軸の実効寄与・人間向け HTML tool
-cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment
+cargo run --release --locked -p jigsall-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment
 ```
 
 プロファイリングは以下の feature で有効にします。

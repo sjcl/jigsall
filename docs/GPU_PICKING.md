@@ -29,8 +29,8 @@ placed競合の回帰テストはcountを100万にし、ID 0 / 1 / 999998 / 9999
 2026-10-02、Windows / RTX 5090 / Vulkanで実GPU検証。far pathを一時的に無効化した対照実行では64個中3個しかcoverageを持たず、位相回帰テストが失敗しました。far pathでは全64個を維持します。main drawは1回、CPUの通常frameに全piece走査・専用far piece listを追加していません。
 
 ```sh
-cargo test -p puzzella-game --release --locked far_zoom_threshold
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked far_zoom_threshold
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
 
 ## Point / rectangle
@@ -74,7 +74,7 @@ cargo test --workspace --release --locked gpu_remote_presentation -- --ignored -
 2026-10-04、Windows / RTX 5090 / Vulkan（NVIDIA 610.88）でremote presentationを検証しました。canonical位置が画面外にある2つのheld pieceを異なるslot deltaで画面内へ移し、normal / farの描画とculling、point / rectangleのHELD除外を確認しました。scalar更新はcanonical state upload / remote mapping uploadが0 bytes、delta uniformが512 bytes、idleでは両remote uploadが0 bytesです。Release相当のmapping clearと同epochのsession reset後にoffsetが残らないことも確認しました。100万pieceのfar zoom回帰テストではremote mapping bufferが4,000,000 bytes、delta bufferが512 bytesで、camera / idleのremote uploadが0 bytesです。
 
 ```sh
-cargo test -p puzzella-game --release --locked --all-features gpu_remote_presentation -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked --all-features gpu_remote_presentation -- --ignored --nocapture --test-threads=1
 ```
 
 開始時に選択可能な対象maskを固定し、1つのGrabGroupをauthorityへ渡します。authorityは所有権を再検証し、受理した対象の相対Z順を保ってGrabします。CPUのper-piece offset mapはありません。対象を示すbitsetを一度GPUへuploadし、移動中はworld-spaceのdrag_deltaだけをuniformへ渡します。main vertexとvisibility computeが同じ一時移動を適用するため、CPU正本が画面外にあるピースもdragで画面内へ入れます。heldの除外とZ順は維持します。
@@ -103,15 +103,15 @@ gestureはpending point、preview、release時の最終rectangleを管理しま�
 ## 実GPU検証
 
 ```sh
-cargo test -p puzzella-game --release --locked gpu_raster_selection -- --ignored --nocapture
-cargo test -p puzzella-game --release --locked gpu_resized_texture_uses_logical_coordinates_and_shared_alpha_picking -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked gpu_transparency_and_visibility -- --ignored --nocapture
-cargo test -p puzzella-game --release --locked gpu_radix_sort_visible_counts_and_ties -- --ignored --nocapture
-cargo test -p puzzella-game --release --locked gpu_drag_transform_and_preview_without_readback -- --ignored --nocapture
-cargo test -p puzzella-game --locked gpu_component_rectangle_preview_matches_final_selection_without_readback -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --locked gpu_component_preview_crosses_mask_words_and_preserves_direct_high_bits -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture
-cargo test -p puzzella-game --release --locked procedural_gpu_benchmark -- --ignored --nocapture
+cargo test -p jigsall-game --release --locked gpu_raster_selection -- --ignored --nocapture
+cargo test -p jigsall-game --release --locked gpu_resized_texture_uses_logical_coordinates_and_shared_alpha_picking -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked gpu_transparency_and_visibility -- --ignored --nocapture
+cargo test -p jigsall-game --release --locked gpu_radix_sort_visible_counts_and_ties -- --ignored --nocapture
+cargo test -p jigsall-game --release --locked gpu_drag_transform_and_preview_without_readback -- --ignored --nocapture
+cargo test -p jigsall-game --locked gpu_component_rectangle_preview_matches_final_selection_without_readback -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --locked gpu_component_preview_crosses_mask_words_and_preserves_direct_high_bits -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture
+cargo test -p jigsall-game --release --locked procedural_gpu_benchmark -- --ignored --nocapture
 ```
 
 2026-10-01、RTX 5090 / Vulkanで成功しました。Rust / WGSL raw hash、約9604画素のCPU shapeと実描画coverage、tab・neck・blank、Z順序、alpha blend、透明穴越しの選択、tabだけの可視性、camera移動、pan / zoom / viewport offset、16-byte単一uploadとidle 0-byte uploadを確認しました。

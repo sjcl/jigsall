@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::{AppState, GameData, PerformanceMonitor};
-use puzzella_core::{GENERATOR_VERSION, LOCAL_PLAYER};
+use jigsall_core::{GENERATOR_VERSION, LOCAL_PLAYER};
 #[test]
 fn local_selection_tracks_authority_changes_and_keeps_local_holds() {
     let mut store = PieceDataStore::default();
@@ -8,22 +8,22 @@ fn local_selection_tracks_authority_changes_and_keeps_local_holds() {
     store.selected_pieces.fill();
     let mut state = store.state(PieceId(0)).unwrap();
     state.held_by = Some(LOCAL_PLAYER);
-    store.set_state(PieceId(0), state, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(0), state, jigsall_core::LOCAL_PLAYER);
     assert!(store.selected_pieces.contains(&PieceId(0)));
     store.sync_highlights();
     state.held_by = Some(PlayerId(1));
-    store.set_state(PieceId(0), state, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(0), state, jigsall_core::LOCAL_PLAYER);
     assert!(!store.selected_pieces.contains(&PieceId(0)));
     assert!(store.highlights_dirty);
     state.held_by = None;
-    store.set_state(PieceId(0), state, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(0), state, jigsall_core::LOCAL_PLAYER);
     assert!(!store.selected_pieces.contains(&PieceId(0)));
     let mut placed = store.state(PieceId(1)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(1), placed, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(1), placed, jigsall_core::LOCAL_PLAYER);
     let disabled = store.state(PieceId(2)).unwrap();
     store.states[2].flags &= !ENABLED;
-    store.set_state(PieceId(2), disabled, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(2), disabled, jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         store.selected_pieces.iter().collect::<Vec<_>>(),
         [PieceId(3)]
@@ -46,7 +46,7 @@ fn local_selection_survives_local_grab_but_not_other_players_grab() {
         };
         assert_eq!(
             store
-                .apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+                .apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER)
                 .grabbed,
             1
         );
@@ -61,7 +61,7 @@ fn local_selection_survives_local_grab_but_not_other_players_grab() {
         };
         assert_eq!(
             store
-                .apply_command(PlayerId(1), &command, None, puzzella_core::LOCAL_PLAYER)
+                .apply_command(PlayerId(1), &command, None, jigsall_core::LOCAL_PLAYER)
                 .grabbed,
             1
         );
@@ -75,14 +75,14 @@ fn local_selection_survives_local_grab_but_not_other_players_grab() {
             PlayerId(1),
             &PieceCommand::Grab(PieceId(0)),
             None,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert!(store.selected_pieces.contains(&PieceId(0)));
         store.apply_command(
             PlayerId(1),
             &PieceCommand::Release(PieceId(1)),
             None,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert!(!store.selected_pieces.contains(&PieceId(1)));
     }
@@ -98,23 +98,23 @@ fn local_selection_additive_original_is_revalidated_after_delayed_readback() {
         LOCAL_PLAYER,
         &PieceCommand::Grab(PieceId(0)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     store.apply_command(
         PlayerId(1),
         &PieceCommand::Grab(PieceId(1)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let mut placed = store.state(PieceId(2)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(2), placed, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(2), placed, jigsall_core::LOCAL_PLAYER);
     let disabled = store.state(PieceId(3)).unwrap();
     store.states[3].flags &= !ENABLED;
-    store.set_state(PieceId(3), disabled, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(3), disabled, jigsall_core::LOCAL_PLAYER);
     let mut members = PieceBitSet::new(6);
     members.extend((0..5).map(PieceId));
-    store.commit_selection(members, Some(&original), puzzella_core::LOCAL_PLAYER);
+    store.commit_selection(members, Some(&original), jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         store.selected_pieces.iter().collect::<Vec<_>>(),
         [PieceId(0), PieceId(4)]
@@ -205,7 +205,7 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
         other,
         &PieceCommand::Grab(PieceId(0)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     store.drag = DragTransform {
         members: members.words().clone(),
@@ -219,7 +219,7 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
                     members: members.clone()
                 },
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
         0
@@ -229,7 +229,7 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
         other,
         &PieceCommand::Release(PieceId(0)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     store.drag = DragTransform {
         members: members.words().clone(),
@@ -241,14 +241,14 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
             members: members.clone(),
         },
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(store.drag.members[0], 0);
     store.apply_command(
         other,
         &PieceCommand::Release(PieceId(0)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     for bulk in [false, true] {
         store.drag = DragTransform {
@@ -261,7 +261,7 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
                 members: members.clone(),
             },
             None,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         let command = if bulk {
             PieceCommand::ReleaseGroup {
@@ -271,12 +271,12 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
         } else {
             PieceCommand::Release(PieceId(0))
         };
-        store.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER);
+        store.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER);
         store.apply_command(
             other,
             &PieceCommand::Grab(PieceId(0)),
             None,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(store.drag.members[0], 0);
         assert_eq!(store.state(PieceId(0)).unwrap().position, Vec2::ZERO);
@@ -284,7 +284,7 @@ fn rejected_grab_and_authority_release_cannot_drag_another_players_hold() {
             other,
             &PieceCommand::Release(PieceId(0)),
             None,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
     }
 }
@@ -336,24 +336,24 @@ fn bulk_ownership_snap_threshold_and_exactly_once_commit() {
     store.initialize((0..4).map(|id| def.correct_position(PieceId(id))).collect());
     let mut placed = store.state(PieceId(1)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(1), placed, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(1), placed, jigsall_core::LOCAL_PLAYER);
     let other = PlayerId(u64::MAX);
     let mut held = store.state(PieceId(2)).unwrap();
     held.held_by = Some(other);
-    store.set_state(PieceId(2), held, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(2), held, jigsall_core::LOCAL_PLAYER);
     let mut members = PieceBitSet::new(4);
     members.fill();
     store.selected_pieces = members.clone();
     let mut loose = store.state(PieceId(3)).unwrap();
     loose.position.x += 4.0;
-    store.set_state(PieceId(3), loose, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(3), loose, jigsall_core::LOCAL_PLAYER);
     let grabbed = store.apply_command(
         LOCAL_PLAYER,
         &PieceCommand::GrabGroup {
             members: members.clone(),
         },
         Some(&def),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(grabbed.grabbed, 2);
     assert_eq!(store.state(PieceId(2)).unwrap().held_by, Some(other));
@@ -363,7 +363,7 @@ fn bulk_ownership_snap_threshold_and_exactly_once_commit() {
                 other,
                 &PieceCommand::Release(PieceId(0)),
                 Some(&def),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .released,
         0
@@ -376,7 +376,7 @@ fn bulk_ownership_snap_threshold_and_exactly_once_commit() {
         LOCAL_PLAYER,
         &command,
         Some(&def),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!((released.released, released.placed), (2, 1));
     assert_eq!(store.placed_count, 2);
@@ -390,7 +390,7 @@ fn bulk_ownership_snap_threshold_and_exactly_once_commit() {
             LOCAL_PLAYER,
             &command,
             Some(&def),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         AppliedCommand::default()
     );
@@ -410,7 +410,7 @@ fn nonexistent_ids_wrong_dimensions_and_invalid_delta_cannot_corrupt_state() {
         },
     ] {
         assert_eq!(
-            store.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER),
+            store.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER),
             AppliedCommand::default()
         );
     }
@@ -422,7 +422,7 @@ fn nonexistent_ids_wrong_dimensions_and_invalid_delta_cannot_corrupt_state() {
             members: members.clone(),
         },
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let before = store.states.clone();
     for delta in [Vec2::splat(f32::NAN), Vec2::splat(f32::INFINITY)] {
@@ -434,7 +434,7 @@ fn nonexistent_ids_wrong_dimensions_and_invalid_delta_cannot_corrupt_state() {
                     delta
                 },
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             AppliedCommand::default()
         );
@@ -449,7 +449,7 @@ fn nonexistent_ids_wrong_dimensions_and_invalid_delta_cannot_corrupt_state() {
                 delta: Vec2::ONE
             },
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         AppliedCommand::default()
     );
@@ -468,7 +468,7 @@ fn bulk_grab_checks_authoritative_owner_even_if_render_mirror_is_stale() {
                 LOCAL_PLAYER,
                 &PieceCommand::GrabGroup { members },
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
         0
@@ -531,17 +531,17 @@ fn final_mask_revalidates_delayed_ownership_and_placed_state() {
         PlayerId(1),
         &PieceCommand::Grab(PieceId(1)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let mut placed = store.state(PieceId(2)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(2), placed, puzzella_core::LOCAL_PLAYER);
-    store.commit_selection(mask, Some(&original), puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(2), placed, jigsall_core::LOCAL_PLAYER);
+    store.commit_selection(mask, Some(&original), jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         store.selected_pieces.iter().collect::<Vec<_>>(),
         [PieceId(0), PieceId(3)]
     );
-    store.commit_selection(PieceBitSet::new(4), None, puzzella_core::LOCAL_PLAYER);
+    store.commit_selection(PieceBitSet::new(4), None, jigsall_core::LOCAL_PLAYER);
     assert!(store.selected_pieces.is_empty());
     store.selected_pieces = original.clone();
     assert!(store.selected_pieces.contains(&PieceId(0)));
@@ -562,18 +562,18 @@ fn bulk_snap_completion_updates_progress_without_per_piece_events() {
         .init_resource::<GameData>()
         .init_resource::<crate::resources::LocalPlayerId>()
         .init_resource::<PerformanceMonitor>()
-        .add_message::<puzzella_core::ClientCommand>()
+        .add_message::<jigsall_core::ClientCommand>()
         .add_systems(Update, (apply_piece_commands, update_game_progress).chain());
     let mut messages = app
         .world_mut()
-        .resource_mut::<Messages<puzzella_core::ClientCommand>>();
-    messages.write(puzzella_core::ClientCommand {
+        .resource_mut::<Messages<jigsall_core::ClientCommand>>();
+    messages.write(jigsall_core::ClientCommand {
         player: LOCAL_PLAYER,
         command: PieceCommand::GrabGroup {
             members: members.clone(),
         },
     });
-    messages.write(puzzella_core::ClientCommand {
+    messages.write(jigsall_core::ClientCommand {
         player: LOCAL_PLAYER,
         command: PieceCommand::ReleaseGroup {
             members,

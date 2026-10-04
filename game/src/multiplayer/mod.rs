@@ -20,7 +20,7 @@ pub use snapshot::{
 };
 
 use crate::resources::PieceDataStore;
-use puzzella_core::{
+use jigsall_core::{
     session::{AuthorityCursor, AuthoritySession, ProtocolError},
     PieceId, PlayerId, PuzzleDefinition,
 };

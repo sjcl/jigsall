@@ -1,10 +1,10 @@
 use super::*;
 /// Cross-repository test. Start the actual server binary separately, then set
-/// PUZZELLA_RENDEZVOUS_SMOKE_URL=ws://127.0.0.1:8080/v1/ws. CI stays standalone.
+/// JIGSALL_RENDEZVOUS_SMOKE_URL=ws://127.0.0.1:8080/v1/ws. CI stays standalone.
 #[test]
 #[ignore = "requires the real puzzella-rendezvous binary on loopback"]
 fn gns_localhost_real_rendezvous_native_ice_password_secure_lanes() {
-    let url = std::env::var("PUZZELLA_RENDEZVOUS_SMOKE_URL").expect("set loopback rendezvous URL");
+    let url = std::env::var("JIGSALL_RENDEZVOUS_SMOKE_URL").expect("set loopback rendezvous URL");
     super::super::super::rendezvous::EndpointUrl::loopback_for_test(&url).unwrap();
     let (tx, rx) = mpsc::sync_channel(256);
     let mut peers = Vec::new();
@@ -15,8 +15,8 @@ fn gns_localhost_real_rendezvous_native_ice_password_secure_lanes() {
                 "network::gns::p2p::tests::gns_p2p_child",
                 "--nocapture",
             ])
-            .env("PUZZELLA_P2P_TEST_ROLE", role)
-            .env("PUZZELLA_P2P_RENDEZVOUS", &url)
+            .env("JIGSALL_P2P_TEST_ROLE", role)
+            .env("JIGSALL_P2P_RENDEZVOUS", &url)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

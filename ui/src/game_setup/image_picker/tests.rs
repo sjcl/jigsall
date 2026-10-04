@@ -1,6 +1,6 @@
 use super::*;
 use bevy::state::app::StatesPlugin;
-use puzzella_game::resources::{AppState, ImageLoadChannels};
+use jigsall_game::resources::{AppState, ImageLoadChannels};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
@@ -65,7 +65,7 @@ fn app() -> App {
             opaque: true,
         })
         .insert_resource(OriginalPuzzleImage {
-            hash: puzzella_game::persistence::image_hash(b"previous image"),
+            hash: jigsall_game::persistence::image_hash(b"previous image"),
             encoded: Some(Arc::from(b"previous image".as_slice())),
             image_lease: None,
         })
@@ -109,7 +109,7 @@ fn assert_previous_image(app: &App) {
     );
     assert_eq!(
         app.world().resource::<OriginalPuzzleImage>().hash,
-        puzzella_game::persistence::image_hash(b"previous image")
+        jigsall_game::persistence::image_hash(b"previous image")
     );
     assert!(app.world().resource::<ExternalFileRegistry>().is_empty());
     assert!(app
@@ -187,10 +187,7 @@ fn selected_file_uses_existing_decode_and_original_image_pipeline() {
     assert_eq!(&result.virtual_key, key);
     assert_eq!(result.image.unwrap().image.size(), UVec2::new(2, 3));
     let original = result.original.unwrap();
-    assert_eq!(
-        original.hash,
-        puzzella_game::persistence::image_hash(&bytes)
-    );
+    assert_eq!(original.hash, jigsall_game::persistence::image_hash(&bytes));
     assert_eq!(original.encoded.unwrap().as_ref(), bytes.as_slice());
 }
 

@@ -1,6 +1,6 @@
 # 遊び方ガイド
 
-[Puzzella の紹介と起動方法](../README.md)に戻る。
+[Jigsall の紹介と起動方法](../README.md)に戻る。
 
 ## 画像とピース数
 

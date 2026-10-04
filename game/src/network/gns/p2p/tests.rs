@@ -7,7 +7,7 @@ use crate::network::{
     session::SessionConnections,
     session_control::{SessionControlMessage, SessionMetadata},
 };
-use puzzella_core::{
+use jigsall_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
     PlayerId,
 };
@@ -48,9 +48,9 @@ fn test_messages() -> [(MessageClass, Vec<u8>); 3] {
     ))
     .unwrap();
     let transient = wire::encode(&wire::WireMessage::DragUpdate(
-        puzzella_core::protocol::RemoteDragUpdate {
+        jigsall_core::protocol::RemoteDragUpdate {
             session: SessionId(7788),
-            authority_epoch: puzzella_core::session::AuthorityEpoch(1),
+            authority_epoch: jigsall_core::session::AuthorityEpoch(1),
             player: PlayerId(10),
             grab_sequence: 0,
             basis_sequence: 0,
@@ -121,14 +121,14 @@ impl Transport for Observed {
 // native singleton identities and exercise the real inter-process UDP route.
 #[test]
 fn gns_p2p_child() {
-    let Ok(role) = std::env::var("PUZZELLA_P2P_TEST_ROLE") else {
+    let Ok(role) = std::env::var("JIGSALL_P2P_TEST_ROLE") else {
         return;
     };
     let host = role == "host";
     #[cfg(feature = "rendezvous")]
     let mut rendezvous = None;
     #[cfg(feature = "rendezvous")]
-    let mut backend = if let Ok(url) = std::env::var("PUZZELLA_P2P_RENDEZVOUS") {
+    let mut backend = if let Ok(url) = std::env::var("JIGSALL_P2P_RENDEZVOUS") {
         let endpoint = super::super::rendezvous::EndpointUrl::loopback_for_test(&url).unwrap();
         let (backend, adapter) = super::super::rendezvous::RendezvousAdapter::new(
             endpoint,
@@ -462,7 +462,7 @@ fn gns_localhost_p2p_native_ice_password_secure_lanes_and_close() {
                 "network::gns::p2p::tests::gns_p2p_child",
                 "--nocapture",
             ])
-            .env("PUZZELLA_P2P_TEST_ROLE", role)
+            .env("JIGSALL_P2P_TEST_ROLE", role)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

@@ -4,7 +4,7 @@ use bevy::{
     prelude::*,
 };
 use bevy_egui::egui;
-use puzzella_game::keybindings::*;
+use jigsall_game::keybindings::*;
 
 const KEY_COLUMN_WIDTH: f32 = 200.0;
 const COLUMN_SPACING: f32 = 12.0;

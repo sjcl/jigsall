@@ -4,7 +4,7 @@ use crate::resources::{
     PieceDataStore,
 };
 use bevy::math::Vec2;
-use puzzella_core::{
+use jigsall_core::{
     decode_rotation,
     protocol::{
         ActiveDrag, ActiveDragTarget, RejectedComponentRef, ReleaseResultFingerprint, TargetError,
@@ -161,7 +161,7 @@ pub(super) fn drag_rotation_fingerprint(
 ) -> ReleaseResultFingerprint {
     let result = result_fingerprint(store, roots, Some(definition), applied);
     let mut hash = Sha256::new();
-    hash.update(b"puzzella/drag-rotation/v1\0");
+    hash.update(b"jigsall/drag-rotation/v1\0");
     hash.update(result.0.to_le_bytes());
     hash.update(player.0.to_le_bytes());
     hash.update(drag.grab_sequence.to_le_bytes());
@@ -189,7 +189,7 @@ fn fingerprint_with_scratch(
         released_roots.len(),
     );
     let mut hash = Sha256::new();
-    hash.update(b"puzzella/release-result/v1\0");
+    hash.update(b"jigsall/release-result/v1\0");
     hash.update((minima.len() as u32).to_le_bytes());
     for minimum in minima.iter() {
         let size = store.connectivity.component_size(minimum);

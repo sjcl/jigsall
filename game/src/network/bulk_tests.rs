@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn immutable_session_image_hash_is_verified_once_and_reused_without_peer_copies() {
-    use puzzella_core::session::{ImageHash, SessionDefinition, SessionId};
+    use jigsall_core::session::{ImageHash, SessionDefinition, SessionId};
     let bytes: Arc<[u8]> = Arc::from(vec![19; 2 * 1024 * 1024]);
     let session = SessionDefinition {
         id: SessionId(17),

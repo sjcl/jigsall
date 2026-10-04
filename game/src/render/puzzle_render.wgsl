@@ -1,5 +1,5 @@
-#import puzzella::presentation::presentation_position
-#import puzzella::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
+#import jigsall::presentation::presentation_position
+#import jigsall::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
@@ -11,7 +11,7 @@ struct PuzzleUniform {
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
-// Same counterclockwise quarter turns and bits 9..10 as puzzella_core::rotation.
+// Same counterclockwise quarter turns and bits 9..10 as jigsall_core::rotation.
 fn decode_rotation(flags:u32)->u32 {return (flags>>9u)&3u;}
 fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
     switch rotation&3u {

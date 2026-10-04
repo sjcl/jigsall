@@ -10,7 +10,7 @@ use super::{
     transport::*,
     wire::{self, WireMessage},
 };
-use puzzella_core::{session::AuthorityCursor, PlayerId};
+use jigsall_core::{session::AuthorityCursor, PlayerId};
 use std::{
     collections::{BTreeMap, HashSet},
     time::{Duration, Instant},

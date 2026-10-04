@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::pieces::{prepare_piece_upload, HELD};
-use puzzella_core::decode_rotation;
+use jigsall_core::decode_rotation;
 
 fn pose(app: &App, id: PieceId) -> (Vec2, u32) {
     let store = app.world().resource::<PieceDataStore>();

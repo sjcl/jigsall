@@ -145,9 +145,9 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/fingerprint-v2-v5.svg
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo run --release --locked -p jigsall-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
+cargo run --release --locked -p jigsall-puzzle --features cpu-geometry-reference --example shape_comparison -- target/fingerprint-v2-v5.svg
 ```
 
 通常45件と実GPU3件を確認しました。新exampleは`target/edge-fingerprint-preview.svg`、classes/worst/nearest/puzzleのSVG、histogram/class-values/nearest/answer-key CSVとmetrics.txtを生成します。1000ピースのSVGは約25 MBになるためリポジトリにはPNGを保存し、SVGはexampleから再生成します。debug型・v4 decoder・descriptor・solverはtest/reference feature限定です。

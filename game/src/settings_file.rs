@@ -42,7 +42,7 @@ impl Default for SettingsFile {
     fn default() -> Self {
         Self::new(
             directories::BaseDirs::new()
-                .map(|dirs| dirs.data_local_dir().join("puzzella/settings.json")),
+                .map(|dirs| dirs.data_local_dir().join("jigsall/settings.json")),
         )
     }
 }

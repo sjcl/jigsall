@@ -147,7 +147,7 @@ impl AddressResolution {
         let (sender, receiver) = bounded(1);
         let deadline = Instant::now() + RESOLUTION_TIMEOUT;
         std::thread::Builder::new()
-            .name("puzzella-dns".into())
+            .name("jigsall-dns".into())
             .spawn(move || {
                 let _slot = slot;
                 let _ = sender.send(resolve());

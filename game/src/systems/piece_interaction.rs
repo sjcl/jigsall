@@ -2,8 +2,8 @@ use crate::keybindings::{KeyAction, KeyBindingsState, KeyPresses};
 use crate::{components::*, resources::*};
 use bevy::prelude::*;
 use bevy_egui::EguiContexts;
-use puzzella_core::ClientCommand;
-use puzzella_core::*;
+use jigsall_core::ClientCommand;
+use jigsall_core::*;
 
 /// UI adapters only sample input and publish the gesture's gameplay commands.
 #[allow(clippy::too_many_arguments)]
@@ -270,7 +270,7 @@ mod tests {
             rotation_enabled: true,
         };
         let area =
-            puzzella_puzzle::placement::LogicalPlayArea::from_definition(&definition).unwrap();
+            jigsall_puzzle::placement::LogicalPlayArea::from_definition(&definition).unwrap();
         app.insert_resource(definition.clone());
         // Select both independent components, preserving their relative positions.
         for (id, point) in [Vec2::new(100.0, 100.0), Vec2::new(300.0, 100.0)]
@@ -301,7 +301,7 @@ mod tests {
         crate::checkpoint::PuzzleCheckpoint::capture(
             store,
             &definition,
-            puzzella_core::session::ImageHash([0; 32]),
+            jigsall_core::session::ImageHash([0; 32]),
         )
         .unwrap();
     }
@@ -533,7 +533,7 @@ mod tests {
                 frame(Vec2::new(107., 103.), true, true),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .is_empty());
         let request = selection.latest.unwrap();
@@ -542,7 +542,7 @@ mod tests {
                 frame(Vec2::new(120., 130.), true, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .is_empty());
         assert!(interaction
@@ -550,7 +550,7 @@ mod tests {
                 frame(Vec2::new(9., 5.), false, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .is_empty());
         selection.completed = Some(SelectionResult {
@@ -564,7 +564,7 @@ mod tests {
             frame(Vec2::splat(500.), false, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(
             commands,
@@ -610,7 +610,7 @@ mod tests {
             frame(Vec2::splat(50.), true, true),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         let point = selection.latest.unwrap();
         selection.completed = Some(SelectionResult {
@@ -623,14 +623,14 @@ mod tests {
             frame(Vec2::new(400., 200.), true, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         let preview = selection.latest.unwrap();
         interaction.update(
             frame(Vec2::new(410., 210.), false, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         let final_request = selection.latest.unwrap();
         assert!(final_request.request_id > preview.request_id);
@@ -644,7 +644,7 @@ mod tests {
             frame(Vec2::splat(500.), false, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert!(store.selected_pieces.is_empty());
         selection.completed = Some(SelectionResult {
@@ -661,7 +661,7 @@ mod tests {
             frame(Vec2::splat(500.), false, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(
             store.selected_pieces.iter().collect::<HashSet<_>>(),

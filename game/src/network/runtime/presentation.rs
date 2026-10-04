@@ -1,7 +1,7 @@
 //! Game-layer adapter: accepted network contexts -> renderer-neutral bounded cache.
 use super::*;
 use crate::resources::remote_drag::RemoteDragPresentation;
-use puzzella_core::PieceBitSet;
+use jigsall_core::PieceBitSet;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -109,7 +109,7 @@ pub(super) fn event_player(event: &ProtocolAuthorityEvent) -> PlayerId {
 mod tests {
     use super::*;
     use crate::multiplayer::{finalization::FinalDragSet, replication::ReplicationError};
-    use puzzella_core::{PieceId, GENERATOR_VERSION};
+    use jigsall_core::{PieceId, GENERATOR_VERSION};
     #[test]
     fn remote_presentation_final_reconciliation_rebase_and_late_transients() {
         assert_eq!(

@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::{pieces::HELD, remote_drag::RemoteDragPresentation};
-use puzzella_core::PieceBitSet;
+use jigsall_core::PieceBitSet;
 
 #[test]
 fn remote_presentation_shader_paths_share_the_position_function() {
@@ -9,7 +9,7 @@ fn remote_presentation_shader_paths_share_the_position_function() {
         include_str!("../visibility.wgsl"),
         include_str!("../pick_visibility.wgsl"),
     ] {
-        assert!(source.contains("#import puzzella::presentation::presentation_position"));
+        assert!(source.contains("#import jigsall::presentation::presentation_position"));
         assert_eq!(
             source
                 .matches("presentation_position(state.position,")

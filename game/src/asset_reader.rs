@@ -1,6 +1,6 @@
 use crate::resources::ImageDecodeLimits;
 use bevy::prelude::*;
-use puzzella_core::{fit_image_size, MAX_PUZZLE_IMAGE_DIMENSION};
+use jigsall_core::{fit_image_size, MAX_PUZZLE_IMAGE_DIMENSION};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -800,7 +800,7 @@ pub(crate) mod tests {
     #[test]
     fn decoded_image_moves_pixels_to_render_world_and_keeps_metadata() {
         let path = std::env::temp_dir().join(format!(
-            "puzzella-image-load-{}-{}.png",
+            "jigsall-image-load-{}-{}.png",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

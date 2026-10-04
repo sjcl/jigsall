@@ -1,6 +1,6 @@
 use crate::{components::*, resources::*};
 use bevy::prelude::*;
-use puzzella_core::PuzzleDefinition;
+use jigsall_core::PuzzleDefinition;
 #[allow(clippy::too_many_arguments)]
 pub fn generate_puzzle_state(
     definition: Option<Res<PuzzleDefinition>>,

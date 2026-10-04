@@ -2,7 +2,7 @@
 use super::local_rotation::{PredictionDrag, PresentationPose};
 use super::*;
 use bevy::math::DVec2;
-use puzzella_core::{
+use jigsall_core::{
     add_quarter_turns, matches_transform,
     protocol::{ActiveDragTarget, PieceTarget, RejectedComponentRef, ResolvedPieceTarget},
 };
@@ -114,7 +114,7 @@ impl PieceDataStore {
                 })
             });
         }
-        let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(definition).ok()?;
+        let area = jigsall_puzzle::placement::LogicalPlayArea::from_definition(definition).ok()?;
         let pivots = crate::play_area::PivotEnvelope::from_roots_with_positions(
             self,
             roots.iter().copied(),
@@ -252,7 +252,7 @@ impl PieceDataStore {
         // cancellation/overflow when changing the canonical orientation.
         // Rebuild from canonical coordinates, never by rotating rounded positions.
         let pivot = (world_min.as_dvec2() + world_max.as_dvec2()) * 0.5;
-        let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(definition).ok()?;
+        let area = jigsall_puzzle::placement::LogicalPlayArea::from_definition(definition).ok()?;
         if !area.contains(pivot) {
             return None;
         }
@@ -433,7 +433,7 @@ impl PieceDataStore {
     /// Replica preflight: reject the whole accepted event before any mutation.
     pub(crate) fn can_rotate_target(
         &self,
-        target: &puzzella_core::protocol::PieceTarget,
+        target: &jigsall_core::protocol::PieceTarget,
         quarter_turns: i8,
         definition: &PuzzleDefinition,
     ) -> bool {
@@ -469,10 +469,10 @@ impl PieceDataStore {
     /// rejects before gameplay. Independent components each keep their own pivot.
     pub(crate) fn rotate_target(
         &mut self,
-        target: &puzzella_core::protocol::PieceTarget,
+        target: &jigsall_core::protocol::PieceTarget,
         quarter_turns: i8,
         definition: &PuzzleDefinition,
-    ) -> Result<RotationResult, puzzella_core::protocol::TargetError> {
+    ) -> Result<RotationResult, jigsall_core::protocol::TargetError> {
         let resolved = target.resolve(&self.connectivity)?;
         let mut plans = Vec::new();
         let accepted = match resolved.target {

@@ -2,7 +2,7 @@
 <html lang="ja">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>輪郭だけのマッチング · Puzzella generator v__GENERATOR_VERSION__</title>
+<title>輪郭だけのマッチング · Jigsall generator v__GENERATOR_VERSION__</title>
 <style>
 :root{font-family:system-ui,sans-serif;color:#26343d;background:#faf9f6;color-scheme:light}*{box-sizing:border-box}
 body{max-width:1320px;margin:auto;padding:24px}h1{font-size:28px;margin:5px 0 8px}p{line-height:1.6}.eyebrow{color:#626d76;font-size:13px;letter-spacing:.08em}
@@ -16,7 +16,7 @@ button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-vis
 .results{margin-top:28px;padding-top:20px;border-top:1px solid #d7dce0}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:9px;text-align:left;border-bottom:1px solid #e0e4e7;white-space:nowrap}
 @media(max-width:760px){body{padding:14px}.board{grid-template-columns:1fr}.target{position:static}.candidates{grid-template-columns:repeat(auto-fit,minmax(255px,1fr))}}
 </style>
-<div class="eyebrow">PUZZELLA · GENERATOR V__GENERATOR_VERSION__ · SHAPE STUDY</div>
+<div class="eyebrow">JIGSALL · GENERATOR V__GENERATOR_VERSION__ · SHAPE STUDY</div>
 <h1>輪郭だけのマッチング</h1>
 <p>左の凸辺に対応する凹辺を、右の候補から1つ選んでください。全て同じ色で、形だけを比べます。</p>
 <div class="settings">
@@ -43,7 +43,7 @@ button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-vis
 const data=JSON.parse(document.getElementById('matching-data').textContent);
 const generatorVersion=__GENERATOR_VERSION__;
 const $=id=>document.getElementById(id);
-const key='puzzella-v'+generatorVersion+'-human-matching-v1';
+const key='jigsall-v'+generatorVersion+'-human-matching-v1';
 let records=[],session=null,current=null,phase='idle';
 try{const saved=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(saved))records=saved;}catch{ $('storage').textContent='この環境ではブラウザ保存が使えません。CSV / JSONで記録を保存してください。'; }
 for(const seed of [...new Set(data.map(d=>d.seed))]) {const o=document.createElement('option');o.value=seed;o.textContent=seed;$('seed').append(o);}

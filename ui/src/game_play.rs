@@ -1,9 +1,9 @@
 use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::keybindings::{KeyAction, KeyBindingsState};
-use puzzella_game::persistence::runtime::PersistenceState;
-use puzzella_game::resources::*;
+use jigsall_game::keybindings::{KeyAction, KeyBindingsState};
+use jigsall_game::persistence::runtime::PersistenceState;
+use jigsall_game::resources::*;
 
 /// インゲームUI（プレイ中のUI）
 #[allow(clippy::too_many_arguments)]
@@ -11,12 +11,12 @@ pub fn draw_game_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     game_state: Res<GameData>,
-    definition: Option<Res<puzzella_core::PuzzleDefinition>>,
+    definition: Option<Res<jigsall_core::PuzzleDefinition>>,
     roster: Res<PlayerRoster>,
     bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
     persistence: Res<PersistenceState>,
-    network: Res<puzzella_game::network::runtime::NetworkStatus>,
+    network: Res<jigsall_game::network::runtime::NetworkStatus>,
     sub_state: Res<State<GameSubState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
@@ -51,12 +51,12 @@ pub fn draw_game_ui(
                 paint_player_count(ui, &roster, &i18n);
             }
             match network.role {
-                Some(puzzella_game::network::runtime::RuntimeRole::Host) => {
+                Some(jigsall_game::network::runtime::RuntimeRole::Host) => {
                     ui.label(i18n.text("multiplayer-hosting"));
                     crate::multiplayer::paint_room_code(ui, &network, &i18n);
                 }
-                Some(puzzella_game::network::runtime::RuntimeRole::Client)
-                    if network.phase == puzzella_game::network::runtime::RuntimePhase::Ready =>
+                Some(jigsall_game::network::runtime::RuntimeRole::Client)
+                    if network.phase == jigsall_game::network::runtime::RuntimePhase::Ready =>
                 {
                     ui.label(i18n.text("multiplayer-connected"));
                 }
@@ -149,7 +149,7 @@ fn paint_autosave_status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Loc
         ui.separator();
         let key = if matches!(
             error,
-            puzzella_game::persistence::runtime::PersistenceError::AutosaveRotation(_)
+            jigsall_game::persistence::runtime::PersistenceError::AutosaveRotation(_)
         ) {
             "game-autosave-rotation-failed"
         } else {
@@ -253,8 +253,8 @@ mod tests {
 
     #[test]
     fn hud_and_overlay_render_roster_count_duplicate_names_default_and_scores() {
-        use puzzella_core::{PlayerDisplayName, PlayerId};
-        use puzzella_game::players::{RosterPlayer, RosterSnapshot};
+        use jigsall_core::{PlayerDisplayName, PlayerId};
+        use jigsall_game::players::{RosterPlayer, RosterSnapshot};
         let mut roster = PlayerRoster::default();
         roster
             .install_snapshot(
@@ -317,9 +317,8 @@ mod tests {
             for (saving, failed) in [(true, false), (false, true), (false, false)] {
                 let mut state = PersistenceState::default();
                 state.autosaving = saving;
-                state.autosave_error = failed.then_some(
-                    puzzella_game::persistence::runtime::PersistenceError::WorkerStopped,
-                );
+                state.autosave_error = failed
+                    .then_some(jigsall_game::persistence::runtime::PersistenceError::WorkerStopped);
                 let ctx = egui::Context::default();
                 let output = ctx.run_ui(default(), |ui| {
                     ui.horizontal(|ui| paint_autosave_status(ui, &state, &i18n));

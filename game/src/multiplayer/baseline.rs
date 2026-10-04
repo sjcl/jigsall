@@ -8,7 +8,7 @@ use crate::resources::{
     PieceDataStore,
 };
 use bevy::math::Vec2;
-use puzzella_core::{
+use jigsall_core::{
     protocol::{
         ActiveDrag, ActiveDragTarget, DenseTarget, PieceTarget, ResolvedPieceTarget, TargetError,
     },

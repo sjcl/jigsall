@@ -1,6 +1,6 @@
 use super::*;
-use puzzella_core::{session::ImageHash, PlayerId, PuzzleDefinition, GENERATOR_VERSION};
-use puzzella_game::persistence::{SaveError, StorageError};
+use jigsall_core::{session::ImageHash, PlayerId, PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_game::persistence::{SaveError, StorageError};
 
 fn disconnected_game(completed: bool) -> (App, egui::Context) {
     let (mut app, ctx) = scheduled_screens();

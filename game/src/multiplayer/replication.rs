@@ -6,7 +6,7 @@ use crate::{
     resources::{pieces::AppliedCommand, PieceDataStore},
 };
 use bevy::math::Vec2;
-use puzzella_core::{
+use jigsall_core::{
     protocol::{
         ActiveDragTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope, RemoteDragUpdate,
         ResolvedPieceTarget,
@@ -30,7 +30,7 @@ pub enum ReplicationError {
     Snapshot(SnapshotError),
 }
 
-pub type RemoteDrag = puzzella_core::protocol::ActiveDrag;
+pub type RemoteDrag = jigsall_core::protocol::ActiveDrag;
 
 #[derive(Default, Debug)]
 pub struct PeerReplicationState {

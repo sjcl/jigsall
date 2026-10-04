@@ -1,7 +1,7 @@
 use super::*;
 use crate::persistence::{DepartureAction, SaveDialogs};
-use puzzella_core::{session::ImageHash, PuzzleDefinition, GENERATOR_VERSION};
-use puzzella_game::persistence::{SaveError, StorageError};
+use jigsall_core::{session::ImageHash, PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_game::persistence::{SaveError, StorageError};
 mod window_close;
 
 fn paused_game(role: Option<RuntimeRole>, completed: bool) -> (App, egui::Context) {
@@ -210,7 +210,7 @@ fn departure_waits_for_manual_save_success_and_allows_retry_after_failure() {
             )));
             let mut output = render_schedule(&mut app, &ctx, vec![]);
             output.textures_delta.clear();
-            assert!(labels(&output).contains(&"Timed out waiting for access to saved data. Close other Puzzella instances and try again."));
+            assert!(labels(&output).contains(&"Timed out waiting for access to saved data. Close other Jigsall instances and try again."));
             output.drop_without_applying_deltas();
             assert_staying(&app, role);
 

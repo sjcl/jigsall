@@ -284,7 +284,7 @@ fn window_close_during_disconnected_save_waits_for_success_before_exit() {
         app.world_mut().run_schedule(StateTransition);
         {
             let mut status = app.world_mut().resource_mut::<NetworkStatus>();
-            status.local_player = Some(puzzella_core::PlayerId(1));
+            status.local_player = Some(jigsall_core::PlayerId(1));
             status.phase = RuntimePhase::Disconnected;
             status.failure = Some(NetworkFailureKind::ConnectionLost);
         }

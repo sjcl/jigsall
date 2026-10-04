@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use bytemuck::{Pod, Zeroable};
-use puzzella_core::{
+use jigsall_core::{
     decode_rotation, rotate_quarter, with_rotation, PieceBitSet, PieceCommand, PieceConnectivity,
     PieceId, PieceScratchSet, PieceState, PlayerId, PuzzleDefinition,
 };
@@ -88,9 +88,9 @@ impl DensePieceStates {
     pub fn generate(definition: &PuzzleDefinition) -> Self {
         let mut states = Arc::<[GpuPieceState]>::new_uninit_slice(definition.piece_count());
         let display_size = definition.image_size.as_vec2();
-        puzzella_puzzle::placement::fill_placement_grid(
+        jigsall_puzzle::placement::fill_placement_grid(
             Arc::get_mut(&mut states).unwrap(),
-            puzzella_puzzle::placement::placement_piece_size(definition),
+            jigsall_puzzle::placement::placement_piece_size(definition),
             display_size,
             definition.seed,
             |position| MaybeUninit::new(GpuPieceState::new(position, PieceId(0))),
@@ -102,7 +102,7 @@ impl DensePieceStates {
             state.z_order = id as u32;
             state.flags = with_rotation(
                 state.flags,
-                puzzella_puzzle::placement::initial_rotation(definition, PieceId(id as u32)),
+                jigsall_puzzle::placement::initial_rotation(definition, PieceId(id as u32)),
             );
         }
         Self(states)
@@ -213,7 +213,7 @@ impl PieceOwners {
         self.counts.get(&player).copied().unwrap_or(0)
     }
     fn ensure_len(&mut self, count: usize) {
-        assert!(count <= puzzella_core::MAX_PIECES);
+        assert!(count <= jigsall_core::MAX_PIECES);
         if self.owners.len() < count {
             self.owners.resize(count, PlayerId(0));
             let mut occupied = PieceBitSet::new(count);
@@ -337,9 +337,9 @@ impl PieceDataStore {
     pub(crate) fn restore_baseline_holds(
         &mut self,
         player: PlayerId,
-        target: &puzzella_core::protocol::ActiveDragTarget,
+        target: &jigsall_core::protocol::ActiveDragTarget,
     ) {
-        use puzzella_core::protocol::ActiveDragTarget;
+        use jigsall_core::protocol::ActiveDragTarget;
         self.held_by.ensure_len(self.len());
         let mut count = 0;
         let states = &mut *self.states;
@@ -830,7 +830,7 @@ impl PieceDataStore {
             return;
         }
         if let Some(area) = definition
-            .and_then(|d| puzzella_puzzle::placement::LogicalPlayArea::from_definition(d).ok())
+            .and_then(|d| jigsall_puzzle::placement::LogicalPlayArea::from_definition(d).ok())
         {
             let pivot = crate::play_area::component_center(
                 self.connectivity.iter_component(id).map(translated),
@@ -896,7 +896,7 @@ impl PieceDataStore {
             return AppliedCommand::default();
         }
         let area = definition
-            .and_then(|d| puzzella_puzzle::placement::LogicalPlayArea::from_definition(d).ok());
+            .and_then(|d| jigsall_puzzle::placement::LogicalPlayArea::from_definition(d).ok());
         if let Some(area) = area {
             if !self.release_pivots_fit(roots.iter().copied(), delta, definition, area) {
                 return AppliedCommand::default();
@@ -1171,7 +1171,7 @@ mod bulk_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puzzella_core::GENERATOR_VERSION;
+    use jigsall_core::GENERATOR_VERSION;
 
     fn definition(grid_size: UVec2, seed: u64) -> PuzzleDefinition {
         PuzzleDefinition {
@@ -1196,7 +1196,7 @@ mod tests {
                 let def = definition(grid, seed);
                 let size = def.image_size.as_vec2() / grid.as_vec2();
                 let mut expected = vec![Vec2::ZERO; def.piece_count()];
-                puzzella_puzzle::placement::fill_placement_grid(
+                jigsall_puzzle::placement::fill_placement_grid(
                     &mut expected,
                     size,
                     def.image_size.as_vec2(),
@@ -1214,7 +1214,7 @@ mod tests {
 
     #[test]
     fn worker_random_rotation_is_reproducible_and_rectangular_slots_remain_disjoint() {
-        use puzzella_puzzle::placement::{initial_rotation, LogicalPlayArea};
+        use jigsall_puzzle::placement::{initial_rotation, LogicalPlayArea};
         for grid in [UVec2::new(40, 25), UVec2::new(1000, 1), UVec2::new(1, 1000)] {
             let mut def = definition(grid, 42);
             def.rotation_enabled = true;
@@ -1227,7 +1227,7 @@ mod tests {
                 let rotation = decode_rotation(state.flags);
                 assert_eq!(rotation, initial_rotation(&def, PieceId(index as u32)));
                 assert_eq!(state.z_order, index as u32);
-                assert_eq!(state.flags & !puzzella_core::ROTATION_MASK, ENABLED);
+                assert_eq!(state.flags & !jigsall_core::ROTATION_MASK, ENABLED);
                 assert!(area.contains(state.position.as_dvec2()));
                 seen[rotation as usize] = true;
                 // The procedural quad includes every tab. Swapping axes at 90°
@@ -1314,7 +1314,7 @@ mod tests {
         let id = PieceId(777777);
         let mut s = store.state(id).unwrap();
         s.position = Vec2::ONE;
-        store.set_state(id, s, puzzella_core::LOCAL_PLAYER);
+        store.set_state(id, s, jigsall_core::LOCAL_PLAYER);
         store.bring_piece_to_front(id);
         assert_eq!(store.states[id.0 as usize].position, Vec2::ONE);
         assert!(store.states[id.0 as usize].z_order >= 1_000_000);
@@ -1352,7 +1352,7 @@ mod tests {
                 placed: false,
                 held_by: None,
             },
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(extracted[0], before);
         assert_eq!(store.states[0].position, Vec2::ONE);

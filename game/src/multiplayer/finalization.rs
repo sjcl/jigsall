@@ -2,7 +2,7 @@
 use super::{protocol::ProtocolDragContexts, MAX_BASELINE_DRAGS};
 use crate::resources::PieceDataStore;
 use bevy::math::Vec2;
-use puzzella_core::{session::AuthoritySession, PlayerId};
+use jigsall_core::{session::AuthoritySession, PlayerId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -106,7 +106,7 @@ fn deserialize_drags<'de, D: serde::Deserializer<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puzzella_core::{
+    use jigsall_core::{
         protocol::{ComponentRef, PieceTarget, ProtocolCommandEnvelope, ProtocolPieceCommand},
         session::{
             AuthorityCursor, ClientCommandSequence, ImageHash, SessionDefinition, SessionId,
@@ -200,8 +200,8 @@ mod tests {
         let mut store = PieceDataStore::default();
         store.initialize((0..65).map(|i| Vec2::new(i as f32, 0.0)).collect());
         let mut contexts = ProtocolDragContexts::default();
-        let definition = puzzella_core::PuzzleDefinition {
-            generator_version: puzzella_core::GENERATOR_VERSION,
+        let definition = jigsall_core::PuzzleDefinition {
+            generator_version: jigsall_core::GENERATOR_VERSION,
             seed: 42,
             grid_size: bevy::math::UVec2::new(65, 1),
             image_size: bevy::math::UVec2::new(1300, 20),

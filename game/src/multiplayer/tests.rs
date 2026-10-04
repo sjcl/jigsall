@@ -4,7 +4,7 @@ use crate::resources::{
     PieceUpload,
 };
 use bevy::prelude::*;
-use puzzella_core::{
+use jigsall_core::{
     session::{
         AuthorityEpoch, AuthorityEventEnvelope, ClientCommandEnvelope, ClientCommandSequence,
         CommandSequenceStatus, ImageHash, MigrationState, RecoverySource, SessionDefinition,
@@ -44,11 +44,11 @@ fn fixture() -> PieceDataStore {
     ]);
     let mut placed = store.state(PieceId(0)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(0), placed, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(0), placed, jigsall_core::LOCAL_PLAYER);
     for (id, player) in [(PieceId(1), A), (PieceId(2), B)] {
         let mut held = store.state(id).unwrap();
         held.held_by = Some(player);
-        store.set_state(id, held, puzzella_core::LOCAL_PLAYER);
+        store.set_state(id, held, jigsall_core::LOCAL_PLAYER);
         store.bring_piece_to_front(id);
     }
     store.selected_pieces.insert(PieceId(1));
@@ -334,12 +334,12 @@ fn ordinary_disconnect_releases_only_b_holds_marks_dirty_without_moving_or_snapp
     for id in [PieceId(10), PieceId(11), PieceId(25), PieceId(12)] {
         let mut state = store.state(id).unwrap();
         state.held_by = Some(if id == PieceId(12) { C } else { B });
-        store.set_state(id, state, puzzella_core::LOCAL_PLAYER);
+        store.set_state(id, state, jigsall_core::LOCAL_PLAYER);
     }
     // Even malformed placed+held data is cleaned without changing placed.
     let mut placed = store.state(PieceId(25)).unwrap();
     placed.placed = true;
-    store.set_state(PieceId(25), placed, puzzella_core::LOCAL_PLAYER);
+    store.set_state(PieceId(25), placed, jigsall_core::LOCAL_PLAYER);
     store.dirty_pieces.clear();
     let before = store.states.clone();
     let epoch = store.epoch;

@@ -1,8 +1,8 @@
 //! Reconstructible presentation cache. Never used by authority, saves or snapshots.
 use bevy::prelude::*;
-use puzzella_core::PieceBitSet;
+use jigsall_core::PieceBitSet;
 #[cfg(test)]
-use puzzella_core::PieceId;
+use jigsall_core::PieceId;
 use std::sync::Arc;
 
 pub const REMOTE_DRAG_SLOTS: usize = 64;

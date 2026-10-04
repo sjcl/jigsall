@@ -388,7 +388,7 @@ impl CompletedBulkTransfer {
 #[derive(Clone)]
 pub struct VerifiedPuzzleImage {
     bytes: Arc<[u8]>,
-    session: puzzella_core::session::SessionDefinition,
+    session: jigsall_core::session::SessionDefinition,
 }
 #[cfg(test)]
 thread_local! { static PAYLOAD_DIGESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -400,7 +400,7 @@ fn payload_digest(bytes: &[u8]) -> [u8; 32] {
 impl VerifiedPuzzleImage {
     pub fn verify(
         bytes: Arc<[u8]>,
-        session: puzzella_core::session::SessionDefinition,
+        session: jigsall_core::session::SessionDefinition,
     ) -> Result<Self, BulkTransferError> {
         BulkTransferLimits::default()
             .validate_size(BulkTransferKind::PuzzleImage, bytes.len() as u64)?;
@@ -409,7 +409,7 @@ impl VerifiedPuzzleImage {
         }
         Ok(Self { bytes, session })
     }
-    pub fn session(&self) -> puzzella_core::session::SessionDefinition {
+    pub fn session(&self) -> jigsall_core::session::SessionDefinition {
         self.session
     }
     pub fn size(&self) -> u64 {

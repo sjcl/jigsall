@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use puzzella_core::{PieceBitSet, PieceId};
+use jigsall_core::{PieceBitSet, PieceId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionMode {

@@ -1409,7 +1409,7 @@ fn client_profile_is_mandatory_once_in_secure_sync_and_binds_reserved_identity()
         Err(SyncError::WrongPhase)
     );
     assert_eq!(h.p.host_roster.revision(), 0);
-    let name = puzzella_core::PlayerDisplayName::from_user_input("日本語 🧩").unwrap();
+    let name = jigsall_core::PlayerDisplayName::from_user_input("日本語 🧩").unwrap();
     let mut h = Harness::named(true, Default::default(), Some(name.clone()));
     let player = h.p.host.assigned_player(HA).unwrap();
     assert!(h.p.host_roster.get(player).is_none());
@@ -1665,7 +1665,7 @@ impl Harness {
     fn named(
         cached: bool,
         limits: CatchUpLimits,
-        display_name: Option<puzzella_core::PlayerDisplayName>,
+        display_name: Option<jigsall_core::PlayerDisplayName>,
     ) -> Self {
         let image: Arc<[u8]> = Arc::from(b"immutable session image".as_slice());
         let definition = SessionDefinition {

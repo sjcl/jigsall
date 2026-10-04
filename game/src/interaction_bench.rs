@@ -71,7 +71,7 @@ fn million_selection_cpu_benchmark() {
             };
             let receive = micros(start);
             let start = Instant::now();
-            store.commit_selection(mask, None, puzzella_core::LOCAL_PLAYER);
+            store.commit_selection(mask, None, jigsall_core::LOCAL_PLAYER);
             let commit = micros(start);
             let (mut store, highlight, highlight_bytes, _) = upload(&mut app, store);
             assert_eq!(highlight_bytes, 0);
@@ -99,7 +99,7 @@ fn million_selection_cpu_benchmark() {
                     frame(Vec2::ZERO, true, true),
                     &mut store,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .is_empty());
             let down = micros(start);
@@ -115,17 +115,13 @@ fn million_selection_cpu_benchmark() {
                 frame(Vec2::ZERO, true, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let members = micros(start);
             assert_eq!(commands.len(), 1);
             let start = Instant::now();
-            let result = store.apply_command(
-                LOCAL_PLAYER,
-                &commands[0],
-                None,
-                puzzella_core::LOCAL_PLAYER,
-            );
+            let result =
+                store.apply_command(LOCAL_PLAYER, &commands[0], None, jigsall_core::LOCAL_PLAYER);
             let grab = micros(start);
             assert_eq!(result.grabbed, count);
             drop(commands);
@@ -137,7 +133,7 @@ fn million_selection_cpu_benchmark() {
                     frame(Vec2::splat(step as f32), true, false),
                     &mut store,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 ))
                 .is_empty());
             }
@@ -149,7 +145,7 @@ fn million_selection_cpu_benchmark() {
                 frame(Vec2::new(10.0, 20.0), false, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let release_command = micros(start);
             assert_eq!(commands.len(), 1);
@@ -171,7 +167,7 @@ fn million_selection_cpu_benchmark() {
                 LOCAL_PLAYER,
                 &commands[0],
                 Some(&definition),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let release = micros(start);
             assert_eq!(result.released, count);
@@ -183,7 +179,7 @@ fn million_selection_cpu_benchmark() {
             for (id, state) in store.states.iter().enumerate() {
                 let released_position = Vec2::new(id as f32 + 10.0, 10_020.0);
                 assert!(
-                    puzzella_core::offset_distance_squared(state.position, released_position)
+                    jigsall_core::offset_distance_squared(state.position, released_position)
                         < f64::from(definition.snap_distance).powi(2)
                 );
             }
@@ -298,7 +294,7 @@ fn connected_snapping_cpu_benchmark() {
                     frame(Vec2::ZERO, true, true),
                     &mut s,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 let request = selection.latest.unwrap();
                 selection.completed = Some(SelectionResult {
@@ -311,7 +307,7 @@ fn connected_snapping_cpu_benchmark() {
                     frame(Vec2::ZERO, true, false),
                     &mut s,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 assert_eq!(commands.len(), 1);
                 let start = Instant::now();
@@ -319,7 +315,7 @@ fn connected_snapping_cpu_benchmark() {
                     LOCAL_PLAYER,
                     &commands[0],
                     Some(&d),
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 let grab = micros(start);
                 assert_eq!(
@@ -339,7 +335,7 @@ fn connected_snapping_cpu_benchmark() {
                         frame(Vec2::splat(step as f32), true, false),
                         &mut s,
                         &mut selection,
-                        puzzella_core::LOCAL_PLAYER
+                        jigsall_core::LOCAL_PLAYER
                     ))
                     .is_empty());
                 }
@@ -359,7 +355,7 @@ fn connected_snapping_cpu_benchmark() {
                     ),
                     &mut s,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 assert_eq!(commands.len(), 1);
                 let start = Instant::now();
@@ -367,7 +363,7 @@ fn connected_snapping_cpu_benchmark() {
                     LOCAL_PLAYER,
                     &commands[0],
                     Some(&d),
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 let release = micros(start);
                 assert_eq!(released.released, grabbed.grabbed);
@@ -424,7 +420,7 @@ fn small_component_release_cpu_benchmark() {
                                 LOCAL_PLAYER,
                                 &PieceCommand::Grab(id),
                                 Some(&d),
-                                puzzella_core::LOCAL_PLAYER
+                                jigsall_core::LOCAL_PLAYER
                             )
                             .grabbed,
                         members as usize
@@ -444,7 +440,7 @@ fn small_component_release_cpu_benchmark() {
                                 position: store.states[id.0 as usize].position + Vec2::ONE,
                             },
                             Some(&d),
-                            puzzella_core::LOCAL_PLAYER,
+                            jigsall_core::LOCAL_PLAYER,
                         );
                         PieceCommand::Release(id)
                     };
@@ -455,7 +451,7 @@ fn small_component_release_cpu_benchmark() {
                         LOCAL_PLAYER,
                         &release,
                         Some(&d),
-                        puzzella_core::LOCAL_PLAYER,
+                        jigsall_core::LOCAL_PLAYER,
                     ));
                     let elapsed = micros(start);
                     assert_eq!(outcome.released, members as usize);
@@ -504,13 +500,13 @@ fn small_component_grab_cpu_benchmark() {
                                 LOCAL_PLAYER,
                                 &PieceCommand::Grab(seed),
                                 None,
-                                puzzella_core::LOCAL_PLAYER,
+                                jigsall_core::LOCAL_PLAYER,
                             );
                             store.apply_command(
                                 LOCAL_PLAYER,
                                 &PieceCommand::Release(seed),
                                 None,
-                                puzzella_core::LOCAL_PLAYER,
+                                jigsall_core::LOCAL_PLAYER,
                             );
                         }
                         let id = PieceId(base + members / 2);
@@ -531,7 +527,7 @@ fn small_component_grab_cpu_benchmark() {
                             LOCAL_PLAYER,
                             &grab,
                             Some(&d),
-                            puzzella_core::LOCAL_PLAYER,
+                            jigsall_core::LOCAL_PLAYER,
                         ));
                         let elapsed = micros(start);
                         assert_eq!(outcome.grabbed, members as usize);

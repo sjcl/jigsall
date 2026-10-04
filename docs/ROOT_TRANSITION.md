@@ -93,8 +93,8 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/root-comparison.svg
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo run --release --locked -p jigsall-puzzle --features cpu-geometry-reference --example shape_comparison -- target/root-comparison.svg
 ```
 
 shape_comparisonは組み立て図に加えroot-comparison-roots.svgを出力します。上記6つの必須チェックは成功、通常40件（core 3 / puzzle 15 / game 22）とall-featuresの40件、実GPU3件（形状・透明度・benchmark）を確認しました。all-featuresでは以前と同じWindows profiling初期化のSymInitialize code 87診断が出ますが、全testは成功しています。異GPU / OSの検証は行っていません。

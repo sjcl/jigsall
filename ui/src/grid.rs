@@ -1,5 +1,5 @@
-use puzzella_game::resources::{PieceMode, PuzzleConfig, PuzzleImage};
-use puzzella_puzzle::grid::{calculate_aspect_ratio_grid, generate_columns_rows_numbers};
+use jigsall_game::resources::{PieceMode, PuzzleConfig, PuzzleImage};
+use jigsall_puzzle::grid::{calculate_aspect_ratio_grid, generate_columns_rows_numbers};
 
 /// PuzzleConfigの現在のモードに基づいてグリッドサイズを計算
 /// 画像が読み込まれていない場合はNoneを返す

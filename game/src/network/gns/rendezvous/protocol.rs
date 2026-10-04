@@ -1,4 +1,4 @@
-//! Mirrored in sjcl/puzzella game/src/network/gns/rendezvous/protocol.rs.
+//! Mirrored in sjcl/jigsall game/src/network/gns/rendezvous/protocol.rs.
 //! Change the canonical fixtures and both copies together; no gameplay data here.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_core::{matches_translation, GENERATOR_VERSION, LOCAL_PLAYER};
+use jigsall_core::{matches_translation, GENERATOR_VERSION, LOCAL_PLAYER};
 
 fn fixture(
     grid: UVec2,
@@ -9,9 +9,9 @@ fn fixture(
         generator_version: GENERATOR_VERSION,
         seed: 42,
         grid_size: grid,
-        image_size: puzzella_core::fit_image_size(
+        image_size: jigsall_core::fit_image_size(
             grid * 20,
-            puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+            jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION,
         ),
         snap_distance: 5.0,
         rotation_enabled: true,
@@ -45,13 +45,13 @@ fn release(
             members: members.clone(),
         },
         Some(d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     store.apply_command(
         LOCAL_PLAYER,
         &PieceCommand::ReleaseGroup { members, delta },
         Some(d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     )
 }
 fn assert_offset(store: &PieceDataStore, d: &PuzzleDefinition, id: u32, expected: Vec2) {
@@ -275,7 +275,7 @@ fn connected_outline_uploads_only_changed_states_and_stays_idle_during_drag() {
                 members: members.clone(),
             },
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         store.drag.members = members.words().clone();
     }
@@ -430,7 +430,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
                 members: members.clone()
             },
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         4
@@ -440,7 +440,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             PlayerId(1),
             &PieceCommand::Grab(PieceId(1)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         0
@@ -452,7 +452,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             position: Vec2::ZERO,
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_offset(&s, &d, 0, Vec2::splat(100.0));
     s.dirty_pieces.clear();
@@ -463,7 +463,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             position: d.correct_position(PieceId(2)) + Vec2::splat(200.0),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_offset(&s, &d, 0, Vec2::splat(200.0));
     assert_eq!(s.dirty_pieces.count(), 4);
@@ -476,7 +476,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             position: d.correct_position(PieceId(2)) + Vec2::splat(200.0),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert!(s.dirty_pieces.is_empty());
     assert_eq!(
@@ -487,7 +487,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
                 delta: Vec2::ONE
             },
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .released,
         4
@@ -499,7 +499,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             LOCAL_PLAYER,
             &PieceCommand::Grab(PieceId(1)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         4
@@ -509,7 +509,7 @@ fn partial_bulk_masks_and_scalar_commands_move_only_complete_components() {
             LOCAL_PLAYER,
             &PieceCommand::Release(PieceId(3)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .released,
         4
@@ -527,7 +527,7 @@ fn contradictory_partial_ownership_rejects_whole_component() {
             LOCAL_PLAYER,
             &PieceCommand::Grab(PieceId(0)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         0
@@ -538,7 +538,7 @@ fn contradictory_partial_ownership_rejects_whole_component() {
             LOCAL_PLAYER,
             &PieceCommand::Release(PieceId(0)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .released,
         0
@@ -560,7 +560,7 @@ fn held_neighbor_components_are_never_absorbed() {
         PlayerId(1),
         &PieceCommand::Grab(PieceId(2)),
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     release(&mut s, &d, &[0], Vec2::ZERO);
     assert_eq!(s.connectivity.component_size(PieceId(0)), 1);
@@ -592,7 +592,7 @@ fn snapping_to_placed_target_places_all_absorbed_members() {
     );
     let mut state = s.state(PieceId(2)).unwrap();
     state.placed = true;
-    s.set_state(PieceId(2), state, puzzella_core::LOCAL_PLAYER);
+    s.set_state(PieceId(2), state, jigsall_core::LOCAL_PLAYER);
     s.connectivity.union(PieceId(0), PieceId(1));
     let result = release(&mut s, &d, &[0], Vec2::ZERO);
     assert_eq!(result.placed, 2);
@@ -632,14 +632,14 @@ fn union_expands_selection_and_only_changed_dense_members_become_dirty() {
         LOCAL_PLAYER,
         &PieceCommand::Grab(PieceId(0)),
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     s.dirty_pieces.clear();
     s.apply_command(
         LOCAL_PLAYER,
         &PieceCommand::Release(PieceId(0)),
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(s.selected_pieces.count(), 2);
     assert_eq!(
@@ -695,7 +695,7 @@ fn connected_board_threshold_is_strict_and_disconnect_does_not_snap() {
         LOCAL_PLAYER,
         &PieceCommand::Grab(PieceId(0)),
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let before = s.states.clone();
     assert_eq!(
@@ -770,7 +770,7 @@ fn finite_scalar_singleton_move_still_accepts_an_overflowing_difference() {
         LOCAL_PLAYER,
         &PieceCommand::Grab(PieceId(0)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     s.apply_command(
         LOCAL_PLAYER,
@@ -779,7 +779,7 @@ fn finite_scalar_singleton_move_still_accepts_an_overflowing_difference() {
             position: Vec2::splat(-f32::MAX),
         },
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(s.states[0].position, Vec2::splat(-f32::MAX));
     assert_eq!(
@@ -787,7 +787,7 @@ fn finite_scalar_singleton_move_still_accepts_an_overflowing_difference() {
             LOCAL_PLAYER,
             &PieceCommand::Release(PieceId(0)),
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .released,
         1
@@ -818,7 +818,7 @@ fn alternating_board_releases_union_without_rescanning_the_growing_cluster() {
             members: all.clone(),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let result = s.apply_command(
         LOCAL_PLAYER,
@@ -827,7 +827,7 @@ fn alternating_board_releases_union_without_rescanning_the_growing_cluster() {
             delta: Vec2::ZERO,
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!((result.released, result.placed), (10_000, 10_000));
     assert_eq!(s.connectivity.component_size(PieceId(0)), 10_000);
@@ -1160,7 +1160,7 @@ fn small_grab_plans_in_a_million_piece_puzzle_have_no_membership_heap() {
                 LOCAL_PLAYER,
                 &PieceCommand::Grab(id),
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
             members as usize
@@ -1193,7 +1193,7 @@ fn scalar_and_partial_group_grab_preserve_local_selection_and_duplicate_counts()
             }
         };
         assert_eq!(
-            s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+            s.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER)
                 .grabbed,
             3
         );
@@ -1207,7 +1207,7 @@ fn scalar_and_partial_group_grab_preserve_local_selection_and_duplicate_counts()
         let next_z = s.next_z_order;
         for player in [LOCAL_PLAYER, PlayerId(1)] {
             assert_eq!(
-                s.apply_command(player, &command, None, puzzella_core::LOCAL_PLAYER)
+                s.apply_command(player, &command, None, jigsall_core::LOCAL_PLAYER)
                     .grabbed,
                 0
             );
@@ -1254,7 +1254,7 @@ fn group_grab_rejects_invalid_components_atomically_and_accepts_siblings() {
                 }
             };
             assert_eq!(
-                s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+                s.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER)
                     .grabbed,
                 if scalar { 0 } else { 2 },
                 "{invalid}"
@@ -1293,7 +1293,7 @@ fn group_grab_preserves_cross_component_z_ties_and_max_z_compaction() {
                 ),
             };
             assert_eq!(
-                s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER)
+                s.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER)
                     .grabbed,
                 6
             );
@@ -1327,7 +1327,7 @@ fn local_group_grab_syncs_partial_drag_to_complete_accepted_components() {
                     members: requested.clone()
                 },
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
             3
@@ -1360,7 +1360,7 @@ fn all_valid_group_grab_keeps_drag_membership_arc_shared() {
                 members: requested.clone()
             },
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         64
@@ -1389,7 +1389,7 @@ fn remote_scalar_and_group_grab_remove_complete_local_selection_and_drag() {
             }
         };
         assert_eq!(
-            s.apply_command(PlayerId(1), &command, None, puzzella_core::LOCAL_PLAYER)
+            s.apply_command(PlayerId(1), &command, None, jigsall_core::LOCAL_PLAYER)
                 .grabbed,
             3
         );
@@ -1416,7 +1416,7 @@ fn scalar_grab_of_large_component_updates_every_member() {
             LOCAL_PLAYER,
             &PieceCommand::Grab(PieceId(75)),
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         100
@@ -1429,7 +1429,7 @@ fn scalar_grab_of_large_component_updates_every_member() {
             LOCAL_PLAYER,
             &PieceCommand::Release(PieceId(15)),
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .released,
         100
@@ -1455,7 +1455,7 @@ fn million_piece_singleton_grab_uploads_exactly_sixteen_bytes() {
                 LOCAL_PLAYER,
                 &PieceCommand::Grab(id),
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
         1
@@ -1492,7 +1492,7 @@ fn group_grab_deduplicates_many_partial_roots_and_full_masks_need_no_scratch_hea
             LOCAL_PLAYER,
             &PieceCommand::GrabGroup { members: partial },
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         600

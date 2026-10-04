@@ -2,8 +2,8 @@ use crate::{components::*, resources::*, systems::*};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use bevy_egui::EguiPostUpdateSet;
-use puzzella_core::ClientCommand;
-use puzzella_core::*;
+use jigsall_core::ClientCommand;
+use jigsall_core::*;
 
 use crate::persistence::runtime::{
     OriginalPuzzleImage, PendingRestore, PersistenceService, PersistenceState,
@@ -842,7 +842,7 @@ mod tests {
                         LOCAL_PLAYER,
                         &PieceCommand::Grab(PieceId(1)),
                         Some(&definition),
-                        puzzella_core::LOCAL_PLAYER,
+                        jigsall_core::LOCAL_PLAYER,
                     );
                     if during_drag {
                         store.drag.members = std::sync::Arc::from([1 << 1]);
@@ -1166,7 +1166,7 @@ mod local_identity_tests {
         asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
         transform::TransformPlugin,
     };
-    use puzzella_core::session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId};
+    use jigsall_core::session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId};
 
     #[test]
     fn initialization_and_snapshot_restore_use_independent_process_identity() {

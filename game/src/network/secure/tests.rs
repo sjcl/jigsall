@@ -68,7 +68,7 @@ fn session_control_frame() -> Vec<u8> {
     use crate::network::session_control::{AuthAccepted, SessionControlMessage};
     wire::encode(&wire::WireMessage::SessionControl(
         SessionControlMessage::AuthAccepted(AuthAccepted {
-            player: puzzella_core::PlayerId(43),
+            player: jigsall_core::PlayerId(43),
             confirmation: [8; 32],
         }),
     ))
@@ -239,7 +239,7 @@ fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
     assert_eq!(WIRE_VERSION, 1);
     let (mut client, mut host) = channels();
     let secret = secret();
-    let hk = Hkdf::<Sha256>::new(Some(b"puzzella-secure-channel-v1"), secret.as_bytes());
+    let hk = Hkdf::<Sha256>::new(Some(b"jigsall-secure-channel-v1"), secret.as_bytes());
     for (index, label) in KEY_LABELS.iter().enumerate() {
         for version in [1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
             let mut expected = [0; 32];
@@ -256,7 +256,7 @@ fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
         }
     }
     for class in CLASSES {
-        assert_eq!(&aad(class, 0)[25..27], &[1, 0]);
+        assert_eq!(&aad(class, 0)[24..26], &[1, 0]);
         let plaintext = frame(class);
         let record = client.seal(class, &plaintext).unwrap();
         assert_eq!(record.len(), plaintext.len() + RECORD_OVERHEAD);
@@ -446,7 +446,7 @@ fn new_pake_produces_unrelated_keys_and_old_record_cannot_cross_sessions() {
         auth::{ClientHandshake, ServerHandshake, SessionPassword},
         session_control::*,
     };
-    use puzzella_core::{
+    use jigsall_core::{
         session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
         PlayerId,
     };
@@ -475,7 +475,7 @@ fn new_pake_produces_unrelated_keys_and_old_record_cannot_cross_sessions() {
             .unwrap();
         assert_eq!(server_secret.as_bytes().len(), 16);
         assert_eq!(server_secret.as_bytes(), client_secret.as_bytes());
-        let version_offset = b"puzzella-session-auth-v1".len();
+        let version_offset = b"jigsall-session-auth-v1".len();
         assert_eq!(server_secret.binding(), client_secret.binding());
         assert_eq!(
             &server_secret.binding()[version_offset..version_offset + 2],

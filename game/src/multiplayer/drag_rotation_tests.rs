@@ -2,8 +2,8 @@ use super::*;
 use crate::multiplayer::protocol::ProtocolCommandResult;
 use crate::resources::pieces::{ENABLED, HELD};
 use bevy::math::Vec2;
-use puzzella_core::protocol::*;
-use puzzella_core::session::*;
+use jigsall_core::protocol::*;
+use jigsall_core::session::*;
 
 #[test]
 fn snapshots_during_protocol_drag_preserve_rotation_rebase_without_committing_later_updates() {
@@ -15,7 +15,7 @@ fn snapshots_during_protocol_drag_preserve_rotation_rebase_without_committing_la
     s.deliver(&rotation, true);
     let rebased = s.store.states.clone();
     assert_ne!(rebased[0].position, initial[0].position);
-    assert_eq!(puzzella_core::decode_rotation(rebased[0].flags), 1);
+    assert_eq!(jigsall_core::decode_rotation(rebased[0].flags), 1);
     let update = s.update(A, 1, 1, Vec2::new(50., 0.));
     let active = s
         .contexts
@@ -32,7 +32,7 @@ fn snapshots_during_protocol_drag_preserve_rotation_rebase_without_committing_la
     for (piece, canonical) in snapshot.pieces.iter().zip(rebased.iter()) {
         assert_eq!(piece.position, canonical.position);
         assert_eq!(piece.z_order, canonical.z_order);
-        assert_eq!(puzzella_core::decode_rotation(piece.flags), 1);
+        assert_eq!(jigsall_core::decode_rotation(piece.flags), 1);
     }
     for peer in &mut s.peers {
         peer.replica
@@ -79,7 +79,7 @@ fn snapshots_during_protocol_drag_preserve_rotation_rebase_without_committing_la
         for (piece, canonical) in peer.store.states.iter().zip(rebased.iter()) {
             assert_eq!(piece.position, canonical.position);
             assert_eq!(piece.z_order, canonical.z_order);
-            assert_eq!(puzzella_core::decode_rotation(piece.flags), 1);
+            assert_eq!(jigsall_core::decode_rotation(piece.flags), 1);
             assert_eq!(piece.flags & HELD, 0);
         }
         assert_eq!(
@@ -93,7 +93,7 @@ fn snapshots_during_protocol_drag_preserve_rotation_rebase_without_committing_la
 #[test]
 fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_and_peers() {
     let mut s = Simulation::new(&[Vec2::splat(1000.); 5], &[(0, 1), (0, 2), (3, 4)]);
-    s.peers[0].store.connectivity = puzzella_core::PieceConnectivity::new(5);
+    s.peers[0].store.connectivity = jigsall_core::PieceConnectivity::new(5);
     s.peers[0].store.connectivity.union(PieceId(1), PieceId(2));
     s.peers[0].store.connectivity.union(PieceId(1), PieceId(0));
     s.peers[0].store.connectivity.union(PieceId(3), PieceId(4));
@@ -120,7 +120,7 @@ fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_
             A,
             &future_request,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::ControlNotProcessed { required: 1 }
@@ -206,7 +206,7 @@ fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_
             A,
             &request(0, 11),
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::StaleMoveContext
@@ -219,7 +219,7 @@ fn drag_rebases_keep_one_grab_and_reject_old_or_future_basis_transients_on_host_
             A,
             &request(1, 11),
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::DuplicateCommand
@@ -303,7 +303,7 @@ fn dense_drag_rebase_shares_membership_and_rejects_stale_topology_atomically() {
             A,
             &request,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::InconsistentDragTarget)
     );
@@ -394,7 +394,7 @@ fn invalid_drag_rotation_is_atomic_and_rejected_control_keeps_previous_move_basi
                 s.store.states[1].flags &= !ENABLED;
             }
             7 => {
-                s.store.states[1].flags = puzzella_core::with_rotation(s.store.states[1].flags, 1);
+                s.store.states[1].flags = jigsall_core::with_rotation(s.store.states[1].flags, 1);
             }
             8 => {
                 s.store.states[1].position.x += 1.;
@@ -433,7 +433,7 @@ fn invalid_drag_rotation_is_atomic_and_rejected_control_keeps_previous_move_basi
                     A,
                     &envelope,
                     Some(&s.definition),
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .is_err(),
             "case {case}"
@@ -518,7 +518,7 @@ fn replica_preflight_rejects_inconsistent_sibling_and_bad_context_without_partia
                 HOST,
                 &event,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .is_err());
         assert_eq!(peer.store.states.to_vec(), before);
@@ -543,7 +543,7 @@ fn drag_rotation_fingerprint_mismatch_diverges_and_freezes_presentation() {
             HOST,
             &event,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ReplicationError::Diverged)
     );

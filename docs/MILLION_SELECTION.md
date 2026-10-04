@@ -135,9 +135,9 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
 ```
 
 benchmarkはworkspaceのtargetにmillion-selection-cpu.csv、million-selection-gpu.csv、procedural-benchmark.csvを出力します。GPU CSVにはadapter、backend、driverを含めます。既存renderer CSVの列は維持しています。CPU例は測定stageを分離しており、GPU frame / ordinary window FPSと混同しません。
@@ -326,13 +326,13 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
-cargo test -p puzzella-game --release --locked small_component_grab_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked small_component_release_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked connected_snapping_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo test -p puzzella-game --release --locked render_only_image_upload_keeps_metadata_and_pixel_values -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked small_component_grab_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked small_component_release_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked connected_snapping_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked million_selection_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked multi_drag_cpu_benchmark -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo test -p jigsall-game --release --locked render_only_image_upload_keeps_metadata_and_pixel_values -- --ignored --nocapture --test-threads=1
 ```
 
 今回の実行は`CARGO_TARGET_DIR` / `--target-dir`で比較用targetを分離しています。GPU coverage、Z、alpha、visibility、picking、drag、connected outline、preview/readback、画像pixelとuploadの既存assertを維持しました。通常windowでの全手動操作や異OS / GPUの確認は含みません。

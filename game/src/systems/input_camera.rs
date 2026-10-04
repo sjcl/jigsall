@@ -4,8 +4,8 @@ use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::EguiContexts;
-use puzzella_core::PuzzleDefinition;
-use puzzella_puzzle::{placement::placement_half_extents, procedural::MAX_TAB_DEPTH};
+use jigsall_core::PuzzleDefinition;
+use jigsall_puzzle::{placement::placement_half_extents, procedural::MAX_TAB_DEPTH};
 
 pub fn update_input_state(
     mut input: ResMut<InputState>,
@@ -87,7 +87,7 @@ fn camera_zoom_settings(
         let piece_size = display_size / definition.grid_size.as_vec2();
         let centers = placement_half_extents(
             definition.piece_count(),
-            puzzella_puzzle::placement::placement_piece_size(definition),
+            jigsall_puzzle::placement::placement_piece_size(definition),
             display_size,
         );
         let mut piece_half =
@@ -341,7 +341,7 @@ mod tests {
     use super::*;
     use bevy::camera::{ComputedCameraValues, RenderTargetInfo};
     use bevy::ecs::system::RunSystemOnce;
-    use puzzella_core::GENERATOR_VERSION;
+    use jigsall_core::GENERATOR_VERSION;
 
     fn zoom_app() -> (App, Entity, Entity) {
         let mut app = App::new();
@@ -428,7 +428,7 @@ mod tests {
         let expected = *app.world().get::<Transform>(camera).unwrap();
         for cap in [1024, 256] {
             app.world_mut().resource_mut::<PuzzleImage>().texture_size =
-                puzzella_core::fit_image_size(logical_size, cap);
+                jigsall_core::fit_image_size(logical_size, cap);
             app.world_mut()
                 .run_system_once(auto_adjust_camera_zoom)
                 .unwrap();
@@ -460,7 +460,7 @@ mod tests {
                 piece_size * 0.5 + Vec2::splat(piece_size.min_element() * MAX_TAB_DEPTH);
             let states = DensePieceStates::generate(app.world().resource::<PuzzleDefinition>());
             for state in states.iter() {
-                let half = if puzzella_core::decode_rotation(state.flags) & 1 == 0 {
+                let half = if jigsall_core::decode_rotation(state.flags) & 1 == 0 {
                     piece_half
                 } else {
                     Vec2::new(piece_half.y, piece_half.x)

@@ -1,7 +1,7 @@
 //! Local puzzle texture budget. This never changes saved puzzle coordinates.
 use crate::settings_file::{SettingsFile, SettingsSection};
 use bevy::prelude::*;
-use puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION;
+use jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

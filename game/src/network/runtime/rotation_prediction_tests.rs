@@ -1,7 +1,7 @@
 use super::*;
 use crate::resources::pieces::{prepare_piece_upload, without_piece_state_access, PieceUpload};
 use bevy::prelude::*;
-use puzzella_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_core::{PieceId, PuzzleDefinition, GENERATOR_VERSION};
 
 fn session() -> AuthoritySession {
     AuthoritySession::new(
@@ -208,7 +208,7 @@ fn local_rotation_scope_epoch_inactive_and_rejection_restore_overrides() {
         }
         assert!(store.local_rotation.poses.is_empty());
         assert!(store.dirty_pieces.contains(&PieceId(0)));
-        assert_eq!(puzzella_core::decode_rotation(store.states[0].flags), 0);
+        assert_eq!(jigsall_core::decode_rotation(store.states[0].flags), 0);
     }
 }
 
@@ -286,7 +286,7 @@ fn local_rotation_old_gesture_ack_and_cancel_do_not_rebase_new_prediction() {
         .unwrap();
     bridge.refresh_prediction(player, Some(&def), &interaction, &mut store);
     let before = store.presentation_state(PieceId(1));
-    assert_eq!(puzzella_core::decode_rotation(before.flags), 1);
+    assert_eq!(jigsall_core::decode_rotation(before.flags), 1);
     bridge
         .reconcile(
             player,

@@ -3,9 +3,9 @@ use crate::play_area::{DragValidation, PivotEnvelope};
 use crate::resources::pieces::DragTransform;
 use crate::{resources::*, selection::*};
 use bevy::prelude::*;
-use puzzella_core::protocol::{ComponentRef, PieceTarget};
-use puzzella_core::*;
-use puzzella_puzzle::placement::LogicalPlayArea;
+use jigsall_core::protocol::{ComponentRef, PieceTarget};
+use jigsall_core::*;
+use jigsall_puzzle::placement::LogicalPlayArea;
 
 #[cfg(test)]
 mod drag_rotation_tests;
@@ -212,7 +212,7 @@ impl PieceInteraction {
         {
             return None;
         }
-        let target = puzzella_core::protocol::PieceTarget::from_selection(
+        let target = jigsall_core::protocol::PieceTarget::from_selection(
             &store.connectivity,
             &store.selected_pieces,
         )
@@ -643,7 +643,7 @@ mod tests {
     }
     fn apply(store: &mut PieceDataStore, commands: Vec<PieceCommand>) {
         for command in commands {
-            store.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER);
+            store.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER);
         }
     }
 
@@ -657,12 +657,7 @@ mod tests {
             let mut selection = PuzzleSelection::default();
             let mut down = frame(Vec2::ZERO, true, true);
             down.ctrl = true;
-            interaction.update(
-                down,
-                &mut store,
-                &mut selection,
-                puzzella_core::LOCAL_PLAYER,
-            );
+            interaction.update(down, &mut store, &mut selection, jigsall_core::LOCAL_PLAYER);
             if box_selecting {
                 let request = selection.latest.unwrap();
                 selection.completed = Some(SelectionResult {
@@ -675,7 +670,7 @@ mod tests {
                     frame(Vec2::splat(20.0), true, false),
                     &mut store,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 assert!(interaction.screen_selection_rect().is_some());
             }
@@ -683,19 +678,19 @@ mod tests {
                 LOCAL_PLAYER,
                 &PieceCommand::Grab(PieceId(0)),
                 None,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             store.apply_command(
                 PlayerId(1),
                 &PieceCommand::Grab(PieceId(1)),
                 None,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let mut placed = store.state(PieceId(2)).unwrap();
             placed.placed = true;
-            store.set_state(PieceId(2), placed, puzzella_core::LOCAL_PLAYER);
+            store.set_state(PieceId(2), placed, jigsall_core::LOCAL_PLAYER);
             let commands =
-                interaction.cancel(&mut store, &mut selection, puzzella_core::LOCAL_PLAYER);
+                interaction.cancel(&mut store, &mut selection, jigsall_core::LOCAL_PLAYER);
             assert_eq!(
                 store.selected_pieces.iter().collect::<Vec<_>>(),
                 [PieceId(0)]
@@ -719,7 +714,7 @@ mod tests {
             frame(Vec2::ZERO, true, true),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         let request = selection.latest.unwrap();
         selection.completed = Some(SelectionResult {
@@ -732,7 +727,7 @@ mod tests {
             frame(Vec2::ZERO, true, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(commands.len(), 1);
         assert!(commands
@@ -754,7 +749,7 @@ mod tests {
                     frame(Vec2::splat(step as f32), true, false),
                     &mut store,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .is_empty());
             assert!(Arc::ptr_eq(&members, &store.drag.members));
@@ -765,7 +760,7 @@ mod tests {
             frame(Vec2::new(150.0, 200.0), false, false),
             &mut store,
             &mut selection,
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(commands.len(), 1);
         assert!(store.drag.members.is_empty());
@@ -780,7 +775,7 @@ mod tests {
                 frame(Vec2::splat(500.0), false, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .is_empty());
     }
@@ -801,30 +796,25 @@ mod tests {
             }
             let mut other = store.state(PieceId(33)).unwrap();
             other.held_by = Some(LOCAL_PLAYER);
-            store.set_state(PieceId(33), other, puzzella_core::LOCAL_PLAYER);
+            store.set_state(PieceId(33), other, jigsall_core::LOCAL_PLAYER);
             interaction.update(
                 frame(Vec2::new(10.0, 20.0), true, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             interaction.update(
                 frame(Vec2::splat(f32::NAN), true, false),
                 &mut store,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let commands = if focus_loss {
                 let mut lost = frame(Vec2::splat(500.0), false, false);
                 lost.focused = false;
-                interaction.update(
-                    lost,
-                    &mut store,
-                    &mut selection,
-                    puzzella_core::LOCAL_PLAYER,
-                )
+                interaction.update(lost, &mut store, &mut selection, jigsall_core::LOCAL_PLAYER)
             } else {
-                interaction.cancel(&mut store, &mut selection, puzzella_core::LOCAL_PLAYER)
+                interaction.cancel(&mut store, &mut selection, jigsall_core::LOCAL_PLAYER)
             };
             assert_eq!(commands.len(), 2);
             apply(&mut store, commands);
@@ -832,7 +822,7 @@ mod tests {
             assert_eq!(store.states[33].position, Vec2::ZERO);
             assert!(store.held_by.is_empty());
             assert!(interaction
-                .cancel(&mut store, &mut selection, puzzella_core::LOCAL_PLAYER)
+                .cancel(&mut store, &mut selection, jigsall_core::LOCAL_PLAYER)
                 .is_empty());
         }
     }
@@ -851,7 +841,7 @@ mod tests {
                     frame(Vec2::splat(step as f32), true, false),
                     &mut store,
                     &mut selection,
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 );
                 assert!(std::hint::black_box(commands).is_empty());
                 std::hint::black_box(&store.drag);

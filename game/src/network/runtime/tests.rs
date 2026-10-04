@@ -6,7 +6,7 @@ mod presence_tests;
 mod presentation_tests;
 use crate::{persistence::runtime::OriginalPuzzleImage, resources::*};
 use bevy::state::app::StatesPlugin;
-use puzzella_core::{PieceBitSet, PieceCommand, PieceId, GENERATOR_VERSION};
+use jigsall_core::{PieceBitSet, PieceCommand, PieceId, GENERATOR_VERSION};
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::Mutex,
@@ -911,7 +911,7 @@ fn host_local_commands_are_retained_during_join_then_replicated() {
         pair.client.world().resource::<PieceDataStore>().states
     );
     assert_eq!(
-        puzzella_core::decode_rotation(
+        jigsall_core::decode_rotation(
             pair.client.world().resource::<PieceDataStore>().states[0].flags
         ),
         1
@@ -1324,7 +1324,7 @@ fn client_rotation_ack_rebases_pointer_and_release_queued_before_ack_uses_the_ne
 #[test]
 fn old_rotation_ack_uses_its_members_bounds_and_new_gesture_waits_for_release() {
     let mut pair = Pair::new();
-    let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&definition()).unwrap();
+    let area = jigsall_puzzle::placement::LogicalPlayArea::from_definition(&definition()).unwrap();
     pair.host
         .world_mut()
         .resource_mut::<PieceDataStore>()
@@ -1731,8 +1731,8 @@ fn separate_process_image_join(render: bool) {
             "network::runtime::tests::gns_localhost_runtime_process_client",
             "--nocapture",
         ])
-        .env("PUZZELLA_TEST_JOIN_ADDRESS", address.to_string())
-        .env("PUZZELLA_TEST_JOIN_RENDER", if render { "1" } else { "0" })
+        .env("JIGSALL_TEST_JOIN_ADDRESS", address.to_string())
+        .env("JIGSALL_TEST_JOIN_RENDER", if render { "1" } else { "0" })
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -1808,10 +1808,10 @@ fn process_gpu_client_app() -> App {
 #[cfg(feature = "gns")]
 #[test]
 fn gns_localhost_runtime_process_client() {
-    let Ok(address) = std::env::var("PUZZELLA_TEST_JOIN_ADDRESS") else {
+    let Ok(address) = std::env::var("JIGSALL_TEST_JOIN_ADDRESS") else {
         return;
     };
-    let render = std::env::var("PUZZELLA_TEST_JOIN_RENDER").is_ok_and(|mode| mode == "1");
+    let render = std::env::var("JIGSALL_TEST_JOIN_RENDER").is_ok_and(|mode| mode == "1");
     let mut client = if render {
         process_gpu_client_app()
     } else {

@@ -1,8 +1,8 @@
 use super::*;
 use crate::localization::{LanguagePreference, Locale};
 use bevy::ecs::system::RunSystemOnce;
-use puzzella_core::PlayerDisplayName;
-use puzzella_game::players::{PresenceMessage, RosterPlayer, RosterSnapshot};
+use jigsall_core::PlayerDisplayName;
+use jigsall_game::players::{PresenceMessage, RosterPlayer, RosterSnapshot};
 
 fn font() -> FontRef<'static> {
     FontRef::try_from_slice(EMBEDDED_FALLBACK_FONTS[0].bytes).unwrap()
@@ -157,7 +157,7 @@ fn cursor_atlas_rebuilds_on_presence_names_locale_dpi_reset_only() {
     // Camera motion is deliberately outside the atlas builder's system inputs.
     let camera = app
         .world_mut()
-        .spawn((puzzella_game::MainCamera, Transform::IDENTITY))
+        .spawn((jigsall_game::MainCamera, Transform::IDENTITY))
         .id();
     for frame in 0..8 {
         *app.world_mut().get_mut::<Transform>(camera).unwrap() =

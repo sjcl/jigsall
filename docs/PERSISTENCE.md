@@ -12,7 +12,7 @@
 
 ## オートセーブ
 
-Settings の一般タブで有効・無効、間隔（1–60分）、ゲームごとの保存件数上限（1件以上）を変更できます。初期値は有効・5分・1件です。変更は即時反映し、`<OS user local application data>/puzzella/settings.json` の `autosave` セクションに保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。`max_saves_per_game` はゲームごとに保持するオートセーブ件数で、省略時は1です。0や不正なJSONはエラーを表示して初期値を使います。上限を減らした場合は、そのゲームの次のオートセーブ成功後に超過分を削除します。共通のファイル形式と保存処理は [SETTINGS.md](SETTINGS.md) を参照してください。
+Settings の一般タブで有効・無効、間隔（1–60分）、ゲームごとの保存件数上限（1件以上）を変更できます。初期値は有効・5分・1件です。変更は即時反映し、`<OS user local application data>/jigsall/settings.json` の `autosave` セクションに保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。`max_saves_per_game` はゲームごとに保持するオートセーブ件数で、省略時は1です。0や不正なJSONはエラーを表示して初期値を使います。上限を減らした場合は、そのゲームの次のオートセーブ成功後に超過分を削除します。共通のファイル形式と保存処理は [SETTINGS.md](SETTINGS.md) を参照してください。
 
 `game/src/persistence/autosave.rs` は `GameSubState::Playing` かつ `LocalPlayerId == SessionHostId` の間だけ実時間を加算します。ポーズ・初期化・完成後・メニューでは加算しません。間隔変更・無効化・ホストでなくなった場合・セッション終了時にはタイマーをリセットします。間隔が来ても別の保存処理やタイトル入力中は待機し、空いたフレームで1回保存します。現在のローカルゲームはローカルプレイヤーがホストです。network runtime の接続・移行処理は `SessionHostId` を現在のauthorityに同期する必要があります。
 
@@ -93,20 +93,22 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 ## 保存先と atomic write
 
 ```text
-<OS user local application data>/puzzella/
+<OS user local application data>/jigsall/
   saves/<32 lowercase hex SaveId>.puzsave
   images/<64 lowercase hex ImageHash>.puzimg
   locks/repository.lock
   locks/<64 lowercase hex ImageHash>.puzimg.lock
 ```
 
-Windows は `%LOCALAPPDATA%/puzzella`、macOS はユーザー Application Support 以下、Linux は XDG data directory 以下です。production は working directory に依存しません。`FilesystemStorage::new(root)` で test の temporary directory を注入できます。
+Windows は `%LOCALAPPDATA%/jigsall`、macOS はユーザー Application Support 以下、Linux は XDG data directory 以下です。production は working directory に依存しません。`FilesystemStorage::new(root)` で test の temporary directory を注入できます。
+
+旧 `puzzella` 保存先からのセーブ・画像の自動移行は行いません。
 
 storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と namespace を使います。`read_range` は指定範囲だけを読み、EOF では短い buffer を返します。backend は全 blob を取得して slice する実装を避け、`len` は blob size の metadata を取得します。任意 path、`PathBuf`、rename は上位 API にありません。固定 hex key だけから filename を作るため、タイトルによる path traversal はできません。storage-specific failure は表示可能な `StorageError` に変換します。`write(key, Vec<u8>)` は encoded allocation の所有権を渡します。repository → StorageProxy → StorageOperation::Write → owner backend の間で blob の clone は行いません。FilesystemStorage の atomic write 手順は同じです。非同期 write の executor は API が必要とする期間、受け取った buffer を保持してください。
 
-書き込みは同じ directory の `.puzzella-*.tmp` に write → flush → sync_all → atomic overwrite。`tempfile::persist` による Windows MoveFileExW / Unix rename を使い、旧 target の delete は行いません。Unix では directory も sync します。rename/replace の失敗で旧 file を失わず、temp は一覧に入りません。電源断時の durability は OS/filesystem の保証に依存します。
+書き込みは同じ directory の `.jigsall-*.tmp` に write → flush → sync_all → atomic overwrite。`tempfile::persist` による Windows MoveFileExW / Unix rename を使い、旧 target の delete は行いません。Unix では directory も sync します。rename/replace の失敗で旧 file を失わず、temp は一覧に入りません。電源断時の durability は OS/filesystem の保証に依存します。
 
-プロセスの異常終了で残った一時ファイルは、起動時に persistence worker 上で1回掃除します。`saves` / `images` の直下にある `.puzzella-*.tmp` の通常ファイルだけを対象とし、最終更新から24時間以上経過したものを削除します。最近のファイル・未来の更新時刻を持つファイル・directory・symlink・保存データは対象外です。掃除は main thread をブロックせず、保存 request の処理前に完了します。directory が存在しない場合は何も作成せず、読み取り・削除の失敗は警告ログに残して他のファイルの掃除と保存処理を続けます。
+プロセスの異常終了で残った一時ファイルは、起動時に persistence worker 上で1回掃除します。`saves` / `images` の直下にある `.jigsall-*.tmp` の通常ファイルだけを対象とし、最終更新から24時間以上経過したものを削除します。最近のファイル・未来の更新時刻を持つファイル・directory・symlink・保存データは対象外です。掃除は main thread をブロックせず、保存 request の処理前に完了します。directory が存在しない場合は何も作成せず、読み取り・削除の失敗は警告ログに残して他のファイルの掃除と保存処理を続けます。
 
 新規画像の import で元 bytes の hash と既存画像 container の完全性を検証し、その後に save を publish します。import 済み画像を使う通常 Save は存在確認だけを行い、`.puzimg` の再読込・再 hash は行いません。実際の load では画像全体を検証するため、import 後の外部破損はそこで検出します。同じ ImageHash は複数 save で共有します。途中 failure は高々 orphan image を残します。
 

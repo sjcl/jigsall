@@ -5,7 +5,7 @@ use crate::{
     selection::{PuzzleSelection, SelectionMode, SelectionPayload, SelectionResult},
 };
 use bevy::prelude::*;
-use puzzella_core::{
+use jigsall_core::{
     session::{ImageHash, SessionDefinition, SessionId},
     PieceCommand, GENERATOR_VERSION, LOCAL_PLAYER,
 };
@@ -40,7 +40,7 @@ fn fixture(placed: bool) -> (PuzzleDefinition, PieceDataStore) {
         for id in 0..8 {
             let mut state = store.state(PieceId(id)).unwrap();
             state.placed = true;
-            store.set_state(PieceId(id), state, puzzella_core::LOCAL_PLAYER);
+            store.set_state(PieceId(id), state, jigsall_core::LOCAL_PLAYER);
         }
     }
     // Two already-connected components merge across their correct boundary.
@@ -68,7 +68,7 @@ fn connected_snapshot_round_trip_preserves_positions_placement_and_edges() {
                 PlayerId(1),
                 &PieceCommand::Grab(PieceId(5)),
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
         }
         let snapshot = GameSnapshot::capture(&s, &d, SESSION, expected(&d).cursor).unwrap();
@@ -233,7 +233,7 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
         frame(Vec2::ZERO, true, true),
         &mut restored,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let request = selection.latest.unwrap();
     selection.completed = Some(SelectionResult {
@@ -246,7 +246,7 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
         frame(Vec2::ZERO, true, false),
         &mut restored,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(commands.len(), 1);
     assert_eq!(
@@ -255,7 +255,7 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
                 LOCAL_PLAYER,
                 &commands[0],
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
         6
@@ -264,7 +264,7 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
         frame(Vec2::splat(20.0), false, false),
         &mut restored,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(
         restored
@@ -272,7 +272,7 @@ fn migration_then_gpu_point_selection_moves_the_complete_restored_component() {
                 LOCAL_PLAYER,
                 &commands[0],
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .released,
         6
@@ -336,7 +336,7 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
                 LOCAL_PLAYER,
                 &PieceCommand::Grab(PieceId(777_777)),
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .grabbed,
         1_000_000
@@ -347,7 +347,7 @@ fn million_connected_fractional_positions_round_trip_and_stay_atomic() {
                 LOCAL_PLAYER,
                 &PieceCommand::Release(PieceId(777_777)),
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .released,
         1_000_000
@@ -396,13 +396,13 @@ fn assert_snapshot_root_independence(image_size: UVec2, fractional: Vec2) {
             LOCAL_PLAYER,
             &PieceCommand::Grab(PieceId(1)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         s.apply_command(
             LOCAL_PLAYER,
             &PieceCommand::Release(PieceId(1)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert!(s.connectivity.same_component(PieceId(1), PieceId(0)));
         assert!(!s.connectivity.same_component(PieceId(1), PieceId(3)));
@@ -461,13 +461,13 @@ fn fixed_offset_snap_closure_and_board_priority_survive_snapshot_restore() {
                 LOCAL_PLAYER,
                 &PieceCommand::Grab(PieceId(0)),
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let result = store.apply_command(
                 LOCAL_PLAYER,
                 &PieceCommand::Release(PieceId(0)),
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             assert_eq!(result.placed, placed);
             assert_eq!(store.connectivity.component_size(PieceId(0)), expected_size);
@@ -511,13 +511,13 @@ fn fractional_closure_is_identical_after_restore_and_preserves_target_positions(
             LOCAL_PLAYER,
             &PieceCommand::Grab(PieceId(0)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         store.apply_command(
             LOCAL_PLAYER,
             &PieceCommand::Release(PieceId(0)),
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         assert_eq!(store.connectivity.component_size(PieceId(0)), 3);
         for (state, before) in store.states[1..].iter().zip(targets) {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{resources::pieces::DragTransform, selection::SelectionPayload};
 use bevy::ecs::system::RunSystemOnce;
-use puzzella_core::{PieceCommand, LOCAL_PLAYER};
+use jigsall_core::{PieceCommand, LOCAL_PLAYER};
 
 #[test]
 #[ignore = "real GPU million-selection benchmark; writes target/million-selection-gpu.csv"]
@@ -95,7 +95,7 @@ fn gpu_million_selection_benchmark() {
         let start = Instant::now();
         app.world_mut()
             .resource_mut::<PieceDataStore>()
-            .commit_selection(mask, None, puzzella_core::LOCAL_PLAYER);
+            .commit_selection(mask, None, jigsall_core::LOCAL_PLAYER);
         let commit = start.elapsed().as_secs_f64() * 1e6;
         let start = Instant::now();
         app.world_mut()
@@ -123,7 +123,7 @@ fn gpu_million_selection_benchmark() {
             };
             let start = Instant::now();
             let outcome =
-                store.apply_command(LOCAL_PLAYER, &grab, Some(&def), puzzella_core::LOCAL_PLAYER);
+                store.apply_command(LOCAL_PLAYER, &grab, Some(&def), jigsall_core::LOCAL_PLAYER);
             let grab_cpu = start.elapsed().as_secs_f64() * 1e6;
             assert_eq!(outcome.grabbed, 1_000_000);
             (members, grab_cpu)
@@ -162,7 +162,7 @@ fn gpu_million_selection_benchmark() {
                 LOCAL_PLAYER,
                 &release,
                 Some(&def),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             let release_cpu = start.elapsed().as_secs_f64() * 1e6;
             assert_eq!((outcome.released, outcome.placed), (1_000_000, 0));

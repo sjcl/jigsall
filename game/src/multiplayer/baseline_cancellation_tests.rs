@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::pieces::{ENABLED, HELD};
-use puzzella_core::protocol::{DragCancelled, ProtocolAuthorityEvent};
+use jigsall_core::protocol::{DragCancelled, ProtocolAuthorityEvent};
 
 #[test]
 fn join_at_c_then_cancel_at_c_plus_one_keeps_baseline_position() {
@@ -48,10 +48,7 @@ fn join_baseline_then_cancel_preserves_canonical_state_and_other_drag() {
             if rotate {
                 host.rotate(42, 40, Some(100), Vec2::new(80., 30.));
                 host.update(HOST, 42, 101, Vec2::new(800., 300.));
-                assert_ne!(
-                    puzzella_core::decode_rotation(host.store.states[0].flags),
-                    0
-                );
+                assert_ne!(jigsall_core::decode_rotation(host.store.states[0].flags), 0);
             }
             host.grab(b, 5, [63]);
             host.update(b, 5, 50, Vec2::new(-20., 50.));
@@ -157,8 +154,8 @@ fn join_baseline_then_cancel_preserves_canonical_state_and_other_drag() {
 
 #[test]
 fn million_piece_dense_baseline_cancellation_uses_compact_membership() {
-    let mut host = Host::new(puzzella_core::MAX_PIECES, &[]);
-    host.grab(HOST, 0, 0..puzzella_core::MAX_PIECES as u32);
+    let mut host = Host::new(jigsall_core::MAX_PIECES, &[]);
+    host.grab(HOST, 0, 0..jigsall_core::MAX_PIECES as u32);
     host.update(HOST, 0, 0, Vec2::new(80., 30.));
     let ActiveDragTarget::Dense(target) = &host
         .contexts
@@ -179,13 +176,13 @@ fn million_piece_dense_baseline_cancellation_uses_compact_membership() {
         .cancel_replicated(&mut host.session, &mut host.store, HOST)
         .unwrap()
         .unwrap();
-    assert_eq!(event.applied.released, puzzella_core::MAX_PIECES);
+    assert_eq!(event.applied.released, jigsall_core::MAX_PIECES);
     peer.event(&host, &event.authority_event);
     peer.assert_matches(&host);
     assert!(host.store.held_by.is_empty());
     assert!(peer.store.held_by.is_empty());
-    assert_eq!(host.store.dirty_pieces.count(), puzzella_core::MAX_PIECES);
-    assert_eq!(peer.store.dirty_pieces.count(), puzzella_core::MAX_PIECES);
+    assert_eq!(host.store.dirty_pieces.count(), jigsall_core::MAX_PIECES);
+    assert_eq!(peer.store.dirty_pieces.count(), jigsall_core::MAX_PIECES);
     assert!(peer
         .replica
         .remote_drag(&peer.session, &peer.store, HOST)

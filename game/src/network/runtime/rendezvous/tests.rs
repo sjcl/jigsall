@@ -435,7 +435,7 @@ fn rendezvous_pre_room_host_failure_keeps_prepared_world_and_allows_retry() {
             let roster = driver.take_roster();
             world::install_driver(host.world_mut(), Box::new(driver), status, roster);
             // A queued command must not fall through to offline authority on failure.
-            fixtures::send(&mut host, PieceCommand::Grab(puzzella_core::PieceId(0)));
+            fixtures::send(&mut host, PieceCommand::Grab(jigsall_core::PieceId(0)));
             host.update();
             host.update();
             let status = host.world().resource::<NetworkStatus>();
@@ -917,8 +917,8 @@ fn rendezvous_runtime_ready_command_roundtrip_survives_control_loss_then_tears_d
         Some(RendezvousControlStatus::Unavailable)
     );
     assert!(bus.lock().unwrap().closed.is_empty());
-    let mut members = puzzella_core::PieceBitSet::new(4);
-    members.insert(puzzella_core::PieceId(0));
+    let mut members = jigsall_core::PieceBitSet::new(4);
+    members.insert(jigsall_core::PieceId(0));
     fixtures::send(&mut client, PieceCommand::GrabGroup { members });
     for _ in 0..10 {
         client.update();

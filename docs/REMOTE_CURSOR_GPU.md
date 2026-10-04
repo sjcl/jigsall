@@ -120,8 +120,8 @@ JoinBaseline or saves.
 
 ```powershell
 cargo test --workspace --locked cursor_atlas -- --nocapture
-cargo test --locked -p puzzella-game cursor -- --nocapture
-cargo test --locked --release -p puzzella-game gpu_remote_cursor -- --ignored --nocapture --test-threads=1
+cargo test --locked -p jigsall-game cursor -- --nocapture
+cargo test --locked --release -p jigsall-game gpu_remote_cursor -- --ignored --nocapture --test-threads=1
 ```
 
 CPU tests cover Latin/Japanese/fallback/unsupported and 32-character names, 65

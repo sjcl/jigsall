@@ -163,8 +163,8 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
+cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+cargo run --release --locked -p jigsall-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
 ```
 
 benchmarkはtarget/procedural-benchmark.csvを更新します。今回の記録は[benchmarks/procedural-rtx5090.csv](../benchmarks/procedural-rtx5090.csv)。通常lyon除外はcargo tree --locked -e normal -i lyonで確認できます。

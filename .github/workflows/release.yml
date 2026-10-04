@@ -74,12 +74,12 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x86_64
-            binary: puzzella
-            archive: puzzella-linux-x86_64.tar.gz
+            binary: jigsall
+            archive: jigsall-linux-x86_64.tar.gz
           - os: windows-2022
             platform: windows-x86_64
-            binary: puzzella.exe
-            archive: puzzella-windows-x86_64.zip
+            binary: jigsall.exe
+            archive: jigsall-windows-x86_64.zip
     env:
       CMAKE_GENERATOR: Ninja
       GNS_VCPKG_BUILDTREES_ROOT: ${{ github.workspace }}/target/vcpkg-trees
@@ -135,7 +135,7 @@ jobs:
           cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
 
       - name: Build application with multiplayer support
-        run: cargo build --locked --release -p puzzella --bin puzzella --features gns
+        run: cargo build --locked --release -p jigsall --bin jigsall --features gns
 
       - name: Package release
         shell: python
@@ -150,10 +150,10 @@ jobs:
           ], text=True))
           binary = Path(metadata["target_directory"]) / "release" / os.environ["BINARY_NAME"]
           files = [
-              (binary, f"puzzella/{binary.name}"),
-              (Path("README.md"), "puzzella/README.md"),
-              (Path("ui/fonts/OFL.txt"), "puzzella/licenses/MPLUS1p/OFL.txt"),
-              (Path("ui/fonts/README.md"), "puzzella/licenses/MPLUS1p/README.md"),
+              (binary, f"jigsall/{binary.name}"),
+              (Path("README.md"), "jigsall/README.md"),
+              (Path("ui/fonts/OFL.txt"), "jigsall/licenses/MPLUS1p/OFL.txt"),
+              (Path("ui/fonts/README.md"), "jigsall/licenses/MPLUS1p/README.md"),
           ]
           for source, _ in files:
               if not source.is_file():
@@ -172,7 +172,7 @@ jobs:
       - name: Upload packaged build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: puzzella-release-${{ matrix.platform }}
+          name: jigsall-release-${{ matrix.platform }}
           path: dist/${{ matrix.archive }}
           if-no-files-found: error
           compression-level: 0
@@ -189,7 +189,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: puzzella-release-*
+          pattern: jigsall-release-*
           path: dist
           merge-multiple: true
       # No checkout: only this job receives release write permission.
@@ -204,7 +204,7 @@ jobs:
           import hashlib, json, os, subprocess
           from pathlib import Path
           assets = sorted(Path("dist").iterdir())
-          expected = {"puzzella-linux-x86_64.tar.gz", "puzzella-windows-x86_64.zip"}
+          expected = {"jigsall-linux-x86_64.tar.gz", "jigsall-windows-x86_64.zip"}
           if {asset.name for asset in assets} != expected or not all(asset.is_file() for asset in assets):
               raise RuntimeError("Expected both Windows and Linux release archives")
           checksums = Path("dist/SHA256SUMS")

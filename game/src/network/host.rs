@@ -8,7 +8,7 @@ use crate::{
     multiplayer::protocol::{HostCommandOutcome, ProtocolCommandError, ProtocolDragContexts},
     resources::PieceDataStore,
 };
-use puzzella_core::{
+use jigsall_core::{
     protocol::ProtocolAuthorityEventEnvelope, session::AuthoritySession, PlayerId, PuzzleDefinition,
 };
 
@@ -67,11 +67,11 @@ impl HostRouter<'_> {
             WireMessage::ClientCommand(command) => {
                 let transient = matches!(
                     command.command,
-                    puzzella_core::protocol::ProtocolPieceCommand::DragUpdate { .. }
+                    jigsall_core::protocol::ProtocolPieceCommand::DragUpdate { .. }
                 );
                 // Reject invalid authenticated scalars even when an old context
                 // would otherwise yield a benign sequencing error first.
-                if matches!(command.command, puzzella_core::protocol::ProtocolPieceCommand::DragUpdate { delta } if !delta.is_finite())
+                if matches!(command.command, jigsall_core::protocol::ProtocolPieceCommand::DragUpdate { delta } if !delta.is_finite())
                 {
                     return Err(HostRouteError::Command(ProtocolCommandError::InvalidDelta));
                 }

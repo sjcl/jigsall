@@ -1,5 +1,5 @@
 //! Bounded session-control data; no crypto-library types cross this boundary.
-use puzzella_core::{
+use jigsall_core::{
     session::{AuthorityCursor, SessionDefinition},
     PlayerId,
 };

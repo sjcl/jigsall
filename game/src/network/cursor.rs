@@ -4,7 +4,7 @@ use crate::{
     resources::remote_cursor::RemoteCursorPresentation,
 };
 use bevy::prelude::Vec2;
-use puzzella_core::{
+use jigsall_core::{
     session::{AuthorityEpoch, SessionId},
     PlayerId,
 };

@@ -5,8 +5,8 @@ use bevy::{
     prelude::*,
     window::{ClosingWindow, PrimaryWindow, WindowCloseRequested},
 };
-use puzzella_core::PuzzleDefinition;
-use puzzella_game::{
+use jigsall_core::PuzzleDefinition;
+use jigsall_game::{
     network::runtime::{NetworkStatus, RuntimeRole},
     persistence::runtime::PersistenceState,
     resources::{AppState, GameCompleteSubState, GameSubState, PieceDataStore},

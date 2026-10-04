@@ -314,8 +314,8 @@ fn child(root: &Path, action: &str) -> TestProcess {
                 "--ignored",
                 "--nocapture",
             ])
-            .env("PUZZELLA_LOCK_TEST_ROOT", root)
-            .env("PUZZELLA_LOCK_TEST_ACTION", action)
+            .env("JIGSALL_LOCK_TEST_ROOT", root)
+            .env("JIGSALL_LOCK_TEST_ACTION", action)
             .spawn()
             .unwrap(),
     )
@@ -401,11 +401,11 @@ fn process_termination_releases_image_and_repository_locks_without_stale_lock_cl
 #[test]
 #[ignore = "invoked by the process lock tests"]
 fn image_lock_child_process() {
-    let Some(root) = std::env::var_os("PUZZELLA_LOCK_TEST_ROOT") else {
+    let Some(root) = std::env::var_os("JIGSALL_LOCK_TEST_ROOT") else {
         return;
     };
     let root = PathBuf::from(root);
-    let action = std::env::var("PUZZELLA_LOCK_TEST_ACTION").unwrap();
+    let action = std::env::var("JIGSALL_LOCK_TEST_ACTION").unwrap();
     let storage = FilesystemStorage::new(&root);
     let repository = SaveRepository::new(storage.clone());
     let bytes = encoded_image(image::ImageFormat::Png);

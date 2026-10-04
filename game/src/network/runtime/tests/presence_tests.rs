@@ -1,6 +1,6 @@
 use super::*;
 use crate::players::{PresenceMessage, RosterSnapshot};
-use puzzella_core::PlayerDisplayName;
+use jigsall_core::PlayerDisplayName;
 
 #[path = "cursor_tests.rs"]
 mod cursor_tests;

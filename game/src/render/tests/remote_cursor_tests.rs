@@ -4,7 +4,7 @@ use crate::{
     resources::{remote_cursor::RemoteCursorPresentation, GameSubState},
 };
 use ab_glyph::{Font, FontRef, ScaleFont};
-use puzzella_core::PlayerId;
+use jigsall_core::PlayerId;
 use std::collections::BTreeMap;
 
 // Read the completed frame directly. Calling app.update again here would hide

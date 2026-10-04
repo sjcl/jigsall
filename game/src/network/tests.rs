@@ -17,7 +17,7 @@ use crate::{
     resources::PieceDataStore,
 };
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{
+use jigsall_core::{
     protocol::*, session::*, PieceBitSet, PieceId, PlayerId, PuzzleDefinition, GENERATOR_VERSION,
     MAX_PIECES,
 };

@@ -27,18 +27,18 @@ BevyのAPI資料: [WindowMode](https://docs.rs/bevy/0.19.1/bevy/window/enum.Wind
 
 ## 適用・保存
 
-解像度または画面モードを適用した場合は15秒以内に確認します。取り消し・時間切れで変更前の設定へ戻し、確認されるまでファイルへ保存しません。FPSだけの変更はすぐ保存を要求します。ユーザーデータディレクトリの `puzzella/settings.json`（Windowsでは `%LOCALAPPDATA%\puzzella\settings.json`）の `display` セクションを更新し、他の設定を保持します。共通ワーカーが小さいJSONを一時ファイルへ書き、sync後にatomic replaceで保存します。UI操作はディスク処理の完了を待ちません。確認済みの表示設定は保存待ちで期限を過ぎても取り消さず、保存完了・エラーを非同期に受け取ります。共通の保存処理と終了時の扱いは [SETTINGS.md](SETTINGS.md) を参照してください。
+解像度または画面モードを適用した場合は15秒以内に確認します。取り消し・時間切れで変更前の設定へ戻し、確認されるまでファイルへ保存しません。FPSだけの変更はすぐ保存を要求します。ユーザーデータディレクトリの `jigsall/settings.json`（Windowsでは `%LOCALAPPDATA%\jigsall\settings.json`）の `display` セクションを更新し、他の設定を保持します。共通ワーカーが小さいJSONを一時ファイルへ書き、sync後にatomic replaceで保存します。UI操作はディスク処理の完了を待ちません。確認済みの表示設定は保存待ちで期限を過ぎても取り消さず、保存完了・エラーを非同期に受け取ります。共通の保存処理と終了時の扱いは [SETTINGS.md](SETTINGS.md) を参照してください。
 
 初期値はウィンドウ1280 × 720、最大60 FPSです。最大FPSは10〜1000の整数または無制限です。破損・範囲外の設定ファイルは初期値へ戻します。保存済みのフルスクリーン解像度が現在のモニターで使えない場合はウィンドウへ戻し、設定画面にエラーを表示します。
 
 ## 検証
 
 ```powershell
-cargo test --locked -p puzzella-game settings::tests --lib
+cargo test --locked -p jigsall-game settings::tests --lib
 # UIなしでOSウィンドウの状態と実測FPSを検証。ユーザーの設定は読み書きしない。
-cargo run --locked -p puzzella-game --example display_settings_probe
+cargo run --locked -p jigsall-game --example display_settings_probe
 # 実際の設定画面を描画し、target/settings-ui-*.png を保存する。
-cargo test --locked -p puzzella-ui native_settings_ui_probe -- --ignored --nocapture --test-threads=1
+cargo test --locked -p jigsall-ui native_settings_ui_probe -- --ignored --nocapture --test-threads=1
 ```
 
 probeは800 × 600のウィンドウ、ボーダーレス、30 / 120 FPS・無制限、対応解像度のフルスクリーン、ウィンドウへの復帰を順番に実行します。ECSの設定だけでなくwinitの実ウィンドウのサイズ・fullscreen状態を確認し、FPS上限も実時間で検証します。

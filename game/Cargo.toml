@@ -1,5 +1,5 @@
 [package]
-name = "puzzella-game"
+name = "jigsall-game"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,8 @@ publish.workspace = true
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
-puzzella-core.workspace = true
-puzzella-puzzle.workspace = true
+jigsall-core.workspace = true
+jigsall-puzzle.workspace = true
 bevy.workspace = true
 winit.workspace = true
 bevy_egui.workspace = true
@@ -62,4 +62,4 @@ rendezvous = ["gns", "dep:base64", "dep:tokio", "dep:tokio-tungstenite", "dep:fu
 
 [dev-dependencies]
 ab_glyph.workspace = true
-puzzella-puzzle = { workspace = true, features = ["shape-analysis"] }
+jigsall-puzzle = { workspace = true, features = ["shape-analysis"] }

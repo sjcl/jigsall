@@ -3,7 +3,7 @@ use crate::multiplayer::{self, MenuScreen, MultiplayerUi};
 use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::resources::*;
+use jigsall_game::resources::*;
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_menu_ui(
@@ -11,16 +11,16 @@ pub fn draw_menu_ui(
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<AppState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
-    mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
-    service: Res<puzzella_game::persistence::runtime::PersistenceService>,
+    mut persistence: ResMut<jigsall_game::persistence::runtime::PersistenceState>,
+    service: Res<jigsall_game::persistence::runtime::PersistenceService>,
     mut exit: MessageWriter<AppExit>,
     mut settings_dialog: ResMut<crate::settings::SettingsDialog>,
-    display_settings: Res<puzzella_game::settings::DisplaySettingsState>,
-    profile: Res<puzzella_game::player_settings::PlayerSettingsState>,
-    status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    display_settings: Res<jigsall_game::settings::DisplaySettingsState>,
+    profile: Res<jigsall_game::player_settings::PlayerSettingsState>,
+    status: Res<jigsall_game::network::runtime::NetworkStatus>,
     mut multiplayer: ResMut<MultiplayerUi>,
     #[cfg(feature = "rendezvous")] rendezvous_config: Option<
-        Res<puzzella_game::network::runtime::RendezvousRuntimeConfig>,
+        Res<jigsall_game::network::runtime::RendezvousRuntimeConfig>,
     >,
 ) {
     #[cfg(feature = "rendezvous")]
@@ -60,7 +60,7 @@ pub fn draw_menu_ui(
                             };
                             ui.add(egui::Image::new((logo.id(), egui::vec2(size, size))));
                             ui.label(
-                                egui::RichText::new("Puzzella")
+                                egui::RichText::new("Jigsall")
                                     .size(if compact { 34.0 } else { 54.0 })
                                     .strong(),
                             );

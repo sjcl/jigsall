@@ -20,14 +20,14 @@ pub const RECORD_OVERHEAD: usize = 8 + 16;
 pub const fn record_limit(class: MessageClass) -> usize {
     wire::frame_limit(class) + RECORD_OVERHEAD
 }
-const RECORD_DOMAIN: &[u8; 25] = b"puzzella-secure-record-v1";
+const RECORD_DOMAIN: &[u8; 24] = b"jigsall-secure-record-v1";
 const KEY_LABELS: [&[u8]; 6] = [
-    b"puzzella-secure-channel-v1/client-to-host/control",
-    b"puzzella-secure-channel-v1/client-to-host/transient",
-    b"puzzella-secure-channel-v1/client-to-host/bulk",
-    b"puzzella-secure-channel-v1/host-to-client/control",
-    b"puzzella-secure-channel-v1/host-to-client/transient",
-    b"puzzella-secure-channel-v1/host-to-client/bulk",
+    b"jigsall-secure-channel-v1/client-to-host/control",
+    b"jigsall-secure-channel-v1/client-to-host/transient",
+    b"jigsall-secure-channel-v1/client-to-host/bulk",
+    b"jigsall-secure-channel-v1/host-to-client/control",
+    b"jigsall-secure-channel-v1/host-to-client/transient",
+    b"jigsall-secure-channel-v1/host-to-client/bulk",
 ];
 #[derive(Clone, Copy)]
 pub(crate) enum ChannelRole {
@@ -46,12 +46,12 @@ fn nonce(sequence: u64) -> Nonce {
     bytes[4..].copy_from_slice(&sequence.to_le_bytes());
     bytes.into()
 }
-fn aad(class: MessageClass, sequence: u64) -> [u8; 36] {
-    let mut bytes = [0; 36];
-    bytes[..25].copy_from_slice(RECORD_DOMAIN);
-    bytes[25..27].copy_from_slice(&WIRE_VERSION.to_le_bytes());
-    bytes[27] = lane(class) as u8;
-    bytes[28..].copy_from_slice(&sequence.to_le_bytes());
+fn aad(class: MessageClass, sequence: u64) -> [u8; 35] {
+    let mut bytes = [0; 35];
+    bytes[..24].copy_from_slice(RECORD_DOMAIN);
+    bytes[24..26].copy_from_slice(&WIRE_VERSION.to_le_bytes());
+    bytes[26] = lane(class) as u8;
+    bytes[27..].copy_from_slice(&sequence.to_le_bytes());
     bytes
 }
 
@@ -65,7 +65,7 @@ struct Channel {
 }
 impl Channel {
     fn new(secret: AuthenticatedSecret, role: ChannelRole) -> Self {
-        let hk = Hkdf::<Sha256>::new(Some(b"puzzella-secure-channel-v1"), secret.as_bytes());
+        let hk = Hkdf::<Sha256>::new(Some(b"jigsall-secure-channel-v1"), secret.as_bytes());
         let mut keys = Zeroizing::new([[0; 32]; 6]);
         for (key, label) in keys.iter_mut().zip(KEY_LABELS) {
             hk.expand_multi_info(&[label, &WIRE_VERSION.to_le_bytes(), secret.binding()], key)

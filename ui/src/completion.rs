@@ -1,7 +1,7 @@
 use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::resources::*;
+use jigsall_game::resources::*;
 
 const PANEL: egui::Color32 = egui::Color32::from_rgb(24, 33, 45);
 const BORDER: egui::Color32 = egui::Color32::from_rgb(58, 73, 87);
@@ -17,8 +17,8 @@ pub fn draw_completion_ui(
     store: Res<PieceDataStore>,
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
-    mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
-    network_status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    mut persistence: ResMut<jigsall_game::persistence::runtime::PersistenceState>,
+    network_status: Res<jigsall_game::network::runtime::NetworkStatus>,
 ) {
     if persistence.title_dialog_open || dialogs.departure_pending() {
         return;

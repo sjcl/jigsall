@@ -46,12 +46,12 @@ pub struct ReliableEgress {
     pub bulk_delivered_bytes: u64,
 }
 
-/// Backend-issued identity. The number is a Puzzella token, never a native handle.
+/// Backend-issued identity. The number is a Jigsall token, never a native handle.
 /// Backends must not reuse a token during their lifetime.
 /// Only backends inside this crate can construct tokens.
 /// The underlying value cannot be read as a native handle by callers:
 /// ```compile_fail
-/// use puzzella_game::network::transport::ConnectionId;
+/// use jigsall_game::network::transport::ConnectionId;
 /// fn native_handle(connection: ConnectionId) -> u64 {
 ///     connection.0
 /// }

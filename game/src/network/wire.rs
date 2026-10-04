@@ -3,7 +3,7 @@ use super::bulk::{BulkTransferMessage, MAX_BULK_DATA_BYTES};
 use super::session_control::SessionControlMessage;
 use super::sync_control::SyncControlMessage;
 use super::transport::MessageClass;
-use puzzella_core::protocol::{
+use jigsall_core::protocol::{
     ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand, RemoteDragUpdate,
 };
 use serde::{de::DeserializeOwned, Serialize};

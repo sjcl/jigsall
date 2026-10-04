@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_game::network::runtime::{NetworkStatus, RuntimeRole};
+use jigsall_game::network::runtime::{NetworkStatus, RuntimeRole};
 
 #[derive(Clone, Copy)]
 pub(crate) enum DepartureAction {

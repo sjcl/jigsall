@@ -4,7 +4,7 @@ use super::{
     session_control::SessionMetadata,
 };
 use crate::multiplayer::finalization::FinalDragSet;
-use puzzella_core::{
+use jigsall_core::{
     protocol::ProtocolAuthorityEventEnvelope,
     session::{AuthorityCursor, ImageHash},
     PuzzleDefinition,
@@ -84,6 +84,6 @@ pub enum SyncControlMessage {
         roster: crate::players::RosterSnapshot,
     },
     ClientProfile {
-        display_name: Option<puzzella_core::PlayerDisplayName>,
+        display_name: Option<jigsall_core::PlayerDisplayName>,
     },
 }

@@ -4,7 +4,7 @@ mod cancellation;
 use crate::multiplayer::{GameSnapshot, SnapshotExpectation};
 use crate::resources::pieces::{ENABLED, PLACED};
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{
+use jigsall_core::{
     protocol::{ComponentRef, DenseTarget, PieceTarget, MAX_COMPONENT_REFS},
     session::{AuthorityCursor, ImageHash, SessionDefinition},
     PieceBitSet, PieceCommand, PieceId, GENERATOR_VERSION,
@@ -124,7 +124,7 @@ impl Fixture {
             envelope,
             matches!(envelope.command, ProtocolPieceCommand::Grab { .. })
                 .then_some(&self.definition),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         )
     }
     fn grab(&mut self, sequence: u64, target: PieceTarget) -> ProtocolCommandResult {
@@ -219,7 +219,7 @@ fn disabled_or_missing_definition_rejects_rotation_without_mutating_state_or_dra
                     A,
                     &envelope,
                     has_definition.then_some(&f.definition),
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 ),
                 Err(ProtocolCommandError::RotationDisabled)
             ));
@@ -239,7 +239,7 @@ fn disabled_or_missing_definition_rejects_rotation_without_mutating_state_or_dra
                     .store
                     .states
                     .iter()
-                    .all(|s| puzzella_core::decode_rotation(s.flags) == 0));
+                    .all(|s| jigsall_core::decode_rotation(s.flags) == 0));
             }
         }
     }
@@ -261,7 +261,7 @@ fn sparse_grab_is_component_atomic_and_rejects_only_bad_entries() {
         B,
         &PieceCommand::Grab(PieceId(4)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let mut input = refs.clone();
     input[1] = stale;
@@ -303,7 +303,7 @@ fn dense_grab_expands_partial_components_and_rechecks_all_member_flags() {
         B,
         &PieceCommand::Grab(PieceId(2)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     f.store.states[5].flags |= PLACED;
     f.store.states[7].flags &= !ENABLED;
@@ -437,7 +437,7 @@ fn identity_epoch_session_and_wrong_stream_rejections_do_not_consume_valid_ticks
             B,
             &update,
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::WrongPlayer)
     );
@@ -836,7 +836,7 @@ fn protocol_dispatch_preserves_relative_z_compaction_and_final_board_snap() {
             A,
             &release,
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         )
         .unwrap();
     let ProtocolCommandResult::Released { applied, .. } = result else {
@@ -855,7 +855,7 @@ fn protocol_dispatch_preserves_relative_z_compaction_and_final_board_snap() {
 
 #[test]
 fn serialized_targets_round_trip_with_small_payload_bounds_and_bounded_decode() {
-    let c = puzzella_core::PieceConnectivity::new(1_000_000);
+    let c = jigsall_core::PieceConnectivity::new(1_000_000);
     let refs: Vec<_> = (0..32)
         .map(|id| ComponentRef::from_member(&c, PieceId(id)).unwrap())
         .collect();
@@ -968,7 +968,7 @@ fn accepted_dense_membership_is_canonical_shared_with_ack_and_compacts_small_res
         B,
         &PieceCommand::Grab(PieceId(5)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let ProtocolCommandResult::Grabbed { applied, ack } = f.grab(0, input) else {
         panic!()
@@ -1101,7 +1101,7 @@ fn dense_release_revalidates_topology_and_each_components_gameplay_state() {
 
 #[test]
 fn grab_ack_identifies_exact_partial_acceptance_and_round_trips_with_authority_cursor() {
-    use puzzella_core::protocol::{ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope};
+    use jigsall_core::protocol::{ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope};
     let mut f = Fixture::new(12);
     for (a, b) in [(0, 1), (1, 2), (3, 4), (5, 6), (6, 7), (7, 8)] {
         f.store.connectivity.union(PieceId(a), PieceId(b));
@@ -1110,7 +1110,7 @@ fn grab_ack_identifies_exact_partial_acceptance_and_round_trips_with_authority_c
         B,
         &PieceCommand::Grab(PieceId(3)),
         None,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let ProtocolCommandResult::Grabbed { applied, ack } = f.grab(0, f.target(&[2, 4, 8])) else {
         panic!()

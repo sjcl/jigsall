@@ -413,8 +413,8 @@ the normal GamePlugin and an offscreen GPU target to the separate-process
 Both GPU regressions are ignored in ordinary CI and run locally in release mode:
 
 ```sh
-cargo test --release --locked -p puzzella-game --features gns gpu_delayed_puzzle_image -- --ignored --nocapture --test-threads=1
-cargo test --release --locked -p puzzella-game --features gns gns_localhost_runtime_separate_process_gpu_image_join -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p jigsall-game --features gns gpu_delayed_puzzle_image -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p jigsall-game --features gns gns_localhost_runtime_separate_process_gpu_image_join -- --ignored --nocapture --test-threads=1
 ```
 
 2026-10-04 Windows / RTX 5090 / Vulkan release validation reproduced the

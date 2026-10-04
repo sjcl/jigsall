@@ -1,7 +1,7 @@
 //! Opt-in CPU authority adapter. No ECS systems, transport, or renderer changes.
 use crate::play_area::{DragValidation, PivotEnvelope};
 use crate::resources::{pieces::AppliedCommand, PieceDataStore};
-use puzzella_core::{
+use jigsall_core::{
     protocol::{
         ActiveDrag, ActiveDragTarget, DragCancelled, DragRotationCommitted, GrabAccepted,
         ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope,
@@ -14,7 +14,7 @@ use puzzella_core::{
     },
     PlayerId, PuzzleDefinition,
 };
-use puzzella_puzzle::placement::LogicalPlayArea;
+use jigsall_puzzle::placement::LogicalPlayArea;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +155,7 @@ impl ProtocolDragContexts {
                         basis_sequence,
                         through_tick,
                         final_delta,
-                        quarter_turns: puzzella_core::add_quarter_turns(0, quarter_turns) as i8,
+                        quarter_turns: jigsall_core::add_quarter_turns(0, quarter_turns) as i8,
                         result: *result,
                     },
                 ))
@@ -350,7 +350,7 @@ impl ProtocolDragContexts {
                 let ClientCommandSequence::Control(basis_sequence) = envelope.sequence else {
                     unreachable!()
                 };
-                let turns = puzzella_core::add_quarter_turns(0, *quarter_turns) as i8;
+                let turns = jigsall_core::add_quarter_turns(0, *quarter_turns) as i8;
                 let (applied, roots) = store
                     .rotate_drag_target(player, &drag.target, *final_delta, turns, definition)
                     .ok_or(ProtocolCommandError::InconsistentDragTarget)?;
@@ -376,7 +376,7 @@ impl ProtocolDragContexts {
                 let definition = definition
                     .filter(|d| d.validate().is_ok() && d.piece_count() == store.len())
                     .ok_or(ProtocolCommandError::InvalidDefinition)?;
-                let turns = puzzella_core::add_quarter_turns(0, *quarter_turns) as i8;
+                let turns = jigsall_core::add_quarter_turns(0, *quarter_turns) as i8;
                 let rotation = store
                     .rotate_target(target, turns, definition)
                     .map_err(ProtocolCommandError::Target)?;

@@ -30,12 +30,12 @@ fn screen_world() -> (World, Entity, egui::Context) {
     world.init_resource::<PersistenceState>();
     world.init_resource::<PieceDataStore>();
     world.insert_resource(PersistenceService::with_storage_requests().0);
-    world.insert_resource(puzzella_game::settings::DisplaySettingsState::load(None));
+    world.insert_resource(jigsall_game::settings::DisplaySettingsState::load(None));
     world.insert_resource(PlayerSettingsState::load(None));
     world.init_resource::<Messages<AppExit>>();
     world.init_resource::<PuzzleConfig>();
     world.init_resource::<crate::game_setup::image_picker::ImagePicker>();
-    world.init_resource::<puzzella_game::asset_reader::ExternalFileRegistry>();
+    world.init_resource::<jigsall_game::asset_reader::ExternalFileRegistry>();
     (world, entity, ctx)
 }
 
@@ -155,8 +155,8 @@ fn scheduled_screens() -> (App, egui::Context) {
     world.init_resource::<GameData>();
     world.init_resource::<GameUiPointerCapture>();
     world.init_resource::<PlayerRoster>();
-    world.init_resource::<puzzella_game::resources::LocalPlayerId>();
-    world.init_resource::<puzzella_game::resources::remote_cursor::RemoteCursorPresentation>();
+    world.init_resource::<jigsall_game::resources::LocalPlayerId>();
+    world.init_resource::<jigsall_game::resources::remote_cursor::RemoteCursorPresentation>();
     world.init_resource::<PieceDataStore>();
     world.init_resource::<PieceGenerationProgress>();
     world.init_resource::<PerformanceMonitor>();
@@ -165,14 +165,12 @@ fn scheduled_screens() -> (App, egui::Context) {
         gpu_memory_bytes: None,
     });
     world.init_resource::<crate::persistence::thumbnails::SaveThumbnails>();
-    world.insert_resource(puzzella_game::image_settings::ImageSettingsState::load(
-        None,
-    ));
-    world.insert_resource(puzzella_game::keybindings::KeyBindingsState::load(None));
+    world.insert_resource(jigsall_game::image_settings::ImageSettingsState::load(None));
+    world.insert_resource(jigsall_game::keybindings::KeyBindingsState::load(None));
     world.insert_resource(crate::preferences::UiPreferences::load(None));
-    world.init_resource::<puzzella_game::settings::DisplayCapabilities>();
-    world.init_resource::<Messages<puzzella_game::settings::DisplaySettingsAction>>();
-    world.insert_resource(puzzella_game::persistence::autosave::AutosaveSettingsState::load(None));
+    world.init_resource::<jigsall_game::settings::DisplayCapabilities>();
+    world.init_resource::<Messages<jigsall_game::settings::DisplaySettingsAction>>();
+    world.insert_resource(jigsall_game::persistence::autosave::AutosaveSettingsState::load(None));
     world.init_resource::<Messages<bevy::input::keyboard::KeyboardInput>>();
     world.init_resource::<ButtonInput<KeyCode>>();
     world
@@ -417,7 +415,7 @@ fn join_failure_back_keeps_address_clears_password_and_returns_to_join_form() {
 
 #[test]
 fn host_failure_back_edits_port_without_reentering_setup_or_retaining_a_password_draft() {
-    use puzzella_core::session::{SessionDefinition, SessionId};
+    use jigsall_core::session::{SessionDefinition, SessionId};
     let (mut app, ctx) = scheduled_screens();
     let mut ui = app.world_mut().resource_mut::<MultiplayerUi>();
     ui.connecting = true;
@@ -426,10 +424,10 @@ fn host_failure_back_edits_port_without_reentering_setup_or_retaining_a_password
         address: "0.0.0.0:27015".parse().unwrap(),
         password: SessionPassword::new("test password".into()).unwrap(),
         display_name: None,
-        host: puzzella_core::PlayerId(0),
+        host: jigsall_core::PlayerId(0),
         session: SessionDefinition {
             id: SessionId(42),
-            image_hash: puzzella_core::session::ImageHash([0; 32]),
+            image_hash: jigsall_core::session::ImageHash([0; 32]),
         },
     }));
     click_label(&mut app, &ctx, "Back");
@@ -723,7 +721,7 @@ fn submit_hostname(world: &mut World) {
         display_name: request.display_name,
     });
     assert!(world.resource::<MultiplayerUi>().pending_join.is_some());
-    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    assert!(!world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
 }
 
 #[test]
@@ -745,7 +743,7 @@ fn hostname_join_cancel_or_navigation_discards_the_pending_request() {
         assert!(state.join.password.is_empty());
         assert!(!state.connecting);
         assert!(state.error.is_none());
-        assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+        assert!(!world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
     }
 }
 
@@ -761,7 +759,7 @@ fn hostname_join_timeout_drops_credentials_and_shows_the_localized_error() {
     assert!(state.pending_join.is_none());
     assert_eq!(state.error, Some(UiError::Resolution));
     assert!(state.connection_screen(world.resource::<NetworkStatus>()));
-    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    assert!(!world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
     process_actions(&mut world);
     assert_eq!(
         world.resource::<MultiplayerUi>().error,
@@ -825,7 +823,7 @@ fn hostname_resolution_screen_shows_waiting_then_a_localized_failure() {
 #[cfg(feature = "gns")]
 #[test]
 fn gns_localhost_hostname_join_ui_hands_the_resolved_address_to_the_runtime_once() {
-    use puzzella_game::network::{gns::GnsDirectIp, transport::DirectIpTransport};
+    use jigsall_game::network::{gns::GnsDirectIp, transport::DirectIpTransport};
     let mut host = GnsDirectIp::new().unwrap();
     let listener = host.listen("127.0.0.1:0".parse().unwrap()).unwrap();
     let address = host.listener_address(listener).unwrap();
@@ -834,9 +832,7 @@ fn gns_localhost_hostname_join_ui_hands_the_resolved_address_to_the_runtime_once
         device_max_dimension: 8192,
         gpu_memory_bytes: None,
     });
-    world.insert_resource(puzzella_game::image_settings::ImageSettingsState::load(
-        None,
-    ));
+    world.insert_resource(jigsall_game::image_settings::ImageSettingsState::load(None));
     let mut profile = PlayerSettingsState::load(None);
     profile.commit("Alice");
     {
@@ -857,12 +853,12 @@ fn gns_localhost_hostname_join_ui_hands_the_resolved_address_to_the_runtime_once
         world.resource::<NetworkStatus>().phase,
         RuntimePhase::Connecting
     );
-    assert!(world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    assert!(world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
     process_actions(&mut world);
     assert_eq!(world.resource::<NetworkStatus>().address, Some(address));
     world.resource_mut::<MultiplayerUi>().cancel();
     process_actions(&mut world);
-    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    assert!(!world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
 }
 
 #[test]
@@ -1072,7 +1068,7 @@ fn host_waits_for_generation_and_gpu_barrier_then_blocks_missing_encoded_image()
         world.resource::<MultiplayerUi>().pending_host.is_some(),
         "no renderer readiness yet"
     );
-    world.init_resource::<puzzella_game::render::RenderReady>();
+    world.init_resource::<jigsall_game::render::RenderReady>();
     start_prepared_host(&mut world);
     assert!(world.resource::<MultiplayerUi>().pending_host.is_none());
     assert_eq!(
@@ -1170,7 +1166,7 @@ fn wildcard_listen_address_is_never_presented_as_an_invitation() {
 #[cfg(feature = "gns")]
 #[test]
 fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
-    use puzzella_core::PuzzleDefinition;
+    use jigsall_core::PuzzleDefinition;
     let (mut world, _, _) = screen_world();
     let mut encoded = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(32, 32, image::Rgb([1, 2, 3])))
@@ -1178,12 +1174,12 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
         .unwrap();
     let encoded = encoded.into_inner();
     world.insert_resource(OriginalPuzzleImage {
-        hash: puzzella_game::persistence::image_hash(&encoded),
+        hash: jigsall_game::persistence::image_hash(&encoded),
         encoded: Some(encoded.into()),
         image_lease: None,
     });
     let definition = PuzzleDefinition {
-        generator_version: puzzella_core::GENERATOR_VERSION,
+        generator_version: jigsall_core::GENERATOR_VERSION,
         seed: 12,
         grid_size: UVec2::splat(2),
         image_size: UVec2::splat(32),
@@ -1193,13 +1189,13 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
     let mut store = PieceDataStore::default();
     store.initialize(
         (0..4)
-            .map(|id| definition.correct_position(puzzella_core::PieceId(id)) + Vec2::splat(100.0))
+            .map(|id| definition.correct_position(jigsall_core::PieceId(id)) + Vec2::splat(100.0))
             .collect(),
     );
     world.insert_resource(store);
     world.insert_resource(definition);
     world.insert_resource(State::new(AppState::InGame));
-    world.init_resource::<puzzella_game::render::RenderReady>();
+    world.init_resource::<jigsall_game::render::RenderReady>();
     world.init_resource::<LocalPlayerId>();
     world.insert_resource(PieceGenerationProgress {
         generation_phase: GenerationPhase::UploadingGpu,
@@ -1225,11 +1221,11 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
     assert_eq!(status.phase, RuntimePhase::Hosting);
     let address = status.address.unwrap();
     assert_ne!(address.port(), 0);
-    assert!(world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    assert!(world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
     let player = world.resource::<LocalPlayerId>().0;
     assert_eq!(
         world
-            .resource::<puzzella_game::players::PlayerRoster>()
+            .resource::<jigsall_game::players::PlayerRoster>()
             .get(player)
             .unwrap()
             .display_name,
@@ -1239,5 +1235,5 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
     assert_eq!(world.resource::<NetworkStatus>().address, Some(address));
     world.resource_mut::<MultiplayerUi>().cancel();
     process_actions(&mut world);
-    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    assert!(!world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
 }

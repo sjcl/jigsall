@@ -1,6 +1,6 @@
 //! Convert domain outcomes to UI text. Technical details remain diagnostic arguments.
 use crate::localization::Localization;
-use puzzella_game::{
+use jigsall_game::{
     persistence::{
         runtime::{PersistenceError, PersistenceNotice},
         SaveError, SaveTitleError, StorageError, MAX_SAVE_TITLE_CHARS,
@@ -130,7 +130,7 @@ impl Localization {
 mod tests {
     use super::*;
     use crate::localization::{LanguagePreference, Locale};
-    use puzzella_game::persistence::SaveId;
+    use jigsall_game::persistence::SaveId;
 
     #[test]
     fn retained_domain_outcomes_follow_language_changes_and_keep_technical_details() {
@@ -140,7 +140,7 @@ mod tests {
         let lock_timeout = SaveError::Storage(StorageError::LockTimeout);
         assert_eq!(
             i18n.save_error(&lock_timeout),
-            "Timed out waiting for access to saved data. Close other Puzzella instances and try again."
+            "Timed out waiting for access to saved data. Close other Jigsall instances and try again."
         );
         assert_eq!(
             i18n.display_error(&error),
@@ -150,7 +150,7 @@ mod tests {
         i18n.set_preference(LanguagePreference::Locale(Locale::JA));
         assert_eq!(
             i18n.save_error(&lock_timeout),
-            "保存データのロック待ちがタイムアウトしました。他の Puzzella を閉じてから再試行してください。"
+            "保存データのロック待ちがタイムアウトしました。他の Jigsall を閉じてから再試行してください。"
         );
         assert_eq!(
             i18n.display_error(&error),

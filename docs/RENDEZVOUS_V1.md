@@ -17,7 +17,7 @@ native P2P foundation without the WebSocket client. Root `rendezvous` forwards g
 Direct IP. The normal UI reads only start/cancel APIs and NetworkStatus.
 
 ```rust,ignore
-use puzzella_game::network::gns::{IceConfig, rendezvous::{EndpointUrl, RendezvousAdapter, P2P_VIRTUAL_PORT}};
+use jigsall_game::network::gns::{IceConfig, rendezvous::{EndpointUrl, RendezvousAdapter, P2P_VIRTUAL_PORT}};
 let url = EndpointUrl::production(configured_wss_url)?;
 let (mut backend, mut adapter) = RendezvousAdapter::new(url, P2P_VIRTUAL_PORT, configured_ice)?;
 // Caller polls adapter and backend each frame, starting create/join after Welcome.
@@ -144,8 +144,8 @@ cargo fmt --all --check
 cargo check --workspace --locked
 cargo check --workspace --locked --features gns
 cargo check --workspace --locked --features rendezvous
-cargo test --locked -p puzzella-game --features rendezvous rendezvous
-cargo test --locked -p puzzella-game --features rendezvous gns_localhost -- --nocapture --test-threads=1
+cargo test --locked -p jigsall-game --features rendezvous rendezvous
+cargo test --locked -p jigsall-game --features rendezvous gns_localhost -- --nocapture --test-threads=1
 ```
 
 Local WS fixtures cover Welcome/create/join, route-before-ACK, HostReady binding,
@@ -168,9 +168,9 @@ cargo run --locked
 In this repository, using PowerShell:
 
 ```powershell
-$env:PUZZELLA_RENDEZVOUS_SMOKE_URL = 'ws://127.0.0.1:8080/v1/ws'
-cargo test --locked -p puzzella-game --features rendezvous gns_localhost_real_rendezvous_native_ice_password_secure_lanes -- --ignored --nocapture --test-threads=1
-Remove-Item Env:PUZZELLA_RENDEZVOUS_SMOKE_URL
+$env:JIGSALL_RENDEZVOUS_SMOKE_URL = 'ws://127.0.0.1:8080/v1/ws'
+cargo test --locked -p jigsall-game --features rendezvous gns_localhost_real_rendezvous_native_ice_password_secure_lanes -- --ignored --nocapture --test-threads=1
+Remove-Item Env:JIGSALL_RENDEZVOUS_SMOKE_URL
 ```
 
 The ignored test launches two independent native GNS process identities. The host
@@ -190,7 +190,7 @@ Windows x86_64, Rust 1.97.0, development/test profile, LLVM/libclang 18.1.8:
 | Check | Result |
 | --- | --- |
 | Server fmt / all-target Clippy / tests / binary build | Passed; 15 tests |
-| Puzzella default workspace check and tests | Passed |
+| Jigsall default workspace check and tests | Passed |
 | Direct-IP-only `gns` check and game tests | Passed; 720 game tests + 16 serial native localhost tests |
 | `rendezvous` workspace check and all-target Clippy | Passed |
 | Rendezvous adapter/protocol/worker/TLS fixtures | Passed; 13 tests |
@@ -315,9 +315,10 @@ no password/code is stored there. Without it the Internet option is disabled and
 Direct IP remains usable. No third-party STUN or production URL is supplied.
 The ordinary binary can populate the resource from operator environment:
 
-- `PUZZELLA_RENDEZVOUS_WSS_URL`: production `wss://…/v1/ws`, validated by EndpointUrl.
-- `PUZZELLA_ICE_STUN_SERVERS`: comma-separated caller-configured STUN addresses.
-- `PUZZELLA_ICE_ALLOW_PUBLIC_CANDIDATES`: `true` or `false` (default false).
+- `JIGSALL_RENDEZVOUS_WSS_URL`: production `wss://…/v1/ws`, validated by EndpointUrl.
+- `JIGSALL_ICE_STUN_SERVERS`: comma-separated caller-configured STUN addresses.
+- `JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES`: `true` or `false` (default false).
+
 
 Missing/invalid WSS configuration disables Internet. Remote plaintext WS and
 certificate bypass are unavailable. Local tests explicitly inject
@@ -325,9 +326,9 @@ certificate bypass are unavailable. Local tests explicitly inject
 actual runtime against the real loopback server, start it as above and run:
 
 ```powershell
-$env:PUZZELLA_RENDEZVOUS_SMOKE_URL = 'ws://127.0.0.1:8080/v1/ws'
-cargo test --locked -p puzzella-game --features rendezvous gns_localhost_real_rendezvous_runtime_ready_command_roundtrip -- --ignored --nocapture --test-threads=1
-Remove-Item Env:PUZZELLA_RENDEZVOUS_SMOKE_URL
+$env:JIGSALL_RENDEZVOUS_SMOKE_URL = 'ws://127.0.0.1:8080/v1/ws'
+cargo test --locked -p jigsall-game --features rendezvous gns_localhost_real_rendezvous_runtime_ready_command_roundtrip -- --ignored --nocapture --test-threads=1
+Remove-Item Env:JIGSALL_RENDEZVOUS_SMOKE_URL
 ```
 
 This ignored test uses two independent native GNS processes, the public runtime
@@ -343,7 +344,7 @@ Some NAT/firewall pairs may require TURN; TURN/relay is not implemented.
 ## Runtime/UI verification record (2026-10-05)
 
 Windows x86_64, Rust 1.97.0, LLVM/libclang 18.1.8, shared Cargo/vcpkg paths.
-Foundation base: puzzella `4ac3c3d` / server `8c6900c` (latest fetched
+Foundation base: jigsall `4ac3c3d` / server `8c6900c` (latest fetched
 `codex/rendezvous-v1` at work start). Server protocol is unchanged; only the stale
 TCP-only abuse-source paragraph was corrected to the existing trusted-proxy rules.
 
@@ -406,7 +407,7 @@ authorization races. Existing auth, control-loss and gameplay tests remain contr
 | Both repositories: `git diff --check`, Cargo fmt check | Passed |
 | App: `cargo clippy --workspace --locked --all-targets --features rendezvous -- -D warnings` | Passed |
 | Server: `cargo clippy --locked --all-targets -- -D warnings` | Passed |
-| App: `cargo test --locked -p puzzella-game --features rendezvous network::gns::rendezvous -- --nocapture` | Passed, 28 adapter/protocol tests |
+| App: `cargo test --locked -p jigsall-game --features rendezvous network::gns::rendezvous -- --nocapture` | Passed, 28 adapter/protocol tests |
 | App: `cargo test --workspace --locked --features rendezvous -- --skip gns_localhost` | Passed, workspace/unit/doc tests |
 | Server: `cargo test --locked --quiet` | Passed, 34 unit and 8 WebSocket tests |
 | App: `cargo test --workspace --locked --features rendezvous gns_localhost -- --nocapture --test-threads=1` | Passed, 17 game and 1 UI test |

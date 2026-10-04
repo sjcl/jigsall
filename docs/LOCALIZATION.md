@@ -1,6 +1,6 @@
 # UI localization
 
-`puzzella-ui` owns the Fluent catalogs, language preferences, platform locale
+`jigsall-ui` owns the Fluent catalogs, language preferences, platform locale
 resolution and embedded Japanese font. `game`, `core`, `puzzle` and networking
 do not depend on Fluent. Localization runs only while drawing UI or presenting
 notifications, never in piece, geometry, GPU, picking, snapping or replication paths.
@@ -31,11 +31,11 @@ system names are preserved.
 Settings → Language offers Automatic, English and 日本語. A selection updates
 the live resource immediately and the next frame uses the new translations.
 Language preferences are saved in the `preferences` section of
-`puzzella/settings.json` in `directories::BaseDirs::data_local_dir()`
-(Windows: `%LOCALAPPDATA%\puzzella\settings.json`). The shared helper updates only
+`jigsall/settings.json` in `directories::BaseDirs::data_local_dir()`
+(Windows: `%LOCALAPPDATA%\jigsall\settings.json`). The shared helper updates only
 this section, so display preview/confirmation and reversion cannot undo language
-selection. Writes use a synced temporary file and atomic replacement. See
-[SETTINGS.md](SETTINGS.md) for the unified format; old files are not migrated.
+selection. Writes use a synced temporary file and atomic replacement. Older
+standalone settings files and formats are not imported.
 
 ```json
 { "preferences": { "language": "auto" } }
@@ -102,7 +102,7 @@ support: Arabic/Hebrew additions also require validating bidi ordering, shaping,
 mixed-direction values and layout in egui, together with fonts and this policy.
 
 There are no remaining English UI sentences in `ui/src` outside tests. Invariant
-text includes `Puzzella`, version numbers, `PNG / JPEG / WebP / BMP`, file extension
+text includes `Jigsall`, version numbers, `PNG / JPEG / WebP / BMP`, file extension
 filters, resolution dimensions, numeric preset values and unit symbols (`FPS`,
 `px`, `x`). Save timestamps currently retain the neutral `YYYY-MM-DD HH:MM` format.
 Technical `$reason` details may be English. Internal widget/texture/system IDs and
@@ -115,7 +115,7 @@ cargo fmt --all --check
 cargo clippy --workspace --locked --all-targets -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --locked
-cargo test --locked -p puzzella-ui native_settings_ui_probe -- --ignored --nocapture --test-threads=1
+cargo test --locked -p jigsall-ui native_settings_ui_probe -- --ignored --nocapture --test-threads=1
 ```
 
 Catalog tests cover every canonical key, syntax, matching variables, formatting,

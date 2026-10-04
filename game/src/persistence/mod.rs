@@ -10,7 +10,7 @@ pub use codec::{
     image_hash, PuzImage, SaveCodec, SaveHeader, MAX_SAVE_HEADER_BYTES, PUZIMG_FORMAT_VERSION,
     SAVE_FORMAT_VERSION,
 };
-use puzzella_core::session::ImageHash;
+use jigsall_core::session::ImageHash;
 pub use repository::{ImageLease, LoadedSave, SaveListEntry, SaveRepository, SaveSummary};
 pub use storage::{
     FilesystemStorage, SaveStorage, StorageError, StorageGuard, StorageKey, StorageNamespace,

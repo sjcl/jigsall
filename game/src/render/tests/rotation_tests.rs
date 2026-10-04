@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::pieces::CONNECTED_EDGES;
-use puzzella_core::{
+use jigsall_core::{
     protocol::{ComponentRef, PieceTarget},
     rotate_quarter, with_rotation, PieceCommand, LOCAL_PLAYER,
 };
@@ -17,7 +17,7 @@ fn rotate_body(app: &mut App, def: &PuzzleDefinition, id: PieceId) {
                     quarter_turns: 1
                 },
                 Some(def),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .rotated
             > 0
@@ -76,7 +76,7 @@ fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_compon
         store.states[2].z_order = 100;
     }
     app.insert_resource(def)
-        .insert_resource(LocalPlayerId(puzzella_core::PlayerId(42)))
+        .insert_resource(LocalPlayerId(jigsall_core::PlayerId(42)))
         .insert_resource(crate::keybindings::KeyBindingsState::load(None))
         .init_resource::<PieceInteraction>()
         .init_resource::<InputState>()
@@ -84,7 +84,7 @@ fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_compon
         .init_resource::<PerformanceMonitor>()
         .init_resource::<bevy_egui::EguiUserTextures>()
         .init_resource::<TestKey>()
-        .add_message::<puzzella_core::ClientCommand>()
+        .add_message::<jigsall_core::ClientCommand>()
         .add_systems(
             Update,
             (press_key, handle_piece_input, apply_piece_commands).chain(),
@@ -101,7 +101,7 @@ fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_compon
     rotate_at(&mut app, translation, KeyCode::KeyQ);
     let store = app.world().resource::<PieceDataStore>();
     assert_eq!(&store.states[..2], &original[..2]);
-    assert_eq!(puzzella_core::decode_rotation(store.states[2].flags), 1);
+    assert_eq!(jigsall_core::decode_rotation(store.states[2].flags), 1);
     assert_eq!(store.states[2].position, translation);
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
     assert_eq!(gpu.upload_bytes, 16);
@@ -120,7 +120,7 @@ fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_compon
     let store = app.world().resource::<PieceDataStore>();
     let pivot = (original[0].position + original[1].position) * 0.5;
     for (id, original) in original.iter().enumerate().take(2) {
-        assert_eq!(puzzella_core::decode_rotation(store.states[id].flags), 3);
+        assert_eq!(jigsall_core::decode_rotation(store.states[id].flags), 3);
         assert_eq!(
             store.states[id].position,
             pivot + rotate_quarter(original.position - pivot, 3)
@@ -151,7 +151,7 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
     let mut def = definition(UVec2::new(3, 2), 192, 42);
     def.image_size.y = 64;
     app.world_mut().insert_resource(def.clone());
-    let mut members = puzzella_core::PieceBitSet::new(6);
+    let mut members = jigsall_core::PieceBitSet::new(6);
     members.insert(PieceId(1));
     {
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
@@ -170,7 +170,7 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
                         members: members.clone()
                     },
                     Some(&def),
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .grabbed,
             1
@@ -197,7 +197,7 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
                         quarter_turns: 1,
                     },
                     Some(&def),
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 )
                 .drag_rebased
         );
@@ -232,7 +232,7 @@ fn gpu_drag_rotation_rebase_uploads_only_state_and_keeps_membership_on_pointer_f
                 delta: Vec2::new(10., 0.),
             },
             Some(&def),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
     assert_eq!(
         pick(

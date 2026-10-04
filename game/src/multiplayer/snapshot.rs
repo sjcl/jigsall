@@ -7,7 +7,7 @@ use crate::{
     checkpoint::{CheckpointView, PuzzleCheckpoint},
     resources::PieceDataStore,
 };
-use puzzella_core::{
+use jigsall_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
     PieceConnectivity, PuzzleDefinition, MAX_PIECES,
 };

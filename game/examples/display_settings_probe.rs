@@ -1,12 +1,12 @@
 //! Native backend verification, without menu UI or changes to user preferences.
-//! cargo run --locked -p puzzella-game --example display_settings_probe
+//! cargo run --locked -p jigsall-game --example display_settings_probe
 use bevy::{
     ecs::system::NonSendMarker,
     prelude::*,
     window::PrimaryWindow,
     winit::{WinitSettings, WINIT_WINDOWS},
 };
-use puzzella_game::settings::*;
+use jigsall_game::settings::*;
 use std::time::{Duration, Instant};
 
 #[derive(Resource)]
@@ -20,7 +20,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Puzzella display settings probe".into(),
+                title: "Jigsall display settings probe".into(),
                 ..default()
             }),
             ..default()

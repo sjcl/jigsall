@@ -4,7 +4,7 @@ use crate::resources::{
     GpuPieceState, PieceDataStore,
 };
 use bevy::math::Vec2;
-use puzzella_core::{
+use jigsall_core::{
     decode_rotation, matches_transform, rotate_quarter, session::ImageHash, with_rotation,
     PieceConnectivity, PieceId, PuzzleDefinition, ROTATION_MASK,
 };
@@ -178,7 +178,7 @@ impl CheckpointView<'_> {
                 return Err(CheckpointError::InconsistentComponent(id));
             }
         }
-        let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(self.definition)
+        let area = jigsall_puzzle::placement::LogicalPlayArea::from_definition(self.definition)
             .map_err(CheckpointError::InvalidDefinition)?;
         for index in 0..count {
             let id = PieceId(index as u32);

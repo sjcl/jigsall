@@ -1,6 +1,6 @@
 //! One rigid transform decision, followed by unions at that fixed transform only.
 use super::*;
-use puzzella_core::{matches_transform, PuzzleGeometry, SnapCandidate};
+use jigsall_core::{matches_transform, PuzzleGeometry, SnapCandidate};
 
 #[derive(Clone, Copy)]
 struct CorrectBounds {
@@ -15,7 +15,7 @@ impl CorrectBounds {
 
 pub(super) struct SnapScratch {
     geometry: PuzzleGeometry,
-    play_area: puzzella_puzzle::placement::LogicalPlayArea,
+    play_area: jigsall_puzzle::placement::LogicalPlayArea,
     snap_distance: f32,
     #[cfg(test)]
     pub(super) boundary_members: usize,
@@ -34,7 +34,7 @@ impl SnapScratch {
     pub(super) fn new(count: usize, definition: &PuzzleDefinition) -> Self {
         Self {
             geometry: definition.geometry(),
-            play_area: puzzella_puzzle::placement::LogicalPlayArea::from_definition(definition)
+            play_area: jigsall_puzzle::placement::LogicalPlayArea::from_definition(definition)
                 .expect("validated gameplay definition"),
             snap_distance: definition.snap_distance,
             #[cfg(test)]

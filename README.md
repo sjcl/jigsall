@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/menu-icon.png" alt="Puzzella のアイコン" width="112" height="112">
+  <img src="assets/menu-icon.png" alt="Jigsall のアイコン" width="112" height="112">
 </p>
 
-<h1 align="center">Puzzella</h1>
+<h1 align="center">Jigsall</h1>
 
 任意の画像からパズルを生成する、Rust + Bevy 製のジグソーパズルゲームです。シングルプレイ、Direct-IP と Room Code によるマルチプレイに対応しています。
 

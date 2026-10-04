@@ -1,7 +1,7 @@
 //! Reproducible offline metrics and monochrome fixtures. No runtime debug mode.
 use bevy_math::{UVec2, Vec2};
-use puzzella_core::GENERATOR_VERSION;
-use puzzella_puzzle::{
+use jigsall_core::GENERATOR_VERSION;
+use jigsall_puzzle::{
     fingerprint::{
         decode_v4_reference, sample_profile, worst_case_profiles, EdgeFingerprint,
         EdgeSilhouetteDescriptor,
@@ -280,11 +280,11 @@ fn main() {
     std::fs::write(dir.join("edge-fingerprint-nearest.svg"), closest_svg).unwrap();
     std::fs::write(dir.join("edge-fingerprint-nearest.csv"), nearest_csv).unwrap();
     // Uniform random internal edges; no style/class/silhouette filtering.
-    let selected: Vec<_> = puzzella_puzzle::fingerprint::assessment::random_edges(42, 0, 24, None)
+    let selected: Vec<_> = jigsall_puzzle::fingerprint::assessment::random_edges(42, 0, 24, None)
         .into_iter()
         .map(|e| e.raw)
         .collect();
-    let order = puzzella_puzzle::fingerprint::assessment::blank_permutation(42, 0, 24);
+    let order = jigsall_puzzle::fingerprint::assessment::blank_permutation(42, 0, 24);
     let mut matching = svg(
         1460,
         1135,

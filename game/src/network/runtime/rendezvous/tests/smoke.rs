@@ -45,13 +45,13 @@ impl Drop for Process {
 #[test]
 #[ignore = "requires the real puzzella-rendezvous binary on loopback"]
 fn gns_localhost_real_rendezvous_runtime_ready_command_roundtrip() {
-    let url = std::env::var("PUZZELLA_RENDEZVOUS_SMOKE_URL").expect("set loopback rendezvous URL");
+    let url = std::env::var("JIGSALL_RENDEZVOUS_SMOKE_URL").expect("set loopback rendezvous URL");
     EndpointUrl::loopback_for_test(&url).unwrap();
     let (tx, rx) = mpsc::sync_channel(64);
     let mut processes = Vec::new();
     for (id, role) in ["host", "client"].into_iter().enumerate() {
         let mut child=Command::new(std::env::current_exe().unwrap()).args(["--exact","network::runtime::rendezvous::tests::smoke::gns_localhost_rendezvous_runtime_child","--nocapture"])
-            .env("PUZZELLA_RUNTIME_SMOKE_ROLE",role).env("PUZZELLA_RENDEZVOUS_SMOKE_URL",&url)
+            .env("JIGSALL_RUNTIME_SMOKE_ROLE",role).env("JIGSALL_RENDEZVOUS_SMOKE_URL",&url)
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
@@ -125,7 +125,7 @@ fn gns_localhost_real_rendezvous_runtime_ready_command_roundtrip() {
 }
 #[test]
 fn gns_localhost_rendezvous_runtime_child() {
-    let Ok(role) = std::env::var("PUZZELLA_RUNTIME_SMOKE_ROLE") else {
+    let Ok(role) = std::env::var("JIGSALL_RUNTIME_SMOKE_ROLE") else {
         return;
     };
     let (tx, rx) = mpsc::sync_channel(16);
@@ -143,7 +143,7 @@ fn gns_localhost_rendezvous_runtime_child() {
     let mut app = fixtures::app();
     app.world_mut().insert_resource(RendezvousRuntimeConfig {
         endpoint: EndpointUrl::loopback_for_test(
-            &std::env::var("PUZZELLA_RENDEZVOUS_SMOKE_URL").unwrap(),
+            &std::env::var("JIGSALL_RENDEZVOUS_SMOKE_URL").unwrap(),
         )
         .unwrap(),
         ice: IceConfig::default(),
@@ -168,10 +168,10 @@ fn gns_localhost_rendezvous_runtime_child() {
                     start_rendezvous_join(app.world_mut(), options).unwrap();
                 }
                 Frame::Grab => {
-                    fixtures::send(&mut app, PieceCommand::Grab(puzzella_core::PieceId(0)))
+                    fixtures::send(&mut app, PieceCommand::Grab(jigsall_core::PieceId(0)))
                 }
                 Frame::Release => {
-                    fixtures::send(&mut app, PieceCommand::Release(puzzella_core::PieceId(0)))
+                    fixtures::send(&mut app, PieceCommand::Release(jigsall_core::PieceId(0)))
                 }
                 Frame::Leave => {
                     stop_session(app.world_mut());

@@ -1,6 +1,6 @@
 use super::*;
 use crate::checkpoint::{CheckpointError, PuzzleCheckpoint, SnapshotPieceState, SNAPSHOT_PLACED};
-use puzzella_core::{
+use jigsall_core::{
     protocol::{ComponentRef, DenseTarget, TargetError},
     session::ImageHash,
     GENERATOR_VERSION, LOCAL_PLAYER,
@@ -11,9 +11,9 @@ fn fixture(grid: UVec2) -> (PuzzleDefinition, PieceDataStore) {
         generator_version: GENERATOR_VERSION,
         seed: 42,
         grid_size: grid,
-        image_size: puzzella_core::fit_image_size(
+        image_size: jigsall_core::fit_image_size(
             grid * UVec2::new(20, 30),
-            puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+            jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION,
         ),
         snap_distance: 5.0,
         rotation_enabled: true,
@@ -43,7 +43,7 @@ fn rotate(store: &mut PieceDataStore, d: &PuzzleDefinition, ids: &[u32], turns: 
                 quarter_turns: turns,
             },
             Some(d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         )
         .rotated
 }
@@ -328,7 +328,7 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
         LOCAL_PLAYER,
         &PieceCommand::Grab(PieceId(1)),
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let position = store.states[1].position + Vec2::new(10.25, -6.5);
     store.apply_command(
@@ -338,7 +338,7 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
             position,
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_rigid(&store, &d, 0, 1);
     let before = store.states.to_vec();
@@ -359,7 +359,7 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
             delta: Vec2::new(0.25, 5.5),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_rigid(&store, &d, 0, 1);
     assert_eq!(store.component_root_dirty, roots_dirty);
@@ -503,7 +503,7 @@ fn rotation_at_an_exact_fractional_play_area_edge_keeps_a_legal_pivot() {
     for id in 0..store.len() as u32 {
         set_transform(&mut store, &d, id, 0, Vec2::ZERO);
     }
-    let area = puzzella_puzzle::placement::LogicalPlayArea::from_definition(&d).unwrap();
+    let area = jigsall_puzzle::placement::LogicalPlayArea::from_definition(&d).unwrap();
     let center =
         crate::play_area::component_center((0..3).map(|id| d.correct_position(PieceId(id))))
             .unwrap();

@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_core::DisplayNameError;
+use jigsall_core::DisplayNameError;
 
 fn entry(id: u64) -> RosterPlayer {
     RosterPlayer {

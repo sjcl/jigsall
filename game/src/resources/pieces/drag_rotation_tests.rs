@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_core::{GENERATOR_VERSION, LOCAL_PLAYER, ROTATION_MASK};
+use jigsall_core::{GENERATOR_VERSION, LOCAL_PLAYER, ROTATION_MASK};
 
 fn fixture() -> (PuzzleDefinition, PieceDataStore, PieceBitSet) {
     let d = PuzzleDefinition {
@@ -27,7 +27,7 @@ fn fixture() -> (PuzzleDefinition, PieceDataStore, PieceBitSet) {
             members: members.clone(),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     store.drag.delta = Vec2::new(20., 30.);
     store.dirty_pieces.clear();
@@ -48,7 +48,7 @@ fn rotate_drag(
             quarter_turns: turns,
         },
         Some(d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     )
 }
 
@@ -132,7 +132,7 @@ fn repeated_drag_turns_reconstruct_fractional_l_shape_without_accumulated_drift(
             members: members.clone(),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let before = store.states.to_vec();
     for turn in 0..400 {
@@ -197,12 +197,7 @@ fn invalid_drag_sibling_rejects_the_whole_operation_before_mutation() {
         };
         assert!(
             !store
-                .apply_command(
-                    LOCAL_PLAYER,
-                    &command,
-                    Some(&d),
-                    puzzella_core::LOCAL_PLAYER
-                )
+                .apply_command(LOCAL_PLAYER, &command, Some(&d), jigsall_core::LOCAL_PLAYER)
                 .drag_rebased,
             "case {case}"
         );
@@ -249,7 +244,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                 members: members.clone(),
             },
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         let desired = if board {
             d.correct_position(PieceId(0))
@@ -271,7 +266,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                     delta: Vec2::ZERO,
                 },
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             assert_eq!(store.placed_count, 0);
             store.drag.members = members.words().clone();
@@ -281,7 +276,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                     members: members.clone(),
                 },
                 Some(&d),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             );
             assert!(rotate_drag(&mut store, &d, &members, -1).drag_rebased);
         }
@@ -297,7 +292,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
                 delta: Vec2::ZERO,
             },
             Some(&d),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         );
         if board {
             assert_eq!(store.placed_count, 1);
@@ -311,7 +306,7 @@ fn drag_rotation_defers_same_rotation_neighbor_and_board_snapping_until_release(
 fn drag_rotation_upload_is_exact_even_for_fragmented_members_and_pointer_frames_reuse_membership() {
     let (mut d, mut store, _) = fixture();
     d.grid_size = UVec2::new(1000, 1);
-    d.image_size = UVec2::new(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION, 30);
+    d.image_size = UVec2::new(jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION, 30);
     store.initialize(
         (0..1000)
             .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.))
@@ -326,7 +321,7 @@ fn drag_rotation_upload_is_exact_even_for_fragmented_members_and_pointer_frames_
             members: members.clone(),
         },
         Some(&d),
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let mut app = App::new();
     app.insert_resource(store)

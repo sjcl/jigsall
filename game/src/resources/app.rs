@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use puzzella_core::{PlayerId, LOCAL_PLAYER};
+use jigsall_core::{PlayerId, LOCAL_PLAYER};
 
 /// This process's session identity, independent of puzzle/snapshot state.
 /// Snapshot installation may replace PieceDataStore without resetting this resource.

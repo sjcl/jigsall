@@ -11,7 +11,7 @@ pub const DANGER: Color32 = Color32::from_rgb(224, 153, 144);
 
 /// Shared palette and embedded artwork: menus do not depend on the launch directory.
 pub fn prepare(ctx: &egui::Context) {
-    let id = egui::Id::new("puzzella_menu_theme");
+    let id = egui::Id::new("jigsall_menu_theme");
     if ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false)) {
         return;
     }
@@ -56,7 +56,7 @@ pub fn prepare(ctx: &egui::Context) {
 }
 
 pub fn logo(ctx: &egui::Context) -> egui::TextureHandle {
-    let id = egui::Id::new("puzzella_logo_texture");
+    let id = egui::Id::new("jigsall_logo_texture");
     if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(id)) {
         return texture;
     }
@@ -67,7 +67,7 @@ pub fn logo(ctx: &egui::Context) -> egui::TextureHandle {
         [image.width() as usize, image.height() as usize],
         image.as_raw(),
     );
-    let texture = ctx.load_texture("puzzella_logo", pixels, egui::TextureOptions::LINEAR);
+    let texture = ctx.load_texture("jigsall_logo", pixels, egui::TextureOptions::LINEAR);
     ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
     texture
 }

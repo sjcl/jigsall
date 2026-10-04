@@ -18,13 +18,13 @@ pub struct RendezvousRuntimeConfig {
     pub ice: IceConfig,
 }
 pub struct RendezvousHostOptions {
-    pub display_name: Option<puzzella_core::PlayerDisplayName>,
+    pub display_name: Option<jigsall_core::PlayerDisplayName>,
     pub session: SessionDefinition,
     pub host: PlayerId,
     pub password: SessionPassword,
 }
 pub struct RendezvousJoinOptions {
-    pub display_name: Option<puzzella_core::PlayerDisplayName>,
+    pub display_name: Option<jigsall_core::PlayerDisplayName>,
     pub room_code: RoomCode,
     pub password: SessionPassword,
     pub cached_image: Option<Arc<[u8]>>,

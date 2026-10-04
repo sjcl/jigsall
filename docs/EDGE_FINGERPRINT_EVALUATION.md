@@ -121,9 +121,9 @@ SVGの輪郭は既存Rust `sd_tab`のzero contourをofflineでsampleしたもの
 
 ```sh
 # 全指標・無作為fixture・HTMLを生成
-cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment
+cargo run --release --locked -p jigsall-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment
 # HTMLだけ再生成（数値評価を再実行しない）
-cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment --tool-only
+cargo run --release --locked -p jigsall-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment --tool-only
 ```
 
 SVG/HTMLはtargetに生成し、PNG・数値CSV・manifestは`benchmarks/edge-assessment/`に保存しました。HTMLは約7 MBです。ローカルファイルのブラウザ保存が利用できない環境ではexportを使うか、localhostで配信します。

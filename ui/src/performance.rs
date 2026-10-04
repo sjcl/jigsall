@@ -1,7 +1,7 @@
 use crate::localization::Localization;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::resources::{PerformanceDebugLevel, PerformanceMonitor, PieceDataStore};
+use jigsall_game::resources::{PerformanceDebugLevel, PerformanceMonitor, PieceDataStore};
 
 pub fn draw_performance_overlay(
     mut contexts: EguiContexts,
@@ -137,7 +137,7 @@ fn overlay_text(perf: &PerformanceMonitor, piece_count: usize, i18n: &Localizati
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puzzella_game::resources::SystemTiming;
+    use jigsall_game::resources::SystemTiming;
     use std::time::Duration;
 
     #[test]

@@ -165,7 +165,7 @@ jobs:
       # The patched wrapper is an excluded dependency, so workspace tests do not
       # run its initializer regression test. Select it with the optional graph.
       - name: GNS single-shot identity initialization
-        run: cargo test --locked -p puzzella-game -p game-networking-sockets --features puzzella-game/gns --lib identity_initialization -- --nocapture
+        run: cargo test --locked -p jigsall-game -p game-networking-sockets --features jigsall-game/gns --lib identity_initialization -- --nocapture
       - name: Windows application build (GNS enabled)
         if: runner.os == 'Windows'
         run: cargo build --workspace --locked --features gns

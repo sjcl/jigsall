@@ -32,7 +32,7 @@ use crate::{
     players::{PlayerRoster, RosterError, RosterPlayer},
     resources::PieceDataStore,
 };
-use puzzella_core::{
+use jigsall_core::{
     protocol::ProtocolAuthorityEventEnvelope,
     session::{AuthorityCursor, AuthoritySession},
     PlayerId, PuzzleDefinition,
@@ -396,7 +396,7 @@ impl SendingTransfer {
 
 struct HostSyncPeer {
     profile_received: bool,
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
     origin: Option<Origin>,
     player: PlayerId,
     authenticated: SessionMetadata,
@@ -1448,7 +1448,7 @@ pub enum ClientSyncOutcome {
 }
 
 pub struct ClientSyncRouter {
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
     connection: ConnectionId,
     player: PlayerId,
     authenticated: SessionMetadata,
@@ -1479,7 +1479,7 @@ impl ClientSyncRouter {
     pub fn start(
         bootstrap: &mut ClientBootstrap,
         cached_image: Option<&[u8]>,
-        display_name: Option<puzzella_core::PlayerDisplayName>,
+        display_name: Option<jigsall_core::PlayerDisplayName>,
         now: Instant,
     ) -> Result<Self, SyncError> {
         let authenticated = bootstrap.metadata().ok_or(SyncError::NotSyncing)?;

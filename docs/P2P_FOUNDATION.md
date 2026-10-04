@@ -36,9 +36,9 @@ the backend does not synchronously Kill the shared singleton to force Release.
 Run on a configured native GNS host:
 
 ```powershell
-cargo test --locked -p puzzella-game --features gns p2p -- --nocapture
+cargo test --locked -p jigsall-game --features gns p2p -- --nocapture
 # Select the excluded patched wrapper in the root's optional GNS graph.
-cargo test --locked -p puzzella-game -p game-networking-sockets --features puzzella-game/gns --lib identity_initialization -- --nocapture
+cargo test --locked -p jigsall-game -p game-networking-sockets --features jigsall-game/gns --lib identity_initialization -- --nocapture
 ```
 
 The integration test re-enters the same Rust test executable in two child
@@ -100,5 +100,5 @@ explicitly releases them. The localhost real-server test is documented in
 
 The root crates.io patch replaces only game-networking-sockets 0.3.0 with
 `vendor/game-networking-sockets`; sys 0.3.0 and its native library remain pinned.
-See that directory's PUZZELLA_PATCH.md for the preserved upstream source and
+See that directory's JIGSALL_PATCH.md for the preserved upstream source and
 the initializer extension. Default dependency graphs still exclude native GNS.

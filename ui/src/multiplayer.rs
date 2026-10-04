@@ -2,7 +2,7 @@
 use crate::{localization::Localization, theme};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::{
+use jigsall_game::{
     network::{
         address::{AddressResolution, ResolutionError, ServerAddress},
         auth::{SessionPassword, MAX_PASSWORD_BYTES, MIN_PASSWORD_BYTES},
@@ -134,7 +134,7 @@ fn valid_room_code(value: &str) -> bool {
     #[cfg(feature = "rendezvous")]
     {
         value
-            .parse::<puzzella_game::network::runtime::RoomCode>()
+            .parse::<jigsall_game::network::runtime::RoomCode>()
             .is_ok()
     }
     #[cfg(not(feature = "rendezvous"))]
@@ -162,12 +162,12 @@ fn valid_address(value: &str, host: bool) -> bool {
 struct JoinRequest {
     address: ServerAddress,
     password: SessionPassword,
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
 }
 struct PendingJoin {
     resolution: AddressResolution,
     password: SessionPassword,
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
 }
 
 struct PendingDirectHost {
@@ -182,7 +182,7 @@ enum PendingHost {
 enum Action {
     Join(JoinRequest),
     #[cfg(feature = "rendezvous")]
-    JoinInternet(puzzella_game::network::runtime::RendezvousJoinOptions),
+    JoinInternet(jigsall_game::network::runtime::RendezvousJoinOptions),
     PrepareHost(PendingHost),
     Cancel,
 }
@@ -326,7 +326,7 @@ impl MultiplayerUi {
             let room = self
                 .join
                 .room_code
-                .parse::<puzzella_game::network::runtime::RoomCode>()
+                .parse::<jigsall_game::network::runtime::RoomCode>()
                 .map_err(|_| UiError::RoomCode);
             match room.and_then(|room_code| {
                 self.join
@@ -340,7 +340,7 @@ impl MultiplayerUi {
                     self.owns_session = true;
                     self.error = None;
                     self.action = Some(Action::JoinInternet(
-                        puzzella_game::network::runtime::RendezvousJoinOptions {
+                        jigsall_game::network::runtime::RendezvousJoinOptions {
                             display_name: profile.current.display_name.clone(),
                             room_code,
                             password,
@@ -445,12 +445,12 @@ pub(crate) fn process_actions(world: &mut World) {
             ui.host.method = host_method;
             ui.join.method = join_method;
             ui.internet_available = internet_available;
-            puzzella_game::network::runtime::stop_session(world);
+            jigsall_game::network::runtime::stop_session(world);
         }
         #[cfg(feature = "rendezvous")]
         Action::JoinInternet(options) => {
             if let Err(error) =
-                puzzella_game::network::runtime::start_rendezvous_join(world, options)
+                jigsall_game::network::runtime::start_rendezvous_join(world, options)
             {
                 world.resource_mut::<MultiplayerUi>().error = Some(UiError::start(error));
             }
@@ -489,7 +489,7 @@ pub(crate) fn process_actions(world: &mut World) {
             if let Some(id) = selected {
                 let limits = world.resource::<PuzzleImageLimits>().decode_limits(
                     &world
-                        .resource::<puzzella_game::image_settings::ImageSettingsState>()
+                        .resource::<jigsall_game::image_settings::ImageSettingsState>()
                         .current,
                 );
                 world.resource_scope(|world, service: Mut<PersistenceService>| {
@@ -533,7 +533,7 @@ fn start_resolved_join(
     world: &mut World,
     address: SocketAddr,
     password: SessionPassword,
-    display_name: Option<puzzella_core::PlayerDisplayName>,
+    display_name: Option<jigsall_core::PlayerDisplayName>,
 ) {
     let options = JoinOptions {
         address,
@@ -542,7 +542,7 @@ fn start_resolved_join(
         cached_image: None,
     };
     #[cfg(feature = "gns")]
-    let result = puzzella_game::network::runtime::start_join(world, options);
+    let result = jigsall_game::network::runtime::start_join(world, options);
     #[cfg(not(feature = "gns"))]
     let result: Result<(), RuntimeStartError> = {
         drop(options);
@@ -601,7 +601,7 @@ pub(crate) fn start_prepared_host(world: &mut World) {
     }
     let store = world.resource::<PieceDataStore>();
     if !world
-        .get_resource::<puzzella_game::render::RenderReady>()
+        .get_resource::<jigsall_game::render::RenderReady>()
         .is_some_and(|ready| ready.is_ready(store.epoch))
     {
         return;
@@ -618,7 +618,7 @@ pub(crate) fn start_prepared_host(world: &mut World) {
         ui.error = Some(UiError::ImageUnavailable);
         return;
     };
-    use puzzella_core::session::{SessionDefinition, SessionId};
+    use jigsall_core::session::{SessionDefinition, SessionId};
     #[allow(unused_mut)]
     let mut request = if world.resource::<MultiplayerUi>().retrying {
         world
@@ -647,9 +647,9 @@ pub(crate) fn start_prepared_host(world: &mut World) {
             PendingHost::Direct(direct) => direct,
             #[cfg(feature = "rendezvous")]
             PendingHost::Internet(password) => {
-                let result = puzzella_game::network::runtime::start_rendezvous_host(
+                let result = jigsall_game::network::runtime::start_rendezvous_host(
                     world,
-                    puzzella_game::network::runtime::RendezvousHostOptions {
+                    jigsall_game::network::runtime::RendezvousHostOptions {
                         display_name,
                         session,
                         host,
@@ -1027,7 +1027,7 @@ pub(crate) fn draw_connection_ui(
     profile: Res<PlayerSettingsState>,
     mut saves: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<PersistenceState>,
-    definition: Option<Res<puzzella_core::PuzzleDefinition>>,
+    definition: Option<Res<jigsall_core::PuzzleDefinition>>,
     original: Option<Res<OriginalPuzzleImage>>,
     store: Res<PieceDataStore>,
     app_state: Option<Res<State<AppState>>>,

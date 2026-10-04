@@ -1,7 +1,7 @@
 //! Lane reorder is a presentation drop, not Reliable divergence. Call these
 //! classifiers only for decoded Transient messages, never for Reliable events.
 use crate::multiplayer::{protocol::ProtocolCommandError, replication::ReplicationError};
-use puzzella_core::session::ProtocolError;
+use jigsall_core::session::ProtocolError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransientDrop {

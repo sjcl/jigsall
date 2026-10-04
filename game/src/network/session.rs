@@ -1,6 +1,6 @@
 //! Gameplay-ready peers. Authentication/bootstrap keeps its own connection state.
 use super::transport::{ConnectionId, TransportEvent};
-use puzzella_core::PlayerId;
+use jigsall_core::PlayerId;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

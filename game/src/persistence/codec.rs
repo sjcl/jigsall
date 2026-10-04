@@ -2,7 +2,7 @@ use super::*;
 use crate::checkpoint::{SnapshotPieceState, SNAPSHOT_PLACED};
 use crate::resources::pieces::MAX_Z;
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{PuzzleDefinition, GENERATOR_VERSION};
+use jigsall_core::{PuzzleDefinition, GENERATOR_VERSION};
 use sha2::{Digest, Sha256};
 
 pub const SAVE_FORMAT_VERSION: u16 = 1;

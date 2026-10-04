@@ -4,7 +4,7 @@ use crate::resources::{
     remote_cursor::RemoteCursorPresentation, AppState, GameSubState, LocalGameplayBlocked,
     LocalPlayerId,
 };
-use puzzella_core::PlayerId;
+use jigsall_core::PlayerId;
 use std::collections::BTreeMap;
 
 pub const MAX_REMOTE_CURSORS: usize = 64;

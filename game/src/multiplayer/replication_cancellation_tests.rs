@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_core::protocol::DragCancelled;
+use jigsall_core::protocol::DragCancelled;
 
 #[test]
 fn existing_peers_replay_sparse_and_dense_cancel_without_delta_commit() {
@@ -132,7 +132,7 @@ fn peer_cancel_missing_wrong_and_inconsistent_context_latch_without_mutation() {
                     HOST,
                     &event,
                     Some(&s.definition),
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 ),
                 Err(expected)
             );

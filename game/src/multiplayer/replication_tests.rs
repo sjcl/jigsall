@@ -11,7 +11,7 @@ use crate::{
     resources::pieces::{CONNECTED_EDGES, ENABLED, HELD, MAX_Z, PLACED},
 };
 use bevy::math::UVec2;
-use puzzella_core::{
+use jigsall_core::{
     protocol::{
         DenseTarget, PieceTarget, ProtocolCommandEnvelope, ProtocolPieceCommand, ReleaseCommitted,
         ReleaseResultFingerprint,
@@ -141,7 +141,7 @@ impl Simulation {
                     command,
                 },
                 provide_definition.then_some(&self.definition),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             )
             .unwrap()
     }
@@ -154,7 +154,7 @@ impl Simulation {
                     self.session.host(),
                     event,
                     snap.then_some(&self.definition),
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 )
                 .unwrap();
         }
@@ -675,7 +675,7 @@ fn event_authentication_gap_and_duplicate_are_checked_before_gameplay() {
                 host,
                 &invalid,
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(error))
         );
@@ -697,7 +697,7 @@ fn event_authentication_gap_and_duplicate_are_checked_before_gameplay() {
                     HOST,
                     stale,
                     None,
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 ),
                 Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
             );
@@ -716,7 +716,7 @@ impl Simulation {
                     HOST,
                     grab,
                     None,
-                    puzzella_core::LOCAL_PLAYER
+                    jigsall_core::LOCAL_PLAYER
                 ),
                 Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
             );
@@ -767,7 +767,7 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
                 HOST,
                 &release,
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Diverged),
             "{corruption}"
@@ -786,7 +786,7 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
                 HOST,
                 &release,
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Diverged)
         );
@@ -828,7 +828,7 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
                 HOST,
                 &release,
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
@@ -847,7 +847,7 @@ fn divergence_does_not_record_cursor_or_allow_replay_until_snapshot_resync() {
                 HOST,
                 &release,
                 None,
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             )
             .unwrap();
         s.grab(A, 2, &[0]);
@@ -893,7 +893,7 @@ fn contradictory_grab_is_atomic_including_components_after_a_valid_sibling() {
                 HOST,
                 &event,
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Diverged)
         );
@@ -932,7 +932,7 @@ fn missing_or_wrong_release_context_does_not_mutate_or_record() {
                 HOST,
                 &event,
                 None,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(if with_grab {
                 ReplicationError::WrongDragContext
@@ -947,12 +947,12 @@ fn missing_or_wrong_release_context_does_not_mutate_or_record() {
 
 #[test]
 fn dense_million_piece_remote_context_retains_mask_and_scalar_presentation() {
-    let count = puzzella_core::MAX_PIECES;
+    let count = jigsall_core::MAX_PIECES;
     let d = PuzzleDefinition {
         generator_version: GENERATOR_VERSION,
         seed: 42,
         grid_size: UVec2::splat(1000),
-        image_size: UVec2::splat(puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION),
+        image_size: UVec2::splat(jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION),
         snap_distance: 5.0,
         rotation_enabled: true,
     };
@@ -1076,7 +1076,7 @@ fn dense_release_replay_and_stale_topology_preserve_target_specific_validation()
             HOST,
             &event,
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ReplicationError::Diverged)
     );
@@ -1126,7 +1126,7 @@ fn snapshot_install_invalidates_in_flight_context_and_rejects_old_updates() {
                 HOST,
                 &grab,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
@@ -1174,7 +1174,7 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                 HOST,
                 &pending,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::Frozen))
         );
@@ -1211,13 +1211,13 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                 HOST,
                 &pending,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::WrongEpoch))
         );
         let delayed_rotation = ProtocolAuthorityEventEnvelope {
             event: ProtocolAuthorityEvent::DragRotationCommitted(
-                puzzella_core::protocol::DragRotationCommitted {
+                jigsall_core::protocol::DragRotationCommitted {
                     player: A,
                     grab_sequence: 0,
                     basis_sequence: 1,
@@ -1236,7 +1236,7 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                 HOST,
                 &delayed_rotation,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             ),
             Err(ReplicationError::Protocol(ProtocolError::WrongEpoch))
         );
@@ -1252,7 +1252,7 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                     ..pending.clone()
                 },
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::WrongHost))
         );
@@ -1299,7 +1299,7 @@ fn migration_freezes_apply_then_restarts_with_new_host_epoch_and_no_old_drags() 
                     command,
                 },
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER,
+                jigsall_core::LOCAL_PLAYER,
             ),
             Err(ProtocolCommandError::Sequence(ProtocolError::WrongEpoch))
         ));
@@ -1318,7 +1318,7 @@ fn publication_counter_exhaustion_is_rejected_before_mutation() {
     let mut s = Simulation::new(&[Vec2::splat(100.0)], &[]);
     s.session = AuthoritySession::new(SESSION, HOST, AuthorityCursor::new(3, u64::MAX));
     let target = PieceTarget::Component(
-        puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
+        jigsall_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
             .unwrap(),
     );
     let envelope = ProtocolCommandEnvelope {
@@ -1336,7 +1336,7 @@ fn publication_counter_exhaustion_is_rejected_before_mutation() {
             A,
             &envelope,
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Sequence(
             ProtocolError::CounterExhausted
@@ -1352,7 +1352,7 @@ fn publication_counter_exhaustion_is_rejected_before_mutation() {
             A,
             &envelope,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         )
         .unwrap();
 }
@@ -1415,7 +1415,7 @@ fn restored_replica_with_different_dsu_root_replays_connected_snap_identically()
     };
     let offsets = [100.0, 100.0, 104.0, 180.0, 100.0, 104.0].map(|x| Vec2::new(x, 100.0));
     let mut s = Simulation::with_definition(definition, &offsets, &[(1, 4), (1, 0)]);
-    let mut connectivity = puzzella_core::PieceConnectivity::new(6);
+    let mut connectivity = jigsall_core::PieceConnectivity::new(6);
     connectivity.union(PieceId(1), PieceId(4));
     connectivity.union(PieceId(1), PieceId(0));
     s.store.connectivity = connectivity;
@@ -1464,7 +1464,7 @@ fn empty_acceptance_is_reliable_but_rejected_commands_publish_nothing() {
             A,
             &envelope,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::NoActiveDrag)
     ));
@@ -1514,7 +1514,7 @@ fn disabled_rotation_rejects_replica_commits_before_piece_mutation() {
                     HOST,
                     &event,
                     Some(&definition),
-                    puzzella_core::LOCAL_PLAYER,
+                    jigsall_core::LOCAL_PLAYER,
                 ),
                 Err(ReplicationError::Diverged)
             );
@@ -1560,7 +1560,7 @@ fn reliable_rotations_replay_identically_and_snap_rotated_neighbors_after_drag()
         };
         assert_eq!(
             commit.quarter_turns,
-            puzzella_core::add_quarter_turns(0, turns) as i8
+            jigsall_core::add_quarter_turns(0, turns) as i8
         );
         let peer = &mut s.peers[0];
         assert_eq!(
@@ -1570,7 +1570,7 @@ fn reliable_rotations_replay_identically_and_snap_rotated_neighbors_after_drag()
                 HOST,
                 &event,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Protocol(ProtocolError::StaleEvent))
         );
@@ -1581,8 +1581,8 @@ fn reliable_rotations_replay_identically_and_snap_rotated_neighbors_after_drag()
     rotate_event(&mut s, 4, &[0, 2], 1);
     let moving = s.store.states[2];
     let translation = s.store.states[0].position
-        - puzzella_core::rotate_quarter(s.definition.correct_position(PieceId(0)), 1);
-    let final_delta = puzzella_core::rotate_quarter(s.definition.correct_position(PieceId(2)), 1)
+        - jigsall_core::rotate_quarter(s.definition.correct_position(PieceId(0)), 1);
+    let final_delta = jigsall_core::rotate_quarter(s.definition.correct_position(PieceId(2)), 1)
         + translation
         - moving.position;
     s.grab(A, 5, &[2]);
@@ -1595,7 +1595,7 @@ fn reliable_rotations_replay_identically_and_snap_rotated_neighbors_after_drag()
         .store
         .states
         .iter()
-        .all(|state| puzzella_core::decode_rotation(state.flags) == 2));
+        .all(|state| jigsall_core::decode_rotation(state.flags) == 2));
     let snapshot =
         GameSnapshot::capture(&s.store, &s.definition, SESSION, s.session.cursor()).unwrap();
     let serialized = postcard::to_allocvec(&snapshot).unwrap();
@@ -1626,9 +1626,9 @@ fn authority_rotation_excludes_remote_holds_and_rejects_active_player_drag() {
     rotate_event(&mut s, 0, &[0, 2], 1);
     assert_eq!(s.store.states[0], before[0]);
     assert_eq!(s.store.states[1], before[1]);
-    assert_eq!(puzzella_core::decode_rotation(s.store.states[2].flags), 1);
+    assert_eq!(jigsall_core::decode_rotation(s.store.states[2].flags), 1);
     let target = PieceTarget::Component(
-        puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
+        jigsall_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
             .unwrap(),
     );
     let envelope = ProtocolCommandEnvelope {
@@ -1649,7 +1649,7 @@ fn authority_rotation_excludes_remote_holds_and_rejects_active_player_drag() {
             B,
             &envelope,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::ActiveDragExists)
     ));
@@ -1662,9 +1662,9 @@ fn replica_rotation_preflights_whole_event_and_detects_rotation_divergence() {
     for corrupt in 0..3 {
         let mut s = Simulation::new(&[Vec2::splat(100.0); 3], &[(0, 1)]);
         let target = PieceTarget::Components(vec![
-            puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
+            jigsall_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(0))
                 .unwrap(),
-            puzzella_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(2))
+            jigsall_core::protocol::ComponentRef::from_member(&s.store.connectivity, PieceId(2))
                 .unwrap(),
         ]);
         let mut event = s
@@ -1698,7 +1698,7 @@ fn replica_rotation_preflights_whole_event_and_detects_rotation_divergence() {
                 HOST,
                 &event,
                 Some(&s.definition),
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             ),
             Err(ReplicationError::Diverged)
         );
@@ -1712,7 +1712,7 @@ fn replica_rotation_preflights_whole_event_and_detects_rotation_divergence() {
 
 #[test]
 fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
-    use puzzella_core::protocol::TargetError;
+    use jigsall_core::protocol::TargetError;
     let mut s = Simulation::new(&[Vec2::splat(100.0); 40], &[]);
     let mut members = PieceBitSet::new(40);
     members.fill();
@@ -1751,7 +1751,7 @@ fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
             A,
             &envelope,
             Some(&s.definition),
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         ),
         Err(ProtocolCommandError::Target(TargetError::StaleTopology))
     ));
@@ -1762,7 +1762,7 @@ fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
 fn rotation_replay_is_independent_of_dsu_root_and_member_list_history() {
     let mut s = Simulation::new(&[Vec2::splat(100.37); 3], &[(0, 1), (1, 2)]);
     let peer = &mut s.peers[1];
-    peer.store.connectivity = puzzella_core::PieceConnectivity::new(3);
+    peer.store.connectivity = jigsall_core::PieceConnectivity::new(3);
     peer.store.connectivity.union(PieceId(2), PieceId(1));
     peer.store.connectivity.union(PieceId(2), PieceId(0));
     assert_ne!(

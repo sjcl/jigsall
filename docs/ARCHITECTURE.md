@@ -1,14 +1,14 @@
-# Puzzella のアーキテクチャ
+# Jigsall のアーキテクチャ
 
 2026-10-05。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2からprocedural GPU rendererへ移行済みです。移行検証用の旧 CPU メッシュ生成と CPU picking は削除しました。現在は開発時v4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v1（開発時v5）です。初回リリース向けにgeneratorとsnapshot schemaをそれぞれ5→1に整理し、生成結果とsnapshotのlayoutは維持しています。開発中の形式との互換性や移行は提供しません。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 ## Workspaceと責務
 
 ```text
-puzzella
-  ├── puzzella-ui → puzzella-game / puzzella-puzzle / puzzella-core
-  └── puzzella-game → puzzella-core / puzzella-puzzle
-                                         └── puzzella-core
+jigsall
+  ├── jigsall-ui → jigsall-game / jigsall-puzzle / jigsall-core
+  └── jigsall-game → jigsall-core / jigsall-puzzle
+                                         └── jigsall-core
 ```
 
 共通の依存バージョン・Cargo.lock・targetをworkspaceで管理し、全packageをdefault-membersに含めています。
@@ -37,7 +37,7 @@ puzzella
 | `game/src/checkpoint.rs` | multiplayer / persistent 共通 capture・validation・DSU 復元・install |
 | `game/src/persistence/` | versioned binary codec、画像 content addressing、backend 非依存 repository / logical storage、I/O worker |
 
-旧 v2 の Bezier・lyon tessellation、CPU triangle / R-tree picking、専用 example と feature を削除し、lyon・lyon_tessellation・Rayon・rstar の依存を除去しました。現行 shader との比較に使う解析 SDF と形状評価 example は維持します。`puzzella-puzzle/shape-analysis` は fingerprint 評価用です。入力テストは選択結果を明示的に注入し、実 GPU の coverage は render tests で検証します。
+旧 v2 の Bezier・lyon tessellation、CPU triangle / R-tree picking、専用 example と feature を削除し、lyon・lyon_tessellation・Rayon・rstar の依存を除去しました。現行 shader との比較に使う解析 SDF と形状評価 example は維持します。`jigsall-puzzle/shape-analysis` は fingerprint 評価用です。入力テストは選択結果を明示的に注入し、実 GPU の coverage は render tests で検証します。
 
 ## CPU正本と入力
 

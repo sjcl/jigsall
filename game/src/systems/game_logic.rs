@@ -1,7 +1,7 @@
 use crate::resources::*;
 use bevy::prelude::*;
-use puzzella_core::ClientCommand;
-use puzzella_core::*;
+use jigsall_core::ClientCommand;
+use jigsall_core::*;
 
 pub fn escape_just_pressed(keys: Res<ButtonInput<KeyCode>>) -> bool {
     keys.just_pressed(KeyCode::Escape)

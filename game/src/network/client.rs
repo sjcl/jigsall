@@ -8,7 +8,7 @@ use crate::{
     multiplayer::replication::{PeerReplicationState, ReplicationError},
     resources::{pieces::AppliedCommand, PieceDataStore},
 };
-use puzzella_core::{
+use jigsall_core::{
     protocol::ProtocolCommandEnvelope,
     session::{AuthoritySession, CommandSequenceStatus},
     PlayerId, PuzzleDefinition,

@@ -2,8 +2,8 @@ use crate::localization::Localization;
 use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
-use puzzella_core::PuzzleDefinition;
-use puzzella_game::{
+use jigsall_core::PuzzleDefinition;
+use jigsall_game::{
     persistence::{runtime::*, SaveId, SaveTitle, MAX_SAVE_TITLE_CHARS},
     resources::*,
 };
@@ -56,7 +56,7 @@ pub fn draw_save_dialogs(
     mut state: ResMut<PersistenceState>,
     service: Res<PersistenceService>,
     image_limits: Res<PuzzleImageLimits>,
-    image_settings: Res<puzzella_game::image_settings::ImageSettingsState>,
+    image_settings: Res<jigsall_game::image_settings::ImageSettingsState>,
     definition: Option<Res<PuzzleDefinition>>,
     original: Option<Res<OriginalPuzzleImage>>,
     image: Option<Res<PuzzleImage>>,

@@ -10,7 +10,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-const TEMP_FILE_PREFIX: &str = ".puzzella-";
+const TEMP_FILE_PREFIX: &str = ".jigsall-";
 const TEMP_FILE_SUFFIX: &str = ".tmp";
 const STALE_TEMP_FILE_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -139,7 +139,7 @@ impl FilesystemStorage {
         let dirs = directories::BaseDirs::new().ok_or_else(|| {
             StorageError::Unavailable("User application data directory is unavailable".into())
         })?;
-        Ok(Self::new(dirs.data_local_dir().join("puzzella")))
+        Ok(Self::new(dirs.data_local_dir().join("jigsall")))
     }
     fn directory(&self, namespace: StorageNamespace) -> PathBuf {
         self.root.join(match namespace {
@@ -422,7 +422,7 @@ mod tests {
         for namespace in [StorageNamespace::Saves, StorageNamespace::Images] {
             let directory = storage.directory(namespace);
             fs::create_dir_all(&directory).unwrap();
-            let stale = directory.join(".puzzella-stale.tmp");
+            let stale = directory.join(".jigsall-stale.tmp");
             write_at(&stale, old);
             let key = match namespace {
                 StorageNamespace::Saves => StorageKey::Save(SaveId(1)),
@@ -431,18 +431,18 @@ mod tests {
             storage.write(key, b"saved data".to_vec()).unwrap();
             set_modified(&storage.path(key), old);
             let preserved = [
-                (".puzzella-recent.tmp", now),
-                (".puzzella-future.tmp", now + STALE_TEMP_FILE_AGE),
+                (".jigsall-recent.tmp", now),
+                (".jigsall-future.tmp", now + STALE_TEMP_FILE_AGE),
                 ("other.tmp", old),
-                (".puzzella-other.tmp.bak", old),
-                (".puzzella-other.puzsave", old),
+                (".jigsall-other.tmp.bak", old),
+                (".jigsall-other.puzsave", old),
             ];
             for (name, modified) in preserved {
                 write_at(&directory.join(name), modified);
             }
-            let nested = directory.join(".puzzella-directory.tmp");
+            let nested = directory.join(".jigsall-directory.tmp");
             fs::create_dir(&nested).unwrap();
-            let nested_temp = nested.join(".puzzella-nested.tmp");
+            let nested_temp = nested.join(".jigsall-nested.tmp");
             write_at(&nested_temp, old);
 
             storage.cleanup_stale_temp_files();
@@ -488,7 +488,7 @@ mod tests {
         .unwrap();
         let images = storage.directory(StorageNamespace::Images);
         fs::create_dir(&images).unwrap();
-        let stale = images.join(".puzzella-stale.tmp");
+        let stale = images.join(".jigsall-stale.tmp");
         write_at(&stale, SystemTime::now() - STALE_TEMP_FILE_AGE * 2);
 
         storage.cleanup_stale_temp_files();
@@ -509,18 +509,18 @@ mod tests {
         let old = SystemTime::now() - STALE_TEMP_FILE_AGE * 2;
         let saves = storage.directory(StorageNamespace::Saves);
         fs::create_dir(&saves).unwrap();
-        let locked_path = saves.join(".puzzella-locked.tmp");
+        let locked_path = saves.join(".jigsall-locked.tmp");
         write_at(&locked_path, old);
         let locked = fs::File::options()
             .read(true)
             .share_mode(1)
             .open(&locked_path)
             .unwrap();
-        let removable = saves.join(".puzzella-removable.tmp");
+        let removable = saves.join(".jigsall-removable.tmp");
         write_at(&removable, old);
         let images = storage.directory(StorageNamespace::Images);
         fs::create_dir(&images).unwrap();
-        let image_temp = images.join(".puzzella-removable.tmp");
+        let image_temp = images.join(".jigsall-removable.tmp");
         write_at(&image_temp, old);
 
         storage.cleanup_stale_temp_files();
@@ -545,7 +545,7 @@ mod tests {
         fs::create_dir(&saves).unwrap();
         let target = dir.path().join("target");
         write_at(&target, SystemTime::now() - STALE_TEMP_FILE_AGE * 2);
-        let link = saves.join(".puzzella-symlink.tmp");
+        let link = saves.join(".jigsall-symlink.tmp");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
         storage.cleanup_stale_temp_files();

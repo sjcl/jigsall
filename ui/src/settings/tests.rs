@@ -892,7 +892,7 @@ fn keyboard_event(key_code: KeyCode, state: bevy::input::ButtonState) -> Keyboar
 #[test]
 fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
     use bevy::input::ButtonState::{Pressed, Released};
-    use puzzella_game::keybindings::{KeyAction, KeyBindings};
+    use jigsall_game::keybindings::{KeyAction, KeyBindings};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
     let mut state = KeyBindingsState::load(Some(path.clone()));
@@ -987,7 +987,7 @@ fn real_key_widgets_capture_both_slots_save_reset_and_discard_edits() {
 #[test]
 fn key_capture_consumes_escape_tab_and_enter_without_activating_settings_widgets() {
     use bevy::input::ButtonState::{Pressed, Released};
-    use puzzella_game::keybindings::KeyBindings;
+    use jigsall_game::keybindings::KeyBindings;
     let mut state = KeyBindingsState::load(None);
     let ctx = egui::Context::default();
     let mut dialog = SettingsDialog::default();
@@ -1284,7 +1284,7 @@ fn native_image_budget_ui_probe() {
     let mut preferences = UiPreferences::load(None);
     preferences.language = LanguagePreference::Locale(Locale::EN_US);
     let (service, _storage) =
-        puzzella_game::persistence::runtime::PersistenceService::with_storage_requests();
+        jigsall_game::persistence::runtime::PersistenceService::with_storage_requests();
     App::new()
         .add_plugins(
             DefaultPlugins
@@ -1311,8 +1311,8 @@ fn native_image_budget_ui_probe() {
         .insert_resource(WinitSettings::continuous())
         .add_plugins((
             crate::GameUiPlugin,
-            puzzella_game::asset_reader::DirectFileAssetPlugin,
-            puzzella_game::GamePlugin,
+            jigsall_game::asset_reader::DirectFileAssetPlugin,
+            jigsall_game::GamePlugin,
         ))
         .insert_resource(Probe {
             start: Instant::now(),
@@ -1364,7 +1364,7 @@ fn native_settings_ui_probe() {
         mut exit: MessageWriter<AppExit>,
         mut preferences: ResMut<UiPreferences>,
         mut i18n: ResMut<Localization>,
-        mut next_app: ResMut<NextState<puzzella_game::resources::AppState>>,
+        mut next_app: ResMut<NextState<jigsall_game::resources::AppState>>,
     ) {
         if probe.start.elapsed() < Duration::from_secs(probe.phase as u64 * 2) {
             return;
@@ -1445,7 +1445,7 @@ fn native_settings_ui_probe() {
                     .observe(save_to_disk(screenshot_path("settings-ui-graphics-ja.png")));
             }
             15 => {
-                next_app.set(puzzella_game::resources::AppState::GameSetup);
+                next_app.set(jigsall_game::resources::AppState::GameSetup);
             }
             16 => {
                 commands
@@ -1468,7 +1468,7 @@ fn native_settings_ui_probe() {
                 actions.write(DisplaySettingsAction::Revert);
                 i18n.set_preference(LanguagePreference::Locale(Locale::JA));
                 commands.queue(|world: &mut World| {
-                    use puzzella_game::{asset_reader::*, resources::*};
+                    use jigsall_game::{asset_reader::*, resources::*};
                     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                         .join("../assets/menu-icon.png");
                     let key = world
@@ -1492,7 +1492,7 @@ fn native_settings_ui_probe() {
             }
             21 => {
                 commands.queue(|world: &mut World| {
-                    use puzzella_game::resources::{PieceMode, PuzzleConfig};
+                    use jigsall_game::resources::{PieceMode, PuzzleConfig};
                     let mut config = world.resource_mut::<PuzzleConfig>();
                     config.piece_mode = PieceMode::ManualGrid;
                     config.grid_size = (8, 4);
@@ -1506,7 +1506,7 @@ fn native_settings_ui_probe() {
                         "setup-ui-rotation-warning-ja.png",
                     )));
             }
-            23 => next_app.set(puzzella_game::resources::AppState::InGame),
+            23 => next_app.set(jigsall_game::resources::AppState::InGame),
             24 => {
                 commands
                     .spawn(Screenshot::primary_window())
@@ -1514,7 +1514,7 @@ fn native_settings_ui_probe() {
             }
             25 => {
                 commands.queue(|world: &mut World| {
-                    use puzzella_game::resources::GameSubState;
+                    use jigsall_game::resources::GameSubState;
                     assert_eq!(
                         world.resource::<State<GameSubState>>().get(),
                         &GameSubState::Playing
@@ -1532,11 +1532,11 @@ fn native_settings_ui_probe() {
             27 => {
                 commands.queue(|world: &mut World| {
                     world
-                        .resource_mut::<puzzella_game::resources::GameData>()
+                        .resource_mut::<jigsall_game::resources::GameData>()
                         .puzzle_completed = true;
                     world
-                        .resource_mut::<NextState<puzzella_game::resources::AppState>>()
-                        .set(puzzella_game::resources::AppState::GameComplete);
+                        .resource_mut::<NextState<jigsall_game::resources::AppState>>()
+                        .set(jigsall_game::resources::AppState::GameComplete);
                 });
             }
             28 => {
@@ -1553,7 +1553,7 @@ fn native_settings_ui_probe() {
     }
     let started = std::time::SystemTime::now();
     let (service, _storage) =
-        puzzella_game::persistence::runtime::PersistenceService::with_storage_requests();
+        jigsall_game::persistence::runtime::PersistenceService::with_storage_requests();
     App::new()
         .add_plugins(DefaultPlugins.set(WinitPlugin {
             run_on_any_thread: true,
@@ -1569,8 +1569,8 @@ fn native_settings_ui_probe() {
         .insert_resource(WinitSettings::continuous())
         .add_plugins((
             crate::GameUiPlugin,
-            puzzella_game::asset_reader::DirectFileAssetPlugin,
-            puzzella_game::GamePlugin,
+            jigsall_game::asset_reader::DirectFileAssetPlugin,
+            jigsall_game::GamePlugin,
         ))
         .insert_resource(Probe {
             start: Instant::now(),

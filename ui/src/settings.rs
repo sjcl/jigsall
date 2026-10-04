@@ -7,12 +7,12 @@ use crate::{
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::image_settings::{ImageSettingsError, ImageSettingsState, TextureBudget};
-use puzzella_game::keybindings::KeyBindingsState;
-use puzzella_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettingsState};
-use puzzella_game::player_settings::{PlayerSettingsError, PlayerSettingsState};
-use puzzella_game::resources::PuzzleImageLimits;
-use puzzella_game::settings::*;
+use jigsall_game::image_settings::{ImageSettingsError, ImageSettingsState, TextureBudget};
+use jigsall_game::keybindings::KeyBindingsState;
+use jigsall_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettingsState};
+use jigsall_game::player_settings::{PlayerSettingsError, PlayerSettingsState};
+use jigsall_game::resources::PuzzleImageLimits;
+use jigsall_game::settings::*;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum SettingsTab {
@@ -162,10 +162,10 @@ fn paint_player_settings(
     if let Some(error) = &state.error {
         let text = match error {
             PlayerSettingsError::Invalid(error) => i18n.text(match error {
-                puzzella_core::DisplayNameError::Empty => "settings-player-name-empty",
-                puzzella_core::DisplayNameError::TooManyChars => "settings-player-name-chars",
-                puzzella_core::DisplayNameError::TooManyBytes => "settings-player-name-bytes",
-                puzzella_core::DisplayNameError::ForbiddenCharacter => {
+                jigsall_core::DisplayNameError::Empty => "settings-player-name-empty",
+                jigsall_core::DisplayNameError::TooManyChars => "settings-player-name-chars",
+                jigsall_core::DisplayNameError::TooManyBytes => "settings-player-name-bytes",
+                jigsall_core::DisplayNameError::ForbiddenCharacter => {
                     "settings-player-name-control"
                 }
             }),

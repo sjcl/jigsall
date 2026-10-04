@@ -12,10 +12,10 @@ use bevy::{
     math::UVec2,
     prelude::{App, Update},
 };
-use puzzella_core::protocol::{
+use jigsall_core::protocol::{
     ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand, RemoteDragUpdate,
 };
-use puzzella_core::{
+use jigsall_core::{
     protocol::ComponentRef,
     session::{
         AuthorityCursor, ClientCommandSequence, CommandSequenceStatus, ImageHash,
@@ -41,7 +41,7 @@ struct Host {
 }
 impl Host {
     fn new(count: usize, links: &[(u32, u32)]) -> Self {
-        let grid_size = if count == puzzella_core::MAX_PIECES {
+        let grid_size = if count == jigsall_core::MAX_PIECES {
             UVec2::splat(1000)
         } else {
             UVec2::new(count as u32, 1)
@@ -50,9 +50,9 @@ impl Host {
             generator_version: GENERATOR_VERSION,
             seed: 42,
             grid_size,
-            image_size: puzzella_core::fit_image_size(
+            image_size: jigsall_core::fit_image_size(
                 grid_size * 200,
-                puzzella_core::MAX_PUZZLE_IMAGE_DIMENSION,
+                jigsall_core::MAX_PUZZLE_IMAGE_DIMENSION,
             ),
             snap_distance: 5.,
             rotation_enabled: true,
@@ -470,8 +470,8 @@ fn multiple_players_restore_in_stable_order_and_release_independently() {
 
 #[test]
 fn million_piece_dense_capture_and_restore_share_masks_without_member_refs() {
-    let mut host = Host::new(puzzella_core::MAX_PIECES, &[]);
-    host.grab(HOST, 40, 0..puzzella_core::MAX_PIECES as u32);
+    let mut host = Host::new(jigsall_core::MAX_PIECES, &[]);
+    host.grab(HOST, 40, 0..jigsall_core::MAX_PIECES as u32);
     host.update(HOST, 40, 91, Vec2::new(70., 20.));
     let baseline = host.capture();
     let PieceTarget::Dense(dense) = &baseline.active_drags[0].target else {
@@ -501,7 +501,7 @@ fn million_piece_dense_capture_and_restore_share_masks_without_member_refs() {
         panic!()
     };
     assert!(Arc::ptr_eq(remote.members.words(), dense.members.words()));
-    assert_eq!(peer.store.held_by.len(), puzzella_core::MAX_PIECES);
+    assert_eq!(peer.store.held_by.len(), jigsall_core::MAX_PIECES);
     assert!(peer.store.held_by.has_player(HOST));
     assert!(peer.store.dirty_pieces.is_empty());
     assert!(peer.store.drag.members.is_empty());
@@ -845,8 +845,7 @@ fn fourth_invalid_drag_leaves_existing_receiver_and_diverged_state_intact() {
     let mut peer = Peer::new();
     peer.install(&host, &valid).unwrap();
     let mut event = host.release(PlayerId(0), 41, 40, Vec2::ONE);
-    let puzzella_core::protocol::ProtocolAuthorityEvent::ReleaseCommitted(commit) =
-        &mut event.event
+    let jigsall_core::protocol::ProtocolAuthorityEvent::ReleaseCommitted(commit) = &mut event.event
     else {
         panic!()
     };

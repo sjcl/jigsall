@@ -1,6 +1,6 @@
 use super::*;
 use crate::resources::pieces::{local_rotation::PresentationPose, HELD};
-use puzzella_core::PieceBitSet;
+use jigsall_core::PieceBitSet;
 use std::collections::HashMap;
 
 #[test]
@@ -60,7 +60,7 @@ fn gpu_local_rotation_overrides_share_draw_culling_picking_and_restore_sparse_ra
         for world in probes {
             let expected = if size == 4
                 || piece_signed_distance(
-                    puzzella_core::rotate_quarter(world, 3),
+                    jigsall_core::rotate_quarter(world, 3),
                     def.image_size.as_vec2() / def.grid_size.as_vec2(),
                     piece_profiles(def.seed, def.grid_size, UVec2::ZERO),
                 ) < 0.0
@@ -110,7 +110,7 @@ fn gpu_local_rotation_overrides_share_draw_culling_picking_and_restore_sparse_ra
             123
         );
         assert_eq!(
-            puzzella_core::decode_rotation(
+            jigsall_core::decode_rotation(
                 app.world().resource::<PieceUpload>().ranges[0].states[0].flags
             ),
             1

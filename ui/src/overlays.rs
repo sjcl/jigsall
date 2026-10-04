@@ -2,7 +2,7 @@ use crate::localization::Localization;
 use crate::theme;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-use puzzella_game::resources::*;
+use jigsall_game::resources::*;
 
 /// Pause actions use the same visual language as the title and save dialog.
 #[allow(clippy::too_many_arguments)]
@@ -13,8 +13,8 @@ pub fn draw_in_game_menu_ui(
     completion_state: Option<Res<State<GameCompleteSubState>>>,
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
-    mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
-    network_status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    mut persistence: ResMut<jigsall_game::persistence::runtime::PersistenceState>,
+    network_status: Res<jigsall_game::network::runtime::NetworkStatus>,
 ) {
     if persistence.title_dialog_open || dialogs.departure_pending() {
         return;
@@ -106,7 +106,7 @@ pub fn draw_generation_progress_ui(
     progress: Res<PieceGenerationProgress>,
     mut next_state: ResMut<NextState<AppState>>,
     multiplayer: Res<crate::multiplayer::MultiplayerUi>,
-    status: Res<puzzella_game::network::runtime::NetworkStatus>,
+    status: Res<jigsall_game::network::runtime::NetworkStatus>,
 ) {
     if multiplayer.connection_screen(&status) {
         return;

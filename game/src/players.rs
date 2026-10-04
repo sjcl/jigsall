@@ -1,6 +1,6 @@
 //! Session-lifetime presence. Never serialized into puzzle checkpoints or saves.
 use bevy::prelude::Resource;
-use puzzella_core::{PlayerDisplayName, PlayerId};
+use jigsall_core::{PlayerDisplayName, PlayerId};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use std::{collections::BTreeMap, fmt};
 

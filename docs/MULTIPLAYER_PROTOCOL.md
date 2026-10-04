@@ -178,9 +178,11 @@ remain the future backend's responsibility.
 
 Dense records the component count and a target-specific topology fingerprint at
 encoding time. SHA-256 input is the UTF-8 domain
-`puzzella/component-topology/v1` followed by one zero byte, then the touched
+`jigsall/component-topology/v1` followed by one zero byte, then the touched
 components' `(minimum_member, component_size)` pairs in ascending minimum order,
 each field as little-endian u32, then the component count as little-endian u32.
+This renamed domain changes the pre-release fingerprint values; peers must use
+the same build when comparing them.
 `topology_digest` is the first 16 hash bytes interpreted as a little-endian u128.
 This fixes ordering, byte encoding and the algorithm independently of serde,
 HashMap order, platform hashers, and DSU history. It is a stale-state fingerprint,
@@ -399,11 +401,12 @@ the end of Release; no scratch is retained by the replica. Dense iteration scans
 mask words, but hashes only affected IDs. This changes neither the v1 byte sequence
 nor its digest/domain: ordering is still ascending stable minima and member IDs.
 
-The v1 serializer-independent SHA-256 input is fixed in this exact order:
+The v1 serializer-independent SHA-256 input is fixed in this exact order. The
+renamed domain changes pre-release fingerprint values.
 
 | Field | Encoding / ordering |
 | --- | --- |
-| Domain | UTF-8 `puzzella/release-result/v1`, then one zero byte |
+| Domain | UTF-8 `jigsall/release-result/v1`, then one zero byte |
 | Final affected component count | u32 little endian |
 | Each affected component | Ascending stable minimum PieceId; deduplicated |
 | Component minimum, size | Two u32 little endian fields |

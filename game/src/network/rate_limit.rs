@@ -386,7 +386,7 @@ mod tests {
             wire::{self, WireMessage},
         };
         use bevy::math::Vec2;
-        use puzzella_core::{
+        use jigsall_core::{
             protocol::RemoteDragUpdate,
             session::{AuthorityEpoch, SessionId},
             PlayerId,

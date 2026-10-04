@@ -27,7 +27,7 @@ wire (versioned Postcard binary messages)
         ↓
 SecureTransport<T> (PAKE-derived application AEAD, sequences, replay protection)
         ↓
-Transport (opaque Puzzella identities, byte messages, lifecycle events)
+Transport (opaque Jigsall identities, byte messages, lifecycle events)
         ├ Direct-IP open-source GameNetworkingSockets (gns feature)
         ├ custom-signaled GNS P2P / native ICE (gns foundation; rendezvous runtime)
         └ future Steamworks ISteamNetworkingSockets
@@ -108,7 +108,7 @@ schema gains P2P addresses, ICE candidates, room codes or native handles.
 After establishment it implements the common `Transport`: `Connected`,
 `ConnectionFailed`, `Disconnected`, byte messages, `send`, `close`, secure channel
 activation, Ready occupancy and reliable egress telemetry. It uses the same
-Puzzella token issuer as Direct IP, with no native-handle conversion or token
+Jigsall token issuer as Direct IP, with no native-handle conversion or token
 reuse. Native connection state is sampled in caller-owned `poll`; transitions are
 normalized once, and overdue Connecting/FindingRoute slots are reconciled against
 the current native state before the shared 10-second deadline is applied.
@@ -127,7 +127,7 @@ The root crates.io patch vendors that version with a small `get_with_identity`
 extension: the wrapper's single initializer receives the identity, and later
 calls validate it without invoking Init again. Direct IP and P2P share that
 initializer; no raw pre-initialization or live identity reset is needed. See
-`vendor/game-networking-sockets/PUZZELLA_PATCH.md` for upstream provenance.
+`vendor/game-networking-sockets/JIGSALL_PATCH.md` for upstream provenance.
 `gns/p2p/native.rs` uses its `gns::sys` re-export, including
 `CreateCustomSignaling`, `ConnectP2PCustomSignaling` and
 `ReceivedP2PCustomSignal2`. There is no second sys dependency, version, or native
@@ -251,10 +251,12 @@ It is not a memory-hard password KDF. Online guessing is bounded below; password
 entropy and the absence of an independent implementation audit remain assumptions.
 [The upstream library states that it has not been independently audited](https://github.com/djx-y-z/pakery#security).
 
-The additional-data byte sequence is `puzzella-session-auth-v1`, u16 LE wire version,
+The additional-data byte sequence is `jigsall-session-auth-v1`, u16 LE wire version,
 u128 LE SessionId, 32 ImageHash bytes, u64 LE host PlayerId, u64 LE cursor epoch,
 u64 LE cursor sequence, 32 OS-CSPRNG nonce bytes and u64 LE reserved PlayerId.
 SPAKE2 also binds both ephemeral shares and the fixed host/client role identities.
+These `jigsall-*` labels and role identities replace the pre-release `puzzella-*`
+values; mixed-version peers cannot authenticate.
 ConnectionId is not included because tokens differ between endpoints. IDs are
 reserved before ServerHello so the assigned identity is covered by confirmation;
 they become publicly assigned in bootstrap only after verification. Reservations
@@ -317,17 +319,17 @@ therefore carries that confirmation-verified context into the application HKDF
 too, explicitly binding SessionId, ImageHash, host, cursor, handshake nonce and
 reserved/assigned PlayerId. Existing context confirmation remains unchanged.
 
-HKDF-SHA256 uses Ke as IKM, `puzzella-secure-channel-v1` as salt, and the following
+HKDF-SHA256 uses Ke as IKM, `jigsall-secure-channel-v1` as salt, and the following
 six separate info labels, each followed by the u16 LE WIRE_VERSION and the
 complete confirmation-verified session context byte sequence described above:
 
 ```text
-puzzella-secure-channel-v1/client-to-host/control
-puzzella-secure-channel-v1/client-to-host/transient
-puzzella-secure-channel-v1/client-to-host/bulk
-puzzella-secure-channel-v1/host-to-client/control
-puzzella-secure-channel-v1/host-to-client/transient
-puzzella-secure-channel-v1/host-to-client/bulk
+jigsall-secure-channel-v1/client-to-host/control
+jigsall-secure-channel-v1/client-to-host/transient
+jigsall-secure-channel-v1/client-to-host/bulk
+jigsall-secure-channel-v1/host-to-client/control
+jigsall-secure-channel-v1/host-to-client/transient
+jigsall-secure-channel-v1/host-to-client/bulk
 ```
 
 Each result is a 32-byte ChaCha20Poly1305 key; HKDF does not increase Ke's entropy.
@@ -359,7 +361,7 @@ u64 sequence LE | ciphertext of entire inner PZLA frame | 16-byte AEAD tag
 ```
 
 Nonce is `00 00 00 00 || sequence_le_u64`. AAD is the ASCII
-`puzzella-secure-record-v1`, u16 LE WIRE_VERSION, one class byte
+`jigsall-secure-record-v1`, u16 LE WIRE_VERSION, one class byte
 (Control=0, Transient=1, Bulk=2), and u64 LE sequence. Opposite directions and classes
 have independent keys, and each key starts its send sequence at zero. Counters
 never roll back, including after an ambiguous backend send error: that error
@@ -574,7 +576,7 @@ frame bytes**, **1,246 secure record bytes**. The Transient payload limit is
 minimum; maximum batches consume 24,920 B/s per receiving connection. Both fit
 the unchanged 128 KiB/s authenticated budget; pre-auth Transient remains forbidden.
 
-Each inner Puzzella frame has this header; after activation it is inside one
+Each inner Jigsall frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
 
 | Bytes | Field |
@@ -860,7 +862,7 @@ in the downloaded crate, including `configure_connection_lanes`, `set_lane`,
 [Valve build instructions](https://github.com/ValveSoftware/GameNetworkingSockets/blob/master/BUILDING.md).
 
 Default builds require no GNS native dependencies. Root `gns` forwards to
-`puzzella-game/gns`. `--all-features` enables GNS and therefore needs native tools.
+`jigsall-game/gns`. `--all-features` enables GNS and therefore needs native tools.
 The Rust wrapper builds the bundled open-source GNS sources; no Steamworks SDK,
 `steamworks` crate or Steam client is needed.
 
@@ -902,9 +904,9 @@ packages as well. No Windows tools are required on Linux.
 
 ```sh
 # Header/limits, roundtrips, identity and fake host/client routing
-cargo test --locked -p puzzella-game network::tests
+cargo test --locked -p jigsall-game network::tests
 # Actual localhost UDP sockets: ephemeral listener + two clients
-cargo test --locked -p puzzella-game --features gns gns_localhost -- --nocapture
+cargo test --locked -p jigsall-game --features gns gns_localhost -- --nocapture
 # Full requested validation; ignored GPU benchmarks stay ignored
 cargo fmt --check
 cargo check --locked
@@ -913,7 +915,7 @@ cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
 cargo check --locked --features gns
-cargo test --locked -p puzzella-game --features gns
+cargo test --locked -p jigsall-game --features gns
 cargo build --locked --features gns
 ```
 
@@ -975,7 +977,7 @@ setup only.
 
 Implement `game/src/network/steamworks` behind its own feature later. It should own
 `ISteamNetworkingSockets`, translate `CreateListenSocketP2P` / `ConnectP2P` and
-`SteamNetworkingIdentity` to private native handles and freshly issued Puzzella
+`SteamNetworkingIdentity` to private native handles and freshly issued Jigsall
 tokens, implement the shared `Transport`, and use the same class/lane/limit policy.
 Store `InboundRateLimiter` in each connection and apply the shared inbound policy
 before native payload copies, as described above.

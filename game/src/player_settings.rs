@@ -1,7 +1,7 @@
 //! Local display preference; connection credentials never enter this section.
 use crate::settings_file::{SettingsFile, SettingsSection};
 use bevy::prelude::Resource;
-use puzzella_core::{DisplayNameError, PlayerDisplayName};
+use jigsall_core::{DisplayNameError, PlayerDisplayName};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

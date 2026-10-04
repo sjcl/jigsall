@@ -35,7 +35,7 @@ fn point_result(
         frame(Vec2::ZERO, true, true, ctrl),
         store,
         selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     let request = selection.latest.unwrap();
     selection.completed = Some(SelectionResult {
@@ -48,7 +48,7 @@ fn point_result(
         frame(Vec2::ZERO, pressed, false, ctrl),
         store,
         selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     )
 }
 
@@ -64,13 +64,8 @@ fn picking_one_member_drags_entire_component_with_frozen_mask() {
     );
     assert_eq!(commands.len(), 1);
     assert_eq!(
-        s.apply_command(
-            LOCAL_PLAYER,
-            &commands[0],
-            None,
-            puzzella_core::LOCAL_PLAYER
-        )
-        .grabbed,
+        s.apply_command(LOCAL_PLAYER, &commands[0], None, jigsall_core::LOCAL_PLAYER)
+            .grabbed,
         2
     );
     let frozen = s.drag.members.clone();
@@ -82,7 +77,7 @@ fn picking_one_member_drags_entire_component_with_frozen_mask() {
                 frame(Vec2::splat(step as f32), true, false, false),
                 &mut s,
                 &mut selection,
-                puzzella_core::LOCAL_PLAYER
+                jigsall_core::LOCAL_PLAYER
             )
             .is_empty());
         assert!(Arc::ptr_eq(&frozen, &s.drag.members));
@@ -99,17 +94,12 @@ fn picking_one_member_drags_entire_component_with_frozen_mask() {
         frame(Vec2::new(70.0, 30.0), false, false, false),
         &mut s,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(commands.len(), 1);
     assert_eq!(
-        s.apply_command(
-            LOCAL_PLAYER,
-            &commands[0],
-            None,
-            puzzella_core::LOCAL_PLAYER
-        )
-        .released,
+        s.apply_command(LOCAL_PLAYER, &commands[0], None, jigsall_core::LOCAL_PLAYER)
+            .released,
         2
     );
     assert_eq!(
@@ -143,26 +133,21 @@ fn final_rectangle_expands_partial_hits_and_additive_multi_selection() {
     let mut s = store();
     let mut hit = PieceBitSet::new(s.len());
     hit.insert(PieceId(1));
-    s.commit_selection(hit, None, puzzella_core::LOCAL_PLAYER);
+    s.commit_selection(hit, None, jigsall_core::LOCAL_PLAYER);
     assert_eq!(s.selected_pieces.count(), 2);
     let original = s.selected_pieces.clone();
     let mut hit = PieceBitSet::new(s.len());
     hit.insert(PieceId(3));
     hit.insert(PieceId(4));
-    s.commit_selection(hit, Some(&original), puzzella_core::LOCAL_PLAYER);
+    s.commit_selection(hit, Some(&original), jigsall_core::LOCAL_PLAYER);
     assert_eq!(s.selected_pieces.count(), 5);
     let mut interaction = PieceInteraction::default();
     let mut selection = PuzzleSelection::default();
     let commands = point_result(&mut interaction, &mut s, &mut selection, 0, false, true);
     assert_eq!(commands.len(), 1);
     assert_eq!(
-        s.apply_command(
-            LOCAL_PLAYER,
-            &commands[0],
-            None,
-            puzzella_core::LOCAL_PLAYER
-        )
-        .grabbed,
+        s.apply_command(LOCAL_PLAYER, &commands[0], None, jigsall_core::LOCAL_PLAYER)
+            .grabbed,
         5
     );
     assert_eq!(s.connectivity.component_size(PieceId(0)), 2);
@@ -180,10 +165,10 @@ fn rollback_expands_original_selection_if_connectivity_changed_during_readback()
         frame(Vec2::ZERO, true, true, false),
         &mut s,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     s.connectivity.union(PieceId(3), PieceId(4));
-    interaction.cancel(&mut s, &mut selection, puzzella_core::LOCAL_PLAYER);
+    interaction.cancel(&mut s, &mut selection, jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         s.selected_pieces.iter().collect::<Vec<_>>(),
         [PieceId(2), PieceId(3), PieceId(4)]
@@ -201,14 +186,14 @@ fn component_selection_keeps_local_holds_and_rejects_remote_holds_on_rollback() 
         frame(Vec2::ZERO, true, true, true),
         &mut s,
         &mut selection,
-        puzzella_core::LOCAL_PLAYER,
+        jigsall_core::LOCAL_PLAYER,
     );
     assert_eq!(
         s.apply_command(
             LOCAL_PLAYER,
             &PieceCommand::Grab(PieceId(0)),
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         2
@@ -218,7 +203,7 @@ fn component_selection_keeps_local_holds_and_rejects_remote_holds_on_rollback() 
             PlayerId(1),
             &PieceCommand::Grab(PieceId(3)),
             None,
-            puzzella_core::LOCAL_PLAYER
+            jigsall_core::LOCAL_PLAYER
         )
         .grabbed,
         2
@@ -229,21 +214,21 @@ fn component_selection_keeps_local_holds_and_rejects_remote_holds_on_rollback() 
     );
     let mut placed = s.state(PieceId(4)).unwrap();
     placed.placed = true;
-    s.set_state(PieceId(4), placed, puzzella_core::LOCAL_PLAYER);
+    s.set_state(PieceId(4), placed, jigsall_core::LOCAL_PLAYER);
     let mut hit = PieceBitSet::new(s.len());
     hit.extend([PieceId(1), PieceId(3), PieceId(4)]);
-    s.commit_selection(hit, Some(&original), puzzella_core::LOCAL_PLAYER);
+    s.commit_selection(hit, Some(&original), jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         s.selected_pieces.iter().collect::<Vec<_>>(),
         [PieceId(0), PieceId(1)]
     );
-    let commands = interaction.cancel(&mut s, &mut selection, puzzella_core::LOCAL_PLAYER);
+    let commands = interaction.cancel(&mut s, &mut selection, jigsall_core::LOCAL_PLAYER);
     assert_eq!(
         s.selected_pieces.iter().collect::<Vec<_>>(),
         [PieceId(0), PieceId(1)]
     );
     for command in commands {
-        s.apply_command(LOCAL_PLAYER, &command, None, puzzella_core::LOCAL_PLAYER);
+        s.apply_command(LOCAL_PLAYER, &command, None, jigsall_core::LOCAL_PLAYER);
     }
     assert_eq!(
         s.selected_pieces.iter().collect::<Vec<_>>(),

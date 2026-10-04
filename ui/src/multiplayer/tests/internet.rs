@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_game::network::{
+use jigsall_game::network::{
     gns::{rendezvous::EndpointUrl, IceConfig},
     runtime::{RendezvousRuntimeConfig, RoomCode},
 };
@@ -122,11 +122,11 @@ fn internet_failure_status_does_not_replace_a_direct_listen_retry() {
     state.retry_host = Some(HostStartRequest::new(HostOptions {
         display_name: None,
         address: "0.0.0.0:27015".parse().unwrap(),
-        session: puzzella_core::session::SessionDefinition {
-            id: puzzella_core::session::SessionId(42),
-            image_hash: puzzella_core::session::ImageHash([0; 32]),
+        session: jigsall_core::session::SessionDefinition {
+            id: jigsall_core::session::SessionId(42),
+            image_hash: jigsall_core::session::ImageHash([0; 32]),
         },
-        host: puzzella_core::PlayerId(0),
+        host: jigsall_core::PlayerId(0),
         password: SessionPassword::new("test password".into()).unwrap(),
     }));
     render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();

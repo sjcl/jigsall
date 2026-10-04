@@ -247,7 +247,7 @@ pub fn piece_signed_distance(local: Vec2, size: Vec2, profiles: [[u32; 2]; 4]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use puzzella_core::{PieceId, PuzzleDefinition};
+    use jigsall_core::{PieceId, PuzzleDefinition};
     fn tab_half_width(p: EdgeProfile, length: f32, short: f32, y: f32) -> f32 {
         let mut inside = 0.0;
         let mut outside = p.width * length;
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn assembled_shape_tiles_image_and_uv_matches_v2() {
         let def = PuzzleDefinition {
-            generator_version: puzzella_core::GENERATOR_VERSION,
+            generator_version: jigsall_core::GENERATOR_VERSION,
             seed: 42,
             grid_size: UVec2::splat(3),
             image_size: UVec2::new(99, 63),

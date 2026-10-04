@@ -278,7 +278,7 @@ fn assert_v1_frame(message: WireMessage, hex: &str) {
 #[test]
 fn wire_v1_profile_and_presence_golden() {
     use crate::players::{PresenceMessage, RosterPlayer};
-    use puzzella_core::PlayerDisplayName;
+    use jigsall_core::PlayerDisplayName;
     assert_v1_frame(
         WireMessage::SyncControl(Control::ClientProfile { display_name: None }),
         "50 5a 4c 41 01 00 07 00 02 00 00 00 0e 00",

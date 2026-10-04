@@ -2,8 +2,8 @@ use crate::localization::Localization;
 use crate::{grid::calculate_grid_from_config, theme};
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiTextureHandle};
-use puzzella_game::asset_reader::ExternalFileRegistry;
-use puzzella_game::resources::*;
+use jigsall_game::asset_reader::ExternalFileRegistry;
+use jigsall_game::resources::*;
 
 pub(crate) mod image_picker;
 
@@ -22,13 +22,13 @@ pub fn draw_game_setup_ui(
     file_registry: Res<ExternalFileRegistry>,
     mut next_state: ResMut<NextState<AppState>>,
     mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
-    status: Res<puzzella_game::network::runtime::NetworkStatus>,
-    profile: Res<puzzella_game::player_settings::PlayerSettingsState>,
-    original: Option<Res<puzzella_game::persistence::runtime::OriginalPuzzleImage>>,
+    status: Res<jigsall_game::network::runtime::NetworkStatus>,
+    profile: Res<jigsall_game::player_settings::PlayerSettingsState>,
+    original: Option<Res<jigsall_game::persistence::runtime::OriginalPuzzleImage>>,
     mut settings: ResMut<crate::settings::SettingsDialog>,
-    display: Res<puzzella_game::settings::DisplaySettingsState>,
+    display: Res<jigsall_game::settings::DisplaySettingsState>,
     #[cfg(feature = "rendezvous")] rendezvous_config: Option<
-        Res<puzzella_game::network::runtime::RendezvousRuntimeConfig>,
+        Res<jigsall_game::network::runtime::RendezvousRuntimeConfig>,
     >,
 ) {
     #[cfg(feature = "rendezvous")]

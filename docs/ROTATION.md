@@ -153,7 +153,7 @@ schedule順・GPU restore・4層の責務は[ARCHITECTURE.md](ARCHITECTURE.md#lo
 
 ```powershell
 cargo test --workspace --lib
-cargo test -p puzzella-game --release --locked --lib render::tests::rotation_tests -- --ignored --test-threads=1
+cargo test -p jigsall-game --release --locked --lib render::tests::rotation_tests -- --ignored --test-threads=1
 ```
 
 CPUテストはsingletonの4000回転、fractional gridの剛体再構成、pair / L字、

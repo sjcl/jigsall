@@ -1,5 +1,5 @@
 use bevy_math::Vec2;
-use puzzella_core::{PieceId, PuzzleDefinition};
+use jigsall_core::{PieceId, PuzzleDefinition};
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn initial_rotations_have_stable_vectors_for_both_seed_halves_and_disabled_mode() {
         let mut definition = PuzzleDefinition {
-            generator_version: puzzella_core::GENERATOR_VERSION,
+            generator_version: jigsall_core::GENERATOR_VERSION,
             seed: 42,
             grid_size: bevy_math::UVec2::new(4, 3),
             image_size: bevy_math::UVec2::new(400, 90),
@@ -162,7 +162,7 @@ mod tests {
             ),
         ] {
             let definition = PuzzleDefinition {
-                generator_version: puzzella_core::GENERATOR_VERSION,
+                generator_version: jigsall_core::GENERATOR_VERSION,
                 seed: 42,
                 grid_size: grid,
                 image_size: image,

@@ -2,8 +2,8 @@
 use crate::{fonts::EMBEDDED_FALLBACK_FONTS, localization::Localization};
 use ab_glyph::{point, Font, FontRef, Glyph, ScaleFont};
 use bevy::{asset::RenderAssetUsages, image::ImageSampler, prelude::*, render::render_resource::*};
-use puzzella_core::PlayerId;
-use puzzella_game::{
+use jigsall_core::PlayerId;
+use jigsall_game::{
     players::{PlayerRoster, MAX_ROSTER_PLAYERS},
     render::remote_cursor::{
         CursorLabel, RemoteCursorLabelAtlas, RemoteCursorLabels, MAX_LABEL_ATLAS_BYTES,
@@ -18,7 +18,7 @@ const MAX_RASTER_SCALE: f32 = 4.0;
 
 #[derive(Clone, PartialEq)]
 struct AtlasKey {
-    session: Option<puzzella_core::session::SessionId>,
+    session: Option<jigsall_core::session::SessionId>,
     roster_revision: u64,
     names: Vec<(PlayerId, String)>,
     fallback: String,
@@ -51,7 +51,7 @@ pub(crate) fn prepare_label_atlas(
     mut cache: ResMut<LabelAtlasCache>,
     mut labels: ResMut<RemoteCursorLabels>,
     mut images: ResMut<Assets<Image>>,
-    session: Option<NonSend<puzzella_game::network::runtime::NetworkSession>>,
+    session: Option<NonSend<jigsall_game::network::runtime::NetworkSession>>,
 ) {
     let scale = windows.single().map_or(1.0, |w| w.scale_factor());
     let scale = if scale.is_finite() && scale > 0.0 {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{interaction::PointerFrame, resources::pieces::*, selection::PuzzleSelection};
 use bevy::prelude::*;
-use puzzella_core::PieceId;
+use jigsall_core::PieceId;
 
 fn fixture(count: usize) -> (CommandBridge, PieceInteraction, PieceDataStore) {
     let interaction = PieceInteraction::default();
@@ -279,8 +279,8 @@ fn pending_release_without_an_accepted_context_is_a_noop() {
 fn pending_release_reliable_cancellation_and_late_transient_keep_canonical_position() {
     use crate::multiplayer::{protocol::ProtocolDragContexts, replication::PeerReplicationState};
     let player = PlayerId(37);
-    let definition = puzzella_core::PuzzleDefinition {
-        generator_version: puzzella_core::GENERATOR_VERSION,
+    let definition = jigsall_core::PuzzleDefinition {
+        generator_version: jigsall_core::GENERATOR_VERSION,
         seed: 1,
         grid_size: UVec2::new(2, 1),
         image_size: UVec2::new(128, 64),

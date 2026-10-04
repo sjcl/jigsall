@@ -1,5 +1,5 @@
 use super::*;
-use puzzella_core::PlayerId;
+use jigsall_core::PlayerId;
 
 fn timer_app() -> App {
     let (service, _inbox) = PersistenceService::with_storage_requests();

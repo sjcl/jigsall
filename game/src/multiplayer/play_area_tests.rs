@@ -4,7 +4,7 @@ use crate::{
     play_area::{component_center, PIVOT_VISITS},
 };
 use bevy::math::{UVec2, Vec2};
-use puzzella_core::{
+use jigsall_core::{
     protocol::PieceTarget,
     session::{AuthorityCursor, ImageHash, SessionDefinition},
     PieceBitSet, PieceId, GENERATOR_VERSION,
@@ -69,7 +69,7 @@ impl Fixture {
                 command,
             },
             Some(&self.definition),
-            puzzella_core::LOCAL_PLAYER,
+            jigsall_core::LOCAL_PLAYER,
         )
     }
     fn grab_all(&mut self) {
@@ -217,7 +217,7 @@ fn displayed_f32_rounding_cannot_publish_a_pivot_outside_a_fractional_edge() {
     f.store.initialize_dense(states);
     f.store.states[0].position = position;
     let target = PieceTarget::Component(
-        puzzella_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))
+        jigsall_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))
             .unwrap(),
     );
     f.apply(
@@ -268,7 +268,7 @@ fn edge_rotation_can_release_without_moving_the_pointer() {
         }
     }
     let target = PieceTarget::Component(
-        puzzella_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))
+        jigsall_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))
             .unwrap(),
     );
     f.store.rotate_target(&target, 1, &f.definition).unwrap();
@@ -322,7 +322,7 @@ fn overhanging_wide_component_rotates_and_rebases_at_the_edge() {
     f.checkpoint();
     // Ordinary Rotate also keeps its legal pivot while geometry overhangs.
     let target = PieceTarget::Component(
-        puzzella_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))
+        jigsall_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))
             .unwrap(),
     );
     let rotated = f.store.rotate_target(&target, 1, &f.definition).unwrap();

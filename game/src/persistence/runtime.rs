@@ -4,7 +4,7 @@ use super::repository::SaveOutcome;
 use super::*;
 use crate::{checkpoint::PuzzleCheckpoint, resources::*};
 use bevy::prelude::*;
-use puzzella_core::PuzzleDefinition;
+use jigsall_core::PuzzleDefinition;
 use std::{num::NonZeroU32, sync::Arc};
 
 #[derive(Resource)]
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn restore_matches_logical_dimensions_and_installs_a_smaller_local_texture() {
-        use puzzella_core::{PieceId, GENERATOR_VERSION, MAX_PUZZLE_IMAGE_DIMENSION};
+        use jigsall_core::{PieceId, GENERATOR_VERSION, MAX_PUZZLE_IMAGE_DIMENSION};
         let dir = tempfile::tempdir().unwrap();
         let repository = Ok(SaveRepository::new(FilesystemStorage::new(dir.path())));
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -707,7 +707,7 @@ mod tests {
         for namespace in ["saves", "images"] {
             let directory = dir.path().join(namespace);
             fs::create_dir(&directory).unwrap();
-            let stale = directory.join(".puzzella-stale.tmp");
+            let stale = directory.join(".jigsall-stale.tmp");
             fs::write(&stale, b"partial").unwrap();
             fs::File::options()
                 .write(true)
@@ -719,7 +719,7 @@ mod tests {
                 )
                 .unwrap();
             stale_paths.push(stale);
-            let recent = directory.join(".puzzella-recent.tmp");
+            let recent = directory.join(".jigsall-recent.tmp");
             fs::write(&recent, b"partial").unwrap();
             recent_paths.push(recent);
         }
@@ -749,7 +749,7 @@ mod tests {
             .unwrap();
         let bytes = bytes.into_inner();
         let definition = PuzzleDefinition {
-            generator_version: puzzella_core::GENERATOR_VERSION,
+            generator_version: jigsall_core::GENERATOR_VERSION,
             seed: 1,
             grid_size: UVec2::splat(2),
             image_size: UVec2::splat(2),
@@ -759,7 +759,7 @@ mod tests {
         let mut store = PieceDataStore::default();
         store.initialize(
             (0..4)
-                .map(|i| definition.correct_position(puzzella_core::PieceId(i)) + Vec2::splat(2.0))
+                .map(|i| definition.correct_position(jigsall_core::PieceId(i)) + Vec2::splat(2.0))
                 .collect(),
         );
         let mut app = App::new();
@@ -1408,7 +1408,7 @@ mod tests {
         );
         let hash = image_hash(&bytes);
         let definition = PuzzleDefinition {
-            generator_version: puzzella_core::GENERATOR_VERSION,
+            generator_version: jigsall_core::GENERATOR_VERSION,
             seed: 42,
             grid_size: UVec2::ONE,
             image_size: UVec2::new(16384, 10923),
