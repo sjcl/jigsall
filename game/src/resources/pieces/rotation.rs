@@ -67,11 +67,11 @@ impl PieceDataStore {
                 |id| self.predicted_state(id, poses),
                 |id, _| {
                     self.is_selectable(id)
-                        && !self
+                        && self
                             .drag
                             .members
                             .get(id.0 as usize / 32)
-                            .is_some_and(|word| word & (1 << (id.0 % 32)) != 0)
+                            .is_none_or(|word| word & (1 << (id.0 % 32)) == 0)
                 },
             );
             if let Some(plan) = plan {
@@ -195,11 +195,11 @@ impl PieceDataStore {
                         && members.is_none_or(|mask| mask.contains(&id))
                 } else {
                     self.is_selectable(id)
-                        && !self
+                        && self
                             .drag
                             .members
                             .get(id.0 as usize / 32)
-                            .is_some_and(|word| word & (1 << (id.0 % 32)) != 0)
+                            .is_none_or(|word| word & (1 << (id.0 % 32)) == 0)
                 }
             },
         )
