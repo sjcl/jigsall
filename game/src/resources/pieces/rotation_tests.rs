@@ -256,7 +256,7 @@ fn matching_rotation_neighbors_snap_and_can_rotate_after_union() {
     let (d, mut store) = fixture(UVec2::new(2, 1));
     set_transform(&mut store, &d, 0, 1, Vec2::new(101.0, 100.0));
     set_transform(&mut store, &d, 1, 1, Vec2::splat(100.0));
-    store.snap_unheld_component(PieceId(0), &d);
+    store.snap_fixture_component(PieceId(0), &d);
     assert_eq!(store.connectivity.component_size(PieceId(0)), 2);
     assert_rigid(&store, &d, 0, 1);
     assert_eq!(store.states[0].flags & CONNECTED_RIGHT, CONNECTED_RIGHT);
@@ -272,16 +272,16 @@ fn rotated_board_and_different_rotation_neighbors_never_snap() {
     for rotation in 1..4 {
         set_transform(&mut store, &d, 0, rotation, Vec2::ZERO);
         set_transform(&mut store, &d, 1, 0, Vec2::ZERO);
-        store.snap_unheld_component(PieceId(0), &d);
+        store.snap_fixture_component(PieceId(0), &d);
         assert_eq!(store.connectivity.component_size(PieceId(0)), 1);
         assert_eq!(store.placed_count, 0);
         // Even occupying the exact completed position cannot place a rotated piece.
         store.states[0].position = d.correct_position(PieceId(0));
-        store.snap_unheld_component(PieceId(0), &d);
+        store.snap_fixture_component(PieceId(0), &d);
         assert_eq!(store.placed_count, 0);
     }
     set_transform(&mut store, &d, 0, 0, Vec2::X);
-    store.snap_unheld_component(PieceId(0), &d);
+    store.snap_fixture_component(PieceId(0), &d);
     assert_eq!(store.placed_count, 2);
     assert_eq!(rotate(&mut store, &d, &[0], 1), 0);
 }
@@ -298,7 +298,7 @@ fn closure_requires_same_rotation_and_one_fixed_logical_translation() {
     ] {
         set_transform(&mut store, &d, id, rotation, Vec2::new(x, 100.0));
     }
-    store.snap_unheld_component(PieceId(0), &d);
+    store.snap_fixture_component(PieceId(0), &d);
     assert_eq!(store.connectivity.component_size(PieceId(0)), 3);
     assert_eq!(store.connectivity.component_size(PieceId(3)), 1);
     assert_eq!(store.connectivity.component_size(PieceId(4)), 1);
@@ -313,7 +313,7 @@ fn closure_requires_same_rotation_and_one_fixed_logical_translation() {
             Vec2::new(100.0 + id as f32 * 4.0, 100.0),
         );
     }
-    store.snap_unheld_component(PieceId(0), &d);
+    store.snap_fixture_component(PieceId(0), &d);
     assert_eq!(store.connectivity.component_size(PieceId(0)), 2);
     assert_eq!(store.connectivity.component_size(PieceId(2)), 1);
 }
@@ -369,7 +369,7 @@ fn rotated_moves_and_release_preserve_rigid_transform_and_pointer_upload_contrac
 #[test]
 fn rotated_checkpoint_roundtrip_restores_geometry_flags_and_canonical_edges() {
     let (d, mut store) = fixture(UVec2::splat(2));
-    store.snap_unheld_component(PieceId(0), &d);
+    store.snap_fixture_component(PieceId(0), &d);
     assert_eq!(rotate(&mut store, &d, &[0], -1), 4);
     let checkpoint = PuzzleCheckpoint::capture(&store, &d, ImageHash([7; 32])).unwrap();
     assert_eq!(std::mem::size_of::<SnapshotPieceState>(), 16);

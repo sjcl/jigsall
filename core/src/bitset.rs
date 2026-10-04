@@ -153,9 +153,6 @@ impl PieceBitSet {
     pub fn difference(&mut self, other: &Self) {
         self.combine(other, |a, b| a & !b);
     }
-    pub fn xor(&mut self, other: &Self) {
-        self.combine(other, |a, b| a ^ b);
-    }
     pub fn iter(&self) -> impl Iterator<Item = PieceId> + '_ {
         self.words
             .iter()
@@ -248,8 +245,13 @@ mod tests {
         assert!(Arc::ptr_eq(set.words(), snapshot.words()));
         set.remove(&PieceId(31));
         assert_eq!(snapshot.count(), 3);
-        set.xor(&snapshot);
-        assert_eq!(set.iter().collect::<Vec<_>>(), vec![PieceId(31)]);
+        assert_eq!(
+            set.iter().collect::<Vec<_>>(),
+            vec![PieceId(0), PieceId(32)]
+        );
+        let mut removed = snapshot.clone();
+        removed.difference(&set);
+        assert_eq!(removed.iter().collect::<Vec<_>>(), vec![PieceId(31)]);
         set.union(&snapshot);
         set.difference(&snapshot);
         assert!(set.is_empty());

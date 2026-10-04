@@ -4,7 +4,7 @@
 `PuzzleConfig.rotation_enabled`を開始時に`PuzzleDefinition.rotation_enabled`へ固定し、
 ロード・joinでは保存済み／ホストのdefinitionを使用します。オンではseedの上下32bitと
 row-major PieceIdを独立した整数hash domainへ入れ、初期rotationを0 / 1 / 2 / 3から
-決定します。同じdefinitionで初期位置と向きを再構成できます。形状generatorはv5のままです。
+決定します。同じdefinitionで初期位置と向きを再構成できます。形状generatorはv1（開発時v5）です。
 位置shuffleの乱数列は回転生成に消費しません。長方形を90°回した場合にも初期quadが
 重ならないよう、オンでは長辺を一辺とするsquare slotを使います。カメラの初期表示範囲と
 LogicalPlayAreaにも同じslot寸法を使います。初期state生成は従来のworkerで行います。
@@ -15,8 +15,8 @@ LogicalPlayAreaにも同じslot寸法を使います。初期state生成は従�
 変更しません。local predictionとreplicaの回転commitも同じゲームルールで拒否します。
 保存／snapshotのvalidationでは、オフのdefinitionに非ゼロrotationが含まれた場合を拒否します。
 
-save formatはv4、snapshot schemaは5、wireはv11です。古いsave v1–v3、snapshot
-schema 1–4、旧wireとの互換性はありません。各pieceのstateは16 bytesを維持します。
+save formatはv1、snapshot schemaは1、wireはv1です。開発中のsave / wireとの
+互換性は提供せず、snapshot schemaの番号が1以外も拒否します。各pieceのstateは16 bytesを維持します。
 
 Q / Eで選択中のcomponentを反時計回り / 時計回りに90°回転します。
 選択がない場合はカーソル下のピース、またはその結合済みcomponent全体を回転します。
@@ -99,7 +99,7 @@ rendererはworld quadだけ回転し、SDF / UV / profile / outlineはcanonical 
 visibilityとpick visibilityは奇数rotationでAABB extentを交換します。
 far splatも長辺を回転し、pixel-center snapping、alpha、depth、pick ROIを維持します。
 
-snapshot schema 5はdefinitionにrotation_enabledを追加し、16-byte recordでrotationを保存します。
+snapshot schema 1はdefinitionにrotation_enabledを含み、16-byte recordでrotationを保存します。
 validationはrotation統一、剛体変換、placedのrotation 0と正解positionを検証し、
 install時のconnection cacheはDSUから再構築します。ローカルsave codecも同じ
 flagsを保存・検証します。
@@ -122,7 +122,7 @@ rebase後は成功したRotateDragのcontrol番号です。grab_sequenceはgestu
 誤適用せず拒否します。次の最新Transientまたはreliable操作のfinal_deltaで補えます。
 拒否されたRotateDragはcontrol番号だけを消費し、前のbasis / tick / deltaは保持します。
 fingerprintは対象state・rotation・hold・connectivityに加えcontextのGrab / basis / tick /
-zero deltaも検証します。transportは現行のwire version 11のみをdecodeし、互換decoderはありません。
+zero deltaも検証します。transportは現行のwire version 1のみをdecodeし、互換decoderはありません。
 
 ## Cost and verification
 
@@ -196,7 +196,7 @@ drag rebaseのCPU回帰は、singleton / pair / fractional L字の繰り返し�
 anchor成功時更新と拒否時維持、同frame Release優先、fragmented memberのexact upload、
 snap遅延、同rotation neighbor / 0°board、同Grab内の複数rebase、欠落Transientの補完、
 古い / future basisとfloor以前の更新拒否、Sparse / Denseの事前検証、DSU root historyの
-相違、fingerprint mismatchとDivergedを含みます。wire v2のgolden fixtureは10件です。
+相違、fingerprint mismatchとDivergedを含みます。開発時のwire v2のgolden fixtureは10件です。
 
 カーソル下回転のCPU回帰は単体 / component、選択優先、key合算、stale結果、
 クリック・focus / UI / cursorによる取消、遅延中の適格性変更、pointer-only frameの

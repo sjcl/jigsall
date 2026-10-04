@@ -208,17 +208,13 @@ fn displayed_f32_rounding_cannot_publish_a_pivot_outside_a_fractional_edge() {
     f.definition.rotation_enabled = false;
     f.definition.grid_size = UVec2::new(11, 15);
     f.definition.image_size = UVec2::new(6276, 10697);
-    let positions = puzzella_puzzle::placement::generate_placement_grid(
-        11,
-        15,
-        6276.0 / 11.0,
-        10697.0 / 15.0,
-        6276.0,
-        10697.0,
-        f.definition.seed,
-    );
-    let position = *positions.iter().find(|p| p.x == -5990.7275).unwrap();
-    f.store.initialize(positions);
+    let states = crate::resources::DensePieceStates::generate(&f.definition);
+    let position = states
+        .iter()
+        .find(|s| s.position.x == -5990.7275)
+        .unwrap()
+        .position;
+    f.store.initialize_dense(states);
     f.store.states[0].position = position;
     let target = PieceTarget::Component(
         puzzella_core::protocol::ComponentRef::from_member(&f.store.connectivity, PieceId(0))

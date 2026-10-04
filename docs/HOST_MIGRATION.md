@@ -1,5 +1,7 @@
 # Host Migration 基盤
 
+2026-10-04追記: 初回リリースのsnapshot schemaは1（開発時schema 5と同じlayout）、generatorはv1（開発時v5と同じ生成結果）です。本書の旧schemaやgenerator番号は開発時の記録で、互換decoderは提供しません。現在の構成は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
+
 ## Baseline と変更範囲
 
 作業開始時のHEAD: `7d85e57a3ac5e6375f192b1f698e036f77200849`
@@ -9,7 +11,7 @@
 初回実装では元checkoutのgenerator v5化とshape/renderer系の並行作業を保持した。
 その後、`master` の `4fec6dc5fa3a960d69ad7ffe866fcacc3014f07c`
 (`perf: move multi-drag transforms and selection previews to GPU`) へrebaseした。
-現在はmasterのgenerator v5とGPU drag/preview基盤を含む。
+現在はgenerator v1（開発時v5）とGPU drag/preview基盤を含む。
 snapshotは版番号を固定せず、現在の `PuzzleDefinition.validate()` に委譲する。
 host migrationの変更は既存GPU hot pathやgeneratorへ追加処理を接続しない。
 
@@ -99,7 +101,7 @@ Move(after=2, tick=0)   → 新しいcontrol文脈として受理
 
 これはplayerごとの順序境界であり、host発行leaseや所有権の証明ではない。
 他pieceのcontrolを送った場合も番号を進めるため、旧番号のin-flight Moveは捨てる。
-所有権、PieceId、有限座標、placedへの操作可否は引き続き `apply_piece_command()` が検証する。
+所有権、PieceId、有限座標、placedへの操作可否は引き続き `PieceDataStore::apply_command()` が検証する。
 trackerを通した後にgameplayが拒否したcontrolも番号を消費する。
 host adapterはenvelope受理後にgameplayの適用/拒否を同期的に確定してから次を処理し、
 queued commandだけで「controlを処理済み」と判断しないこと。

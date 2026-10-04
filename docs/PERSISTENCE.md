@@ -1,6 +1,14 @@
 # ローカル進捗保存
 
-2026-10-04。Main Menu の **Load Game** から保存一覧を開き、Pause Menu / 完成後の Puzzle Menu / 完成カードの **Save Game** からタイトルを入力して保存します。ホストのプレイ中にはオートセーブも行います。Save As・Steam Cloud は未実装です。
+2026-10-05。Main Menu の **Load Game** から保存一覧を開き、Pause Menu / 完成後の Puzzle Menu / 完成カードの **Save Game** からタイトルを入力して保存します。ホストのプレイ中にはオートセーブも行います。Save As・Steam Cloud は未実装です。
+
+シングルプレイ・ホストの **Return to Title** / **Exit Game** は保存画面を開きます。`ui/src/persistence/departure.rs` が離脱先と確認・保存待ちを管理し、手動保存の成功後だけ既存のタイトル遷移・network teardown / AppExit を実行します。失敗時はタイトル入力と離脱先を保持して再試行できます。保存せず離脱するには追加の確認が必要で、確認のキャンセル・Esc は入力画面へ戻り、入力画面のキャンセル・Esc は離脱を取り消します。接続中のクライアントの離脱は従来の直接遷移を維持します。
+
+`WindowPlugin.close_when_requested` を無効にし、`ui/src/window_close.rs` が `WindowCloseRequested`（閉じるボタン・Alt+F4等）を受け取ります。プレイ中・完成後のシングルプレイとホストでは、PreUpdateで一時停止を要求し、状態遷移で保持を解放してから同じ保存UIを表示します。繰り返しの閉じる要求は確認画面や保存待ちを維持し、既に手動保存中ならその完了を待ちます。タイトル・設定・パズル準備中と接続中のクライアントは通常どおり終了し、補助ウィンドウはそのウィンドウだけを閉じます。切断後のゲームを保持しているクライアントには、下記の保存UIを表示します。
+
+## 切断後の保存
+
+参加後に接続を失ったクライアントは、切断画面の「最後の状態を保存」から通常のタイトル入力・保存workerを使ってローカルに保存できます。ネットワークのteardownで保持・未確定の移動・回転を解放した後、CPUの正本・定義・元画像を「戻る」まで保持します。通常のcheckpointと同じく、最後に確定・同期された位置・連結・回転・進捗だけを保存し、未ACKの操作やTransientの移動は保存しません。新規参加時に発行したローカルGameIdと新しいSaveIdで手動保存を作成し、同じ画面での再保存はその保存を更新します。初回接続・途中参加の未完了時には保存を提供しません。保存中の「戻る」は無効になり、失敗時は状態と元画像を保持して再試行できます。保存中にウィンドウを閉じる場合も、既存の保存して終了する処理で完了を待ちます。
 
 ## オートセーブ
 
@@ -20,7 +28,7 @@ Settings の一般タブで有効・無効、間隔（1–60分）、ゲーム�
 PieceDataStore + PuzzleDefinition + ImageHash
                 ↓ 明示的 capture（committed canonical state のみ）
         PuzzleCheckpoint
-          ├── GameSnapshot（session / cursor、schema 5）
+          ├── GameSnapshot（session / cursor、schema 1）
           └── PuzzleSave（SaveMetadata）
                   ↓ SaveCodec / PuzImage
                  bytes
@@ -29,7 +37,7 @@ PieceDataStore + PuzzleDefinition + ImageHash
               FilesystemStorage
 ```
 
-`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、schema versionは5です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
+`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、schema versionは1です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
 
 通常 Save と multiplayer snapshot は、active local / remote drag の有無に関係なく、その時点までに確定済みの canonical state を保存します。capture は `states.position` を読み、表示用の `drag.delta` を加算せず、現在の Drag を cancel / Release しません。restore では hold / holder identity / drag membership / transient delta を破棄します。`RotateDrag` で既に commit / rebase 済みの位置と回転、および Grab で更新済みの Z は保存し、rebase 後の未確定移動だけを破棄します。Grab 開始時の state に巻き戻す履歴は持ちません。migration / recovery も Drag の終了を待ちません。
 
@@ -37,9 +45,11 @@ PieceDataStore + PuzzleDefinition + ImageHash
 
 ## バイナリ形式
 
+初回リリース向けにgeneratorとsnapshot schemaも5→1に整理しました。generator v1は開発時v5と同じ形状・配置を生成し、snapshot schema 1は開発時schema 5のlayoutを維持します。旧番号の定義・snapshotは拒否し、開発中のlayoutへの互換decoderは提供しません。
+
 全整数・f32 bits は little endian。Rust の memory layout を書き出しません。未知 format version はそれぞれ拒否します。`GENERATOR_VERSION` は形状の互換性であり、save/container version や multiplayer schema と独立です。generator migration は未実装で、対応外 generator は専用エラーになります。将来の migration は codec での definition 読み取りと共通 validation の間に追加できます。
 
-### `.puzsave` version 4
+### `.puzsave` version 1
 
 | 順序 | フィールド | 幅 |
 | --- | --- | --- |
@@ -72,7 +82,7 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 
 完全 load はファイル全体の checksum、header、exact state length を検証してから state 領域を確保し、共通 checkpoint validation を行います。body のみの破損は一覧では検出せず、load の失敗をその entry に表示します。truncation・過大 length・trailing bytes・checksum 不一致・invalid state はエラーです。最大1000×1000 piecesです。
 
-回転モードの追加によりversion 4に変更しました。version 1・2・3と以前の試作layoutは拒否し、読み込み互換・migrationは提供しません。一覧にはすべての対応saveの進捗を表示します。
+初回リリースに向け、開発時のversion 4のlayoutを維持してversion 1に整理しました。対応する番号は1だけです。同じ番号を使っていた初期の試作layoutを含め、開発中のsaveとの読み込み互換・migrationは提供しません。header・全体のchecksumは新しいversionを含めて計算します。一覧にはすべての対応saveの進捗を表示します。
 
 ### `.puzimg` version 1
 

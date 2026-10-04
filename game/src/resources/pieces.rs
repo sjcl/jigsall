@@ -988,20 +988,12 @@ impl PieceDataStore {
         self.drag.exclude(&canonical);
         ids
     }
-
-    /// Compatibility release notification producers use the same component resolver.
-    pub(crate) fn snap_unheld_component(&mut self, id: PieceId, definition: &PuzzleDefinition) {
-        if self.contains(id)
-            && self.connectivity.iter_component(id).all(|member| {
-                self.states[member.0 as usize].flags & PLACED == 0
-                    && self.held_by.get(&member).is_none()
-            })
-        {
-            self.resolve_component_snap(
-                id,
-                &mut snapping::SnapScratch::new(self.len(), definition),
-            );
-        }
+}
+// Fixtures exercise the production snap resolver independently of grab-time Z updates.
+#[cfg(test)]
+impl PieceDataStore {
+    pub(crate) fn snap_fixture_component(&mut self, id: PieceId, definition: &PuzzleDefinition) {
+        self.resolve_component_snap(id, &mut snapping::SnapScratch::new(self.len(), definition));
     }
 }
 #[cfg(test)]
@@ -1203,14 +1195,13 @@ mod tests {
             for seed in [42, 42 | (1 << 63)] {
                 let def = definition(grid, seed);
                 let size = def.image_size.as_vec2() / grid.as_vec2();
-                let expected = puzzella_puzzle::placement::generate_placement_grid(
-                    grid.x as usize,
-                    grid.y as usize,
-                    size.x,
-                    size.y,
-                    def.image_size.x as f32,
-                    def.image_size.y as f32,
+                let mut expected = vec![Vec2::ZERO; def.piece_count()];
+                puzzella_puzzle::placement::fill_placement_grid(
+                    &mut expected,
+                    size,
+                    def.image_size.as_vec2(),
                     seed,
+                    |p| p,
                 );
                 let states = DensePieceStates::generate(&def);
                 assert_eq!(states.len(), expected.len());
@@ -1356,7 +1347,11 @@ mod tests {
         let before = extracted[0];
         store.set_state(
             PieceId(0),
-            PieceState::new(Vec2::ONE),
+            PieceState {
+                position: Vec2::ONE,
+                placed: false,
+                held_by: None,
+            },
             puzzella_core::LOCAL_PLAYER,
         );
         assert_eq!(extracted[0], before);

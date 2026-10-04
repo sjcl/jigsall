@@ -126,7 +126,12 @@ pub fn draw_game_setup_ui(
                                     &file_registry,
                                     &i18n,
                                 );
-                                piece_section(&mut columns[1], &mut config, &i18n);
+                                piece_section(
+                                    &mut columns[1],
+                                    &mut config,
+                                    puzzle_image.as_deref().filter(|_| image_error.is_none()),
+                                    &i18n,
+                                );
                             });
                         } else {
                             select_image = image_section(
@@ -139,35 +144,25 @@ pub fn draw_game_setup_ui(
                                 &i18n,
                             );
                             ui.add_space(12.0);
-                            piece_section(ui, &mut config, &i18n);
+                            piece_section(
+                                ui,
+                                &mut config,
+                                puzzle_image.as_deref().filter(|_| image_error.is_none()),
+                                &i18n,
+                            );
                         }
                         ui.add_space(8.0);
                     });
                 ui.separator();
-                if let Some((cols, rows)) =
-                    calculate_grid_from_config(&config, puzzle_image.as_deref())
+                if multiplayer.host_setup
+                    && multiplayer.host_settings_tab
+                    && !paint_piece_summary(
+                        ui,
+                        &mut config,
+                        puzzle_image.as_deref().filter(|_| image_error.is_none()),
+                        &i18n,
+                    )
                 {
-                    config.grid_size = (cols, rows);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            egui::RichText::new(
-                                i18n.format(
-                                    "setup-piece-count",
-                                    &[("count", (cols * rows).into())],
-                                ),
-                            )
-                            .strong()
-                            .color(theme::ACCENT),
-                        );
-                        theme::hint(
-                            ui,
-                            i18n.format(
-                                "setup-grid",
-                                &[("columns", cols.into()), ("rows", rows.into())],
-                            ),
-                        );
-                    });
-                } else if multiplayer.host_setup && multiplayer.host_settings_tab {
                     theme::hint(ui, i18n.text("multiplayer-puzzle-tab-hint"));
                 }
                 if multiplayer.host_setup
@@ -329,10 +324,20 @@ fn image_section(
 #[cfg(test)]
 mod tests;
 
-fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localization) {
+fn piece_section(
+    ui: &mut egui::Ui,
+    config: &mut PuzzleConfig,
+    image: Option<&PuzzleImage>,
+    i18n: &Localization,
+) {
     ui.spacing_mut().item_spacing.y = 8.0;
     theme::section(ui, i18n.text("setup-pieces"));
     ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(
+            &mut config.piece_mode,
+            PieceMode::SquarePieces,
+            i18n.text("setup-aspect-ratio"),
+        );
         ui.selectable_value(
             &mut config.piece_mode,
             PieceMode::TargetCount,
@@ -343,26 +348,17 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
             PieceMode::ManualGrid,
             i18n.text("setup-manual-grid"),
         );
-        ui.selectable_value(
-            &mut config.piece_mode,
-            PieceMode::SquarePieces,
-            i18n.text("setup-aspect-ratio"),
-        );
     });
     ui.add_space(8.0);
     ui.spacing_mut().slider_width = (ui.available_width() - 110.0).clamp(60.0, 250.0);
     match config.piece_mode {
-        PieceMode::SquarePieces => {
-            ui.label(i18n.text("setup-aspect-scale"));
-            ui.add(
-                egui::Slider::new(&mut config.target_piece_size, 1.0..=50.0)
-                    .suffix("x")
-                    .fixed_decimals(1),
-            );
-        }
-        PieceMode::TargetCount => {
+        PieceMode::SquarePieces | PieceMode::TargetCount => {
+            ui.label(i18n.text(if config.piece_mode == PieceMode::SquarePieces {
+                "setup-target-pieces"
+            } else {
+                "setup-pieces"
+            }));
             ui.add(egui::Slider::new(&mut config.target_piece_count, 4..=10000).logarithmic(true));
-            theme::hint(ui, i18n.text("setup-proportions-hint"));
             ui.horizontal_wrapped(|ui| {
                 for count in [100, 500, 1000] {
                     if ui
@@ -381,23 +377,79 @@ fn piece_section(ui: &mut egui::Ui, config: &mut PuzzleConfig, i18n: &Localizati
             ui.add(egui::Slider::new(&mut config.grid_size.1, 2..=1000).logarithmic(true));
         }
     }
+    ui.add_space(4.0);
+    paint_piece_summary(ui, config, image, i18n);
     ui.add_space(12.0);
     ui.checkbox(&mut config.rotation_enabled, i18n.text("setup-rotation"))
         .on_hover_text(i18n.text("setup-rotation-hint"));
+    if config.rotation_enabled && pieces_are_rectangular(config, image) {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(i18n.text("setup-rotation-warning")).color(theme::DANGER),
+            )
+            .wrap(),
+        );
+    }
     ui.add_space(4.0);
     egui::CollapsingHeader::new(i18n.text("setup-tuning"))
         .id_salt("puzzle_tuning")
         .show(ui, |ui| {
-            ui.label(i18n.text("setup-snap-distance"));
-            ui.add(egui::Slider::new(&mut config.snap_distance, 1.0..=100.0));
-            theme::hint(ui, i18n.text("setup-snap-hint"));
-            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(i18n.text("setup-seed"));
                 seed_input(ui, &mut config.seed);
             });
             theme::hint(ui, i18n.text("setup-seed-hint"));
         });
+}
+
+fn paint_piece_summary(
+    ui: &mut egui::Ui,
+    config: &mut PuzzleConfig,
+    image: Option<&PuzzleImage>,
+    i18n: &Localization,
+) -> bool {
+    let Some((columns, rows)) = calculate_grid_from_config(config, image) else {
+        return false;
+    };
+    config.grid_size = (columns, rows);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(
+                i18n.format("setup-piece-count", &[("count", (columns * rows).into())]),
+            )
+            .strong()
+            .color(theme::ACCENT),
+        );
+        theme::hint(
+            ui,
+            i18n.format(
+                "setup-grid",
+                &[("columns", columns.into()), ("rows", rows.into())],
+            ),
+        );
+    });
+    let size = image.unwrap().logical_size;
+    let pixels = |edge: u32, divisions: usize| {
+        let text = format!("{:.2}", f64::from(edge) / divisions as f64);
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    };
+    ui.label(i18n.format(
+        "setup-piece-size",
+        &[
+            ("width", pixels(size.x, columns).as_str().into()),
+            ("height", pixels(size.y, rows).as_str().into()),
+        ],
+    ))
+    .on_hover_text(i18n.text("setup-piece-size-hint"));
+    true
+}
+
+fn pieces_are_rectangular(config: &PuzzleConfig, image: Option<&PuzzleImage>) -> bool {
+    let Some((columns, rows)) = calculate_grid_from_config(config, image) else {
+        return false;
+    };
+    let size = image.unwrap().logical_size;
+    u64::from(size.x) * rows as u64 != u64::from(size.y) * columns as u64
 }
 
 fn seed_input(ui: &mut egui::Ui, seed: &mut u64) -> egui::Response {

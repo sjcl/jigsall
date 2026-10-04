@@ -115,7 +115,7 @@ pub fn draw_menu_ui(
                                             .clicked()
                                             {
                                                 multiplayer.host_setup = host;
-                                                multiplayer.host_settings_tab = true;
+                                                multiplayer.host_settings_tab = false;
                                                 persistence.retain_image_for_host = host;
                                                 next_state.set(AppState::GameSetup);
                                             }

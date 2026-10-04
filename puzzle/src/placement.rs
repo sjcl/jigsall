@@ -50,29 +50,6 @@ impl LogicalPlayArea {
     }
 }
 
-/// Disjoint lattice slots on rectangular rings, then seeded Fisher-Yates. O(N).
-pub fn generate_placement_grid(
-    grid_width: usize,
-    grid_height: usize,
-    piece_width: f32,
-    piece_height: f32,
-    display_width: f32,
-    display_height: f32,
-    seed: u64,
-) -> Vec<Vec2> {
-    let count = grid_width * grid_height;
-    let mut positions = Vec::with_capacity(count);
-    positions.extend(
-        placement_slots(
-            Vec2::new(piece_width, piece_height),
-            Vec2::new(display_width, display_height),
-        )
-        .take(count),
-    );
-    positions.shuffle(&mut ChaCha8Rng::seed_from_u64(seed));
-    positions
-}
-
 /// Fill and shuffle caller-owned storage without allocating a position Vec.
 /// The mapped values move with their positions during the seeded shuffle.
 pub fn fill_placement_grid<T>(
@@ -137,6 +114,12 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    fn placements(count: usize, piece_size: Vec2, display_size: Vec2, seed: u64) -> Vec<Vec2> {
+        let mut positions = vec![Vec2::ZERO; count];
+        fill_placement_grid(&mut positions, piece_size, display_size, seed, |p| p);
+        positions
+    }
+
     #[test]
     fn initial_rotations_have_stable_vectors_for_both_seed_halves_and_disabled_mode() {
         let mut definition = PuzzleDefinition {
@@ -196,13 +179,10 @@ mod tests {
                 area.half_extents - centers.as_dvec2(),
                 bevy_math::DVec2::splat(f64::from(image.max_element()) * 2.0)
             );
-            let positions = generate_placement_grid(
-                grid.x as usize,
-                grid.y as usize,
-                image.x as f32 / grid.x as f32,
-                image.y as f32 / grid.y as f32,
-                image.x as f32,
-                image.y as f32,
+            let positions = placements(
+                definition.piece_count(),
+                image.as_vec2() / grid.as_vec2(),
+                image.as_vec2(),
                 definition.seed,
             );
             assert!(positions.iter().all(|p| area.contains(p.as_dvec2())));
@@ -241,7 +221,12 @@ mod tests {
     #[test]
     fn million_slots_are_unique_outside_and_reproducible() {
         for (w, h) in [(40, 25), (1000, 1000), (1000, 1), (1, 1000)] {
-            let a = generate_placement_grid(w, h, 10.0, 7.0, w as f32 * 10.0, h as f32 * 7.0, 42);
+            let a = placements(
+                w * h,
+                Vec2::new(10.0, 7.0),
+                Vec2::new(w as f32 * 10.0, h as f32 * 7.0),
+                42,
+            );
             assert_eq!(a.len(), w * h);
             let slots: HashSet<_> = a
                 .iter()
@@ -252,7 +237,12 @@ mod tests {
                 && (p.x.abs() > w as f32 * 5.0 + 7.2 || p.y.abs() > h as f32 * 3.5 + 5.04)));
             assert_eq!(
                 a,
-                generate_placement_grid(w, h, 10.0, 7.0, w as f32 * 10.0, h as f32 * 7.0, 42)
+                placements(
+                    w * h,
+                    Vec2::new(10.0, 7.0),
+                    Vec2::new(w as f32 * 10.0, h as f32 * 7.0),
+                    42
+                )
             );
         }
     }

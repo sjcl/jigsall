@@ -10,9 +10,6 @@ pub mod keybindings;
 pub mod multiplayer;
 pub mod network;
 pub mod persistence;
-#[cfg(any(test, feature = "cpu-picking-debug"))]
-#[allow(dead_code)]
-mod piece_geometry;
 mod play_area;
 pub mod player_settings;
 pub mod players;
@@ -24,5 +21,7 @@ pub mod settings_file;
 mod systems;
 #[cfg(test)]
 mod test_logging;
+mod window;
 pub use components::MainCamera;
 pub use game::GamePlugin;
+pub use window::WindowIconPlugin;

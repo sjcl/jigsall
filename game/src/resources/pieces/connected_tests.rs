@@ -74,7 +74,7 @@ fn component_root_dirty_tracks_only_absorbed_members_and_coalesces_final_roots()
     // Three-member target wins over the released singleton, even with a larger ID.
     s.connectivity.union(PieceId(1), PieceId(2));
     s.connectivity.union(PieceId(1), PieceId(3));
-    s.snap_unheld_component(PieceId(0), &d);
+    s.snap_fixture_component(PieceId(0), &d);
     assert_eq!(
         s.component_root_dirty.iter().collect::<Vec<_>>(),
         [PieceId(0)]
@@ -100,7 +100,7 @@ fn component_root_dirty_tracks_only_absorbed_members_and_coalesces_final_roots()
     app.update();
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .snap_unheld_component(PieceId(0), &d);
+        .snap_fixture_component(PieceId(0), &d);
     app.update();
     let upload = app.world().resource::<PieceUpload>();
     assert_eq!(upload.root_ranges.len(), 1);
@@ -155,7 +155,7 @@ fn same_release_root_changes_upload_the_final_winner_once_per_dirty_member() {
     prepare_component_root_upload(&mut store, &mut upload);
     upload.epoch = store.epoch;
     prepare_component_root_upload(&mut store, &mut upload);
-    store.snap_unheld_component(PieceId(0), &d);
+    store.snap_fixture_component(PieceId(0), &d);
     assert_eq!(
         store.component_root_dirty.iter().collect::<Vec<_>>(),
         [PieceId(0), PieceId(1), PieceId(5)]
@@ -198,7 +198,7 @@ fn render_edge_cache_is_symmetric_and_dirties_only_the_joined_pair() {
     ] {
         let (d, mut s) = fixture(grid, [100.0, 100.0, 300.0].map(Vec2::splat));
         let before = s.states.to_vec();
-        s.snap_unheld_component(PieceId(0), &d);
+        s.snap_fixture_component(PieceId(0), &d);
         assert_eq!(
             s.dirty_pieces.iter().collect::<Vec<_>>(),
             [PieceId(0), PieceId(1)]
@@ -211,7 +211,7 @@ fn render_edge_cache_is_symmetric_and_dirties_only_the_joined_pair() {
         assert_eq!(s.states[2], before[2]);
         assert_render_edges(&s, &d);
         s.dirty_pieces.clear();
-        s.snap_unheld_component(PieceId(0), &d);
+        s.snap_fixture_component(PieceId(0), &d);
         assert!(
             s.dirty_pieces.is_empty(),
             "cached edges never dirty the states again"
@@ -234,7 +234,7 @@ fn render_edge_cache_records_cycle_edges_l_shapes_and_holes() {
             UVec2::splat(3),
             (0..9).map(|id| Vec2::splat(if members.contains(&id) { 100.0 } else { 500.0 })),
         );
-        s.snap_unheld_component(PieceId(0), &d);
+        s.snap_fixture_component(PieceId(0), &d);
         assert_eq!(s.connectivity.component_size(PieceId(0)), members.len());
         assert_render_edges(&s, &d);
     }
@@ -252,7 +252,7 @@ fn connected_outline_uploads_only_changed_states_and_stays_idle_during_drag() {
     app.update(); // Drop the initial shared upload before incremental edits.
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .snap_unheld_component(PieceId(0), &d);
+        .snap_fixture_component(PieceId(0), &d);
     app.update();
     let upload = app.world().resource::<PieceUpload>();
     assert_eq!(upload.ranges.len(), 1);

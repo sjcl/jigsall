@@ -1,6 +1,5 @@
-//! Generator v5. All integer operations and shape equations mirror puzzle_shape.wgsl.
+//! Release generator v1 (pre-release v5). Integer operations and shapes mirror puzzle_shape.wgsl.
 use bevy_math::{UVec2, Vec2};
-use puzzella_core::{PieceId, PuzzleDefinition};
 
 pub const MAX_TAB_DEPTH: f32 = 0.22;
 // Keep these constants identical to puzzle_shape.wgsl.
@@ -59,9 +58,6 @@ fn edge_base(seed: u64, edge: EdgeId) -> u32 {
     h = mix32(h ^ edge.x);
     h = mix32(h ^ edge.y);
     h
-}
-pub fn edge_hash(seed: u64, edge: EdgeId, domain: u32) -> u32 {
-    mix32(edge_base(seed, edge) ^ domain.wrapping_mul(0x9e37_79b9))
 }
 /// Six 8-bit variation samples plus 3-bit style and polarity. Zero marks an outer edge.
 pub fn raw_profile(seed: u64, edge: EdgeId) -> [u32; 2] {
@@ -248,16 +244,10 @@ pub fn piece_signed_distance(local: Vec2, size: Vec2, profiles: [[u32; 2]; 4]) -
     .into_iter()
     .fold(f32::NEG_INFINITY, f32::max)
 }
-pub fn piece_uv(def: &PuzzleDefinition, id: PieceId, local: Vec2) -> Vec2 {
-    let cell = UVec2::new(id.0 % def.grid_size.x, id.0 / def.grid_size.x);
-    let size = def.image_size.as_vec2() / def.grid_size.as_vec2();
-    ((cell.as_vec2() + Vec2::splat(0.5)) * size + Vec2::new(local.x, -local.y))
-        / def.image_size.as_vec2()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use puzzella_core::{PieceId, PuzzleDefinition};
     fn tab_half_width(p: EdgeProfile, length: f32, short: f32, y: f32) -> f32 {
         let mut inside = 0.0;
         let mut outside = p.width * length;
@@ -433,17 +423,16 @@ mod tests {
                 let world = Vec2::new(image_point.x - 49.5, 31.5 - image_point.y);
                 let mut coverage = 0;
                 for id in 0..9 {
-                    let piece = def.piece(id, Vec2::ZERO);
-                    let local = world - piece.correct_position;
-                    let edges = piece_profiles(def.seed, def.grid_size, piece.grid_position);
+                    let cell = UVec2::new(id % def.grid_size.x, id / def.grid_size.x);
+                    let local = world - def.correct_position(PieceId(id));
+                    let edges = piece_profiles(def.seed, def.grid_size, cell);
                     let d = piece_signed_distance(local, size, edges);
                     assert!(d.is_finite());
                     if d <= 0.0 {
                         coverage += 1;
-                        let uv = piece_uv(&def, PieceId(id), local);
-                        let center = (piece.grid_position.as_vec2() + Vec2::splat(0.5)) * size;
-                        let v2 = (center + Vec2::new(local.x, -local.y)) / def.image_size.as_vec2();
-                        assert!(uv.abs_diff_eq(v2, 1e-6));
+                        let center = (cell.as_vec2() + Vec2::splat(0.5)) * size;
+                        let uv = (center + Vec2::new(local.x, -local.y)) / def.image_size.as_vec2();
+                        assert!(uv.abs_diff_eq(image_point / def.image_size.as_vec2(), 1e-6));
                         assert!(uv.cmpge(Vec2::ZERO).all() && uv.cmple(Vec2::ONE).all());
                     }
                 }

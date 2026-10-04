@@ -39,8 +39,6 @@ impl Plugin for GamePlugin {
                 crate::keybindings::sample_key_presses.after(bevy::input::InputSystems),
             )
             .add_message::<ClientCommand>()
-            .add_message::<PieceMoveCompleted>()
-            .add_message::<PiecePlacedEvent>()
             .init_resource::<PersistenceService>()
             .init_resource::<PersistenceState>()
             .init_resource::<crate::persistence::autosave::AutosaveSettingsState>()
@@ -131,9 +129,7 @@ impl Plugin for GamePlugin {
                 PostUpdate,
                 (
                     apply_piece_commands.run_if(crate::network::runtime::world_offline),
-                    check_piece_placement_event_driven
-                        .run_if(crate::network::runtime::world_offline),
-                    update_game_state_event_driven,
+                    update_game_progress,
                     render_selection_box,
                 )
                     .chain()
@@ -230,14 +226,12 @@ fn initialize_game(
         }
     }
     persistence.game_id = crate::persistence::GameId::default();
-    let definition = PuzzleDefinition {
-        generator_version: GENERATOR_VERSION,
-        seed: config.seed,
-        grid_size: UVec2::new(config.grid_size.0 as u32, config.grid_size.1 as u32),
-        image_size: image.logical_size,
-        snap_distance: config.snap_distance,
-        rotation_enabled: config.rotation_enabled,
-    };
+    let definition = PuzzleDefinition::new(
+        config.seed,
+        UVec2::new(config.grid_size.0 as u32, config.grid_size.1 as u32),
+        image.logical_size,
+        config.rotation_enabled,
+    );
     if let Err(error) = definition.validate() {
         progress.error = Some(GenerationError::InvalidDefinition(error.into()));
         progress.generation_phase = GenerationPhase::Failed;
@@ -251,7 +245,7 @@ fn initialize_game(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn cleanup_game(
     mut commands: Commands,
-    entities: Query<Entity, Or<(With<GridReference>, With<SelectionBox>)>>,
+    entities: Query<Entity, With<GridReference>>,
     mut store: ResMut<PieceDataStore>,
     mut input: ResMut<InputState>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
@@ -302,14 +296,8 @@ fn reset_local_player(mut local_player: ResMut<LocalPlayerId>, mut host: ResMut<
     *host = default();
 }
 
-fn clear_session_messages(
-    mut intents: ResMut<Messages<ClientCommand>>,
-    mut moves: ResMut<Messages<PieceMoveCompleted>>,
-    mut placed: ResMut<Messages<PiecePlacedEvent>>,
-) {
+fn clear_session_messages(mut intents: ResMut<Messages<ClientCommand>>) {
     intents.clear();
-    moves.clear();
-    placed.clear();
 }
 
 #[cfg(test)]
@@ -364,8 +352,7 @@ mod tests {
         world.insert_resource(State::new(GameSubState::Initializing));
         world.resource_mut::<LocalGameplayBlocked>().0 = true;
         let (tx, rx) = crossbeam::channel::bounded(1);
-        tx.send(Ok(DensePieceStates::generate(&definition)))
-            .unwrap();
+        tx.send(DensePieceStates::generate(&definition)).unwrap();
         world.insert_resource(PieceGenerationProgress {
             receiver: Some(rx),
             generation_phase: GenerationPhase::GeneratingState,
@@ -539,6 +526,46 @@ mod tests {
                 app.world().resource::<PuzzleDefinition>().rotation_enabled,
                 enabled
             );
+        }
+    }
+
+    #[test]
+    fn new_game_snap_distance_uses_logical_piece_size_in_every_mode() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for piece_mode in [
+            PieceMode::TargetCount,
+            PieceMode::ManualGrid,
+            PieceMode::SquarePieces,
+        ] {
+            for texture_size in [UVec2::new(1000, 600), UVec2::new(100, 60)] {
+                let mut app = App::new();
+                app.init_resource::<LocalPlayerId>()
+                    .init_resource::<PersistenceState>()
+                    .init_resource::<GameData>()
+                    .init_resource::<PlayerRoster>()
+                    .init_resource::<PieceGenerationProgress>()
+                    .init_resource::<PieceDataStore>()
+                    .insert_resource(PuzzleConfig {
+                        grid_size: (10, 10),
+                        piece_mode,
+                        ..default()
+                    })
+                    .insert_resource(PuzzleImage {
+                        handle: default(),
+                        logical_size: UVec2::new(1000, 600),
+                        texture_size,
+                        opaque: true,
+                    });
+                for seed in [42, 123] {
+                    app.world_mut().resource_mut::<PuzzleConfig>().seed = seed;
+                    app.world_mut().run_system_once(initialize_game).unwrap();
+                    let definition = app.world().resource::<PuzzleDefinition>();
+                    assert_eq!(definition.seed, seed);
+                    assert_eq!(definition.snap_distance, 12.0);
+                    assert!(definition.validate().is_ok());
+                }
+            }
         }
     }
 
@@ -765,6 +792,7 @@ mod tests {
                 progress.receiver.is_none(),
                 "Restore must never start random placement generation"
             );
+            assert_eq!(app.world().resource::<PuzzleDefinition>(), &definition);
             let store = app.world().resource::<PieceDataStore>();
             assert_eq!(
                 PuzzleCheckpoint::capture(store, &definition, image_hash(&encoded)).unwrap(),
@@ -1020,8 +1048,7 @@ mod tests {
                 let position = app
                     .world()
                     .resource::<PuzzleDefinition>()
-                    .piece(id.0, Vec2::ZERO)
-                    .correct_position;
+                    .correct_position(id);
                 for command in [
                     PieceCommand::Grab(id),
                     PieceCommand::Move { id, position },

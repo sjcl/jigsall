@@ -5,13 +5,12 @@ use crate::resources::{
 };
 use bevy::prelude::*;
 use puzzella_core::{
-    apply_piece_command,
     session::{
         AuthorityEpoch, AuthorityEventEnvelope, ClientCommandEnvelope, ClientCommandSequence,
         CommandSequenceStatus, ImageHash, MigrationState, RecoverySource, SessionDefinition,
         SessionId,
     },
-    CommandOutcome, PieceCommand, GENERATOR_VERSION,
+    PieceCommand, GENERATOR_VERSION, LOCAL_PLAYER,
 };
 use std::collections::HashSet;
 
@@ -211,11 +210,18 @@ fn graceful_a_to_b_preserves_dense_authority_and_refreshes_upload_for_b_and_c() 
         Ok(CommandSequenceStatus::InOrder)
     );
     // Freed pieces can be grabbed again.
-    let mut state = c_store.state(PieceId(1)).unwrap();
     assert_eq!(
-        apply_piece_command(&mut state, C, &PieceCommand::Grab(PieceId(1))),
-        Some(CommandOutcome::Grabbed)
+        c_store
+            .apply_command(
+                C,
+                &PieceCommand::Grab(PieceId(1)),
+                Some(&definition),
+                LOCAL_PLAYER
+            )
+            .grabbed,
+        1
     );
+    assert_eq!(c_store.state(PieceId(1)).unwrap().held_by, Some(C));
     // The next idle frame has no full upload and no dirty range.
     app.update();
     assert!(app.world().resource::<PieceUpload>().initial.is_none());
@@ -446,7 +452,7 @@ fn invalid_snapshots_are_rejected_atomically_without_panics() {
         invalid.cursor = wrong_cursor;
         cases.push((invalid, SnapshotError::WrongCursor));
     }
-    for schema in [1, 2, 3, 4, SNAPSHOT_SCHEMA_VERSION + 1] {
+    for schema in [0, 2, 3, 4, 5, 6] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = schema;
         cases.push((invalid, SnapshotError::UnsupportedSchema(schema)));
@@ -623,7 +629,6 @@ fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
         },
         ..envelope(4, B, 0)
     };
-    let mut piece = store.state(PieceId(1)).unwrap();
     let early_move = move_request(0, 100, Vec2::new(10.0, 20.0));
     assert_eq!(
         session.accept_command(&early_move),
@@ -634,16 +639,19 @@ fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
         Ok(CommandSequenceStatus::InOrder)
     );
     assert_eq!(
-        apply_piece_command(&mut piece, B, &PieceCommand::Grab(PieceId(1))),
-        Some(CommandOutcome::Grabbed)
+        store
+            .apply_command(B, &PieceCommand::Grab(PieceId(1)), None, LOCAL_PLAYER)
+            .grabbed,
+        1
     );
     assert_eq!(
         session.accept_command(&early_move),
         Ok(CommandSequenceStatus::Gap { expected: 0 })
     );
+    store.apply_command(B, &early_move.command, None, LOCAL_PLAYER);
     assert_eq!(
-        apply_piece_command(&mut piece, B, &early_move.command),
-        Some(CommandOutcome::Moved)
+        store.state(PieceId(1)).unwrap().position,
+        Vec2::new(10.0, 20.0)
     );
     let release = ClientCommandEnvelope {
         command: PieceCommand::Release(PieceId(1)),
@@ -654,28 +662,39 @@ fn reordered_moves_never_suppress_reliable_release_or_move_a_regrabbed_piece() {
         Ok(CommandSequenceStatus::InOrder)
     );
     assert_eq!(
-        apply_piece_command(&mut piece, B, &release.command),
-        Some(CommandOutcome::Released)
+        store
+            .apply_command(B, &release.command, None, LOCAL_PLAYER)
+            .released,
+        1
     );
-    store.set_state(PieceId(1), piece, puzzella_core::LOCAL_PLAYER);
     assert!(store.state(PieceId(1)).unwrap().held_by.is_none());
-    assert_eq!(piece.position, Vec2::new(10.0, 20.0));
+    assert_eq!(
+        store.state(PieceId(1)).unwrap().position,
+        Vec2::new(10.0, 20.0)
+    );
 
     session.accept_command(&envelope(4, B, 2)).unwrap();
-    apply_piece_command(&mut piece, B, &PieceCommand::Grab(PieceId(1))).unwrap();
+    assert_eq!(
+        store
+            .apply_command(B, &PieceCommand::Grab(PieceId(1)), None, LOCAL_PLAYER)
+            .grabbed,
+        1
+    );
     let stale_move = move_request(0, 101, Vec2::splat(999.0));
     assert_eq!(
         session.accept_command(&stale_move),
         Err(ProtocolError::StaleMoveContext)
     );
-    assert_eq!(piece.position, Vec2::new(10.0, 20.0));
+    assert_eq!(
+        store.state(PieceId(1)).unwrap().position,
+        Vec2::new(10.0, 20.0)
+    );
     let current_move = move_request(2, 0, Vec2::new(30.0, 40.0));
     assert_eq!(
         session.accept_command(&current_move),
         Ok(CommandSequenceStatus::InOrder)
     );
-    apply_piece_command(&mut piece, B, &current_move.command).unwrap();
-    store.set_state(PieceId(1), piece, puzzella_core::LOCAL_PLAYER);
+    store.apply_command(B, &current_move.command, None, LOCAL_PLAYER);
     assert_eq!(
         store.state(PieceId(1)).unwrap().position,
         Vec2::new(30.0, 40.0)

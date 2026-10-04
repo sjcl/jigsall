@@ -2,6 +2,7 @@
 #[path = "support/logging.rs"]
 mod logging;
 use bevy_math::Vec2;
+use puzzella_core::GENERATOR_VERSION;
 use puzzella_puzzle::fingerprint::{assessment::*, worst_case_profiles, EdgeFingerprint};
 use std::{collections::HashMap, fmt::Write, path::Path};
 
@@ -34,7 +35,7 @@ fn random_matching(dir: &Path) {
     for seed in SEEDS {
         let edges = random_edges(seed, 0, 32, None);
         let order = blank_permutation(seed, 0, 32);
-        let mut svg=format!("<svg xmlns='http://www.w3.org/2000/svg' width='1900' height='1095' viewBox='0 0 1900 1095'><rect width='100%' height='100%' fill='#faf9f6'/><g font-family='sans-serif' fill='#26343d'><text x='20' y='28' font-size='20'>Uniform random matching · generator v5 · seed {seed} · 32 pairs</text><text x='20' y='50'>No style / class / silhouette filtering · blanks shuffled with a separate RNG</text></g>");
+        let mut svg=format!("<svg xmlns='http://www.w3.org/2000/svg' width='1900' height='1095' viewBox='0 0 1900 1095'><rect width='100%' height='100%' fill='#faf9f6'/><g font-family='sans-serif' fill='#26343d'><text x='20' y='28' font-size='20'>Uniform random matching · generator v{GENERATOR_VERSION} · seed {seed} · 32 pairs</text><text x='20' y='50'>No style / class / silhouette filtering · blanks shuffled with a separate RNG</text></g>");
         for (i, &j) in order.iter().enumerate() {
             let x = 20.0 + (i % 4) as f32 * 235.0;
             let y = 70.0 + (i / 4) as f32 * 126.0;
@@ -106,7 +107,7 @@ fn aspect_metrics(dir: &Path) {
                 let (length, short) = edge_geometry(size, o);
                 let ratio = (length / short) as u32;
                 for mode in [RasterMode::Normalized64, RasterMode::Display64] {
-                    for version in [4, 5] {
+                    for version in [4, GENERATOR_VERSION] {
                         let n = cache
                             .entry((seed, orientation_name(o), ratio, mode, version))
                             .or_insert_with(|| {
@@ -145,7 +146,7 @@ fn aspect_metrics(dir: &Path) {
         for o in ORIENTATIONS {
             let (length, short) = edge_geometry(size, o);
             for mode in [RasterMode::Normalized64, RasterMode::Display64] {
-                for version in [4, 5] {
+                for version in [4, GENERATOR_VERSION] {
                     let (d, ious) = &grouped[&(aspect, orientation_name(o), mode, version)];
                     let (mean, p10, median, min, zeros) = stats(d);
                     let (w, h) = mode.dimensions();
@@ -238,7 +239,7 @@ fn axis_metrics(dir: &Path) {
         }
     }
     let mut csv=String::from("population,aspect,orientation,length,short,raster,axis,from_class,to_class,cases,mean_hamming,p10,median,min,zero_count,mean_normalized_hamming,min_raw0,min_raw1,min_changed_raw0,min_changed_raw1\n");
-    let mut worst_svg=String::from("<svg xmlns='http://www.w3.org/2000/svg' width='1450' height='855' viewBox='0 0 1450 855'><rect width='100%' height='100%' fill='#faf9f6'/><text x='20' y='28' font-family='sans-serif' font-size='20'>Worst adjacent-class separation · actual v5 SDF · before / after</text>");
+    let mut worst_svg=format!("<svg xmlns='http://www.w3.org/2000/svg' width='1450' height='855' viewBox='0 0 1450 855'><rect width='100%' height='100%' fill='#faf9f6'/><text x='20' y='28' font-family='sans-serif' font-size='20'>Worst adjacent-class separation · actual v{GENERATOR_VERSION} SDF · before / after</text>");
     for (aspect, size) in ASPECTS {
         for o in ORIENTATIONS {
             let (length, short) = edge_geometry(size, o);
@@ -387,12 +388,14 @@ fn human_tool(dir: &Path) {
         }
     }
     datasets.push(']');
-    let html = include_str!("support/edge_matching.html").replace("__MATCHING_DATA__", &datasets);
+    let html = include_str!("support/edge_matching.html")
+        .replace("__MATCHING_DATA__", &datasets)
+        .replace("__GENERATOR_VERSION__", &GENERATOR_VERSION.to_string());
     std::fs::write(dir.join("edge-matching-tool.html"), html).unwrap();
 }
 fn main() {
     logging::init();
-    assert_eq!(puzzella_core::GENERATOR_VERSION, 5);
+    assert_eq!(GENERATOR_VERSION, 1);
     let output = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "target/edge-assessment".into());

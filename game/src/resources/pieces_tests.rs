@@ -333,11 +333,7 @@ fn definition() -> PuzzleDefinition {
 fn bulk_ownership_snap_threshold_and_exactly_once_commit() {
     let def = definition();
     let mut store = PieceDataStore::default();
-    store.initialize(
-        (0..4)
-            .map(|id| def.piece(id, Vec2::ZERO).correct_position)
-            .collect(),
-    );
+    store.initialize((0..4).map(|id| def.correct_position(PieceId(id))).collect());
     let mut placed = store.state(PieceId(1)).unwrap();
     placed.placed = true;
     store.set_state(PieceId(1), placed, puzzella_core::LOCAL_PLAYER);
@@ -552,14 +548,10 @@ fn final_mask_revalidates_delayed_ownership_and_placed_state() {
 }
 #[test]
 fn bulk_snap_completion_updates_progress_without_per_piece_events() {
-    use crate::{components::*, systems::game_logic::*};
+    use crate::systems::game_logic::*;
     let def = definition();
     let mut store = PieceDataStore::default();
-    store.initialize(
-        (0..4)
-            .map(|id| def.piece(id, Vec2::ZERO).correct_position)
-            .collect(),
-    );
+    store.initialize((0..4).map(|id| def.correct_position(PieceId(id))).collect());
     let mut members = PieceBitSet::new(4);
     members.fill();
     let mut app = App::new();
@@ -571,12 +563,7 @@ fn bulk_snap_completion_updates_progress_without_per_piece_events() {
         .init_resource::<crate::resources::LocalPlayerId>()
         .init_resource::<PerformanceMonitor>()
         .add_message::<puzzella_core::ClientCommand>()
-        .add_message::<PieceMoveCompleted>()
-        .add_message::<PiecePlacedEvent>()
-        .add_systems(
-            Update,
-            (apply_piece_commands, update_game_state_event_driven).chain(),
-        );
+        .add_systems(Update, (apply_piece_commands, update_game_progress).chain());
     let mut messages = app
         .world_mut()
         .resource_mut::<Messages<puzzella_core::ClientCommand>>();
@@ -596,14 +583,6 @@ fn bulk_snap_completion_updates_progress_without_per_piece_events() {
     app.update();
     assert!(app.world().resource::<GameData>().puzzle_completed);
     assert_eq!(app.world().resource::<GameData>().puzzle_progress, 1.0);
-    assert!(app
-        .world()
-        .resource::<Messages<PieceMoveCompleted>>()
-        .is_empty());
-    assert!(app
-        .world()
-        .resource::<Messages<PiecePlacedEvent>>()
-        .is_empty());
     app.update();
     assert_eq!(
         *app.world().resource::<State<AppState>>().get(),

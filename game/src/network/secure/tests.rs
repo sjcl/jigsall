@@ -236,19 +236,19 @@ fn plaintext_session_control_passes_and_installed_channel_encrypts_bulk() {
 
 #[test]
 fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
-    assert_eq!(WIRE_VERSION, 11);
+    assert_eq!(WIRE_VERSION, 1);
     let (mut client, mut host) = channels();
     let secret = secret();
     let hk = Hkdf::<Sha256>::new(Some(b"puzzella-secure-channel-v1"), secret.as_bytes());
     for (index, label) in KEY_LABELS.iter().enumerate() {
-        for version in [5u16, 6, 7, 8, 9, 10, 11] {
+        for version in [1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
             let mut expected = [0; 32];
             hk.expand_multi_info(
                 &[label, &version.to_le_bytes(), secret.binding()],
                 &mut expected,
             )
             .unwrap();
-            if version == 11 {
+            if version == 1 {
                 assert_eq!(client.keys[index], expected);
             } else {
                 assert_ne!(client.keys[index], expected);
@@ -256,7 +256,7 @@ fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
         }
     }
     for class in CLASSES {
-        assert_eq!(&aad(class, 0)[25..27], &[11, 0]);
+        assert_eq!(&aad(class, 0)[25..27], &[1, 0]);
         let plaintext = frame(class);
         let record = client.seal(class, &plaintext).unwrap();
         assert_eq!(record.len(), plaintext.len() + RECORD_OVERHEAD);
@@ -479,7 +479,7 @@ fn new_pake_produces_unrelated_keys_and_old_record_cannot_cross_sessions() {
         assert_eq!(server_secret.binding(), client_secret.binding());
         assert_eq!(
             &server_secret.binding()[version_offset..version_offset + 2],
-            &[11, 0]
+            &[1, 0]
         );
         (client_secret, server_secret)
     }

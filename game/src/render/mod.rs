@@ -35,6 +35,7 @@ macro_rules! set_viewport {
     }};
 }
 use crossbeam::channel::Sender;
+pub mod remote_cursor;
 use std::{
     collections::HashMap,
     sync::{
@@ -78,6 +79,7 @@ impl RenderReady {
 }
 
 pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
+    remote_cursor::install(app);
     let enabled = app.get_sub_app(RenderApp).is_some();
     let ready = RenderReady {
         enabled,
@@ -229,11 +231,13 @@ fn extract_puzzle(
     out.image = None;
     out.request = selection.latest;
     out.region = None;
-    let (Some(upload), Some(image)) = (upload.as_ref(), image.as_ref()) else {
-        out.upload = default();
+    // A joining baseline may arrive before its image worker completes. The
+    // initial state/root snapshots live for one frame, so extract them even
+    // without a texture; buffer preparation does not require drawing yet.
+    out.upload = upload.as_deref().cloned().unwrap_or_default();
+    let Some(image) = image.as_ref() else {
         return;
     };
-    out.upload = (*upload).clone();
     let Some(def) = &out.upload.definition else {
         return;
     };
@@ -925,7 +929,7 @@ fn prepare_buffers(
     let Some(buffers) = &mut gpu.buffers else {
         return;
     };
-    if frame.config.opaque == 0 && buffers.sort.is_none() {
+    if frame.image.is_some() && frame.config.opaque == 0 && buffers.sort.is_none() {
         buffers.sort = Some(RadixBuffers::new(&device, buffers.capacity));
     }
     if buffers.root_revision != frame.upload.root_revision {

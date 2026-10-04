@@ -1,7 +1,5 @@
 //! Game resources grouped by responsibility.
 pub mod app;
-#[cfg(any(test, feature = "cpu-picking-debug"))]
-pub mod collision;
 pub mod config;
 pub mod generation;
 pub mod images;
@@ -15,8 +13,6 @@ pub use crate::players::{PlayerInfo, PlayerRoster};
 pub use app::{
     AppState, GameCompleteSubState, GameData, GameSubState, LocalPlayerId, SessionHostId,
 };
-#[cfg(any(test, feature = "cpu-picking-debug"))]
-pub use collision::{PieceCollisionData, PieceCollisionSystem};
 pub use config::{PieceMode, PuzzleConfig};
 pub use generation::{GenerationError, GenerationPhase, PieceGenerationProgress};
 pub use images::{
