@@ -2,6 +2,8 @@
 
 ## Development guidance
 
+ビルド・ローカル検証・性能計測のコマンドと技術資料の入口は [DEVELOPMENT.md](docs/DEVELOPMENT.md) にまとめています。変更内容に応じて必要なローカル検証を実行してください。README は GitHub の閲覧者向けに機能・技術概要・ビルド方法を簡潔に記載し、宣伝的なコピーは使わないでください。詳しい操作は [PLAYING.md](docs/PLAYING.md)、実装・検証・計測の詳細は docs に記載してください。
+
 描画移行の方針は [INSTRUCTION.md](docs/INSTRUCTION.md)、現在の構成と責務は [ARCHITECTURE.md](docs/ARCHITECTURE.md)、GPU picking の仕様と実機検証は [GPU_PICKING.md](docs/GPU_PICKING.md) を参照してください。過去の移行手順を未実装の機能とみなさず、現行コードを確認してから変更してください。Rust の最低対応バージョンと依存バージョンはルートの `Cargo.toml` を参照し、workspace 共通の依存定義と lockfile を維持してください。
 
 ## Architecture invariants

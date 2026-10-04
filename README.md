@@ -1,123 +1,87 @@
-# Puzzella
+<p align="center">
+  <img src="assets/menu-icon.png" alt="Puzzella のアイコン" width="112" height="112">
+</p>
 
-任意の画像で遊ぶ、Rust + Bevy製のジグソーパズルゲームです。generator v5の解析形状をGPUで描画し、最大1000×1000ピースを扱います。ゲーム状態と命令検証はCPU側にあり、gns feature付きビルドではタイトルメニューからDirect-IPのホスト／参加を利用できます。
+<h1 align="center">Puzzella</h1>
 
-## 起動
+任意の画像からパズルを生成する、Rust + Bevy 製のジグソーパズルゲームです。シングルプレイと Direct-IP マルチプレイに対応しています。
 
-Rust 1.95以上とOSに対応するC/C++リンカーが必要です。Windowsの詳細は[WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md)を参照してください。
+<p align="center">
+  <a href="#ビルドと起動">ビルドと起動</a> ·
+  <a href="#マルチプレイ">マルチプレイ</a> ·
+  <a href="docs/PLAYING.md">遊び方ガイド</a> ·
+  <a href="docs/DEVELOPMENT.md">開発ガイド</a>
+</p>
 
-通信backendは `gns` featureで有効化します。native build依存、wire仕様、localhost Host + 2 clientsテスト、将来のSteamworks接続点は[NETWORK_TRANSPORT.md](docs/NETWORK_TRANSPORT.md)を参照してください。
+## 主な機能
+
+- PNG・JPEG・BMP・GIF・WebP からのパズル生成
+- 最大 1000 × 1000（100 万）ピース。分割数、スナップ距離、形状・配置の seed、回転の有無を設定可能
+- ピースの連結、範囲選択、複数ピースの移動、90° 単位の回転
+- 元画像を含むローカル保存・復元とオートセーブ
+- Direct-IP 接続によるマルチプレイ（`gns` feature）
+- 日本語・英語 UI、キー割り当て、画面モード・解像度・最大 FPS の設定
+
+対応可能な規模や動作速度は GPU・メモリ・画像・表示範囲によって変わります。画像の読み込み上限と表示用画像のメモリ設定は [遊び方ガイド](docs/PLAYING.md#画像とピース数)を参照してください。
+
+## 技術概要
+
+Bevy でゲームのライフサイクルと描画を、egui で UI を構成しています。
+
+- **ゲーム状態**：CPU の `PieceDataStore` を正本とし、入力命令の所有権・座標・スナップを検証してから GPU に変更を反映します。
+- **描画・選択**：procedural GPU renderer と GPU picking を使用します。ピースごとの Mesh・描画 Entity を作らず、16-byte のピース状態から形状を描画します。描画と選択で形状・UV・画像の alpha 判定を共有します。
+- **生成・読み込み**：配置生成と画像デコードは worker で実行します。形状・配置は generator version と seed を含むゲーム定義から再構成します。
+
+各 crate の責務とデータフローは [アーキテクチャ](docs/ARCHITECTURE.md)、GPU の検証条件と計測結果は [開発ガイド](docs/DEVELOPMENT.md)を参照してください。
+
+## ビルドと起動
+
+Rust 1.95 以上、OS に対応した C/C++ リンカー、Bevy の描画に対応する GPU・ドライバーが必要です。リポジトリのルートで実行してください。
 
 ```sh
-cargo run --locked
 cargo run --locked --release
-# マルチプレイを有効にする場合
+```
+
+環境構築は [Windows ビルド手順](docs/WINDOWS_BUILD.md)、その他のビルド依存は [開発ガイド](docs/DEVELOPMENT.md#ビルドと起動)を参照してください。
+
+### パズルの開始
+
+1. タイトルで「ひとりで遊ぶ → 新しいパズル」を選びます。
+2. 「画像を選ぶ」で画像を読み込み、ピース数を指定します。初期値は 100 ピース、回転は無効です。
+3. 「はじめる」で開始します。
+
+Esc のメニューから「ゲームを保存」で保存し、「ひとりで遊ぶ → つづきから」で再開できます。
+
+## マルチプレイ
+
+マルチプレイは `gns` feature で有効になります。参加する全員が同 feature を有効にしたビルドを使用します。追加のネイティブ依存とセットアップは [開発ガイド](docs/DEVELOPMENT.md#ビルドと起動)と [Windows の GNS ビルド手順](docs/WINDOWS_BUILD.md#gnsを使うビルド)を参照してください。
+
+```sh
 cargo run --locked --release --features gns
 ```
 
-1. タイトルの「ひとりで遊ぶ → 新しいパズル」を選びます。
-2. 「画像を選ぶ」で使いたい画像を読み込みます。
-3. ピース数を選びます。初期値は100ピースです。「詳細設定」では、はめやすさや形・配置の番号を変えられます。
-4. 「はじめる」を押すと、パズルが始まります。
+- **ホスト**：「みんなで遊ぶ → 部屋を開く」で新規または保存済みのパズルを選択し、「部屋の設定」でアドレスとパスワードを指定して開始します。
+- **クライアント**：「みんなで遊ぶ → 部屋に参加」で接続先アドレスとパスワードを入力します。画像と進行状態は参加時に転送されます。
 
-元画像は512 MiB、各辺32768 px、総画素数67,108,864（8192×8192相当）まで読み込めます。上限を超える画像は縮小・デコード前に拒否します。描画用の画像はGPU上限と設定の画像メモリ予算に合わせて縮小します。詳細は[画像読み込みの制限](docs/ARCHITECTURE.md#生成と状態遷移)を参照してください。
+参加先は `192.168.1.10:27015` のような IP アドレス、または `example.com:27015` のようなホスト名とポート番号で指定します。ホストの待受けには IP アドレスを使用します。インターネット経由ではルーターのポート開放が必要な場合があります。詳しくはゲーム内の「接続について」、または [接続の案内](docs/PLAYING.md#みんなで遊ぶ)を参照してください。
 
-「設定」で画面モード、解像度、最大FPSを変更できます。「適用」で反映し、画面モード・解像度を変更した場合は15秒以内に「変更を維持」で確定します。「元に戻す」または時間切れで以前の設定に戻ります。実装・保存先・検証方法は[DISPLAY_SETTINGS.md](docs/DISPLAY_SETTINGS.md)を参照してください。
+## 基本の操作
 
-マルチプレイは「みんなで遊ぶ → 部屋を開く」でパズルを選び、「部屋の設定」でアドレスとパスワードを指定します。「部屋を開いてはじめる」を押すと、準備完了後に参加者を受け付けます。参加する人は「みんなで遊ぶ → 部屋に参加」で教えてもらったアドレスとパスワードを入力します。参加先には `example.com:27015` のようなホスト名とポート番号も使えます。アドレスの書き方や接続環境の説明は、画面の「接続について」から確認できます。
-
-UI は English (`en-US`) と日本語 (`ja`) に対応しています。Settings の Language（設定 → 言語）で自動・English・日本語を選ぶと、再起動なしで表示が切り替わり、次回起動時も設定を復元します。自動では OS の言語を使用し、未対応の場合は英語に戻ります。翻訳カタログ、保存方式、日本語フォント、将来の Steam 接続については [LOCALIZATION.md](docs/LOCALIZATION.md) を参照してください。
-
-同じ画像寸法・grid・seed・generator versionから、同じ整数形状パラメータ、安定PieceId、初期配置を再構成します。通常プレイはversion 5を要求します。v4の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせました。decodeと輪郭が変わるためv4を含む旧versionの定義は拒否します。v2は比較用featureとテストに残しています。異GPU間の浮動小数点・ラスタライズのbit一致は保証しません。
-
-## 操作
-
-| 操作 | 入力 |
+| 機能 | 操作 |
 | --- | --- |
-| 選択・ドラッグ | 左クリック / ドラッグ |
+| 選択・移動 | 左クリック・左ドラッグ |
 | 選択の追加・解除 | Ctrl + 左クリック |
-| ボックス選択 | 空きスペースから左ドラッグ（Ctrl併用で追加） |
-| 複数ピース移動 | 選択済みピースを左ドラッグ |
-| カメラpan | 右ドラッグ |
-| zoom | マウスホイール |
-| edge scrolling | ピースをドラッグして画面端へ |
-| 選択中、またはカーソル下の連結ピースを90°回転（反時計回り / 時計回り） | Q / E |
-| pause / resume | Esc |
-| プレイヤー表示 | Tab |
-| パフォーマンス表示切替（FPSのみ → 詳細 → 非表示） | F3 |
+| 範囲選択 | 空きスペースから左ドラッグ（Ctrl 併用で追加） |
+| 複数ピースの移動 | 選択済みのピースを左ドラッグ |
+| 視点移動・拡大縮小 | 右ドラッグ・マウスホイール |
+| 90° 回転 | Q / E（回転を有効にしたパズルのみ） |
+| メニュー・再開 | Esc |
 
-プレイ中は画面上部の「操作方法」から操作を確認できます。「メニュー」またはEscで一時停止します。
+プレイ中は画面上部の「操作方法」から確認できます。キー割り当ては「設定 → キー設定」で変更できます。回転・連結のルールや保存・設定の詳しい使い方は [遊び方ガイド](docs/PLAYING.md)にまとめています。
 
-キーボード操作は「設定 → キー設定」で変更できます。各操作に「キー1」「キー2」を設定でき、どちらでも操作できます。割り当て欄をクリックしてキーを押し、すべて離すと登録されます。Shift + RやA + Bなど、2キーの同時押しにも対応しています。左右のShift / Ctrl / Alt / Superは共通です。「適用」で保存し、次回起動時も復元します。「解除」で割り当てを空にし、「初期設定に戻す」で標準操作に戻せます。Escは固定で、入力待ちではキャンセル、それ以外では戻る・一時停止に使います。同じ割り当ての重複は保存できず、1キーとそのキーを含む2キーを押した場合は2キーの操作が優先されます。
+## ドキュメント
 
-未選択のピースをクリックすると選択を置き換え、選択済みのピースをドラッグするとグループの相対位置を保って移動します。重なりでは手前の選択可能なピースを選びます。矩形は、範囲内にfragmentを持つ、隠れた選択可能ピースも含みます。alphaゼロの画像部分は選択しません。
-
-Q / E は選択中、またはドラッグ中の各componentを自身の表示位置の中心で回転します。選択がない場合はカーソル下のピース、またはその結合済みcomponent全体を回転します。ドラッグ中は表示中の移動を確定して基準位置を更新し、そのまま移動を続けられます。異なる回転角のピースは結合せず、盤面には0°のcomponentだけ配置できます。配置済みピースと他playerが保持中のcomponentは回転できません。実装と検証は[ROTATION.md](docs/ROTATION.md)を参照してください。
-
-UI上の押下では移動を開始しません。ポーズ・フォーカス喪失で保持を解放し、未確定の範囲選択を取り消します。正解位置の近くで離すとスナップし、配置済みピースはロックされます。全ピースの配置で完成画面へ進みます。
-
-完成画面の「View Completed Puzzle」で完成した盤面を閲覧できます。ホイールで拡大・縮小、右ドラッグで移動し、Escメニューの「Return to Title」でタイトルへ戻れます。完成画面から直接「Return to Title」を選ぶこともできます。
-
-ポーズ・完成後のメニューの「Save Game」でタイトル（最大80文字）を入力してローカル保存できます。「ひとりで遊ぶ → つづきから」で保存を選ぶと、連結・配置・進捗を復元します。元画像は品質を変えずに保存されるため、元ファイルを移動・削除しても再開できます。保存済みゲームの通常 Save は同じ手動セーブを更新します。ホストでプレイ中は初期設定で5分ごとに別枠へオートセーブし、設定画面の一般タブで間隔（1–60分）、ゲームごとの保存件数上限（既定1件）の変更と無効化ができます。上限を超えたオートセーブは、新しい保存の成功後に古い順に削除します。保存中はゲーム画面上部に表示し、ロード一覧では日時の横に「オートセーブ」と表示します。Steam Cloud は未実装です。保存先と形式は [PERSISTENCE.md](docs/PERSISTENCE.md) を参照してください。
-
-元画像で正しく隣接し、同じ回転角のピースは、盤面外でも近い位置で離すと連結します。連結後はクリック・Ctrl・矩形選択・ドラッグで集合全体を扱い、正解位置へスナップすると全体が配置済みになります。複数の未連結集合も同時に選択・移動できます。
-
-## 設計
-
-Bevy 0.19.1 / bevy_egui 0.42を使用します。ピースごとのMesh、Handle、Entity、頂点・index bufferを作りません。16-byte dense stateからGPUで可視IDを生成し、4頂点のprocedural quadを1回のindirect drawで描きます。凸凹、画像UV、枠線、選択表示はshaderで計算します。
-
-```text
-Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
-                                                          ↓
-                                              visibility + indirect draw
-                                                          ↓
-                                                shared shape / picking
-```
-
-不透明画像はdepth test/write、半透明画像は可視IDだけを8bit × 3 passのGPU radix sortでZ順に並べてalpha blendします。初期配置は中央の画像領域を避ける格子リングとseed付きshuffleでO(N)です。
-
-| package | 責務 |
-| --- | --- |
-| `puzzella` / `src/` | 起動・プラグイン登録 |
-| `puzzella-core` / `core/` | 安定ID、定義、命令検証、スナップ |
-| `puzzella-game` / `game/` | 状態遷移、入力、dense state、GPU描画・選択、画像読み込み |
-| `puzzella-puzzle` / `puzzle/` | v5形状のCPU参照、配置、grid、feature限定のv2生成・fingerprint解析 |
-| `puzzella-ui` / `ui/` | egui画面 |
-
-詳細は[ARCHITECTURE.md](docs/ARCHITECTURE.md)、非同期選択は[GPU_PICKING.md](docs/GPU_PICKING.md)、透明sortの現行計測は[TRANSPARENT_RADIX_SORT.md](docs/TRANSPARENT_RADIX_SORT.md)、移行結果とメモリ内訳は[PROCEDURAL_RENDERER.md](docs/PROCEDURAL_RENDERER.md)、v4の付け根修正は[ROOT_TRANSITION.md](docs/ROOT_TRANSITION.md)、v5の識別性と単色プレビューは[EDGE_FINGERPRINT.md](docs/EDGE_FINGERPRINT.md)を参照してください。
-
-## 検証・計測
-
-通常の検証は [GitHub Actions CI](.github/workflows/ci.yml) が PR と `master` への push で実行します。`Cargo.toml` の `workspace.package.rust-version` から最低対応バージョンを読み取り、整形と、Windows / Linux の通常構成・全 feature 構成の Clippy、テスト・doctest、ビルドを確認します。GNS の localhost 通信テストは直列実行します。`cargo check` 相当の検証は Clippy に含まれます。手動実行にも対応しています。
-
-エージェントは [AGENTS.md](AGENTS.md) に従い、CI と同じ結果しか得られないローカル検証を繰り返しません。以下の通常コマンドは CI の検証内容の参考です。実 GPU / ネイティブウィンドウを必要とする ignored テスト、実機 UI の確認、release の性能計測は、変更に応じてローカルで行います。
-
-```sh
-cargo fmt --check
-cargo check --locked
-cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
-cargo test --locked
-cargo test --locked --all-features
-cargo build --locked
-# 実GPU検証と1k〜1M計測
-cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-# v2 / v5形状比較（6スタイルの凸・凹拡大も出力）
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
-# 単色matching / 1000ピース / worst case / 輪郭識別性の測定
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_preview -- target
-# 無作為matching・5縦横比・各軸の実効寄与・人間向けHTML tool
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_assessment -- target/edge-assessment
-```
-
-2026-10-01、Windows / Rust 1.97 / RTX 5090（Vulkan）で通常45件と実GPU3件を確認しました。v5の4096²画像・1024² offscreen・100万ピース全体表示のGPU drawは、3runの中央値で不透明0.5133 ms、半透明0.5189 msです。1024辺の最近傍輪郭距離はv4の約4.15倍になりました。[v5報告書](docs/EDGE_FINGERPRINT.md)に全クラス、preview、計測条件と制限を記載しています。
-
-形状を変更せず識別性評価を強化した結果と、正誤・回答時間を記録するローカルHTML toolの使い方は[追加評価](docs/EDGE_FINGERPRINT_EVALUATION.md)に記載しています。4:1の長辺を64 px幅で表示すると隣接classの一部が同じmaskになり、高解像度の形状差と小さな表示での識別性を分けて扱う必要があります。評価追加後の通常49件とブラウザQAを確認しました。
-
-## プロファイリング
-
-```sh
-cargo run --locked --release --features tracy
-cargo run --locked --release --features chrome
-```
-
-Windowsではwgpu-halを29.0.3に固定しています。29.0.4とgpu-allocator 0.28のWindows COM型の不一致を回避するためです。`cpu-picking-debug`はv2のCPU triangle判定をビルドしますが、通常の選択はGPUです。
+- [遊び方ガイド](docs/PLAYING.md) — 操作、画像の制限、保存、接続、設定
+- [開発ガイド](docs/DEVELOPMENT.md) — ビルド、検証、プロファイリング、技術資料への入口
+- [アーキテクチャ](docs/ARCHITECTURE.md) — ゲーム状態・入力・GPU 描画の構成と責務
+- [リポジトリの作業方針](AGENTS.md) — 開発時に守る設計上のルール
