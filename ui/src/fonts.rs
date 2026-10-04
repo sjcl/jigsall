@@ -9,7 +9,7 @@ pub(crate) struct EmbeddedFallbackFont {
 
 /// Add fonts here, with their license and provenance in ui/fonts.
 /// Each fallback is appended after egui's default fonts in both UI families.
-pub(crate) const EMBEDDED_FALLBACK_FONTS: &[EmbeddedFallbackFont] = &[EmbeddedFallbackFont {
+pub(crate) static EMBEDDED_FALLBACK_FONTS: &[EmbeddedFallbackFont] = &[EmbeddedFallbackFont {
     name: "puzzella_japanese",
     bytes: include_bytes!("../fonts/MPLUS1p-Regular.ttf"),
 }];

@@ -15,7 +15,7 @@ fn gpu_million_selection_benchmark() {
     app.world_mut().insert_resource(def.clone());
     app.world_mut().resource_mut::<PieceDataStore>().initialize(
         (0..1_000_000)
-            .map(|id| def.piece(id, Vec2::ZERO).correct_position)
+            .map(|id| def.correct_position(PieceId(id)))
             .collect(),
     );
     app.world_mut().get_mut::<Transform>(camera).unwrap().scale = Vec3::new(2.02, 2.02, 1.0);
@@ -182,7 +182,7 @@ fn gpu_million_selection_benchmark() {
         {
             let mut store = app.world_mut().resource_mut::<PieceDataStore>();
             for (id, state) in store.states.iter_mut().enumerate() {
-                state.position = def.piece(id as u32, Vec2::ZERO).correct_position;
+                state.position = def.correct_position(PieceId(id as u32));
             }
             store.dirty_pieces.fill();
         }

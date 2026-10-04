@@ -7,7 +7,10 @@ use puzzella_game::{
     persistence::{runtime::*, SaveId, SaveTitle, MAX_SAVE_TITLE_CHARS},
     resources::*,
 };
+mod departure;
 pub(crate) mod thumbnails;
+use departure::DepartureFlow;
+pub(crate) use departure::{process_departure, DepartureAction};
 use thumbnails::SaveThumbnails;
 
 #[derive(Resource, Default)]
@@ -19,6 +22,7 @@ pub struct SaveDialogs {
     reveal_delete: Option<SaveId>,
     loading_save: Option<SaveId>,
     focus_title: bool,
+    departure: Option<DepartureFlow>,
 }
 impl SaveDialogs {
     pub fn open_title(&mut self, state: &mut PersistenceState, i18n: &Localization) {
@@ -28,9 +32,15 @@ impl SaveDialogs {
             .map(|m| m.title.as_str().to_owned())
             .unwrap_or_else(|| i18n.text("save-default-title"));
         self.focus_title = true;
+        self.departure = None;
         state.title_dialog_open = true;
         state.error = None;
         state.message = None;
+    }
+
+    fn cancel_title(&mut self, state: &mut PersistenceState) {
+        state.title_dialog_open = false;
+        self.departure = None;
     }
 }
 pub fn reset_dialogs(mut dialogs: ResMut<SaveDialogs>) {
@@ -86,6 +96,11 @@ pub fn draw_save_dialogs(
     if state.title_dialog_open
         && matches!(app_state.get(), AppState::InGame | AppState::GameComplete)
     {
+        if let Some(DepartureFlow::Confirm(action)) = dialogs.departure {
+            departure::paint_confirmation(ctx, &mut dialogs, &mut state, action, &i18n);
+            return;
+        }
+        let departure = dialogs.departure.map(DepartureFlow::action);
         let response = egui::Modal::new("save_game".into())
             .backdrop_color(egui::Color32::from_black_alpha(185))
             .frame(theme::frame())
@@ -95,8 +110,10 @@ pub fn draw_save_dialogs(
                 egui::ScrollArea::vertical()
                     .max_height(
                         (screen.height()
-                            - 180.0
-                            - if state.busy || state.error.is_some() || state.message.is_some() {
+                            - if departure.is_some() { 280.0 } else { 180.0 }
+                            - if departure.is_none()
+                                && (state.busy || state.error.is_some() || state.message.is_some())
+                            {
                                 32.0
                             } else {
                                 0.0
@@ -105,6 +122,10 @@ pub fn draw_save_dialogs(
                     )
                     .show(ui, |ui| {
                         theme::heading(ui, i18n.text("common-save-game"));
+                        if let Some(action) = departure {
+                            theme::hint(ui, i18n.text(action.prompt_key()));
+                            status(ui, &state, &i18n);
+                        }
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
@@ -179,13 +200,42 @@ pub fn draw_save_dialogs(
                         ui.add_space(8.0);
                     });
                 let title = SaveTitle::new(&dialogs.title);
-                status(ui, &state, &i18n);
+                if departure.is_none() {
+                    status(ui, &state, &i18n);
+                }
                 ui.separator();
+                if let Some(action) = departure {
+                    let width = ui.available_width();
+                    ui.add_enabled_ui(
+                        !state.busy && title.is_ok() && original.is_some() && definition.is_some(),
+                        |ui| {
+                            if theme::button(ui, i18n.text(action.save_key()), width, true)
+                                .clicked()
+                            {
+                                if let Ok(title) = title {
+                                    service.request_save(&mut state, title);
+                                    dialogs.departure = Some(DepartureFlow::Saving(action));
+                                }
+                            }
+                        },
+                    );
+                    ui.add_enabled_ui(!state.busy, |ui| {
+                        if theme::danger_button(ui, i18n.text(action.discard_key()), width)
+                            .clicked()
+                        {
+                            dialogs.departure = Some(DepartureFlow::Confirm(action));
+                        }
+                        if theme::button(ui, i18n.text("common-cancel"), width, false).clicked() {
+                            dialogs.cancel_title(&mut state);
+                        }
+                    });
+                    return;
+                }
                 ui.horizontal(|ui| {
                     let width = (ui.available_width() - 10.0) * 0.5;
                     ui.add_enabled_ui(!state.busy, |ui| {
                         if theme::button(ui, i18n.text("common-cancel"), width, false).clicked() {
-                            state.title_dialog_open = false;
+                            dialogs.cancel_title(&mut state);
                         }
                     });
                     ui.add_enabled_ui(
@@ -203,7 +253,7 @@ pub fn draw_save_dialogs(
                 });
             });
         if !state.busy && response.should_close() {
-            state.title_dialog_open = false;
+            dialogs.cancel_title(&mut state);
         }
     }
 }

@@ -1,5 +1,7 @@
 # タスク: 現在のnative lyon生成を基準に、100万ピース対応のProcedural GPU Rendererへ移行する
 
+2026-10-05追記: 旧 v2 の CPU メッシュ生成・CPU picking と専用 feature / example は削除済みです。以下の旧実装・比較コマンドは当時の記録です。現行の構成と検証コマンドは [DEVELOPMENT.md](DEVELOPMENT.md) を参照してください。
+
 現在の最新実装を前提に作業してください。
 
 基準コミット:

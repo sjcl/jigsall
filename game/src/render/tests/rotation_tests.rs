@@ -378,7 +378,7 @@ fn gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden() {
                 store.states[id as usize].flags = 0;
             }
         }
-        store.snap_unheld_component(PieceId(0), &def);
+        store.snap_fixture_component(PieceId(0), &def);
         store.selected_pieces.extend(ids.map(PieceId));
     }
     wait_ready(&mut app);

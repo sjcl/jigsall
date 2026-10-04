@@ -1,267 +1,269 @@
-//! Paint-only overlay. Its inputs contain no network runtime or gameplay store.
-use crate::localization::Localization;
-use bevy::prelude::*;
-use bevy_egui::{egui, EguiContexts};
+//! Low-frequency name resolution and coverage rasterization. No cursor projection.
+use crate::{fonts::EMBEDDED_FALLBACK_FONTS, localization::Localization};
+use ab_glyph::{point, Font, FontRef, Glyph, ScaleFont};
+use bevy::{asset::RenderAssetUsages, image::ImageSampler, prelude::*, render::render_resource::*};
 use puzzella_core::PlayerId;
 use puzzella_game::{
-    players::PlayerRoster,
-    resources::{remote_cursor::RemoteCursorPresentation, LocalPlayerId},
-    MainCamera,
+    players::{PlayerRoster, MAX_ROSTER_PLAYERS},
+    render::remote_cursor::{
+        CursorLabel, RemoteCursorLabelAtlas, RemoteCursorLabels, MAX_LABEL_ATLAS_BYTES,
+        MAX_LABEL_ATLAS_DIMENSION,
+    },
+    resources::LocalPlayerId,
 };
+use std::{collections::BTreeMap, sync::Arc};
 
-fn player_color(player: PlayerId) -> egui::Color32 {
-    const PALETTE: [[u8; 3]; 8] = [
-        [255, 116, 113],
-        [101, 190, 255],
-        [115, 222, 157],
-        [241, 199, 92],
-        [189, 152, 255],
-        [255, 151, 212],
-        [100, 220, 224],
-        [255, 173, 110],
-    ];
-    // Stable on every OS/client; adjacent IDs select different palette entries.
-    let rgb = PALETTE[(player.0 % PALETTE.len() as u64) as usize];
-    egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2])
+const FONT_SIZE: f32 = 12.0;
+const MAX_RASTER_SCALE: f32 = 4.0;
+
+#[derive(Clone, PartialEq)]
+struct AtlasKey {
+    session: Option<puzzella_core::session::SessionId>,
+    roster_revision: u64,
+    names: Vec<(PlayerId, String)>,
+    fallback: String,
+    locale: crate::localization::Locale,
+    scale: f32,
 }
-fn cursor_name<'a>(
-    roster: &'a PlayerRoster,
-    local: PlayerId,
-    player: PlayerId,
-    fallback: &'a str,
-) -> Option<&'a str> {
-    if player == local {
-        return None;
-    }
-    let info = roster.get(player)?;
-    Some(
-        info.display_name
-            .as_ref()
-            .map(|n| n.as_ref())
-            .unwrap_or(fallback),
-    )
+
+#[derive(Resource, Default)]
+pub(crate) struct LabelAtlasCache {
+    key: Option<AtlasKey>,
+    revision: u64,
+    font: Option<FontRef<'static>>,
 }
-fn project(
-    camera: &Camera,
-    transform: &Transform,
-    world: Vec2,
-    pixels_per_point: f32,
-) -> Option<(egui::Pos2, egui::Rect)> {
-    if !world.is_finite()
-        || !transform.to_matrix().is_finite()
-        || !pixels_per_point.is_finite()
-        || pixels_per_point <= 0.0
-    {
-        return None;
-    }
-    let viewport = camera.logical_viewport_rect()?;
-    let point = camera
-        .world_to_viewport(&GlobalTransform::from(*transform), world.extend(0.0))
-        .ok()?;
-    if !point.is_finite() || !viewport.contains(point) {
-        return None;
-    }
-    // Camera projection uses logical window pixels; egui uses its own UI points.
-    let scale = camera.computed.target_info.as_ref()?.scale_factor / pixels_per_point;
-    if !scale.is_finite() || scale <= 0.0 {
-        return None;
-    }
-    let pos = |p: Vec2| egui::pos2(p.x * scale, p.y * scale);
-    Some((
-        pos(point),
-        egui::Rect::from_min_max(pos(viewport.min), pos(viewport.max)),
-    ))
+
+pub(crate) fn reset_label_atlas(
+    mut cache: ResMut<LabelAtlasCache>,
+    mut labels: ResMut<RemoteCursorLabels>,
+) {
+    cache.key = None;
+    labels.members = Arc::default();
+    labels.atlas = None;
 }
-fn paint_cursor(painter: &egui::Painter, point: egui::Pos2, player: PlayerId, name: &str) {
-    let color = player_color(player);
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            point,
-            point + egui::vec2(4.0, 16.0),
-            point + egui::vec2(15.0, 8.0),
-        ],
-        color,
-        egui::Stroke::new(1.0, egui::Color32::from_black_alpha(220)),
-    ));
-    let galley = painter.layout_no_wrap(
-        name.to_owned(),
-        egui::FontId::proportional(12.0),
-        egui::Color32::WHITE,
-    );
-    let origin = point + egui::vec2(17.0, 9.0);
-    painter.rect_filled(
-        egui::Rect::from_min_size(
-            origin - egui::vec2(4.0, 2.0),
-            galley.size() + egui::vec2(8.0, 4.0),
-        ),
-        3.0,
-        egui::Color32::from_black_alpha(190),
-    );
-    painter.galley(origin, galley, egui::Color32::WHITE);
-}
-pub(crate) fn draw_remote_cursors(
-    mut contexts: EguiContexts,
-    presentation: Res<RemoteCursorPresentation>,
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_label_atlas(
     roster: Res<PlayerRoster>,
     local: Res<LocalPlayerId>,
-    cameras: Query<(&Camera, &Transform), With<MainCamera>>,
     i18n: Res<Localization>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut cache: ResMut<LabelAtlasCache>,
+    mut labels: ResMut<RemoteCursorLabels>,
+    mut images: ResMut<Assets<Image>>,
+    session: Option<NonSend<puzzella_game::network::runtime::NetworkSession>>,
 ) {
-    let Ok(ctx) = contexts.ctx_mut() else {
-        return;
+    let scale = windows.single().map_or(1.0, |w| w.scale_factor());
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     };
-    let Ok((camera, transform)) = cameras.single() else {
-        return;
-    };
-    // Shared background layer is painted before HUD; menus/dialogs use higher layers.
-    // No Ui, Area, Response, widget, interaction rectangle or focus registration.
-    let painter = ctx.layer_painter(egui::LayerId::background());
-    let fallback = i18n.text("game-default-player");
-    for (player, cursor) in presentation.cursors() {
-        let Some(name) = cursor_name(&roster, local.0, player, &fallback) else {
-            continue;
-        };
-        let Some((point, clip)) = project(
-            camera,
-            transform,
-            cursor.displayed_world_position,
-            ctx.pixels_per_point(),
-        ) else {
-            continue;
-        };
-        paint_cursor(&painter.with_clip_rect(clip), point, player, name);
+    if labels.scale_factor != scale {
+        labels.scale_factor = scale;
     }
+    let session = session
+        .as_ref()
+        .and_then(|s| s.authority())
+        .map(|s| s.session_definition().id);
+    if cache
+        .key
+        .as_ref()
+        .is_some_and(|key| key.session == session && key.scale == scale)
+        && !roster.is_changed()
+        && !local.is_changed()
+        && !i18n.is_changed()
+    {
+        return;
+    }
+    let fallback = i18n.text("game-default-player");
+    let names = roster
+        .players()
+        .filter(|p| p.id != local.0)
+        .take(MAX_ROSTER_PLAYERS)
+        .map(|p| {
+            (
+                p.id,
+                p.display_name
+                    .as_ref()
+                    .map_or_else(|| fallback.clone(), |n| n.as_ref().to_owned()),
+            )
+        })
+        .collect();
+    let key = AtlasKey {
+        session,
+        roster_revision: roster.revision(),
+        names,
+        fallback,
+        locale: i18n.locale(),
+        scale,
+    };
+    if cache.key.as_ref() == Some(&key) {
+        return;
+    }
+    if cache.font.is_none() {
+        // Single embedded byte source, also used by the egui fallback definitions.
+        cache.font = FontRef::try_from_slice(EMBEDDED_FALLBACK_FONTS[0].bytes).ok();
+    }
+    cache.revision += 1;
+    labels.members = key.names.iter().map(|(id, _)| *id).collect();
+    labels.atlas = cache
+        .font
+        .as_ref()
+        .and_then(|font| rasterize(font, &key.names, scale))
+        .map(|(image, metadata)| {
+            Arc::new(RemoteCursorLabelAtlas {
+                revision: cache.revision,
+                image: images.add(image),
+                labels: metadata,
+            })
+        });
+    cache.key = Some(key);
+}
+
+struct TextLayout {
+    glyphs: Vec<Glyph>,
+    min: Vec2,
+    size: UVec2,
+}
+
+fn layout(font: &FontRef<'_>, name: &str, scale: f32) -> TextLayout {
+    let scaled = font.as_scaled(FONT_SIZE * scale);
+    let mut x = 0.0;
+    let mut previous = None;
+    let mut glyphs = Vec::with_capacity(32);
+    let mut min = Vec2::ZERO;
+    let mut max = Vec2::new(0.0, scaled.height());
+    for c in name.chars().take(32) {
+        let mut id = scaled.glyph_id(c);
+        if id.0 == 0 {
+            id = scaled.glyph_id('�');
+        }
+        if id.0 == 0 {
+            id = scaled.glyph_id('?');
+        }
+        if let Some(prev) = previous {
+            x += scaled.kern(prev, id);
+        }
+        let glyph = id.with_scale_and_position(scaled.scale(), point(x, scaled.ascent()));
+        if let Some(outline) = font.outline_glyph(glyph.clone()) {
+            let b = outline.px_bounds();
+            min = min.min(Vec2::new(b.min.x, b.min.y));
+            max = max.max(Vec2::new(b.max.x, b.max.y));
+        }
+        x += scaled.h_advance(id);
+        previous = Some(id);
+        glyphs.push(glyph);
+    }
+    max.x = max.x.max(x);
+    min = min.floor();
+    TextLayout {
+        glyphs,
+        min,
+        size: (max.ceil() - min).max(Vec2::ONE).as_uvec2(),
+    }
+}
+
+/// Stable PlayerId shelf packing; one transparent texel guards each text rectangle.
+/// No per-label bitmap or texture. Atlas allocation is at most 16 MiB.
+fn rasterize(
+    font: &FontRef<'_>,
+    names: &[(PlayerId, String)],
+    display_scale: f32,
+) -> Option<(Image, BTreeMap<PlayerId, CursorLabel>)> {
+    if names.is_empty() {
+        return None;
+    }
+    let raster_scale = display_scale.clamp(0.5, MAX_RASTER_SCALE);
+    let mut ordered: Vec<_> = names.iter().take(MAX_ROSTER_PLAYERS).collect();
+    ordered.sort_by_key(|(id, _)| *id);
+    let texts: Vec<_> = ordered
+        .iter()
+        .map(|(_, name)| layout(font, name, raster_scale))
+        .collect();
+    let width = texts
+        .iter()
+        .map(|t| t.size.x + 2)
+        .max()?
+        .max(512)
+        .checked_next_power_of_two()?;
+    if width > MAX_LABEL_ATLAS_DIMENSION {
+        return None;
+    }
+    let mut rects = Vec::with_capacity(texts.len());
+    let (mut x, mut y, mut row_height) = (0, 0, 0);
+    for text in &texts {
+        let size = text.size + UVec2::splat(2);
+        if x + size.x > width {
+            x = 0;
+            y += row_height;
+            row_height = 0;
+        }
+        if y + size.y > MAX_LABEL_ATLAS_DIMENSION {
+            return None;
+        }
+        rects.push(UVec2::new(x + 1, y + 1));
+        x += size.x;
+        row_height = row_height.max(size.y);
+    }
+    let height = (y + row_height).checked_next_power_of_two()?;
+    if height > MAX_LABEL_ATLAS_DIMENSION {
+        return None;
+    }
+    let bytes = (width as usize).checked_mul(height as usize)?;
+    if bytes > MAX_LABEL_ATLAS_BYTES {
+        return None;
+    }
+    let mut bitmap = vec![0u8; bytes];
+    let mut labels = BTreeMap::new();
+    let atlas_size = Vec2::new(width as f32, height as f32);
+    for (((player, _), text), origin) in ordered.into_iter().zip(texts).zip(rects) {
+        for mut glyph in text.glyphs {
+            glyph.position.x -= text.min.x;
+            glyph.position.y -= text.min.y;
+            if let Some(outline) = font.outline_glyph(glyph) {
+                let bounds = outline.px_bounds();
+                outline.draw(|gx, gy, alpha| {
+                    let px = origin.x as i32 + bounds.min.x as i32 + gx as i32;
+                    let py = origin.y as i32 + bounds.min.y as i32 + gy as i32;
+                    if px >= origin.x as i32
+                        && py >= origin.y as i32
+                        && px < (origin.x + text.size.x) as i32
+                        && py < (origin.y + text.size.y) as i32
+                    {
+                        let index = py as usize * width as usize + px as usize;
+                        let coverage = (alpha * 255.0).round() as u8;
+                        bitmap[index] = 255
+                            - (((255 - bitmap[index]) as u16 * (255 - coverage) as u16) / 255)
+                                as u8;
+                    }
+                });
+            }
+        }
+        let uv_min = origin.as_vec2() / atlas_size;
+        let uv_max = (origin + text.size).as_vec2() / atlas_size;
+        labels.insert(
+            *player,
+            CursorLabel {
+                uv: Vec4::new(uv_min.x, uv_min.y, uv_max.x, uv_max.y),
+                logical_size: text.size.as_vec2() / raster_scale,
+            },
+        );
+    }
+    let mut image = Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        bitmap,
+        TextureFormat::R8Unorm,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = ImageSampler::linear();
+    Some((image, labels))
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use bevy::camera::{ComputedCameraValues, RenderTargetInfo, Viewport};
-    #[test]
-    fn cursor_projection_pan_zoom_viewport_offset_hidpi_without_new_network_target() {
-        let camera = Camera {
-            computed: ComputedCameraValues {
-                clip_from_view: Mat4::orthographic_rh(-500., 500., -400., 400., 0., 1000.),
-                target_info: Some(RenderTargetInfo {
-                    physical_size: UVec2::new(2000, 1600),
-                    scale_factor: 2.0,
-                }),
-                ..default()
-            },
-            ..default()
-        };
-        let target = Vec2::new(200., 100.);
-        let p = |transform: Transform| project(&camera, &transform, target, 2.0).unwrap().0;
-        assert_eq!(p(Transform::IDENTITY), egui::pos2(700., 300.));
-        assert_eq!(
-            p(Transform::from_xyz(100., -100., 0.)),
-            egui::pos2(600., 200.)
-        );
-        assert_eq!(
-            p(Transform::from_scale(Vec3::splat(2.))),
-            egui::pos2(600., 350.)
-        );
-        assert_eq!(target, Vec2::new(200., 100.));
-        assert_eq!(
-            project(&camera, &Transform::IDENTITY, target, 4.0)
-                .unwrap()
-                .0,
-            egui::pos2(350., 150.)
-        );
-        assert!(project(&camera, &Transform::IDENTITY, Vec2::splat(10000.), 2.).is_none());
-        assert!(project(&camera, &Transform::IDENTITY, Vec2::splat(f32::NAN), 2.).is_none());
-        let camera = Camera {
-            viewport: Some(Viewport {
-                physical_position: UVec2::new(200, 100),
-                physical_size: UVec2::new(1000, 800),
-                ..default()
-            }),
-            ..camera
-        };
-        assert_eq!(
-            project(&camera, &Transform::IDENTITY, Vec2::ZERO, 2.)
-                .unwrap()
-                .0,
-            egui::pos2(350., 250.)
-        );
-    }
-    #[test]
-    fn cursor_visual_name_color_own_filter_and_no_input_capture() {
-        use puzzella_core::PlayerDisplayName;
-        use puzzella_game::players::{RosterPlayer, RosterSnapshot};
-        let mut roster = PlayerRoster::default();
-        roster
-            .install_snapshot(
-                RosterSnapshot {
-                    revision: 2,
-                    players: (0..3)
-                        .map(|id| RosterPlayer {
-                            player: PlayerId(id),
-                            display_name: (id != 0)
-                                .then(|| PlayerDisplayName::from_user_input("Alice").unwrap()),
-                        })
-                        .collect(),
-                },
-                PlayerId(0),
-                PlayerId(1),
-            )
-            .unwrap();
-        assert!(cursor_name(&roster, PlayerId(1), PlayerId(1), "Player").is_none());
-        assert!(cursor_name(&roster, PlayerId(1), PlayerId(9), "Player").is_none());
-        assert_eq!(
-            cursor_name(&roster, PlayerId(1), PlayerId(0), "Player"),
-            Some("Player")
-        );
-        assert_eq!(
-            cursor_name(&roster, PlayerId(0), PlayerId(1), "Player"),
-            Some("Alice")
-        );
-        assert_eq!(
-            cursor_name(&roster, PlayerId(0), PlayerId(2), "Player"),
-            Some("Alice")
-        );
-        assert_ne!(player_color(PlayerId(1)), player_color(PlayerId(2)));
-        assert_eq!(player_color(PlayerId(1)), player_color(PlayerId(1)));
-        let ctx = egui::Context::default();
-        // Match bevy_egui's run_ui pass, which records the unused root area.
-        // A bare begin_pass has no root area and conservatively captures input.
-        let output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800., 600.),
-                )),
-                events: vec![egui::Event::PointerMoved(egui::pos2(103., 105.))],
-                ..default()
-            },
-            |ui| {
-                paint_cursor(
-                    &ui.ctx().layer_painter(egui::LayerId::background()),
-                    egui::pos2(100., 100.),
-                    PlayerId(2),
-                    "Alice",
-                );
-            },
-        );
-        assert!(!ctx.egui_wants_pointer_input());
-        assert!(!ctx.egui_wants_keyboard_input());
-        assert!(output
-            .shapes
-            .iter()
-            .any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="Alice")));
-        let marker = output
-            .shapes
-            .iter()
-            .find_map(|s| {
-                if let egui::Shape::Path(p) = &s.shape {
-                    Some(p)
-                } else {
-                    None
-                }
-            })
-            .unwrap();
-        let bounds = marker.visual_bounding_rect();
-        assert!(bounds.width() < 20. && bounds.height() < 20.);
-        output.drop_without_applying_deltas();
-    }
-}
+mod tests;

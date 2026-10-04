@@ -11,6 +11,8 @@ pub enum NetworkFailureKind {
     Image,
     Connection,
     RoomNotFound,
+    /// Transport failure or timeout after the client has joined the game.
+    ConnectionLost,
 }
 
 impl NetworkFailureKind {
@@ -105,8 +107,21 @@ impl From<&str> for RuntimeFailure {
 }
 
 impl NetworkStatus {
+    pub(super) fn classify_failure(&self, kind: NetworkFailureKind) -> NetworkFailureKind {
+        if self.role == Some(RuntimeRole::Client)
+            && self.phase == RuntimePhase::Ready
+            && matches!(
+                kind,
+                NetworkFailureKind::Connection | NetworkFailureKind::Timeout
+            )
+        {
+            NetworkFailureKind::ConnectionLost
+        } else {
+            kind
+        }
+    }
     pub(super) fn set_failure(&mut self, kind: NetworkFailureKind, error: impl std::fmt::Debug) {
-        self.failure = Some(kind);
+        self.failure = Some(self.classify_failure(kind));
         self.error = Some(format!("{error:?}"));
     }
 }
@@ -114,6 +129,29 @@ impl NetworkStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn join_and_host_failures_keep_their_categories_before_client_ready() {
+        for (role, phase) in [
+            (RuntimeRole::Client, RuntimePhase::Connecting),
+            (RuntimeRole::Client, RuntimePhase::Authenticating),
+            (
+                RuntimeRole::Client,
+                RuntimePhase::Syncing(SyncPhase::Finalizing),
+            ),
+            (RuntimeRole::Host, RuntimePhase::Hosting),
+        ] {
+            for kind in [NetworkFailureKind::Connection, NetworkFailureKind::Timeout] {
+                let mut status = NetworkStatus {
+                    role: Some(role),
+                    phase,
+                    ..default()
+                };
+                status.set_failure(kind, "transport diagnostic");
+                assert_eq!(status.failure, Some(kind), "{role:?} {phase:?}");
+            }
+        }
+    }
 
     #[test]
     fn typed_causes_classify_independently_of_diagnostic_text() {

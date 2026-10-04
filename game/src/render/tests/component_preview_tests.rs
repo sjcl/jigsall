@@ -367,7 +367,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
     // A growing closure updates only formerly absorbed components.
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .snap_unheld_component(PieceId(0), &def);
+        .snap_fixture_component(PieceId(0), &def);
     update_gpu(&mut app);
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
     assert_eq!(gpu.root_upload_bytes, 24);
@@ -406,7 +406,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
     assert_eq!(roots(&app), [0, 1, 1, 1, 4, 5, 6, 7]);
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .snap_unheld_component(PieceId(0), &def);
+        .snap_fixture_component(PieceId(0), &def);
     update_gpu(&mut app);
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
     assert_eq!((gpu.root_upload_bytes, gpu.root_upload_calls), (20, 2));

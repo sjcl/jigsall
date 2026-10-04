@@ -49,7 +49,7 @@ Bevy 0.19.1 / bevy_egui 0.42 を使用します。依存バージョンはルー
 | --- | --- |
 | `puzzella` / `src/` | 起動・プラグイン登録 |
 | `puzzella-core` / `core/` | 安定 ID、定義、命令検証、スナップ |
-| `puzzella-puzzle` / `puzzle/` | v5 形状の CPU 参照、配置、grid、feature 限定の v2 生成・fingerprint 解析 |
+| `puzzella-puzzle` / `puzzle/` | v1 形状（開発時 v5）の CPU 参照、配置、grid、形状評価用の fingerprint 解析 |
 | `puzzella-game` / `game/` | 状態遷移、入力、dense state、GPU 描画・選択、画像読み込み・worker・通信 |
 | `puzzella-ui` / `ui/` | egui の画面 |
 
@@ -67,9 +67,9 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 
 初期配置は中央の画像領域を避ける格子リングと seed 付き shuffle による O(N) の処理です。同じ画像寸法・grid・seed・generator version から整数形状パラメータ・安定 PieceId・初期配置を再構成します。回転設定もゲーム定義の一部です。
 
-通常プレイは generator v5 を要求します。v4 の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせています。decode と輪郭が変わるため、v4 を含む旧 version の定義は拒否します。v2 は比較用 feature とテストに残しています。異 OS / GPU 間の浮動小数点・ラスタライズの bit 一致は保証しません。
+通常プレイは generator v1 を要求します。初回リリース向けに開発時 v5 の番号を 1 に整理し、形状・hash・seed・初期配置の計算は維持しています。開発時 v4 の滑らかな付け根を保ち、辺の中心・幅・深さ・首と頭の比率・傾きに明確なクラスを持たせています。対応する番号は 1 だけで、開発中の定義との互換性や移行は提供しません。旧 v2 の CPU メッシュ生成・CPU picking は削除しました。異 OS / GPU 間の浮動小数点・ラスタライズの bit 一致は保証しません。
 
-`cpu-geometry-reference` は CPU 形状の参照・比較を、`cpu-picking-debug` は v2 の CPU triangle 判定を有効にします。通常経路の描画・選択は GPU のままです。現在の処理の詳細は [アーキテクチャ](ARCHITECTURE.md)を参照してください。
+`puzzella-puzzle` の `shape-analysis` feature は現行形状の fingerprint 解析と評価 example を有効にします。旧 CPU メッシュ生成・CPU picking の feature と専用 example はありません。通常描画・選択は GPU を使用します。現在の処理の詳細は [アーキテクチャ](ARCHITECTURE.md)を参照してください。
 
 ## 検証
 
@@ -110,12 +110,10 @@ cargo build --workspace --locked --all-features
 ```sh
 # 実 GPU 検証と 1k〜1M ピースの計測
 cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-# v2 / v5 形状比較（6 スタイルの凸・凹拡大も出力）
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/shape-comparison.svg
 # 単色 matching / 1000 ピース / worst case / 輪郭識別性
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_preview -- target
+cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
 # 無作為 matching・5 縦横比・各軸の実効寄与・人間向け HTML tool
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_assessment -- target/edge-assessment
+cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_assessment -- target/edge-assessment
 ```
 
 プロファイリングは以下の feature で有効にします。
@@ -134,6 +132,7 @@ cargo run --locked --release --features chrome
 | 分野 | 資料 |
 | --- | --- |
 | 現在の構成・責務 | [アーキテクチャ](ARCHITECTURE.md) |
+| Remote cursor の描画・atlas・検証 | [GPU cursor presentation](REMOTE_CURSOR_GPU.md) |
 | 描画移行の方針と結果 | [移行方針](INSTRUCTION.md)、[procedural renderer](PROCEDURAL_RENDERER.md) |
 | GPU 選択・大量選択・透明描画 | [GPU picking](GPU_PICKING.md)、[100 万ピースの選択](MILLION_SELECTION.md)、[radix sort](TRANSPARENT_RADIX_SORT.md) |
 | 形状と識別性 | [v4 の付け根修正](ROOT_TRANSITION.md)、[v5 fingerprint](EDGE_FINGERPRINT.md)、[追加評価](EDGE_FINGERPRINT_EVALUATION.md) |

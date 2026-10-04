@@ -1,16 +1,24 @@
 use bevy::prelude::*;
-use puzzella_game::{asset_reader::DirectFileAssetPlugin, GamePlugin};
+use puzzella_game::{asset_reader::DirectFileAssetPlugin, GamePlugin, WindowIconPlugin};
 use puzzella_ui::GameUiPlugin;
 
 fn main() {
     let mut app = App::new();
     #[cfg(feature = "rendezvous")]
     configure_internet(&mut app);
-    app.add_plugins(DefaultPlugins)
-        .add_plugins(GameUiPlugin)
-        .add_plugins(DirectFileAssetPlugin)
-        .add_plugins(GamePlugin)
-        .run();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        close_when_requested: false,
+        primary_window: Some(Window {
+            title: "Puzzella".into(),
+            ..default()
+        }),
+        ..default()
+    }))
+    .add_plugins(WindowIconPlugin)
+    .add_plugins(GameUiPlugin)
+    .add_plugins(DirectFileAssetPlugin)
+    .add_plugins(GamePlugin)
+    .run();
 }
 
 /// Deployment/operator input, outside the ordinary player UI. Production accepts

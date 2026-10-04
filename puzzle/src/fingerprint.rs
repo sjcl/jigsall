@@ -92,7 +92,7 @@ impl EdgeSilhouetteDescriptor {
     }
 }
 
-/// Frozen v4 decoder for measurement only. v5 gameplay rejects v4 definitions.
+/// Frozen pre-release v4 decoder for measurement only. Release v1 rejects v4 definitions.
 pub fn decode_v4_reference(raw: [u32; 2]) -> EdgeProfile {
     let (w, d, n, h, style) = match raw[0] & 7 {
         2 => (0.52, 0.17, 0.18, 0.34, EdgeStyle::Wide),

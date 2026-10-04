@@ -70,7 +70,7 @@ fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
                     store.states[id as usize].flags = 0;
                 }
             }
-            store.snap_unheld_component(PieceId(ids[0]), &def);
+            store.snap_fixture_component(PieceId(ids[0]), &def);
         }
         wait_ready(&mut app);
         // Unhighlighted silhouette is the coverage reference.

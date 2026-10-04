@@ -2,7 +2,7 @@
 <html lang="ja">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>輪郭だけのマッチング · Puzzella v5</title>
+<title>輪郭だけのマッチング · Puzzella generator v__GENERATOR_VERSION__</title>
 <style>
 :root{font-family:system-ui,sans-serif;color:#26343d;background:#faf9f6;color-scheme:light}*{box-sizing:border-box}
 body{max-width:1320px;margin:auto;padding:24px}h1{font-size:28px;margin:5px 0 8px}p{line-height:1.6}.eyebrow{color:#626d76;font-size:13px;letter-spacing:.08em}
@@ -16,7 +16,7 @@ button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-vis
 .results{margin-top:28px;padding-top:20px;border-top:1px solid #d7dce0}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:9px;text-align:left;border-bottom:1px solid #e0e4e7;white-space:nowrap}
 @media(max-width:760px){body{padding:14px}.board{grid-template-columns:1fr}.target{position:static}.candidates{grid-template-columns:repeat(auto-fit,minmax(255px,1fr))}}
 </style>
-<div class="eyebrow">PUZZELLA · GENERATOR V5 · SHAPE STUDY</div>
+<div class="eyebrow">PUZZELLA · GENERATOR V__GENERATOR_VERSION__ · SHAPE STUDY</div>
 <h1>輪郭だけのマッチング</h1>
 <p>左の凸辺に対応する凹辺を、右の候補から1つ選んでください。全て同じ色で、形だけを比べます。</p>
 <div class="settings">
@@ -41,8 +41,9 @@ button{cursor:pointer}button:disabled{cursor:default;opacity:.5}button:focus-vis
 <script>
 'use strict';
 const data=JSON.parse(document.getElementById('matching-data').textContent);
+const generatorVersion=__GENERATOR_VERSION__;
 const $=id=>document.getElementById(id);
-const key='puzzella-v5-human-matching-v1';
+const key='puzzella-v'+generatorVersion+'-human-matching-v1';
 let records=[],session=null,current=null,phase='idle';
 try{const saved=JSON.parse(localStorage.getItem(key)||'[]');if(Array.isArray(saved))records=saved;}catch{ $('storage').textContent='この環境ではブラウザ保存が使えません。CSV / JSONで記録を保存してください。'; }
 for(const seed of [...new Set(data.map(d=>d.seed))]) {const o=document.createElement('option');o.value=seed;o.textContent=seed;$('seed').append(o);}
@@ -90,7 +91,7 @@ function answer(slot){
   const chosen=current.candidates[slot];const correct=chosen===current.target;const correctSlot=current.candidates.indexOf(current.target);
   const edge=session.dataset.edges[current.target];const candidate=session.dataset.edges[chosen];
   const mask=edge.display64[session.ratioIndex];const ambiguous=current.candidates.filter(i=>session.dataset.edges[i].display64[session.ratioIndex]===mask).length;
-  const r={schema_version:1,generator_version:5,session_id:session.id,participant:session.participant,seed:session.dataset.seed,aspect:session.aspect,orientation:session.dataset.orientation,edge_short_ratio:session.ratio,
+  const r={schema_version:1,generator_version:generatorVersion,session_id:session.id,participant:session.participant,seed:session.dataset.seed,aspect:session.aspect,orientation:session.dataset.orientation,edge_short_ratio:session.ratio,
     round:session.round+1,candidate_count:session.count,chosen_slot:slot+1,correct_slot:correctSlot+1,correct,response_ms:Math.max(0,now-current.startedAt),interrupted:current.interrupted,
     display64_equal_candidates:ambiguous,target_x:edge.x,target_y:edge.y,target_raw:edge.raw,target_classes:edge.classes,chosen_x:candidate.x,chosen_y:candidate.y,chosen_raw:candidate.raw,
     candidate_edges:current.candidates.map(i=>({x:session.dataset.edges[i].x,y:session.dataset.edges[i].y,raw:session.dataset.edges[i].raw})),answered_at:new Date().toISOString()};
@@ -110,12 +111,12 @@ $('next').addEventListener('click',()=>{if(phase!=='answered')return;if(++sessio
 $('stop').addEventListener('click',stop);
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&current&&['painting','asking'].includes(phase))current.interrupted=true;});
 function download(name,type,text){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
-$('json').addEventListener('click',()=>download('v5-matching-results.json','application/json',JSON.stringify({schema_version:1,generator_version:5,records},null,2)));
+$('json').addEventListener('click',()=>download('v'+generatorVersion+'-matching-results.json','application/json',JSON.stringify({schema_version:1,generator_version:generatorVersion,records},null,2)));
 $('csv').addEventListener('click',()=>{
   const fields=['schema_version','generator_version','session_id','participant','seed','aspect','orientation','edge_short_ratio','round','candidate_count','chosen_slot','correct_slot','correct','response_ms','interrupted','display64_equal_candidates','target_x','target_y','target_raw','target_classes','chosen_x','chosen_y','chosen_raw','candidate_edges','answered_at'];
   // Quoting preserves commas/newlines; apostrophe prevents spreadsheet formula execution.
   const quote=value=>{let s=Array.isArray(value)?JSON.stringify(value):String(value??'');if(/^[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};
-  const csv=[fields.join(','),...records.map(r=>fields.map(f=>quote(r[f])).join(','))].join('\r\n');download('v5-matching-results.csv','text/csv;charset=utf-8','\ufeff'+csv);
+  const csv=[fields.join(','),...records.map(r=>fields.map(f=>quote(r[f])).join(','))].join('\r\n');download('v'+generatorVersion+'-matching-results.csv','text/csv;charset=utf-8','\ufeff'+csv);
 });
 $('clear').addEventListener('click',()=>{if(confirm('保存した回答記録を全て消去しますか？')){records=[];persist();renderRecords();}});
 renderRecords();

@@ -16,12 +16,15 @@ mod preferences;
 mod remote_cursor;
 mod settings;
 mod theme;
-use bevy::prelude::*;
+mod window_close;
+use bevy::{ecs::schedule::common_conditions::not, prelude::*};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use puzzella_game::resources::{AppState, GameCompleteSubState, GameSubState};
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GameplayUi;
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SaveUi;
 
 pub struct GameUiPlugin;
 impl Plugin for GameUiPlugin {
@@ -30,11 +33,16 @@ impl Plugin for GameUiPlugin {
             .init_resource::<preferences::UiPreferences>()
             .add_systems(Startup, preferences::initialize)
             .add_systems(Update, preferences::poll_save)
+            .init_resource::<remote_cursor::LabelAtlasCache>()
+            .init_resource::<puzzella_game::render::remote_cursor::RemoteCursorLabels>()
+            .add_systems(Last, remote_cursor::prepare_label_atlas)
+            .add_systems(OnEnter(AppState::Menu), remote_cursor::reset_label_atlas)
             .init_resource::<persistence::SaveDialogs>()
             .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()
             .init_resource::<multiplayer::MultiplayerUi>()
             .init_resource::<puzzella_game::resources::LocalGameplayBlocked>()
+            .add_systems(PreUpdate, window_close::handle_close_requests)
             .add_systems(First, multiplayer::start_prepared_host)
             .add_systems(
                 First,
@@ -59,18 +67,29 @@ impl Plugin for GameUiPlugin {
 fn register_screens(app: &mut App) {
     app.configure_sets(
         EguiPrimaryContextPass,
-        GameplayUi
-            .after(multiplayer::draw_connection_ui)
-            .run_if(multiplayer::connection_screen_hidden),
+        GameplayUi.after(multiplayer::draw_connection_ui).run_if(
+            multiplayer::connection_screen_hidden.or_else(window_close::exit_dialog_pending),
+        ),
+    )
+    .configure_sets(
+        EguiPrimaryContextPass,
+        SaveUi.after(multiplayer::draw_connection_ui).run_if(
+            multiplayer::connection_screen_hidden
+                .or_else(window_close::exit_dialog_pending)
+                .or_else(multiplayer::disconnected_game_available),
+        ),
     )
     .add_systems(
         EguiPrimaryContextPass,
         (
             persistence::draw_save_dialogs
-                .in_set(GameplayUi)
+                .in_set(SaveUi)
                 .after(menu::draw_menu_ui)
                 .after(overlays::draw_in_game_menu_ui)
                 .after(completion::draw_completion_ui),
+            persistence::process_departure
+                .in_set(SaveUi)
+                .after(persistence::draw_save_dialogs),
             menu::draw_menu_ui.run_if(in_state(AppState::Menu)),
             settings::draw_settings_ui
                 .in_set(GameplayUi)
@@ -79,10 +98,12 @@ fn register_screens(app: &mut App) {
                 .run_if(in_state(AppState::Menu).or_else(in_state(AppState::GameSetup))),
             game_setup::draw_game_setup_ui.run_if(in_state(AppState::GameSetup)),
             multiplayer::draw_connection_ui
+                .run_if(not(window_close::exit_dialog_pending))
                 .after(menu::draw_menu_ui)
                 .after(game_setup::draw_game_setup_ui),
             multiplayer::process_actions
                 .after(GameplayUi)
+                .after(SaveUi)
                 .after(menu::draw_menu_ui)
                 .after(game_setup::draw_game_setup_ui)
                 .after(persistence::draw_save_dialogs)
@@ -90,12 +111,6 @@ fn register_screens(app: &mut App) {
                 .after(completion::draw_completion_ui)
                 .after(multiplayer::draw_connection_ui),
             multiplayer::sync_local_gameplay_block.after(multiplayer::process_actions),
-            remote_cursor::draw_remote_cursors
-                .in_set(GameplayUi)
-                .before(game_play::draw_game_ui)
-                .before(performance::draw_performance_overlay)
-                .before(game_play::draw_players_overlay)
-                .run_if(in_state(GameSubState::Playing)),
             game_play::draw_game_ui
                 .in_set(GameplayUi)
                 .run_if(in_state(AppState::InGame)),

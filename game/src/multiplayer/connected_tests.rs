@@ -125,7 +125,7 @@ fn snapshot_render_edges_are_derived_from_authority_including_sparse_cycles() {
             .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.0))
             .collect(),
     );
-    source.snap_unheld_component(PieceId(0), &d);
+    source.snap_fixture_component(PieceId(0), &d);
     let render_flags: Vec<_> = source
         .states
         .iter()
@@ -187,7 +187,7 @@ fn invalid_edges_offsets_partial_placement_and_old_schema_are_atomic() {
     let mut invalid = GameSnapshot::capture(&placed, &d, SESSION, expected(&d).cursor).unwrap();
     invalid.pieces[1].flags &= !SNAPSHOT_PLACED;
     cases.push((invalid, SnapshotError::InconsistentComponent(PieceId(1))));
-    for version in [1, 2, 3, 4, 6] {
+    for version in [0, 2, 3, 4, 5, 6] {
         let mut invalid = snapshot.clone();
         invalid.schema_version = version;
         cases.push((invalid, SnapshotError::UnsupportedSchema(version)));

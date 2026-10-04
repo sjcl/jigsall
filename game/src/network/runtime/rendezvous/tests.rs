@@ -2,7 +2,10 @@ use super::*;
 mod smoke;
 use crate::network::gns::rendezvous::protocol::{AuthorityId, MemberId, RoomId};
 use crate::network::runtime::tests as fixtures;
-use crate::{persistence::runtime::OriginalPuzzleImage, resources::AppState};
+use crate::{
+    persistence::runtime::OriginalPuzzleImage,
+    resources::{AppState, LocalGameplayBlocked},
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
@@ -923,8 +926,43 @@ fn rendezvous_runtime_ready_command_roundtrip_survives_control_loss_then_tears_d
     }
     assert_eq!(host.world().resource::<PieceDataStore>().held_by.len(), 1);
     assert_eq!(client.world().resource::<PieceDataStore>().held_by.len(), 1);
-    stop_session(client.world_mut());
+    let epoch = client.world().resource::<PieceDataStore>().epoch;
+    let confirmed = crate::checkpoint::PuzzleCheckpoint::capture(
+        client.world().resource::<PieceDataStore>(),
+        client.world().resource::<PuzzleDefinition>(),
+        client.world().resource::<OriginalPuzzleImage>().hash,
+    )
+    .unwrap();
     stop_session(host.world_mut());
+    client.update();
+    client.update();
+    // Internet gameplay loss uses the same retained-save path as Direct IP.
+    let status = client.world().resource::<NetworkStatus>();
+    assert_eq!(status.failure, Some(NetworkFailureKind::ConnectionLost));
+    assert!(status.has_disconnected_game());
+    assert_eq!(
+        *client.world().resource::<State<AppState>>().get(),
+        AppState::InGame
+    );
+    assert_eq!(client.world().resource::<PieceDataStore>().epoch, epoch);
+    assert_eq!(
+        crate::checkpoint::PuzzleCheckpoint::capture(
+            client.world().resource::<PieceDataStore>(),
+            client.world().resource::<PuzzleDefinition>(),
+            client.world().resource::<OriginalPuzzleImage>().hash,
+        )
+        .unwrap(),
+        confirmed
+    );
+    assert!(client
+        .world()
+        .resource::<PieceDataStore>()
+        .held_by
+        .is_empty());
+    assert!(client.world().contains_resource::<OriginalPuzzleImage>());
+    assert!(client.world().resource::<LocalGameplayBlocked>().0);
+    assert!(client.world().contains_non_send::<NetworkSession>());
+    stop_session(client.world_mut());
     assert!(hs.borrow().stopped && cs.borrow().stopped);
     assert!(!bus.lock().unwrap().closed.is_empty());
     assert!(host.world().resource::<PieceDataStore>().held_by.is_empty());

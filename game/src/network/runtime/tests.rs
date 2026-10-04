@@ -1,4 +1,5 @@
 use super::*;
+mod disconnected_save_tests;
 mod local_rotation_tests;
 mod pending_release_tests;
 mod presence_tests;
@@ -260,6 +261,17 @@ pub(super) fn encoded() -> Arc<[u8]> {
         image::Rgba([60, 170, 20, 255]),
     ))
     .write_to(&mut bytes, image::ImageFormat::Png)
+    .unwrap();
+    bytes.into_inner().into()
+}
+fn encoded_bmp(size: u32) -> Arc<[u8]> {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        size,
+        size,
+        image::Rgba([60, 170, 20, 255]),
+    ))
+    .write_to(&mut bytes, image::ImageFormat::Bmp)
     .unwrap();
     bytes.into_inner().into()
 }
@@ -584,6 +596,64 @@ impl Pair {
             self.frame();
         }
     }
+}
+
+#[test]
+fn image_pump_sends_multiple_chunks_within_the_shared_frame_budget() {
+    let mut pair = Pair::with_image_bytes(8192, None, encoded_bmp(128));
+    let mut second = app();
+    join_with_transport(
+        second.world_mut(),
+        Fake {
+            id: 2,
+            bus: pair.bus.clone(),
+        },
+        JoinOptions {
+            display_name: None,
+            address: "127.0.0.1:10000".parse().unwrap(),
+            password: password(),
+            cached_image: None,
+        },
+    )
+    .unwrap();
+    let mut recipients = BTreeSet::new();
+    let mut multiple = false;
+    for _ in 0..100 {
+        pair.bus.lock().unwrap().sent.clear();
+        pair.host.update();
+        let bus = pair.bus.lock().unwrap();
+        let messages: Vec<_> = bus
+            .sent
+            .iter()
+            .filter(|(_, class, _)| *class == MessageClass::Bulk)
+            .collect();
+        let bytes: usize = messages.iter().map(|(_, _, payload)| payload.len()).sum();
+        assert!(bytes as u64 <= super::super::lifecycle::BULK_FRAME_BYTES);
+        let mut counts = BTreeMap::new();
+        for (id, _, _) in &messages {
+            *counts.entry(*id).or_insert(0usize) += 1;
+        }
+        multiple |= counts.values().any(|&count| count > 1);
+        recipients.extend(messages.iter().map(|(id, _, _)| *id));
+        drop(bus);
+        pair.client.update();
+        second.update();
+        if pair.client.world().resource::<NetworkStatus>().phase == RuntimePhase::Ready
+            && second.world().resource::<NetworkStatus>().phase == RuntimePhase::Ready
+        {
+            assert!(
+                multiple,
+                "Bulk must not be limited to one message per frame"
+            );
+            assert_eq!(
+                recipients.len(),
+                2,
+                "both simultaneous joins receive Bulk data"
+            );
+            return;
+        }
+    }
+    panic!("simultaneous image joins did not finish");
 }
 
 #[test]
@@ -1026,6 +1096,72 @@ fn failure_before_connected_blocks_offline_commands_then_menu_releases_session()
         .resource::<PieceDataStore>()
         .held_by
         .is_empty());
+}
+
+#[test]
+fn ready_host_connection_loss_keeps_its_category_after_menu_cleanup() {
+    for reason in [
+        DisconnectReason::RemoteClosed,
+        DisconnectReason::ConnectionProblem,
+        DisconnectReason::BackendFailure,
+        DisconnectReason::BackendConnectionTimeout,
+    ] {
+        let mut pair = Pair::new();
+        pair.ready();
+        let host_connection = pair.host.world().resource::<NetworkStatus>().peers[0].connection;
+        let mut bus = pair.bus.lock().unwrap();
+        let connection = bus.routes[&host_connection].1;
+        bus.inbox
+            .entry(1)
+            .or_default()
+            .push_back(TransportEvent::Disconnected { connection, reason });
+        drop(bus);
+        pair.client.update();
+        let status = pair.client.world().resource::<NetworkStatus>();
+        assert_eq!(status.phase, RuntimePhase::Disconnected);
+        assert_eq!(
+            status.failure,
+            Some(NetworkFailureKind::ConnectionLost),
+            "{reason:?}"
+        );
+        assert_eq!(status.error, Some(format!("{reason:?}")));
+        pair.client.update();
+        let status = pair.client.world().resource::<NetworkStatus>();
+        assert!(status.has_disconnected_game());
+        assert!(pair
+            .client
+            .world()
+            .contains_resource::<OriginalPuzzleImage>());
+        assert!(pair.client.world().contains_resource::<PuzzleDefinition>());
+        assert!(pair.client.world().contains_non_send::<NetworkSession>());
+        assert!(!world_offline(pair.client.world()));
+        stop_session(pair.client.world_mut());
+        pair.client.update();
+        let status = pair.client.world().resource::<NetworkStatus>();
+        assert_eq!(status.role, None);
+        assert_eq!(status.failure, Some(NetworkFailureKind::ConnectionLost));
+    }
+}
+
+#[test]
+fn ready_client_send_failure_reports_connection_loss() {
+    let mut pair = Pair::new();
+    pair.ready();
+    let host_connection = pair.host.world().resource::<NetworkStatus>().peers[0].connection;
+    let mut bus = pair.bus.lock().unwrap();
+    let connection = bus.routes[&host_connection].1;
+    bus.fail.insert(connection);
+    drop(bus);
+    send(&mut pair.client, PieceCommand::Grab(PieceId(0)));
+    pair.client.update();
+    let status = pair.client.world().resource::<NetworkStatus>();
+    assert_eq!(status.phase, RuntimePhase::Failed);
+    assert_eq!(status.failure, Some(NetworkFailureKind::ConnectionLost));
+    assert!(status
+        .error
+        .as_ref()
+        .unwrap()
+        .contains("injected send failure"));
 }
 
 #[test]
@@ -1545,6 +1681,202 @@ fn rejected_host_rotation_preserves_pointer_basis_and_consumes_control_history()
 }
 
 #[cfg(feature = "gns")]
+const PROCESS_IMAGE_SIZE: u32 = 1600;
+
+#[cfg(feature = "gns")]
+#[test]
+fn gns_localhost_runtime_separate_process_image_join() {
+    separate_process_image_join(false);
+}
+
+#[cfg(feature = "gns")]
+#[test]
+#[ignore = "requires a real GPU"]
+fn gns_localhost_runtime_separate_process_gpu_image_join_reaches_playing() {
+    separate_process_image_join(true);
+}
+
+#[cfg(feature = "gns")]
+fn separate_process_image_join(render: bool) {
+    let mut host = app();
+    let mut session = host_world(&mut host);
+    // About 10 MB, similar to an imported puzzle image rather than a tiny PNG.
+    let bytes = encoded_bmp(PROCESS_IMAGE_SIZE);
+    assert!(bytes.len() > super::super::lifecycle::MAX_BULK_QUEUE_BYTES as usize);
+    session.image_hash = crate::persistence::image_hash(&bytes);
+    host.world_mut()
+        .resource_mut::<PuzzleDefinition>()
+        .image_size = UVec2::splat(PROCESS_IMAGE_SIZE);
+    host.world_mut().insert_resource(OriginalPuzzleImage {
+        hash: session.image_hash,
+        encoded: Some(bytes),
+        image_lease: None,
+    });
+    let address = start_host(
+        host.world_mut(),
+        HostOptions {
+            display_name: None,
+            address: "127.0.0.1:0".parse().unwrap(),
+            session,
+            host: PlayerId(0),
+            password: password(),
+        },
+    )
+    .unwrap();
+    // A single-process GNS fixture can use native loopback shortcuts. Exercise
+    // real UDP and independent process identities with a multi-chunk image.
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "network::runtime::tests::gns_localhost_runtime_process_client",
+            "--nocapture",
+        ])
+        .env("PUZZELLA_TEST_JOIN_ADDRESS", address.to_string())
+        .env("PUZZELLA_TEST_JOIN_RENDER", if render { "1" } else { "0" })
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let result = loop {
+        host.update();
+        if let Some(result) = child.try_wait().unwrap() {
+            break result;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!(
+                "separate-process GNS join timed out: {:?}",
+                host.world().resource::<NetworkStatus>()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(result.success(), "separate-process client failed: {result}");
+    stop_session(host.world_mut());
+}
+
+#[cfg(feature = "gns")]
+fn process_gpu_client_app() -> App {
+    use bevy::{camera::RenderTarget, render::RenderPlugin};
+    crate::test_logging::init();
+    let mut client = App::new();
+    client
+        .insert_resource(crate::persistence::runtime::PersistenceService::with_storage_requests().0)
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: bevy::window::ExitCondition::DontExit,
+                    ..default()
+                })
+                .set(RenderPlugin {
+                    synchronous_pipeline_compilation: true,
+                    ..default()
+                })
+                .disable::<bevy::log::LogPlugin>()
+                .disable::<bevy::winit::WinitPlugin>()
+                .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
+        )
+        .add_plugins((
+            crate::asset_reader::DirectFileAssetPlugin,
+            crate::GamePlugin,
+        ))
+        .init_resource::<bevy_egui::EguiUserTextures>()
+        .insert_resource(crate::image_settings::ImageSettingsState::load(None));
+    client.finish();
+    client.cleanup();
+    client.update();
+    let world = client.world_mut();
+    let target = world
+        .resource_mut::<Assets<Image>>()
+        .add(Image::new_target_texture(
+            128,
+            128,
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            None,
+        ));
+    let camera = world
+        .query_filtered::<Entity, With<crate::components::MainCamera>>()
+        .single(world)
+        .unwrap();
+    world
+        .entity_mut(camera)
+        .insert(RenderTarget::Image(target.into()));
+    client
+}
+
+#[cfg(feature = "gns")]
+#[test]
+fn gns_localhost_runtime_process_client() {
+    let Ok(address) = std::env::var("PUZZELLA_TEST_JOIN_ADDRESS") else {
+        return;
+    };
+    let render = std::env::var("PUZZELLA_TEST_JOIN_RENDER").is_ok_and(|mode| mode == "1");
+    let mut client = if render {
+        process_gpu_client_app()
+    } else {
+        app()
+    };
+    start_join(
+        client.world_mut(),
+        JoinOptions {
+            display_name: None,
+            address: address.parse().unwrap(),
+            password: password(),
+            cached_image: None,
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        client.update();
+        let status = client.world().resource::<NetworkStatus>();
+        assert_ne!(status.phase, RuntimePhase::Failed, "{status:?}");
+        if status.phase == RuntimePhase::Ready
+            && client.world().contains_resource::<PuzzleImage>()
+            && (!render
+                || client
+                    .world()
+                    .get_resource::<State<GameSubState>>()
+                    .is_some_and(|state| *state.get() == GameSubState::Playing))
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "process GNS join: {status:?}");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        client.world().resource::<PuzzleImage>().logical_size,
+        UVec2::splat(PROCESS_IMAGE_SIZE)
+    );
+    assert_eq!(
+        client.world().resource::<OriginalPuzzleImage>().hash,
+        client
+            .world()
+            .non_send::<NetworkSession>()
+            .authority()
+            .unwrap()
+            .session_definition()
+            .image_hash
+    );
+    assert_eq!(client.world().resource::<PlayerRoster>().len(), 2);
+    if render {
+        assert_eq!(
+            client
+                .world()
+                .resource::<PieceGenerationProgress>()
+                .generation_phase,
+            GenerationPhase::Completed
+        );
+        assert_eq!(
+            client.world().resource::<NetworkStatus>().image,
+            ImageReadiness::Ready
+        );
+    }
+    stop_session(client.world_mut());
+}
+
+#[cfg(feature = "gns")]
 #[test]
 fn gns_localhost_runtime_entrypoints_join_ready_command_and_cursor_roundtrip() {
     let mut host = app();
@@ -1760,10 +2092,6 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         .world_mut()
         .spawn(crate::components::GridReference)
         .id();
-    let old_selection = client
-        .world_mut()
-        .spawn(crate::components::SelectionBox)
-        .id();
     {
         use crate::persistence::{GameId, SaveId, SaveMetadata, SaveTitle};
         let mut persistence = client
@@ -1798,7 +2126,6 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
     )
     .unwrap();
     assert!(client.world().get_entity(old_reference).is_err());
-    assert!(client.world().get_entity(old_selection).is_err());
     let persistence = client
         .world()
         .resource::<crate::persistence::runtime::PersistenceState>();
@@ -1840,6 +2167,19 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         client.world().resource::<OriginalPuzzleImage>().hash,
         pair.host.world().resource::<OriginalPuzzleImage>().hash
     );
+    stop_session(pair.host.world_mut());
+    client.update();
+    client.update();
+    assert!(client
+        .world()
+        .resource::<NetworkStatus>()
+        .has_disconnected_game());
+    assert_eq!(
+        *client.world().resource::<State<AppState>>().get(),
+        AppState::InGame
+    );
+    assert_eq!(client.world().resource::<PieceDataStore>().len(), 4);
+    assert!(client.world().contains_resource::<OriginalPuzzleImage>());
     client
         .world_mut()
         .resource_mut::<NextState<AppState>>()
@@ -1851,4 +2191,6 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         LocalPlayerId::default()
     );
     assert!(client.world().resource::<PieceDataStore>().is_empty());
+    assert!(!client.world().contains_resource::<OriginalPuzzleImage>());
+    assert!(!client.world().contains_resource::<PuzzleDefinition>());
 }

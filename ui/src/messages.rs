@@ -119,9 +119,9 @@ impl Localization {
     pub(crate) fn generation_error(&self, error: &GenerationError) -> String {
         match error {
             GenerationError::WorkerStopped => self.text("generation-worker-stopped"),
-            GenerationError::InvalidDefinition(reason)
-            | GenerationError::State(reason)
-            | GenerationError::Renderer(reason) => self.reason("generation-error", reason),
+            GenerationError::InvalidDefinition(reason) | GenerationError::Renderer(reason) => {
+                self.reason("generation-error", reason)
+            }
         }
     }
 }

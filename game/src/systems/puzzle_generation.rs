@@ -26,22 +26,17 @@ pub fn generate_puzzle_state(
         let (tx, rx) = crossbeam::channel::bounded(1);
         std::thread::spawn(move || {
             let states = DensePieceStates::generate(&def);
-            let _ = tx.send(Ok(states));
+            let _ = tx.send(states);
         });
         progress.receiver = Some(rx);
     }
     if let Some(rx) = &progress.receiver {
         match rx.try_recv() {
-            Ok(Ok(states)) => {
+            Ok(states) => {
                 store.initialize_dense(states);
                 progress.pieces_created = store.len();
                 progress.receiver = None;
                 progress.generation_phase = GenerationPhase::UploadingGpu;
-            }
-            Ok(Err(error)) => {
-                progress.error = Some(GenerationError::State(error));
-                progress.generation_phase = GenerationPhase::Failed;
-                progress.receiver = None;
             }
             Err(crossbeam::channel::TryRecvError::Disconnected) => {
                 progress.error = Some(GenerationError::WorkerStopped);

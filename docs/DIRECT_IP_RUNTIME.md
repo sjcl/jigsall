@@ -38,24 +38,27 @@ and settles exactly within 0.001 world units or after 250 ms. Identical stationa
 heartbeats do not restart settling. Settled smoothing does not mark the resource
 changed. There is no prediction, velocity or extrapolation.
 
-The paint-only egui overlay reads only this resource, PlayerRoster, LocalPlayerId
-and MainCamera projection. Each frame projects displayed world positions through
-the receiving camera, so local pan/zoom needs no packet. Markers stay 15x16 UI
-points, with stable PlayerId palette colors and roster display names (localized
-default-player fallback). Own/unknown/offscreen/nonfinite cursors are skipped.
-It registers no widget, Area, interaction rectangle or keyboard focus and paints
-on the background layer before HUD, below menus/dialogs. It runs only in Playing.
+The dedicated RenderApp marker/label passes extract displayed world positions,
+stable PlayerId palette colors and a revision-coherent label atlas. They use the
+exact camera matrix and physical viewport extracted for the puzzle in that frame.
+Markers stay 15x16 logical pixels; UI-resolved roster names and localized fallbacks
+are rasterized into a shared R8 coverage atlas only when roster/name/locale/session
+or DPI changes. No CPU screen projection or egui cursor painter remains. Own,
+unknown, offscreen and nonfinite cursors are skipped. The passes run after puzzle
+and selection, before egui HUD/menus, only in Playing; they register no input/focus.
+See [GPU cursor presentation](REMOTE_CURSOR_GPU.md) for layout, bounds and upload rules.
 
 Cursor work depends only on bounded player/connection counts: no PieceDataStore
 state scan, membership/component lookup, selection mask, dirty renderer revision
-or GPU upload. It does not enter gameplay authority, checkpoints, GameSnapshot,
+or piece GPU upload. Cursor instance uploads are bounded to 3,072 bytes and atlas
+uploads occur only on rebuild. It does not enter gameplay authority, checkpoints, GameSnapshot,
 JoinBaseline, catch-up events, autosave or persistent/cloud formats. See the
 [transport contract](NETWORK_TRANSPORT.md#world-space-remote-cursors) for exact
 sizes, class/lane and rate budget.
 
 Cursor regressions cover bounded wire/golden fixtures, authenticated identity,
 Ready/Presence reordering, full-set loss recovery, expiry/teardown, 360 Hz send
-limits, time-based settling, camera/HiDPI projection and paint-only input behavior.
+limits, time-based settling, same-frame GPU camera projection and HiDPI sizing.
 A million-piece guard verifies no cursor path accesses piece state or advances
 piece upload revisions. The real GNS localhost runtime fixture also exchanges
 world-space cursors after Ready. These checks do not establish an FPS guarantee.
@@ -118,7 +121,7 @@ cascading publication failure and immediate join/leave after queued ReadyCommit.
 one secured transport, bootstrap, sync coordinator/router, Ready connections,
 authority session, host drag contexts or client replica, and local command sender.
 It borrows the existing World `PieceDataStore`; there is no second store or
-per-piece network Entity. The wire version is 11, snapshot schema 5, and join
+per-piece network Entity. The wire version is 1, snapshot schema 1, and join
 baseline schema 1.
 
 ## Programmatic entrypoints
@@ -144,12 +147,13 @@ makes the World invalid; hosting also rejects unfinished offline generation.
 UI reads `NetworkStatus`: role, phase, listener/endpoint, assigned local and host
 identity, peer connection states, image readiness/source availability, and error.
 `failure: Option<NetworkFailureKind>` carries Authentication, Timeout, Capacity,
-Protocol, Image, Connection or RoomNotFound separately from the diagnostic `error` string.
+Protocol, Image, Connection, ConnectionLost or RoomNotFound separately from the diagnostic `error` string.
 Presentation must use the typed category, never parse diagnostic text.
 `NetworkSession::authority()` and `replica()` expose read-only session/remote drag
 state. UI need not access native sockets, bootstrap, or sync internals. Server
 browser, lobby, public NAT verification and migration remain future work.
 Internet Room Code establishment is documented in [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
+Cursor presentation uses the dedicated GPU passes described above.
 
 ## Menu entrypoints
 
@@ -184,10 +188,14 @@ at most four workers may remain outstanding, including timed-out/cancelled ones.
 The connection screen replaces GameSetup's image/piece controls throughout
 Connecting, Authenticating and Syncing. It shows a spinner with localized status,
 not phase-count percentages or internal enum names. Failure/disconnect shows a
-localized error category; the runtime keeps the diagnostic. The shared GameplayUi
-condition excludes the HUD, roster, performance, pause, completion and save/settings
-dialogs while the connection screen is visible. It runs after the connection screen
-so Ready can restore the normal UI in the same pass.
+localized error category; the runtime keeps the diagnostic. Connection failures
+and timeouts after the client reaches Ready use a separate connection-lost message;
+initial connection/authentication/sync failures retain their specific categories.
+The shared GameplayUi condition excludes the HUD, roster, performance, pause,
+completion and settings dialogs while the connection screen is visible. It runs
+after the connection screen so Ready can restore the normal UI in the same pass.
+SaveUi separately permits the manual-save modal for a disconnected game and the
+existing native-window exit flow; gameplay remains blocked during recovery saves.
 
 The UI updates the game-owned LocalGameplayBlocked before Update and after egui
 actions. Local picking, rotation, camera controls and gameplay menu shortcuts are
@@ -227,11 +235,23 @@ joining connections receive bounded, rotating `HostSyncCoordinator::pump` work; 
 have no baseline/catch-up pumping.
 Bounded catch-up overflow schedules the existing restart/FIFO baseline path;
 it does not leave a RestartRequired join waiting until timeout.
+Image and baseline transfers receive up to four rotating pump passes per frame,
+within the shared 128 KiB/frame and 4 MiB/s generation budget. This avoids limiting
+large image delivery to a single 32 KiB chunk per rendered frame. Direct-IP GNS
+uses a matching native send rate after authentication instead of its 256 KiB/s
+default. Localhost coverage includes a separate client process and an image larger
+than the reliable queue, verifying transfer, decode and Ready installation.
+
+On 2026-10-04, the Windows release test
+`gns_localhost_runtime_separate_process_image_join` completed in 2.76 seconds with
+a 1600x1600 BMP (about 10 MB). Host and client run in separate headless processes
+and poll at 2 ms intervals; this covers image transfer/decode and Ready, without
+native-window rendering. It is one local test result, not a throughput guarantee.
 
 PostUpdate handles commands after existing egui, camera and piece input. With no
-`NetworkSession`, the established `apply_piece_commands` and legacy snap
-notification path operate directly; no sender, serialization or network poll
-runs. Network mode gates those authority systems off. Host local controls use
+`NetworkSession`, `apply_piece_commands` applies commands and release-time snap
+through `PieceDataStore` directly; no sender, serialization or network poll runs.
+Network mode gates the offline authority system off. Host local controls use
 `ProtocolDragContexts::apply_replicated`, immediate catch-up recording, and the
 same Ready publication as remote controls. Clients only submit commands; canonical
 gameplay changes come from authenticated Reliable authority events through
@@ -357,7 +377,7 @@ Offline release continues to use immediate local authority without ACK state.
 
 Pending idle frames share the same 125,000-byte bitset for 1M members and update
 only scalar/Arc presentation state. They do not inspect canonical pieces, rebuild
-membership or request canonical uploads. Wire version 11, snapshot schema 5,
+membership or request canonical uploads. Wire version 1, snapshot schema 1,
 JoinBaseline schema 1 and the 16-byte GpuPieceState are unchanged.
 
 ## Joining World and image lifecycle
@@ -380,6 +400,36 @@ and use the existing procedural renderer upload/RenderReady lifecycle. Protocol
 Ready and image/GPU readiness remain distinct. The client enters InGame only
 after Ready, baseline installation and decoded image availability. Initialization
 continues at UploadingGpu without regenerating or replacing the canonical store.
+Renderer extraction forwards piece and component-root uploads even before
+`PuzzleImage` exists. Baseline installation can precede image decode by several
+frames, while the initial upload snapshot exists for only one frame. Preparing
+GPU buffers independently of the image preserves that snapshot and subsequent
+catch-up updates; drawing and RenderReady still wait for the decoded texture and
+camera. The real-GPU delayed-image regression checks the transition to Playing,
+rendered pixels and picking after a piece update during this wait.
+`gns_localhost_runtime_separate_process_gpu_image_join_reaches_playing` adds
+the normal GamePlugin and an offscreen GPU target to the separate-process
+10 MB image join, and requires Playing, Completed generation and image Ready.
+Both GPU regressions are ignored in ordinary CI and run locally in release mode:
+
+```sh
+cargo test --release --locked -p puzzella-game --features gns gpu_delayed_puzzle_image -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p puzzella-game --features gns gns_localhost_runtime_separate_process_gpu_image_join -- --ignored --nocapture --test-threads=1
+```
+
+2026-10-04 Windows / RTX 5090 / Vulkan release validation reproduced the
+delayed-image RenderReady timeout before the extraction fix. After the fix, both
+new GPU regressions passed; the separate-process GamePlugin client reached
+Playing with the 10 MB image. All 269 ordinary network tests, GNS all-target
+Clippy with `-D warnings`, fmt and the GNS release app build passed.
+The broader ignored GPU suite passed 21 of 25 tests. Its four failures also
+reproduced with the cached release test executable generated at 20:10, before
+this change: two component-preview fixtures fail snapshot validation with
+`OutsidePlayArea`, and two connected-outline fixtures have an internal-edge
+pixel mismatch. These existing failures remain; this is not a claim that the
+entire GPU suite passed. GPU fixtures render offscreen rather than through
+interactive native windows.
+
 The image dimensions must match the negotiated definition. Old image-selection
 and persistence results are invalidated at join start. The previous puzzle's
 preview/grid and save destination are cleared; the new puzzle gets a fresh
@@ -407,6 +457,17 @@ retention failure is reported separately and cannot suppress Ready publication.
 Client host loss (including ConnectionFailed before Connected), protocol errors,
 decode failure and sync timeout end the session safely, without host migration.
 A failed session gates offline authority until Menu cleanup.
+
+After a Ready client loses its host, teardown clears holds, local prediction,
+pending Release and remote presentation, but retains the CPU store, definition
+and original image until Back. The empty NetworkSession continues to gate offline
+authority and LocalGameplayBlocked suppresses input. The connection screen offers
+Save Last State through the existing manual-save modal and worker. Capture happens
+only on an explicit save and includes confirmed canonical state, excluding
+Transient and unacknowledged movement/rotation. Saving blocks Back, reports
+success on the connection screen and allows retry after failure. Initial join
+failures still return to Menu and do not offer recovery saves. Back/Stop/Menu
+performs the usual game cleanup; saving does not resume offline gameplay.
 
 Stop/Menu closes listener and connections, destroys transport channels, passwords,
 bootstrap, sync state, mappings, contexts/replica, worker receiver and sender.

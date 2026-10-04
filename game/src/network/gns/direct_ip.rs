@@ -1,8 +1,8 @@
 use super::token;
 use crate::network::{
     lifecycle::{
-        self, Admission, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING,
-        MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
+        self, Admission, BULK_BYTES_PER_SECOND, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES,
+        MAX_CONNECTING, MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
     },
     rate_limit::{
         InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY,
@@ -16,9 +16,9 @@ use crate::network::{
     wire,
 };
 use ::gns::{
-    sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
-    GnsLane, GnsNetworkMessage, GnsSocket, IsClient, IsCreated, IsServer, MessageSlot,
-    ReceivedMessagesInto, SendFlags, ToSend,
+    sys::{ESteamNetworkingConfigValue, ESteamNetworkingConnectionState as State},
+    GnsConfig, GnsConnection, GnsConnectionEvent, GnsGlobal, GnsLane, GnsNetworkMessage, GnsSocket,
+    IsClient, IsCreated, IsServer, MessageSlot, ReceivedMessagesInto, SendFlags, ToSend,
 };
 use std::{
     cell::Cell,
@@ -425,6 +425,22 @@ impl Transport for GnsDirectIp {
         }
         if connection.authenticated {
             return Err(TransportError::ProtocolViolation);
+        }
+        // GNS defaults both limits to 256 KiB/s. Its pinned bandwidth estimate
+        // does not grow when only SendRateMax is raised. Match the application's
+        // bounded Bulk budget once the connection has been authenticated.
+        for option in [
+            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMin,
+            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMax,
+        ] {
+            self.global
+                .utils()
+                .set_connection_config_value(
+                    connection.native,
+                    option,
+                    GnsConfig::Int32(BULK_BYTES_PER_SECOND as i32),
+                )
+                .map_err(backend)?;
         }
         connection.authenticated = true;
         connection.rate_limit = InboundRateLimiter::with_policy(self.rate_policy, Instant::now());
@@ -976,6 +992,29 @@ mod tests {
             std::thread::park_timeout(Duration::from_millis(1));
         }
         (listener, incoming.unwrap(), outgoing)
+    }
+
+    #[test]
+    fn gns_localhost_authenticated_send_rate_matches_bulk_budget() {
+        let mut host = GnsDirectIp::new().unwrap();
+        let mut client = GnsDirectIp::new().unwrap();
+        let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
+        for (transport, id) in [(&host, incoming), (&client, outgoing)] {
+            let native = transport.connections[&id].native;
+            for option in [
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMin,
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMax,
+            ] {
+                assert_eq!(
+                    transport
+                        .global
+                        .utils()
+                        .get_connection_config_value(native, option)
+                        .unwrap(),
+                    ::gns::GnsConfigValue::Int32(BULK_BYTES_PER_SECOND as i32)
+                );
+            }
+        }
     }
 
     fn send_burst(sender: &mut GnsDirectIp, id: ConnectionId, count: u32) {

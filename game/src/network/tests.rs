@@ -383,7 +383,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, u16::MAX] {
+    for version in [0u16, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, u16::MAX] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),

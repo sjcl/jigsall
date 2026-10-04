@@ -661,11 +661,12 @@ fn gpu_far_zoom_placed_depth_is_independent_of_visible_order() {
 #[test]
 #[ignore = "requires a real GPU"]
 fn gpu_far_zoom_million_initial_lattice_has_no_missing_coverage() {
-    use puzzella_puzzle::placement::generate_placement_grid;
     const COUNT: u32 = 1_000_000;
     const RESOLUTION: usize = 512;
     let (mut app, camera, target) = gpu_app(RESOLUTION as u32);
-    let positions = generate_placement_grid(1000, 1000, 1.0, 1.0, 1000.0, 1000.0, 42);
+    let def = definition(UVec2::splat(1000), 1000, 42);
+    let states = crate::resources::DensePieceStates::generate(&def);
+    let positions: Vec<_> = states.iter().map(|state| state.position).collect();
     let extent = positions.iter().fold(Vec2::ZERO, |a, p| a.max(p.abs()));
     let scale = extent.max_element() * 2.0 / RESOLUTION as f32 * 1.02;
     app.world_mut().get_mut::<Transform>(camera).unwrap().scale = Vec3::new(scale, scale, 1.0);
@@ -673,7 +674,7 @@ fn gpu_far_zoom_million_initial_lattice_has_no_missing_coverage() {
         .insert_resource(definition(UVec2::splat(1000), 1000, 42));
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .initialize(positions.clone());
+        .initialize_dense(states);
     wait_ready(&mut app);
     for phase in 0..8 {
         let pan = phase as f32 * 0.125 * scale;

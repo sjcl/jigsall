@@ -1,4 +1,4 @@
-//! Schema 4 stores quarter turns in flags while retaining 16-byte piece records.
+//! Release schema 1 preserves the pre-release schema 5 layout and 16-byte pieces.
 pub use crate::checkpoint::{
     CheckpointError as SnapshotError, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
     SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED,
@@ -12,7 +12,7 @@ use puzzella_core::{
     PieceConnectivity, PuzzleDefinition, MAX_PIECES,
 };
 use serde::{Deserialize, Serialize};
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 5;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameSnapshot {
     pub schema_version: u16,

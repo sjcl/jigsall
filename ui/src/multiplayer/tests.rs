@@ -1,6 +1,8 @@
 use super::*;
 use crate::localization::{LanguagePreference, Locale};
 use bevy::ecs::system::RunSystemOnce;
+mod departure;
+mod disconnection;
 #[cfg(feature = "rendezvous")]
 mod internet;
 mod native;
@@ -26,6 +28,7 @@ fn screen_world() -> (World, Entity, egui::Context) {
     world.init_resource::<crate::persistence::SaveDialogs>();
     world.init_resource::<crate::settings::SettingsDialog>();
     world.init_resource::<PersistenceState>();
+    world.init_resource::<PieceDataStore>();
     world.insert_resource(PersistenceService::with_storage_requests().0);
     world.insert_resource(puzzella_game::settings::DisplaySettingsState::load(None));
     world.insert_resource(PlayerSettingsState::load(None));
@@ -221,6 +224,7 @@ fn click_label(app: &mut App, ctx: &egui::Context, label: &str) {
     let point = output
         .shapes
         .iter()
+        .rev()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Text(text) if text.galley.job.text == label => {
                 Some(text.pos + text.galley.size() * 0.5)
@@ -259,6 +263,111 @@ fn click_label(app: &mut App, ctx: &egui::Context, label: &str) {
         )
         .drop_without_applying_deltas();
     }
+}
+
+#[test]
+fn holding_tab_shows_players_without_capturing_gameplay_keyboard_input() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut()
+        .init_resource::<bevy_egui::input::EguiWantsInput>();
+    // Egui measures new windows in an invisible sizing pass.
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .reset_all();
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+
+    for _ in 0..2 {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Tab);
+        for events in [
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            }],
+            vec![],
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: true,
+                modifiers: default(),
+            }],
+            vec![],
+        ] {
+            let output = render_schedule(&mut app, &ctx, events);
+            let text: Vec<_> = labels(&output).into_iter().map(str::to_owned).collect();
+            let players_visible = labels(&output).contains(&"Players");
+            output.drop_without_applying_deltas();
+            app.world_mut()
+                .run_system_once(bevy_egui::input::write_egui_wants_input_system)
+                .unwrap();
+            assert!(ctx.memory(|memory| memory.focused().is_none()));
+            assert!(!app
+                .world()
+                .resource::<bevy_egui::input::EguiWantsInput>()
+                .wants_any_keyboard_input());
+            assert!(players_visible, "{text:?}");
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Tab);
+        let output = render_schedule(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: default(),
+            }],
+        );
+        let players_visible = labels(&output).contains(&"Players");
+        output.drop_without_applying_deltas();
+        assert!(!players_visible);
+    }
+}
+
+#[test]
+fn hud_buttons_accept_clicks_and_pause_menu_keeps_tab_navigation() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .reset_all();
+    click_label(&mut app, &ctx, "How to Play");
+    assert!(egui::Popup::is_any_open(&ctx));
+    click_label(&mut app, &ctx, "How to Play");
+    assert!(!egui::Popup::is_any_open(&ctx));
+    assert!(ctx.memory(|memory| memory.focused().is_none()));
+
+    click_label(&mut app, &ctx, "Menu · Esc");
+    assert!(matches!(
+        app.world().resource::<NextState<GameSubState>>(),
+        NextState::Pending(GameSubState::Paused)
+    ));
+    app.world_mut()
+        .insert_resource(State::new(GameSubState::Paused));
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    render_schedule(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: default(),
+        }],
+    )
+    .drop_without_applying_deltas();
+    assert!(ctx.memory(|memory| memory.focused().is_some()));
+    assert!(ctx.egui_wants_keyboard_input());
 }
 
 #[test]
@@ -512,6 +621,33 @@ fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switc
         );
         output.drop_without_applying_deltas();
     }
+}
+
+#[cfg(feature = "gns")]
+#[test]
+fn starting_a_new_host_opens_puzzle_settings_even_after_a_previous_network_tab() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut().insert_resource(State::new(AppState::Menu));
+    {
+        let mut state = app.world_mut().resource_mut::<MultiplayerUi>();
+        state.navigate(MenuScreen::Host);
+        state.host_settings_tab = true;
+    }
+    click_label(&mut app, &ctx, "New Puzzle");
+    let state = app.world().resource::<MultiplayerUi>();
+    assert!(state.host_setup);
+    assert!(!state.host_settings_tab);
+    assert!(matches!(
+        app.world().resource::<NextState<AppState>>(),
+        NextState::Pending(AppState::GameSetup)
+    ));
+    app.world_mut()
+        .insert_resource(State::new(AppState::GameSetup));
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    assert!(labels(&output).contains(&"Select Image"));
+    assert!(!labels(&output).contains(&"Accept connections at"));
+    output.drop_without_applying_deltas();
 }
 
 #[test]
@@ -819,10 +955,55 @@ fn typed_network_failures_map_to_readable_error_categories() {
         (NetworkFailureKind::Timeout, UiError::Timeout),
         (NetworkFailureKind::Capacity, UiError::ServerFull),
         (NetworkFailureKind::Connection, UiError::ConnectionFailed),
+        (NetworkFailureKind::ConnectionLost, UiError::ConnectionLost),
         (NetworkFailureKind::Protocol, UiError::ProtocolMismatch),
         (NetworkFailureKind::Image, UiError::ImageUnavailable),
     ] {
         assert_eq!(UiError::failure(kind), category);
+    }
+}
+
+#[test]
+fn connection_failure_and_loss_show_distinct_messages_in_both_languages() {
+    let (mut app, ctx) = scheduled_screens();
+    for locale in [Locale::EN_US, Locale::JA] {
+        app.world_mut()
+            .resource_mut::<Localization>()
+            .set_preference(LanguagePreference::Locale(locale));
+        for phase in [RuntimePhase::Failed, RuntimePhase::Disconnected] {
+            for (kind, key, other_key) in [
+                (
+                    NetworkFailureKind::Connection,
+                    "multiplayer-error-connection",
+                    "multiplayer-error-connection-lost",
+                ),
+                (
+                    NetworkFailureKind::ConnectionLost,
+                    "multiplayer-error-connection-lost",
+                    "multiplayer-error-connection",
+                ),
+            ] {
+                // Menu teardown has already cleared the role and player identities.
+                app.world_mut().insert_resource(NetworkStatus {
+                    phase,
+                    failure: Some(kind),
+                    error: Some("transport diagnostic".into()),
+                    ..default()
+                });
+                app.world_mut().resource_mut::<MultiplayerUi>().owns_session = true;
+                app.world_mut().run_system_once(reset_on_menu).unwrap();
+                render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+                let output = render_schedule(&mut app, &ctx, vec![]);
+                let i18n = app.world().resource::<Localization>();
+                let text = labels(&output);
+                assert!(text.contains(&i18n.text(key).as_str()));
+                assert!(!text.contains(&i18n.text(other_key).as_str()));
+                assert!(!text
+                    .iter()
+                    .any(|text| text.contains("transport diagnostic")));
+                output.drop_without_applying_deltas();
+            }
+        }
     }
 }
 

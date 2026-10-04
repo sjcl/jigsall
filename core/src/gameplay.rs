@@ -1,6 +1,6 @@
 //! Input- and rendering-independent definitions and authoritative decisions.
 use crate::PieceBitSet;
-use bevy_ecs::prelude::{Component, Resource};
+use bevy_ecs::prelude::Resource;
 use bevy_math::{UVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +15,8 @@ impl std::fmt::Display for PieceId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
-/// Version 5 retains the v4 fillets and decodes distinct macro shape classes.
-pub const GENERATOR_VERSION: u16 = 5;
+/// Release v1 preserves the pre-release v5 shape classes and v4 root fillets.
+pub const GENERATOR_VERSION: u16 = 1;
 
 /// Device-independent upper bound for the puzzle's coordinate system.
 pub const MAX_PUZZLE_IMAGE_DIMENSION: u32 = 16_384;
@@ -47,11 +47,27 @@ pub struct PuzzleDefinition {
     pub seed: u64,
     pub grid_size: UVec2,
     pub image_size: UVec2,
+    /// Frozen for saves and multiplayer; new games derive this from nominal cell size.
     pub snap_distance: f32,
     /// Frozen game rule: seeded initial quarter turns and rotation commands.
     pub rotation_enabled: bool,
 }
 impl PuzzleDefinition {
+    /// Create a new puzzle with a snap radius of 20% of the piece's shorter side.
+    /// Logical image dimensions keep texture resolution and zoom from affecting it.
+    /// Call `validate` before using the definition.
+    pub fn new(seed: u64, grid_size: UVec2, image_size: UVec2, rotation_enabled: bool) -> Self {
+        let piece_size = image_size.as_vec2() / grid_size.as_vec2();
+        Self {
+            generator_version: GENERATOR_VERSION,
+            seed,
+            grid_size,
+            image_size,
+            snap_distance: piece_size.min_element() / 5.0,
+            rotation_enabled,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.generator_version != GENERATOR_VERSION {
             return Err("Unsupported puzzle generator version");
@@ -98,18 +114,6 @@ impl PuzzleDefinition {
     pub fn neighbors(&self, id: PieceId) -> [Option<PieceId>; 4] {
         grid_neighbors(self.grid_size, id)
     }
-    #[inline]
-    pub fn piece(&self, index: u32, initial_position: Vec2) -> PuzzlePiece {
-        let grid_position = UVec2::new(index % self.grid_size.x, index / self.grid_size.x);
-        let size = self.image_size.as_vec2() / self.grid_size.as_vec2();
-        let offset = grid_position.as_vec2() - (self.grid_size.as_vec2() - Vec2::ONE) * 0.5;
-        PuzzlePiece {
-            id: PieceId(index),
-            grid_position,
-            correct_position: Vec2::new(offset.x * size.x, -offset.y * size.y),
-            initial_position,
-        }
-    }
 }
 /// Release-local coordinate constants; no persistent per-piece allocation.
 #[derive(Clone, Copy)]
@@ -148,27 +152,11 @@ fn grid_neighbors(grid: UVec2, id: PieceId) -> [Option<PieceId>; 4] {
     ]
 }
 
-#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PuzzlePiece {
-    pub id: PieceId,
-    pub grid_position: UVec2,
-    pub correct_position: Vec2,
-    pub initial_position: Vec2,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PieceState {
     pub position: Vec2,
     pub placed: bool,
     pub held_by: Option<PlayerId>,
-}
-impl PieceState {
-    pub fn new(position: Vec2) -> Self {
-        Self {
-            position,
-            placed: false,
-            held_by: None,
-        }
-    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PieceCommand {
@@ -200,73 +188,71 @@ pub enum PieceCommand {
         quarter_turns: i8,
     },
 }
-impl PieceCommand {
-    pub fn piece_id(&self) -> Option<PieceId> {
-        match *self {
-            Self::Grab(id) | Self::Move { id, .. } | Self::Release(id) => Some(id),
-            Self::GrabGroup { .. }
-            | Self::ReleaseGroup { .. }
-            | Self::Rotate { .. }
-            | Self::RotateDrag { .. } => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum CommandOutcome {
-    Grabbed,
-    Moved,
-    Released,
-}
-
-/// Caller supplies an authenticated identity when a transport is added.
-pub fn apply_piece_command(
-    state: &mut PieceState,
-    player: PlayerId,
-    command: &PieceCommand,
-) -> Option<CommandOutcome> {
-    if state.placed {
-        return None;
-    }
-    match *command {
-        PieceCommand::Grab(_) if state.held_by.is_none() => {
-            state.held_by = Some(player);
-            Some(CommandOutcome::Grabbed)
-        }
-        PieceCommand::Move { position, .. }
-            if state.held_by == Some(player) && position.is_finite() =>
-        {
-            state.position = position;
-            Some(CommandOutcome::Moved)
-        }
-        PieceCommand::Release(_) if state.held_by == Some(player) => {
-            state.held_by = None;
-            Some(CommandOutcome::Released)
-        }
-        _ => None,
-    }
-}
-/// Called after an accepted release; no mouse, UI, or Transform dependency.
-pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) -> bool {
-    if state.placed
-        || state.held_by.is_some()
-        || !state.position.is_finite()
-        || !distance.is_finite()
-        || distance <= 0.0
-    {
-        return false;
-    }
-    if state.position.distance(piece.correct_position) < distance {
-        state.position = piece.correct_position;
-        state.placed = true;
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_snap_distance_scales_with_piece_short_side() {
+        for (image_size, grid_size, expected) in [
+            (UVec2::new(1000, 600), UVec2::splat(10), 12.0),
+            (UVec2::new(1000, 600), UVec2::new(20, 5), 10.0),
+            (UVec2::new(1000, 600), UVec2::new(5, 20), 6.0),
+            (UVec2::new(2000, 1200), UVec2::splat(10), 24.0),
+            (UVec2::new(1000, 600), UVec2::splat(20), 6.0),
+            (UVec2::ONE, UVec2::splat(1000), 0.0002),
+            (UVec2::splat(16384), UVec2::ONE, 3276.8),
+        ] {
+            let definition = PuzzleDefinition::new(42, grid_size, image_size, false);
+            assert!(definition.validate().is_ok());
+            assert!(
+                (definition.snap_distance - expected).abs() <= expected * f32::EPSILON * 2.0,
+                "{image_size:?} / {grid_size:?}: {} != {expected}",
+                definition.snap_distance
+            );
+            for seed in [0, 42, u64::MAX] {
+                let repeated = PuzzleDefinition::new(seed, grid_size, image_size, true);
+                let transposed = PuzzleDefinition::new(
+                    seed,
+                    UVec2::new(grid_size.y, grid_size.x),
+                    UVec2::new(image_size.y, image_size.x),
+                    false,
+                );
+                assert_eq!(
+                    repeated.snap_distance.to_bits(),
+                    definition.snap_distance.to_bits()
+                );
+                assert_eq!(
+                    transposed.snap_distance.to_bits(),
+                    definition.snap_distance.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_snap_distance_preserves_strict_snap_boundary() {
+        let definition = PuzzleDefinition::new(42, UVec2::splat(10), UVec2::new(1000, 600), false);
+        for (offset, target) in [
+            (Vec2::ZERO, None),
+            (Vec2::new(100.0, 50.0), Some(PieceId(1))),
+        ] {
+            assert!(crate::SnapCandidate::new(
+                offset + Vec2::new(12.0, 0.0),
+                offset,
+                target,
+                definition.snap_distance
+            )
+            .is_none());
+            assert!(crate::SnapCandidate::new(
+                offset + Vec2::new(11.99, 0.0),
+                offset,
+                target,
+                definition.snap_distance
+            )
+            .is_some());
+        }
+    }
+
     #[test]
     fn image_fit_rounds_consistently_without_upscaling_or_overflow() {
         for (source, limit, expected) in [
@@ -335,7 +321,10 @@ mod tests {
             };
             let geometry = d.geometry();
             for id in 0..d.piece_count() as u32 {
-                let expected = d.piece(id, Vec2::ZERO).correct_position;
+                let cell = UVec2::new(id % grid_size.x, id / grid_size.x);
+                let size = image_size.as_vec2() / grid_size.as_vec2();
+                let offset = cell.as_vec2() - (grid_size.as_vec2() - Vec2::ONE) * 0.5;
+                let expected = Vec2::new(offset.x * size.x, -offset.y * size.y);
                 let actual = geometry.correct_position(PieceId(id));
                 assert_eq!(
                     actual.to_array().map(f32::to_bits),
@@ -349,6 +338,7 @@ mod tests {
 
     #[test]
     fn only_current_shape_version_is_accepted() {
+        assert_eq!(GENERATOR_VERSION, 1);
         let mut definition = PuzzleDefinition {
             generator_version: GENERATOR_VERSION,
             seed: 42,
@@ -358,77 +348,12 @@ mod tests {
             rotation_enabled: true,
         };
         assert!(definition.validate().is_ok());
-        for old_version in [2, 3, 4] {
+        for old_version in [0, 2, 3, 4, 5, 6] {
             definition.generator_version = old_version;
             assert_eq!(
                 definition.validate(),
                 Err("Unsupported puzzle generator version")
             );
         }
-    }
-    #[test]
-    fn validates_ownership_and_finite_moves() {
-        let mut s = PieceState::new(Vec2::ZERO);
-        let id = PieceId(7);
-        let other = PlayerId(1);
-        assert_eq!(
-            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Grab(id)),
-            Some(CommandOutcome::Grabbed)
-        );
-        assert_eq!(
-            apply_piece_command(&mut s, other, &PieceCommand::Grab(id)),
-            None
-        );
-        assert_eq!(
-            apply_piece_command(
-                &mut s,
-                other,
-                &PieceCommand::Move {
-                    id,
-                    position: Vec2::ONE
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            apply_piece_command(
-                &mut s,
-                LOCAL_PLAYER,
-                &PieceCommand::Move {
-                    id,
-                    position: Vec2::splat(f32::NAN)
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            apply_piece_command(&mut s, other, &PieceCommand::Release(id)),
-            None
-        );
-        assert_eq!(s.position, Vec2::ZERO);
-        assert_eq!(
-            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Release(id)),
-            Some(CommandOutcome::Released)
-        );
-    }
-    #[test]
-    fn release_snap_locks_piece_and_preserves_threshold() {
-        let p = PuzzlePiece {
-            id: PieceId(0),
-            grid_position: UVec2::ZERO,
-            correct_position: Vec2::ZERO,
-            initial_position: Vec2::ONE,
-        };
-        let mut s = PieceState::new(Vec2::new(5.0, 0.0));
-        assert!(!snap_piece(&p, &mut s, 5.0));
-        s.held_by = Some(LOCAL_PLAYER);
-        assert!(!snap_piece(&p, &mut s, 10.0));
-        apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Release(p.id));
-        assert!(snap_piece(&p, &mut s, 10.0));
-        assert_eq!(s.position, Vec2::ZERO);
-        assert_eq!(
-            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Grab(p.id)),
-            None
-        );
     }
 }

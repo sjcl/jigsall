@@ -43,7 +43,7 @@ for(const seed of new Set(manifest.map(row=>row[0]))){
     await page.getByRole('button',{name:`候補 ${slot+1}`,exact:true}).click();
     await page.evaluate(()=>answer(0)); // A repeated callback must not create a second answer.
     const answers=await page.evaluate(()=>records);assert.equal(answers.length,2);assert.equal(answers[1].correct,true);
-    assert.ok(answers.every(r=>Number.isFinite(r.response_ms)&&r.response_ms>0&&r.generator_version===5));
+    assert.ok(answers.every(r=>Number.isFinite(r.response_ms)&&r.response_ms>0&&r.generator_version===1));
     for(const format of ['CSV','JSON']){
       const promise=page.waitForEvent('download');await page.getByRole('button',{name:`${format}を保存`,exact:true}).click();
       const download=await promise;await download.saveAs(path.join(output,`qa-results.${format.toLowerCase()}`));
