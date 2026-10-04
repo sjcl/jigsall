@@ -1,0 +1,405 @@
+//! P2P establishment is independent of DirectIpTransport. Once connected, lanes,
+//! admission occupancy, pre-auth barriers and secured messages use Transport.
+pub(super) mod native;
+use super::{
+    signaling::{self, PeerId, SignalingEndpoint},
+    token,
+};
+use crate::network::{
+    lifecycle::{
+        Bucket, CONNECTING_TIMEOUT, CONNECTION_START_BURST, CONNECTION_START_INTERVAL,
+        MAX_BULK_QUEUE_BYTES, MAX_CONNECTING, MAX_CONNECTIONS, MAX_PENDING_CONNECTIONS,
+        MAX_RELIABLE_QUEUE_BYTES,
+    },
+    rate_limit::{
+        InboundRateLimiter, RateDecision, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY,
+    },
+    secure::record_limit,
+    transport::*,
+    wire,
+};
+use std::{
+    cell::Cell,
+    collections::BTreeMap,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
+};
+
+/// Native ICE settings copied into listeners and outgoing connects. The default
+/// uses private host candidates with no STUN/TURN or other external services.
+#[derive(Clone, Debug, Default)]
+pub struct IceConfig {
+    pub allow_public_candidates: bool,
+    pub stun_servers: Vec<String>,
+}
+struct Connection {
+    native: native::Connection,
+    peer: PeerId,
+    created: Instant,
+    connected: bool,
+    authenticated: bool,
+    ready: bool,
+    limiter: InboundRateLimiter,
+    bulk_enqueued: u64,
+    bulk_delivered: Cell<u64>,
+}
+static ACTIVE: AtomicBool = AtomicBool::new(false);
+struct Lease;
+impl Lease {
+    fn acquire() -> Result<Self, TransportError> {
+        ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| TransportError::Capacity)?;
+        Ok(Self)
+    }
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+/// One P2P endpoint per process (the pinned GNS wrapper has one native identity).
+/// All maintenance is caller-owned; callbacks only enqueue opaque signals.
+/// Wrap this in SecureTransport before passing it to the password bootstrap.
+pub struct GnsP2p {
+    connections: BTreeMap<ConnectionId, Connection>,
+    listener: native::Listener,
+    mailbox: SignalingEndpoint,
+    peer: PeerId,
+    pending: Vec<TransportEvent>,
+    starts: Bucket,
+    signals: Bucket,
+    next_receive: Option<ConnectionId>,
+    _lease: Lease,
+}
+impl GnsP2p {
+    pub fn new(local_virtual_port: u16, ice: IceConfig) -> Result<Self, TransportError> {
+        let lease = Lease::acquire()?;
+        let peer = native::local_peer()?;
+        Ok(Self {
+            connections: BTreeMap::new(),
+            listener: native::Listener::new(local_virtual_port, &ice)?,
+            mailbox: SignalingEndpoint::default(),
+            peer,
+            pending: Vec::new(),
+            starts: Bucket::new(
+                CONNECTION_START_BURST,
+                CONNECTION_START_INTERVAL,
+                Instant::now(),
+            ),
+            signals: Bucket::per_second(128, 128, Instant::now()),
+            next_receive: None,
+            _lease: lease,
+        })
+    }
+    pub fn peer_id(&self) -> PeerId {
+        self.peer
+    }
+    pub fn signaling(&self) -> SignalingEndpoint {
+        self.mailbox.clone()
+    }
+    /// Routing identity only; this never certifies a player or session password.
+    pub fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId> {
+        self.connections.get(&connection).map(|c| c.peer)
+    }
+    fn has_capacity(&self) -> bool {
+        self.connections.len() < MAX_CONNECTIONS
+            && self.connections.values().filter(|c| !c.connected).count() < MAX_CONNECTING
+            && self.connections.values().filter(|c| !c.ready).count() < MAX_PENDING_CONNECTIONS
+    }
+    /// Queue an outgoing P2P connection, separate from IP address establishment.
+    pub fn connect_peer(
+        &mut self,
+        peer: PeerId,
+        remote_virtual_port: u16,
+    ) -> Result<ConnectionId, TransportError> {
+        if peer == self.peer {
+            return Err(TransportError::ProtocolViolation);
+        }
+        if !self.has_capacity() || !self.starts.take(1, Instant::now()) {
+            return Err(TransportError::Capacity);
+        }
+        let id = ConnectionId::new(token()?);
+        let native = self
+            .listener
+            .connect(peer, remote_virtual_port, self.mailbox.clone())?;
+        self.insert(id, native, peer);
+        Ok(id)
+    }
+    fn insert(&mut self, id: ConnectionId, native: native::Connection, peer: PeerId) {
+        let now = Instant::now();
+        self.connections.insert(
+            id,
+            Connection {
+                native,
+                peer,
+                created: now,
+                connected: false,
+                authenticated: false,
+                ready: false,
+                limiter: InboundRateLimiter::with_policy(&PREAUTH_INBOUND_POLICY, now),
+                bulk_enqueued: 0,
+                bulk_delivered: Cell::new(0),
+            },
+        );
+    }
+    fn terminate(
+        &mut self,
+        id: ConnectionId,
+        reason: DisconnectReason,
+        events: &mut Vec<TransportEvent>,
+    ) {
+        if let Some(mut c) = self.connections.remove(&id) {
+            let code = match reason {
+                DisconnectReason::Requested => 1000,
+                DisconnectReason::InvalidMessage => 1001,
+                DisconnectReason::RateLimited => 1003,
+                _ => 1002,
+            };
+            c.native.close(code);
+            events.push(if c.connected {
+                TransportEvent::Disconnected {
+                    connection: id,
+                    reason,
+                }
+            } else {
+                TransportEvent::ConnectionFailed {
+                    connection: id,
+                    reason,
+                }
+            });
+        }
+    }
+    fn maintain(&mut self, now: Instant, events: &mut Vec<TransportEvent>) {
+        let ids: Vec<_> = self.connections.keys().copied().collect();
+        for id in ids {
+            let c = self.connections.get_mut(&id).expect("owned connection");
+            match c.native.state() {
+                native::State::Connected if !c.connected => {
+                    c.connected = true;
+                    events.push(TransportEvent::Connected { connection: id });
+                }
+                native::State::Connected => {}
+                native::State::Closed => self.terminate(id, DisconnectReason::RemoteClosed, events),
+                native::State::Failed => {
+                    self.terminate(id, DisconnectReason::ConnectionProblem, events)
+                }
+                native::State::Pending
+                    if now.saturating_duration_since(c.created) >= CONNECTING_TIMEOUT =>
+                {
+                    self.terminate(id, DisconnectReason::BackendConnectionTimeout, events)
+                }
+                native::State::Pending => {}
+            }
+        }
+    }
+}
+fn lane(class: MessageClass) -> u16 {
+    match class {
+        MessageClass::Transient => 0,
+        MessageClass::Control => 1,
+        MessageClass::Bulk => 2,
+    }
+}
+fn class(lane: u16) -> Option<MessageClass> {
+    match lane {
+        0 => Some(MessageClass::Transient),
+        1 => Some(MessageClass::Control),
+        2 => Some(MessageClass::Bulk),
+        _ => None,
+    }
+}
+impl Transport for GnsP2p {
+    // A self-asserted routing PeerId is intentionally not an authenticated Origin.
+    fn reliable_egress(&self, id: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        let c = self
+            .connections
+            .get(&id)
+            .ok_or(TransportError::UnknownConnection)?;
+        let (queued_bytes, bulk_queued_bytes) = c.native.egress()?;
+        let delivered = c
+            .bulk_delivered
+            .get()
+            .max(c.bulk_enqueued.saturating_sub(bulk_queued_bytes));
+        c.bulk_delivered.set(delivered);
+        Ok(ReliableEgress {
+            queued_bytes,
+            bulk_queued_bytes,
+            bulk_delivered_bytes: delivered,
+        })
+    }
+    fn activate_secure_channel(&mut self, id: ConnectionId) -> Result<(), TransportError> {
+        let c = self
+            .connections
+            .get_mut(&id)
+            .ok_or(TransportError::UnknownConnection)?;
+        if !c.connected {
+            return Err(TransportError::NotConnected);
+        }
+        if c.authenticated {
+            return Err(TransportError::ProtocolViolation);
+        }
+        c.authenticated = true;
+        c.limiter = InboundRateLimiter::with_policy(&DEFAULT_INBOUND_POLICY, Instant::now());
+        Ok(())
+    }
+    fn mark_ready(&mut self, id: ConnectionId) -> Result<(), TransportError> {
+        self.connections
+            .get_mut(&id)
+            .ok_or(TransportError::UnknownConnection)?
+            .ready = true;
+        Ok(())
+    }
+    fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
+        events.append(&mut self.pending);
+        let now = Instant::now();
+        self.maintain(now, events);
+        for _ in 0..signaling::MAX_QUEUED_SIGNALS {
+            let Some(signal) = self.mailbox.pop_inbound() else {
+                break;
+            };
+            if signal.peer == self.peer || !self.signals.take(1, now) {
+                continue;
+            }
+            // Admission is sampled before GNS; the callback only accepts within
+            // that capacity. GNS discards requests for which it returns null.
+            // Only new requests spend start credit; stale/duplicate signals do not.
+            let allow = self.has_capacity() && self.starts.available(1, now);
+            if let Some(native) =
+                self.listener
+                    .receive(signal.peer, &signal.payload, allow, self.mailbox.clone())
+            {
+                self.starts.take(1, now);
+                let id = ConnectionId::new(token()?);
+                self.insert(id, native, signal.peer);
+            }
+        }
+        super::global()?.poll_callbacks();
+        self.maintain(now, events);
+        let mut ids: Vec<_> = self.connections.keys().copied().collect();
+        if let Some(next) = self.next_receive {
+            let start = ids.iter().position(|id| *id >= next).unwrap_or(0);
+            ids.rotate_left(start);
+        }
+        let mut remaining = 512;
+        // Round robin, at most one native message per connection each pass.
+        // A delivered pre-auth record stops that connection until next frame.
+        let mut active = std::collections::VecDeque::from(ids);
+        while remaining > 0 {
+            let Some(id) = active.pop_front() else {
+                break;
+            };
+            let Some(c) = self.connections.get_mut(&id) else {
+                continue;
+            };
+            if !c.connected {
+                continue;
+            }
+            let message = match c.native.receive() {
+                Ok(Some(message)) => message,
+                Ok(None) => continue,
+                Err(_) => {
+                    self.terminate(id, DisconnectReason::BackendFailure, events);
+                    continue;
+                }
+            };
+            remaining -= 1;
+            let Some(class) = class(message.lane()) else {
+                self.terminate(id, DisconnectReason::InvalidMessage, events);
+                continue;
+            };
+            let payload = match message.payload() {
+                Ok(payload) => payload,
+                Err(_) => {
+                    self.terminate(id, DisconnectReason::InvalidMessage, events);
+                    continue;
+                }
+            };
+            if payload.len() > record_limit(class)
+                || (!c.authenticated
+                    && !matches!(wire::is_session_control_for_class(payload, class), Ok(true)))
+            {
+                self.terminate(id, DisconnectReason::InvalidMessage, events);
+                continue;
+            }
+            let mut barrier = false;
+            match c.limiter.check(class, payload.len(), now) {
+                RateDecision::Allow => {
+                    barrier = !c.authenticated;
+                    events.push(TransportEvent::Message {
+                        connection: id,
+                        class,
+                        payload: payload.to_vec(),
+                    });
+                }
+                RateDecision::Drop => {}
+                RateDecision::Disconnect => {
+                    self.terminate(id, DisconnectReason::RateLimited, events);
+                    continue;
+                }
+            }
+            if !barrier {
+                active.push_back(id);
+            }
+        }
+        self.next_receive = active.front().copied();
+        Ok(())
+    }
+    fn send(
+        &mut self,
+        id: ConnectionId,
+        class: MessageClass,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        if payload.len() > record_limit(class) {
+            return Err(TransportError::PayloadTooLarge);
+        }
+        let c = self
+            .connections
+            .get_mut(&id)
+            .ok_or(TransportError::UnknownConnection)?;
+        if !c.connected {
+            return Err(TransportError::NotConnected);
+        }
+        if class != MessageClass::Transient {
+            let limit = if class == MessageClass::Bulk {
+                MAX_BULK_QUEUE_BYTES
+            } else {
+                MAX_RELIABLE_QUEUE_BYTES
+            };
+            if c.native
+                .egress()?
+                .0
+                .saturating_add(payload.len() as u64 + 64)
+                > limit
+            {
+                return Err(TransportError::Backpressure);
+            }
+        }
+        c.native.send(lane(class), class, payload)?;
+        if class == MessageClass::Bulk {
+            c.bulk_enqueued = c.bulk_enqueued.saturating_add(payload.len() as u64);
+        }
+        Ok(())
+    }
+    fn close(&mut self, id: ConnectionId, reason: DisconnectReason) -> Result<(), TransportError> {
+        if !self.connections.contains_key(&id) {
+            return Err(TransportError::UnknownConnection);
+        }
+        let mut events = Vec::new();
+        self.terminate(id, reason, &mut events);
+        self.pending.extend(events);
+        Ok(())
+    }
+}
+impl Drop for GnsP2p {
+    fn drop(&mut self) {
+        self.connections.clear();
+        // Late native Release owns its Arc, but cannot resurrect this mailbox.
+        self.mailbox.close();
+    }
+}
+
+#[cfg(test)]
+mod tests;

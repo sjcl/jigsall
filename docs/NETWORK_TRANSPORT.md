@@ -29,6 +29,7 @@ SecureTransport<T> (PAKE-derived application AEAD, sequences, replay protection)
         ↓
 Transport (opaque Puzzella identities, byte messages, lifecycle events)
         ├ Direct-IP open-source GameNetworkingSockets (gns feature)
+        ├ custom-signaled GNS P2P / native ICE (gns feature, foundation only)
         └ future Steamworks ISteamNetworkingSockets
 ```
 
@@ -95,6 +96,75 @@ publication; failed publications cascade through the same live-connection owner.
 The Syncing coordinator retains catch-up authority events.
 Migration continues to discard drags in a new
 epoch without requiring cancellation events.
+
+## Custom signaling / P2P foundation
+
+`GnsP2p` provides `new(local_virtual_port, IceConfig)` and
+`connect_peer(PeerId, remote_virtual_port)` independently of `DirectIpTransport`.
+It creates a P2P listener, feeds opaque custom signals into GNS, configures the
+same three lanes, and accepts incoming requests through GNS's synchronous receive
+context. Neither Direct IP establishment nor any gameplay/bootstrap/sync wire
+schema gains P2P addresses, ICE candidates, room codes or native handles.
+
+After establishment it implements the common `Transport`: `Connected`,
+`ConnectionFailed`, `Disconnected`, byte messages, `send`, `close`, secure channel
+activation, Ready occupancy and reliable egress telemetry. It uses the same
+Puzzella token issuer as Direct IP, with no native-handle conversion or token
+reuse. Native connection state is sampled in caller-owned `poll`; transitions are
+normalized once, and overdue Connecting/FindingRoute slots are reconciled against
+the current native state before the shared 10-second deadline is applied.
+
+`PeerId` is a private-field 16-byte random process identity, with byte conversion
+for a future rendezvous envelope. GNS receives it as a GenericBytes identity.
+It is a routing label, **not** a PlayerId or authentication credential. The
+process identity is initialized once before either backend creates sockets.
+Both paths share `GnsGlobal`; no live identity reset, GNS shutdown, custom worker
+thread or async runtime is introduced. The pinned wrapper exposes one singleton
+interface, so this foundation allows one active `GnsP2p` per process, with many
+remote connections. Direct IP sockets can coexist with that endpoint.
+
+The high-level 0.3.0 wrapper does not expose custom signaling establishment.
+`gns/p2p/native.rs` uses its `gns::sys` re-export, including
+`CreateCustomSignaling`, `ConnectP2PCustomSignaling` and
+`ReceivedP2PCustomSignal2`. There is no second sys dependency, version, or native
+library. Default builds still have no GNS dependency. See
+[P2P_FOUNDATION.md](P2P_FOUNDATION.md) for ownership, unsafe boundaries and tests.
+
+P2P uses **GNS native ICE**, not application UDP hole punching. The bundled
+CMake defaults and this Windows host's built cache have `ENABLE_ICE=ON` and
+`USE_STEAMWEBRTC=OFF`; no native build-script patch was needed. Connection options
+explicitly select native implementation 1. `IceConfig::default()` enables private
+host candidates and clears STUN/TURN server lists. Public candidates and a STUN
+list can be supplied at establishment; production TURN/relay configuration and
+credentials remain future work. Automated tests use no external servers.
+
+`SignalingEndpoint` is the replacement point for a future WebSocket/QUIC/HTTP
+adapter: drain `pop_outbound()` (destination PeerId + opaque bytes), deliver those
+bytes without interpreting them, and call `receive(sender, bytes)` on the remote
+endpoint. No application callback runs inside native signaling callbacks.
+`InMemorySignaling::register/poll` is the current fake rendezvous. Both mailbox
+directions cap signals at 16 KiB each, 128 queued messages and 256 KiB total;
+backpressure is explicit. Backend polling consumes at most 128 signals/frame
+under a 128/s bucket. Failed outbound native callback enqueue returns false to
+GNS, which fails the connection; abandoned routes expire normally. Malformed,
+duplicate and stale bytes go to GNS's parser and never to the gameplay protocol.
+Incoming requests must match the envelope identity and listening virtual port.
+
+P2P caps total connections at 64, Connecting at 16 and not-Ready at 32. A global
+start bucket permits a burst of 8 and one new connection/s, including outgoing
+starts. Connection messages use the shared pre-auth policy, handshake barrier,
+post-auth rate policy, secure record limits, 512-message/frame round robin drain,
+and reliable/Bulk queue ceilings. `origin()` returns None: a self-asserted PeerId
+is not an IP/account abuse key. Production signaling admission needs its own
+trusted route/session limits; this is not a production admission system.
+
+Signaling servers are never game authentication authorities. Signaling delivery,
+PeerId matching and native `Connected` cannot install channel keys, assign a
+player or grant Ready. Establish first, retain the signaling mailbox, and wrap
+the backend in `SecureTransport<GnsP2p>` for the unchanged SPAKE2 password
+bootstrap and subsequent image/baseline/catch-up/Ready flow. Runtime and UI
+remain Direct IP in this change. No production rendezvous, room-code service,
+HTTP/WebSocket server, TURN, relay, Steamworks or deployment is implemented.
 
 ## Mandatory session password authentication
 

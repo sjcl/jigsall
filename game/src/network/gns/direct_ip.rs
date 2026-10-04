@@ -1,3 +1,4 @@
+use super::token;
 use crate::network::{
     lifecycle::{
         self, Admission, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING,
@@ -23,7 +24,6 @@ use std::{
     cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     net::{SocketAddr, UdpSocket},
-    sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
 
@@ -34,13 +34,6 @@ const MAX_RECEIVE_PER_POLL: usize = 512;
 const CALLBACK_BATCH: usize = 128;
 // The pinned native header specifies lower numbers as higher priority.
 const LANES: [GnsLane; 3] = [GnsLane::new(0, 1), GnsLane::new(0, 4), GnsLane::new(1, 1)];
-static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
-
-fn token() -> Result<u64, TransportError> {
-    NEXT_TOKEN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .map_err(|_| TransportError::Capacity)
-}
 fn backend(error: ::gns::GnsError) -> TransportError {
     TransportError::Backend(error.to_string())
 }
@@ -200,7 +193,7 @@ impl GnsDirectIp {
     }
     fn with_rate_policy(rate_policy: &'static InboundRatePolicy) -> Result<Self, TransportError> {
         Ok(Self {
-            global: GnsGlobal::get().map_err(backend)?,
+            global: super::global()?,
             sockets: BTreeMap::new(),
             connections: BTreeMap::new(),
             native_ids: HashMap::new(),
