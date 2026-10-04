@@ -31,6 +31,7 @@ Bevy でゲームのライフサイクルと描画を、egui で UI を構成し
 - **ゲーム状態**：CPU の `PieceDataStore` を正本とし、入力命令の所有権・座標・スナップを検証してから GPU に変更を反映します。
 - **描画・選択**：procedural GPU renderer と GPU picking を使用します。ピースごとの Mesh・描画 Entity を作らず、16-byte のピース状態から形状を描画します。描画と選択で形状・UV・画像の alpha 判定を共有します。
 - **生成・読み込み**：配置生成と画像デコードは worker で実行します。形状・配置は generator version と seed を含むゲーム定義から再構成します。
+- **P2P 接続基盤**：`rendezvous` feature は WSS room/signaling adapter と GNS native ICE を提供します。room-code の UI/runtime 統合は次段階です。[実装と検証](docs/RENDEZVOUS_V1.md)を参照してください。
 
 各 crate の責務とデータフローは [アーキテクチャ](docs/ARCHITECTURE.md)、GPU の検証条件と計測結果は [開発ガイド](docs/DEVELOPMENT.md)を参照してください。
 

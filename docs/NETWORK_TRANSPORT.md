@@ -99,7 +99,7 @@ epoch without requiring cancellation events.
 
 ## Custom signaling / P2P foundation
 
-`GnsP2p` provides `new(local_virtual_port, IceConfig)` and
+`GnsP2p` provides `new_routed(local_virtual_port, IceConfig)` and
 `connect_peer(PeerId, remote_virtual_port)` independently of `DirectIpTransport`.
 It creates a P2P listener, feeds opaque custom signals into GNS, configures the
 same three lanes, and accepts incoming requests through GNS's synchronous receive
@@ -143,11 +143,11 @@ host candidates and clears STUN/TURN server lists. Public candidates and a STUN
 list can be supplied at establishment; production TURN/relay configuration and
 credentials remain future work. Automated tests use no external servers.
 
-`SignalingEndpoint` is the replacement point for a future WebSocket/QUIC/HTTP
-adapter: drain `pop_outbound()` (destination PeerId + opaque bytes), deliver those
+`SignalingEndpoint` is the bridge for the optional [rendezvous v1 adapter](RENDEZVOUS_V1.md):
+drain `pop_outbound()` (destination PeerId + opaque bytes), deliver those
 bytes without interpreting them, and call `receive(sender, bytes)` on the remote
 endpoint. No application callback runs inside native signaling callbacks.
-`InMemorySignaling::register/poll` is the current fake rendezvous. Both mailbox
+`InMemorySignaling::register/poll` remains a local foundation fixture. Both mailbox
 directions cap signals at 16 KiB each, 128 queued messages and 256 KiB total;
 backpressure is explicit. Each routing peer (local fixtures) or verified
 account/session route (routed mode) gets a 16-message burst, 32 messages/s,
@@ -165,7 +165,7 @@ P2P caps total connections at 64, Connecting at 16 and not-Ready at 32. A global
 start bucket permits a burst of 8 and one new connection/s, including outgoing
 starts. Connection messages use the shared pre-auth policy, handshake barrier,
 post-auth rate policy, secure record limits, 512-message/frame round robin drain,
-and reliable/Bulk queue ceilings. `new()` is the unverified local foundation and
+and reliable/Bulk queue ceilings. `new_unverified_for_test()` is the unverified local foundation and
 returns no Origin. For a trusted rendezvous adapter, `new_routed()` requires
 `signaling().authorize_peer(peer, RouteOrigin)` before signals or connects are
 accepted. The adapter verifies authority/session/account values with its server;
@@ -178,16 +178,21 @@ and the existing 30-second cooldown after 3 qualifying failures. Peer ID rotatio
 and reconnects retain the same history. `revoke_peer` purges queued signals and
 closes affected connections on the next poll. Only a new native connect request
 spends admission credit; duplicate/continuation signaling does not. Server-side
-authentication, account/session admission and Sybil prevention remain the
-adapter's responsibility. A bound route does not install keys or grant Ready.
+authentication and admission belong to the control service/adapter. Rendezvous v1
+binds an anonymous server-issued MemberId in the account field, and complements
+client route limits with bounded server/IP admission; this is not complete Sybil
+resistance or Steam account authentication. A bound route does not install keys or grant Ready.
 
 Signaling servers are never game authentication authorities. Signaling delivery,
 PeerId matching and native `Connected` cannot install channel keys, assign a
 player or grant Ready. Establish first, retain the signaling mailbox, and wrap
 the backend in `SecureTransport<GnsP2p>` for the unchanged SPAKE2 password
 bootstrap and subsequent image/baseline/catch-up/Ready flow. Runtime and UI
-remain Direct IP in this change. No production rendezvous, room-code service,
-HTTP/WebSocket server, TURN, relay, Steamworks or deployment is implemented.
+remain Direct IP. The separate `rendezvous` feature adds a caller-polled WSS adapter
+for the independent `sjcl/puzzella-rendezvous` room/signaling server. Its Host ACK
+handshake gates route activation; active routes survive control-plane loss until
+the connection owner explicitly releases them. Runtime room-code integration,
+TURN, gameplay relay and Steamworks remain future work. See [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
 
 ## Mandatory session password authentication
 

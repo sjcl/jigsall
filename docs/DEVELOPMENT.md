@@ -13,6 +13,8 @@ cargo run --locked
 cargo run --locked --release
 # Direct-IP マルチプレイを有効にする
 cargo run --locked --release --features gns
+# rendezvous adapter と headless fixture（room-code UI は未統合）
+cargo test --locked -p puzzella-game --features rendezvous rendezvous
 ```
 
 Windows の MSVC toolchain・Visual Studio Build Tools・SDK と GNS のセットアップは [Windows ビルド手順](WINDOWS_BUILD.md)を参照してください。Linux CI で使うネイティブ依存の一覧は [CI の Install Linux native dependencies](../.github/workflows/ci.yml)にあります。GNS の依存と通信テストは [ネットワーク transport](NETWORK_TRANSPORT.md)にまとめています。
@@ -134,7 +136,7 @@ cargo run --locked --release --features chrome
 | GPU 選択・大量選択・透明描画 | [GPU picking](GPU_PICKING.md)、[100 万ピースの選択](MILLION_SELECTION.md)、[radix sort](TRANSPARENT_RADIX_SORT.md) |
 | 形状と識別性 | [v4 の付け根修正](ROOT_TRANSITION.md)、[v5 fingerprint](EDGE_FINGERPRINT.md)、[追加評価](EDGE_FINGERPRINT_EVALUATION.md) |
 | 連結・回転 | [connected snapping](CONNECTED_SNAPPING.md)、[回転](ROTATION.md) |
-| 通信・同期 | [transport とビルド依存](NETWORK_TRANSPORT.md)、[Direct-IP runtime](DIRECT_IP_RUNTIME.md)、[protocol](MULTIPLAYER_PROTOCOL.md) |
+| 通信・同期 | [transport とビルド依存](NETWORK_TRANSPORT.md)、[Direct-IP runtime](DIRECT_IP_RUNTIME.md)、[rendezvous v1 adapter と実サーバー検証](RENDEZVOUS_V1.md)、[protocol](MULTIPLAYER_PROTOCOL.md) |
 | 途中参加・ホスト移行 | [join in progress](JOIN_IN_PROGRESS.md)、[host migration](HOST_MIGRATION.md) |
 | 保存・設定・表示・言語 | [保存](PERSISTENCE.md)、[設定](SETTINGS.md)、[表示](DISPLAY_SETTINGS.md)、[ローカライズ](LOCALIZATION.md) |
 

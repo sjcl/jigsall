@@ -13,6 +13,8 @@ pub enum Origin {
 /// Abuse key supplied by a trusted local adapter after verifying the rendezvous
 /// authority, session and account. Never construct this from a peer's envelope
 /// claims. It does not authenticate a game player or replace password bootstrap.
+/// Rendezvous v1 uses a server-issued anonymous MemberId in `account`; it is
+/// not a Steam account and provides no account authentication/Sybil resistance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RouteOrigin {
     authority: [u8; 16],

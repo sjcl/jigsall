@@ -75,7 +75,11 @@ pub struct GnsP2p {
     _lease: Lease,
 }
 impl GnsP2p {
-    pub fn new(local_virtual_port: u16, ice: IceConfig) -> Result<Self, TransportError> {
+    /// Unverified local foundation fixtures only. Production must use new_routed.
+    pub fn new_unverified_for_test(
+        local_virtual_port: u16,
+        ice: IceConfig,
+    ) -> Result<Self, TransportError> {
         Self::with_signaling(local_virtual_port, ice, SignalingEndpoint::default())
     }
     /// Requires explicit authorization of every remote routing identity by a

@@ -75,7 +75,7 @@ Cargo cache or vcpkg paths. The P2P change does not patch the native build scrip
 
 ## Production connection point and limits
 
-A future signaling client uses `GnsP2p::new_routed`, retains SignalingEndpoint,
+The optional [rendezvous v1 client](RENDEZVOUS_V1.md) uses `GnsP2p::new_routed`, retains SignalingEndpoint,
 and calls authorize_peer only after checking the rendezvous authority's session
 and account binding. RouteOrigin's constructor does not perform cryptographic
 verification: this is an explicit trust boundary for the local adapter. Many
@@ -90,8 +90,13 @@ to one account/session route, preserving table capacity for other accounts.
 It handles mailbox backpressure/reconnection and route admission outside GNS;
 it must not promote players or bypass password bootstrap. IceConfig is the place
 to extend establishment-time server options. Runtime host/join generalization,
-route discovery, rendezvous authentication, TURN credentials/relay and Internet
-NAT traversal validation are not implemented or certified by localhost tests.
+room-code runtime/UI integration, TURN credentials/relay and Internet
+NAT traversal validation remain separate work. The v1 WSS server authenticates
+anonymous room membership only; its MemberId occupies RouteOrigin.account and
+provides no Steam account authentication or complete Sybil resistance. Active
+route bindings are preserved after control loss until the connection owner
+explicitly releases them. The localhost real-server test is documented in
+[RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
 
 The root crates.io patch replaces only game-networking-sockets 0.3.0 with
 `vendor/game-networking-sockets`; sys 0.3.0 and its native library remain pinned.
