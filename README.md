@@ -79,6 +79,10 @@ cargo run --locked --release --features gns
 
 プレイ中は画面上部の「操作方法」から確認できます。キー割り当ては「設定 → キー設定」で変更できます。回転・連結のルールや保存・設定の詳しい使い方は [遊び方ガイド](docs/PLAYING.md)にまとめています。
 
+## リリース
+
+master の履歴に含まれるコミットへのタグ push で、Windows / Linux の x86_64 向けに `gns` 有効のリリースビルドを作成し、GitHub Release の Draft に添付します。タグの作成・再実行・公開の手順は [開発ガイド](docs/DEVELOPMENT.md#リリース)を参照してください。
+
 ## ドキュメント
 
 - [遊び方ガイド](docs/PLAYING.md) — 操作、画像の制限、保存、接続、設定

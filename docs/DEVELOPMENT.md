@@ -19,6 +19,24 @@ Windows の MSVC toolchain・Visual Studio Build Tools・SDK と GNS のセッ�
 
 `gns` は CMake・Git・libclang などの追加のネイティブ依存を必要とし、`--all-features` でも有効になります。Windows では検証済みの LLVM/libclang 18.1.8 を使います。GNS の bindgen 0.70.1 と LLVM 23 は互換性がありません。ビルドキャッシュ・vcpkg 作業パスを共有する運用とロック待ちの扱いは [AGENTS.md](../AGENTS.md)に従ってください。
 
+## リリース
+
+master の履歴に含まれるコミットへタグを付けて push すると、[Draft release workflow](../.github/workflows/release.yml) が動きます。
+Windows / Linux の x86_64 向けに `--locked --release --features gns` でビルドし、
+両方が成功すると ZIP / tar.gz と `SHA256SUMS` を添付した GitHub Release の Draft を作成します。
+アーカイブには実行ファイル、README、日本語フォントのライセンスを含めます。
+
+```sh
+git switch master
+git pull --ff-only origin master
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+master に含まれないコミットのタグとタグの削除はスキップします。過去の master のコミットも対象です。
+失敗した場合は Actions から再実行できます。同じタグの Draft があれば添付ファイルを更新し、
+公開済みの Release は変更せず失敗します。公開は GitHub の Releases 画面で Draft を確認してから行ってください。
+
 ## 構成と責務
 
 Bevy 0.19.1 / bevy_egui 0.42 を使用します。依存バージョンはルートの `Cargo.toml` に集約しています。Windows 向けの wgpu-hal は 29.0.3 に固定しています。29.0.4 と gpu-allocator 0.28 の Windows COM 型の不一致を避けるためで、更新時には Windows での再ビルド確認が必要です。
