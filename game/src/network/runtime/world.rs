@@ -454,6 +454,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                         .session_definition()
                         .image_hash,
                     encoded: Some(decoded.encoded),
+                    image_lease: None,
                 });
                 self.status.image = ImageReadiness::Uploading;
             } else {

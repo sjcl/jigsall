@@ -1,5 +1,6 @@
 use super::*;
 mod autosave;
+mod locking;
 use crate::{
     checkpoint::{
         PuzzleCheckpoint, SNAPSHOT_CONNECTED_DOWN, SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED,

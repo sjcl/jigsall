@@ -211,6 +211,7 @@ pub fn start_thread_image_load(
                 let original = crate::persistence::runtime::OriginalPuzzleImage {
                     hash: crate::persistence::image_hash(&bytes),
                     encoded: Some(bytes.into()),
+                    image_lease: None,
                 };
                 Ok((image, original))
             })();

@@ -1,10 +1,14 @@
-//! Transport for storage owned by another thread. Only requests and replies cross
-//! threads; backend handles and asynchronous API callbacks stay with their owner.
-use super::{SaveStorage, StorageError, StorageKey, StorageNamespace};
+//! Transport for storage owned by another thread. Requests, replies and
+//! transferable lock guards cross threads; thread-affine backend handles and
+//! asynchronous API callbacks stay with their owner.
+use super::{ImageHash, SaveStorage, StorageError, StorageGuard, StorageKey, StorageNamespace};
 use crossbeam::channel::{self, Receiver, Sender, TryRecvError};
 
 #[derive(Debug)]
 pub enum StorageOperation {
+    TryLockRepository,
+    TryRetainImage(ImageHash),
+    TryLockImage(ImageHash),
     List(StorageNamespace),
     Read(StorageKey),
     ReadRange(StorageKey, u64, usize),
@@ -15,6 +19,7 @@ pub enum StorageOperation {
 }
 #[derive(Debug)]
 pub enum StorageValue {
+    Guard(Option<StorageGuard>),
     Keys(Vec<StorageKey>),
     Bytes(Vec<u8>),
     Len(u64),
@@ -37,6 +42,15 @@ impl StorageRequest {
     /// dispatch `operation` and complete `reply` from their API callback instead.
     pub fn execute(self, storage: &impl SaveStorage) -> Result<(), StorageError> {
         let result = match self.operation {
+            StorageOperation::TryLockRepository => {
+                storage.try_lock_repository().map(StorageValue::Guard)
+            }
+            StorageOperation::TryRetainImage(hash) => {
+                storage.try_retain_image(hash).map(StorageValue::Guard)
+            }
+            StorageOperation::TryLockImage(hash) => {
+                storage.try_lock_image(hash).map(StorageValue::Guard)
+            }
             StorageOperation::List(ns) => storage.list(ns).map(StorageValue::Keys),
             StorageOperation::Read(key) => storage.read(key).map(StorageValue::Bytes),
             StorageOperation::ReadRange(key, offset, length) => storage
@@ -97,6 +111,24 @@ impl StorageProxy {
     }
 }
 impl SaveStorage for StorageProxy {
+    fn try_lock_repository(&self) -> Result<Option<StorageGuard>, StorageError> {
+        match self.request(StorageOperation::TryLockRepository)? {
+            StorageValue::Guard(guard) => Ok(guard),
+            _ => Err(unexpected()),
+        }
+    }
+    fn try_retain_image(&self, hash: ImageHash) -> Result<Option<StorageGuard>, StorageError> {
+        match self.request(StorageOperation::TryRetainImage(hash))? {
+            StorageValue::Guard(guard) => Ok(guard),
+            _ => Err(unexpected()),
+        }
+    }
+    fn try_lock_image(&self, hash: ImageHash) -> Result<Option<StorageGuard>, StorageError> {
+        match self.request(StorageOperation::TryLockImage(hash))? {
+            StorageValue::Guard(guard) => Ok(guard),
+            _ => Err(unexpected()),
+        }
+    }
     fn list(&self, namespace: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
         match self.request(StorageOperation::List(namespace))? {
             StorageValue::Keys(keys) => Ok(keys),

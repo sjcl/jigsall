@@ -10,8 +10,11 @@ use std::{num::NonZeroU32, sync::Arc};
 #[derive(Resource)]
 pub struct OriginalPuzzleImage {
     pub hash: ImageHash,
-    /// Released only after a successful import. Saving never rereads the source path.
+    /// Released only after successful persistence with a live image lease.
+    /// Saving never rereads the source path.
     pub encoded: Option<Arc<[u8]>>,
+    /// Held through selection, play, pause and pending persistence requests.
+    pub image_lease: Option<ImageLease>,
 }
 #[derive(Resource, Default)]
 pub struct PersistenceState {
@@ -61,6 +64,7 @@ struct LoadedPuzzle {
     image: Image,
     logical_size: UVec2,
     opaque: bool,
+    image_lease: ImageLease,
 }
 /// Small CPU pixels for a menu texture; full decoded images stay on the worker.
 pub struct ThumbnailImage {
@@ -84,14 +88,15 @@ enum Request {
         title: SaveTitle,
         checkpoint: PuzzleCheckpoint,
         bytes: Option<Arc<[u8]>>,
+        image_lease: Option<Box<ImageLease>>,
     },
     Delete(SaveId),
 }
 enum Reply {
-    Imported(ImageHash, Result<(), SaveError>),
+    Imported(ImageHash, Result<ImageLease, SaveError>),
     Listed(Result<Vec<SaveListEntry>, SaveError>),
     Loaded(SaveId, Result<Box<LoadedPuzzle>, SaveError>),
-    Saved(bool, Result<SaveOutcome, SaveError>),
+    Saved(bool, Result<(SaveOutcome, ImageLease), SaveError>),
     Deleted(Result<Vec<SaveListEntry>, SaveError>),
 }
 #[derive(Resource)]
@@ -232,7 +237,7 @@ impl PersistenceService {
         checkpoint: PuzzleCheckpoint,
         bytes: Option<Arc<[u8]>>,
     ) {
-        self.save_as(state, title, checkpoint, bytes, None);
+        self.save_as(state, title, checkpoint, bytes, None, None);
     }
     fn save_as(
         &self,
@@ -241,6 +246,7 @@ impl PersistenceService {
         checkpoint: PuzzleCheckpoint,
         bytes: Option<Arc<[u8]>>,
         autosave_limit: Option<NonZeroU32>,
+        image_lease: Option<ImageLease>,
     ) {
         let metadata = if autosave_limit.is_some() {
             state.current_autosave.as_ref()
@@ -260,6 +266,7 @@ impl PersistenceService {
                 title,
                 checkpoint,
                 bytes,
+                image_lease: image_lease.map(Box::new),
             },
         );
     }
@@ -335,6 +342,7 @@ pub(crate) fn capture_requested_save(
             checkpoint,
             original.encoded.clone(),
             capture.autosave_limit,
+            original.image_lease.clone(),
         ),
         Err(error) => save_error(&mut state, is_autosave, PersistenceError::Checkpoint(error)),
     }
@@ -356,9 +364,10 @@ fn run_request<S: SaveStorage>(
             .map_err(|e| SaveError::Storage(e.clone()))
     };
     match request {
-        Request::Import(hash, bytes) => {
-            Reply::Imported(hash, repo().and_then(|r| r.import_image(hash, &bytes)))
-        }
+        Request::Import(hash, bytes) => Reply::Imported(
+            hash,
+            repo().and_then(|r| r.import_image_retained(hash, &bytes)),
+        ),
         Request::List => Reply::Listed(repo().and_then(SaveRepository::list)),
         Request::Delete(id) => Reply::Deleted(repo().and_then(|r| {
             r.delete(id)?;
@@ -371,12 +380,16 @@ fn run_request<S: SaveStorage>(
             title,
             checkpoint,
             bytes,
+            image_lease: _previous_lease,
         } => Reply::Saved(
             autosave_limit.is_some(),
             repo().and_then(|r| {
+                let image_lease = r.retain_image(checkpoint.image_hash)?;
                 let bytes = bytes.as_deref();
                 if let Some(limit) = autosave_limit {
-                    return r.autosave(game_id, update, title, checkpoint, bytes, limit);
+                    return r
+                        .autosave(game_id, update, title, checkpoint, bytes, limit)
+                        .map(|outcome| (outcome, image_lease));
                 }
                 match update {
                     Some((id, expected_revision)) => {
@@ -384,9 +397,14 @@ fn run_request<S: SaveStorage>(
                     }
                     None => r.create_for_game(game_id, title, checkpoint, bytes),
                 }
-                .map(|metadata| SaveOutcome {
-                    metadata,
-                    rotation_error: None,
+                .map(|metadata| {
+                    (
+                        SaveOutcome {
+                            metadata,
+                            rotation_error: None,
+                        },
+                        image_lease,
+                    )
                 })
             }),
         ),
@@ -414,6 +432,7 @@ fn run_request<S: SaveStorage>(
                     image: decoded.image,
                     logical_size: decoded.logical_size,
                     opaque,
+                    image_lease: loaded.image_lease,
                 }))
             }),
         ),
@@ -456,7 +475,10 @@ pub(crate) fn poll_results(
             if let Some(ref mut original) = original {
                 if original.hash == hash {
                     match result {
-                        Ok(()) => original.encoded = None,
+                        Ok(lease) => {
+                            original.image_lease = Some(lease);
+                            original.encoded = None;
+                        }
                         Err(e) => state.error = Some(PersistenceError::ImageImport(e)),
                     }
                 }
@@ -467,10 +489,13 @@ pub(crate) fn poll_results(
         state.autosaving = false;
         if let Reply::Saved(is_autosave, result) = reply {
             match result {
-                Ok(SaveOutcome {
-                    metadata,
-                    rotation_error,
-                }) => {
+                Ok((
+                    SaveOutcome {
+                        metadata,
+                        rotation_error,
+                    },
+                    lease,
+                )) => {
                     if is_autosave {
                         if state
                             .current_save
@@ -488,7 +513,10 @@ pub(crate) fn poll_results(
                         state.message = Some(PersistenceNotice::Saved);
                     }
                     if let Some(ref mut original) = original {
-                        original.encoded = None;
+                        if original.hash == lease.hash {
+                            original.image_lease = Some(lease);
+                            original.encoded = None;
+                        }
                     }
                 }
                 Err(error) => save_error(&mut state, is_autosave, PersistenceError::Save(error)),
@@ -521,6 +549,7 @@ pub(crate) fn poll_results(
                     commands.insert_resource(OriginalPuzzleImage {
                         hash: loaded.hash,
                         encoded: None,
+                        image_lease: Some(loaded.image_lease),
                     });
                     commands.insert_resource(PendingRestore(Some(loaded.restored)));
                     state.current_autosave =
@@ -720,12 +749,162 @@ mod tests {
             .insert_resource(OriginalPuzzleImage {
                 hash: image_hash(&bytes),
                 encoded: Some(bytes.into()),
+                image_lease: None,
             })
             .init_resource::<Assets<Image>>()
             .insert_resource(State::new(AppState::InGame))
             .insert_resource(NextState::<AppState>::default())
             .add_systems(Update, (capture_requested_save, poll_results).chain());
         app
+    }
+
+    #[test]
+    fn imported_image_is_protected_in_transit_and_while_the_resource_is_alive() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut app = save_app(directory.path().to_owned());
+        let storage = FilesystemStorage::new(directory.path());
+        let repository = Ok(SaveRepository::new(storage.clone()));
+        let original = app.world().resource::<OriginalPuzzleImage>();
+        let hash = original.hash;
+        let reply = run_request(
+            &repository,
+            Request::Import(hash, original.encoded.clone().unwrap()),
+        );
+        repository.as_ref().unwrap().delete(SaveId(99)).unwrap();
+        assert!(storage.exists(StorageKey::Image(hash)).unwrap());
+        let (tx, rx) = crossbeam::channel::unbounded();
+        app.world_mut().resource_mut::<PersistenceService>().rx = rx;
+        tx.send((0, reply)).unwrap();
+        app.update();
+        let original = app.world().resource::<OriginalPuzzleImage>();
+        assert!(original.encoded.is_none());
+        assert!(original.image_lease.is_some());
+        repository.as_ref().unwrap().delete(SaveId(99)).unwrap();
+        assert!(storage.exists(StorageKey::Image(hash)).unwrap());
+        app.world_mut().remove_resource::<OriginalPuzzleImage>();
+        repository.as_ref().unwrap().delete(SaveId(99)).unwrap();
+        assert!(!storage.exists(StorageKey::Image(hash)).unwrap());
+    }
+
+    #[test]
+    fn discarded_import_replies_release_their_image_leases() {
+        for stale_generation in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut app = save_app(directory.path().to_owned());
+            let storage = FilesystemStorage::new(directory.path());
+            let repository = Ok(SaveRepository::new(storage.clone()));
+            let original = app.world().resource::<OriginalPuzzleImage>();
+            let hash = original.hash;
+            let reply = run_request(
+                &repository,
+                Request::Import(hash, original.encoded.clone().unwrap()),
+            );
+            if stale_generation {
+                app.world_mut()
+                    .resource_mut::<PersistenceState>()
+                    .generation = 1;
+            } else {
+                app.world_mut().resource_mut::<OriginalPuzzleImage>().hash =
+                    image_hash(b"replacement");
+            }
+            let (tx, rx) = crossbeam::channel::unbounded();
+            app.world_mut().resource_mut::<PersistenceService>().rx = rx;
+            tx.send((0, reply)).unwrap();
+            app.update();
+            let original = app.world().resource::<OriginalPuzzleImage>();
+            assert!(original.encoded.is_some());
+            assert!(original.image_lease.is_none());
+            repository.as_ref().unwrap().delete(SaveId(99)).unwrap();
+            assert!(!storage.exists(StorageKey::Image(hash)).unwrap());
+        }
+    }
+
+    #[test]
+    fn pending_save_keeps_its_image_after_the_session_resource_is_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let storage = FilesystemStorage::new(directory.path());
+        let repository = SaveRepository::new(storage.clone());
+        let mut app = save_app(directory.path().to_owned());
+        let original = app.world().resource::<OriginalPuzzleImage>();
+        let hash = original.hash;
+        let lease = repository
+            .import_image_retained(hash, original.encoded.as_deref().unwrap())
+            .unwrap();
+        let mut original = app.world_mut().resource_mut::<OriginalPuzzleImage>();
+        original.image_lease = Some(lease);
+        original.encoded = None;
+        let (service, inbox) = PersistenceService::with_storage_requests();
+        app.insert_resource(service);
+        app.world_mut()
+            .resource_scope(|world, service: Mut<PersistenceService>| {
+                service.request_save(
+                    &mut world.resource_mut::<PersistenceState>(),
+                    SaveTitle::new("pending").unwrap(),
+                );
+            });
+        app.update();
+        app.world_mut().remove_resource::<OriginalPuzzleImage>();
+        repository.delete(SaveId(99)).unwrap();
+        assert!(storage.exists(StorageKey::Image(hash)).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while app.world().resource::<PersistenceState>().busy {
+            while let Ok(request) = inbox.try_recv() {
+                request.execute(&storage).unwrap();
+            }
+            app.update();
+            assert!(Instant::now() < deadline, "pending save did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let metadata = app
+            .world()
+            .resource::<PersistenceState>()
+            .current_save
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            repository
+                .load(metadata.id)
+                .unwrap()
+                .save
+                .checkpoint
+                .image_hash,
+            hash
+        );
+        repository.delete(metadata.id).unwrap();
+        assert!(!storage.exists(StorageKey::Image(hash)).unwrap());
+    }
+
+    #[test]
+    fn failed_image_lock_keeps_original_bytes_for_a_later_save() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("locks"), b"not a directory").unwrap();
+        let mut app = save_app(directory.path().to_owned());
+        let repository = Ok(SaveRepository::new(FilesystemStorage::new(
+            directory.path(),
+        )));
+        let original = app.world().resource::<OriginalPuzzleImage>();
+        let reply = run_request(
+            &repository,
+            Request::Import(original.hash, original.encoded.clone().unwrap()),
+        );
+        let (tx, rx) = crossbeam::channel::unbounded();
+        app.world_mut().resource_mut::<PersistenceService>().rx = rx;
+        tx.send((0, reply)).unwrap();
+        app.update();
+        assert!(app
+            .world()
+            .resource::<OriginalPuzzleImage>()
+            .encoded
+            .is_some());
+        assert!(app
+            .world()
+            .resource::<OriginalPuzzleImage>()
+            .image_lease
+            .is_none());
+        assert!(matches!(
+            app.world().resource::<PersistenceState>().error,
+            Some(PersistenceError::ImageImport(SaveError::Storage(_)))
+        ));
     }
 
     fn request_and_wait(app: &mut App, automatic: bool) {
@@ -1195,7 +1374,7 @@ mod tests {
         );
         let (generation, reply) = foreground_reply();
         assert_eq!(generation, 7);
-        let Reply::Saved(false, Ok(saved)) = reply else {
+        let Reply::Saved(false, Ok((saved, _lease))) = reply else {
             panic!("Save failed while thumbnail read was pending")
         };
         assert_eq!(

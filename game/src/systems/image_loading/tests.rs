@@ -126,6 +126,7 @@ fn current_failure_keeps_reason_and_discards_previous_image() {
         .insert_resource(OriginalPuzzleImage {
             hash: crate::persistence::image_hash(b"previous image"),
             encoded: None,
+            image_lease: None,
         });
         sender
             .send(ImageLoadResult {

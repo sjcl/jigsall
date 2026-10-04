@@ -85,6 +85,8 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 <OS user local application data>/puzzella/
   saves/<32 lowercase hex SaveId>.puzsave
   images/<64 lowercase hex ImageHash>.puzimg
+  locks/repository.lock
+  locks/<64 lowercase hex ImageHash>.puzimg.lock
 ```
 
 Windows は `%LOCALAPPDATA%/puzzella`、macOS はユーザー Application Support 以下、Linux は XDG data directory 以下です。production は working directory に依存しません。`FilesystemStorage::new(root)` で test の temporary directory を注入できます。
@@ -97,11 +99,15 @@ storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と 
 
 新規画像の import で元 bytes の hash と既存画像 container の完全性を検証し、その後に save を publish します。import 済み画像を使う通常 Save は存在確認だけを行い、`.puzimg` の再読込・再 hash は行いません。実際の load では画像全体を検証するため、import 後の外部破損はそこで検出します。同じ ImageHash は複数 save で共有します。途中 failure は高々 orphan image を残します。
 
-save の削除に成功した後、persistence worker 上で残ったすべての save の検証済み header から ImageHash を集め、どの save にも参照されていない `.puzimg` を削除します。手動保存・オートセーブのどちらかに参照があれば画像を保持し、以前の更新・保存失敗・未保存の画像選択で残った orphan image も掃除します。piece state や画像 payload の読み込み・decode は行いません。残った save の header が破損・未対応・読み取り失敗の場合、参照を確定できないため画像の掃除全体を見送ります。掃除の失敗は警告ログに残し、成功済みの save 削除と一覧更新は継続します。画像の削除が失敗した場合は他の未参照画像の掃除を続け、残った画像は次回の save 削除時に再試行します。存在しない save の再削除でも掃除を実行します。
+save の削除に成功した後、persistence worker 上で残ったすべての save の検証済み header から ImageHash を集め、どの save にも参照されていない `.puzimg` を削除します。画像ごとの専用 lock file に対する排他ロックを待たずに取得し、使用中の共有ロックがあればその画像の掃除を見送ります。手動保存・オートセーブ・実行中の画像選択やゲームのどれかに参照があれば画像を保持し、以前の更新・保存失敗・使用終了した未保存画像の orphan も掃除します。piece state や画像 payload の読み込み・decode は行いません。残った save の header が破損・未対応・読み取り失敗の場合、参照を確定できないため画像の掃除全体を見送ります。掃除の失敗は警告ログに残し、成功済みの save 削除と一覧更新は継続します。画像の削除・ロック取得が失敗した場合は他の未参照画像の掃除を続け、残った画像は次回の save 削除時に再試行します。存在しない save の再削除でも掃除を実行します。
+
+FilesystemStorage のプロセス間協調は Rust 標準の `File::try_lock` / `try_lock_shared` を使い、OS 固有の削除禁止フラグやプロセス同士の直接通信には依存しません。`repository.lock` の排他ロックで import、create、update、autosave の公開・ローテーション、delete の参照確認から画像掃除までを直列化します。これにより画像の公開から保護取得までの隙間、掃除の参照確認後の save 公開、同じ revision への同時更新を防ぎます。load は同じロック内で save を読み、画像の共有ロックを取得してから共通ロックを解放し、画像の読み込み・decode を続けます。`locks` の空ファイルは削除・置換しません。同じ名前で再作成すると別の filesystem object のロックに分かれるためです。ロックの有効性はファイルの存在や PID・時刻ではなく保持中の handle で決まり、最後の guard の解放やプロセス終了で OS が解放します。
+
+`SaveStorage` の lock hook は非 blocking の試行と `StorageGuard` を返します。`StorageProxy` もこの試行だけを owner へ転送し、競合時の再試行待ちは repository worker 上で行います。ロック保持者が次の I/O を待つ間に executor を停止させません。hook の既定値は単一 client の private backend 向けで、複数 client が共有する backend は3つの hook を実装する必要があります。
 
 ## Worker と restore lifecycle
 
-画像選択 worker は元 encoded bytes と hash を確定し、同じ bytes から decode します。受信後 background repository worker が `.puzimg` を import し、成功後に encoded bytes を RAM から解放します。import failure 時は bytes を保持して後の Save で再試行できます。Save ボタンは元ファイルを読み直しません。RGBA は既存の render-only Image 方針で GPU upload 後に CPU に保持しません。
+画像選択 worker は元 encoded bytes と hash を確定し、同じ bytes から decode します。受信後 background repository worker が画像の共有ロックを保持して `.puzimg` を import し、成功応答から `OriginalPuzzleImage` へ `ImageLease` を移してから encoded bytes を RAM から解放します。load / Save の成功応答も lease を保持します。lease は選択中・Playing・pause・完成画面で維持し、画像の置き換え・session cleanup で解放します。送信済み Save request も lease の clone を持つため、session cleanup 後の保存待ち中も保護されます。古い generation / 別画像の応答やロード失敗は guard を drop します。import / lock failure 時は bytes を保持して後の Save で再試行できます。Save ボタンは元ファイルを読み直しません。RGBA は既存の render-only Image 方針で GPU upload 後に CPU に保持しません。
 
 filesystem の list / read / write、codec / checksum / decode / restore 準備は crossbeam channel の worker 上で実行します。`SaveStorage` 自体には Send / Sync 制約を置きません。`PersistenceService::new(storage)` で backend をI/O workerに移す場合だけ Send を要求し、Clone / Sync は要求しません。この汎用経路はI/Oを直列化しますが、別々の foreground / thumbnail worker がchecksum・decode等を行うため、サムネイルのCPU処理は保存・ロードを待たせません。通常のfilesystem経路は独立したhandleを使い、サムネイルのI/Oもforeground workerから分離します。
 

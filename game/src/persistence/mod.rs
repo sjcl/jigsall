@@ -11,8 +11,10 @@ pub use codec::{
     SAVE_FORMAT_VERSION,
 };
 use puzzella_core::session::ImageHash;
-pub use repository::{LoadedSave, SaveListEntry, SaveRepository, SaveSummary};
-pub use storage::{FilesystemStorage, SaveStorage, StorageError, StorageKey, StorageNamespace};
+pub use repository::{ImageLease, LoadedSave, SaveListEntry, SaveRepository, SaveSummary};
+pub use storage::{
+    FilesystemStorage, SaveStorage, StorageError, StorageGuard, StorageKey, StorageNamespace,
+};
 
 pub const MAX_SAVE_TITLE_CHARS: usize = 80;
 /// UUID v4 identity of one newly started game, shared by all its saves.

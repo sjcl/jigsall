@@ -296,6 +296,7 @@ fn host_world(app: &mut App) -> SessionDefinition {
     app.world_mut().insert_resource(OriginalPuzzleImage {
         hash: session.image_hash,
         encoded: Some(image),
+        image_lease: None,
     });
     session
 }

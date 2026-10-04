@@ -67,6 +67,7 @@ fn app() -> App {
         .insert_resource(OriginalPuzzleImage {
             hash: puzzella_game::persistence::image_hash(b"previous image"),
             encoded: Some(Arc::from(b"previous image".as_slice())),
+            image_lease: None,
         })
         .add_systems(
             Update,

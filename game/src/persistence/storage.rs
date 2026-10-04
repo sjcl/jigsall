@@ -6,6 +6,7 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime},
 };
 
@@ -72,10 +73,42 @@ fn io(e: std::io::Error) -> StorageError {
     StorageError::Io(e.to_string())
 }
 
+/// Keeps a backend lock alive until the last clone is dropped. No paths or
+/// backend handles are exposed to repository users.
+#[derive(Clone, Default)]
+#[must_use = "keep the guard alive for the duration of the protected operation"]
+pub struct StorageGuard {
+    _held: Option<Arc<dyn Send + Sync>>,
+}
+impl StorageGuard {
+    pub fn new(held: impl Send + Sync + 'static) -> Self {
+        Self {
+            _held: Some(Arc::new(held)),
+        }
+    }
+}
+impl std::fmt::Debug for StorageGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StorageGuard").finish_non_exhaustive()
+    }
+}
+
 /// Paths/rename are backend internals. A successful write publishes the entire blob.
 /// Implementations must preserve the previous blob if replacement fails.
 /// Thread affinity belongs to the executor, not to the storage backend.
 pub trait SaveStorage {
+    /// Nonblocking coordination hooks. Defaults are for private, single-client
+    /// backends; shared backends must implement all three. An executor must not
+    /// block acquiring a lock while its holder is waiting for another I/O reply.
+    fn try_lock_repository(&self) -> Result<Option<StorageGuard>, StorageError> {
+        Ok(Some(StorageGuard::default()))
+    }
+    fn try_retain_image(&self, _hash: ImageHash) -> Result<Option<StorageGuard>, StorageError> {
+        Ok(Some(StorageGuard::default()))
+    }
+    fn try_lock_image(&self, _hash: ImageHash) -> Result<Option<StorageGuard>, StorageError> {
+        Ok(Some(StorageGuard::default()))
+    }
     fn list(&self, namespace: StorageNamespace) -> Result<Vec<StorageKey>, StorageError>;
     fn read(&self, key: StorageKey) -> Result<Vec<u8>, StorageError>;
     /// Read at most `length` bytes from `offset`; EOF returns a shorter buffer.
@@ -114,6 +147,29 @@ impl FilesystemStorage {
     }
     fn path(&self, key: StorageKey) -> PathBuf {
         self.directory(key.namespace()).join(key.filename())
+    }
+    fn lock_file(&self, name: &str, shared: bool) -> Result<Option<StorageGuard>, StorageError> {
+        let directory = self.root.join("locks");
+        fs::create_dir_all(&directory).map_err(io)?;
+        // These files are never replaced or unlinked: all processes must keep
+        // locking the same filesystem object, even after an image is collected.
+        let file = fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join(name))
+            .map_err(io)?;
+        let result = if shared {
+            file.try_lock_shared()
+        } else {
+            file.try_lock()
+        };
+        match result {
+            Ok(()) => Ok(Some(StorageGuard::new(file))),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => Err(io(error)),
+        }
     }
     /// Run once on the persistence worker before accepting requests. Recent
     /// files may belong to another running instance and must be left alone.
@@ -175,6 +231,21 @@ fn remove_stale_temp_file(entry: fs::DirEntry, cutoff: SystemTime) -> std::io::R
 }
 
 impl SaveStorage for FilesystemStorage {
+    fn try_lock_repository(&self) -> Result<Option<StorageGuard>, StorageError> {
+        self.lock_file("repository.lock", false)
+    }
+    fn try_retain_image(&self, hash: ImageHash) -> Result<Option<StorageGuard>, StorageError> {
+        self.lock_file(
+            &format!("{}.lock", StorageKey::Image(hash).filename()),
+            true,
+        )
+    }
+    fn try_lock_image(&self, hash: ImageHash) -> Result<Option<StorageGuard>, StorageError> {
+        self.lock_file(
+            &format!("{}.lock", StorageKey::Image(hash).filename()),
+            false,
+        )
+    }
     fn list(&self, namespace: StorageNamespace) -> Result<Vec<StorageKey>, StorageError> {
         let entries = match fs::read_dir(self.directory(namespace)) {
             Ok(entries) => entries,

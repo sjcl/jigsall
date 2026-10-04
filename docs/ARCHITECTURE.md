@@ -145,6 +145,8 @@ opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけを
 
 保存先は OS user application data 以下で、logical key を storage に渡します。画像を先に保存し、save は temporary file の sync と atomic replace で publish します。通常 Save は共有画像の存在だけを確認し、import / load で画像全体の hash を検証します。SaveStorage は Send / Sync を要求せず、filesystem は worker で動かします。メニューのサムネイルは専用queue / workerと独立したfilesystem handleで読み込み・検証・decodeし、保存・ロードのworkerを占有しません。ImageHashで共有する最大64件の成功texture cacheをメニュー退出・session変更後も保持します。将来の Steam Cloud は handle を所有 thread に保持し、両workerからのStorageRequestsのoperationを非同期 API に dispatch、callback から返信する executor を追加します。StorageProxy を使う repository / codec / restore 準備は worker 上で継続します。write は encoded Vec の所有権を移譲し、proxy による全 blob コピーを避けます。Steam Cloud 自体は未実装です。形式・layout・failure / worker lifecycle の詳細は [PERSISTENCE.md](PERSISTENCE.md) を参照してください。
 
+FilesystemStorage は Rust 標準のファイルロックで複数プロセスを協調させます。画像ごとの共有ロックを `ImageLease` として取り込み・ロードの応答から `OriginalPuzzleImage` へ移し、元 encoded bytes の解放後も使用中の画像を保持します。保存待ちの request も lease を共有し、画像の置き換え・session cleanup・古い応答の破棄で解放します。save に未参照の画像を掃除する場合は画像の排他ロックを待たずに試し、使用中なら見送ります。共通の repository 排他ロックは画像 import、save の revision 検証から公開、autosave ローテーション、delete の参照確認から掃除までを直列化します。専用 lock file は削除・置換せず、取得の再試行待ちは worker だけで行い、StorageProxy / executor には非 blocking の試行を渡します。プロセス間の直接通信はありません。
+
 ## Multiplayerの境界と課題
 
 PieceIdはEntity IDから独立したu32、PlayerIdはu64です。version、seed、grid、画像寸法で形状を再構成します。core/sessionはsession identity・画像hash・命令sequence・authority epoch・migrationを、game/multiplayerはsnapshotの検証・復元とplayer単位の保持解放を提供します。GrabGroup / ReleaseGroupも同じ認証済みplayerとreliable control streamを使います。selectionはlocal presentationでありsnapshotには入りません。transport・途中参加のbackend連携・ネットワーク向けレート制限は未実装です。

@@ -19,6 +19,14 @@ pub struct SaveListEntry {
 pub struct LoadedSave {
     pub save: PuzzleSave,
     pub image_bytes: Vec<u8>,
+    pub image_lease: ImageLease,
+}
+/// A live image reference, including while no save refers to it yet.
+#[derive(Clone, Debug)]
+#[must_use = "keep the lease alive while the image is in use"]
+pub struct ImageLease {
+    pub hash: ImageHash,
+    _guard: StorageGuard,
 }
 pub(crate) struct SaveOutcome {
     pub metadata: SaveMetadata,
@@ -30,6 +38,30 @@ impl<S: SaveStorage> SaveRepository<S> {
         Self { storage }
     }
     pub fn import_image(&self, hash: ImageHash, bytes: &[u8]) -> Result<(), SaveError> {
+        let _transaction = self.lock_repository()?;
+        self.import_image_unlocked(hash, bytes)
+    }
+    pub fn import_image_retained(
+        &self,
+        hash: ImageHash,
+        bytes: &[u8],
+    ) -> Result<ImageLease, SaveError> {
+        let _transaction = self.lock_repository()?;
+        let lease = self.retain_image(hash)?;
+        self.import_image_unlocked(hash, bytes)?;
+        Ok(lease)
+    }
+    pub(crate) fn retain_image(&self, hash: ImageHash) -> Result<ImageLease, SaveError> {
+        Ok(ImageLease {
+            hash,
+            _guard: wait_for_lock(|| self.storage.try_retain_image(hash))?,
+        })
+    }
+    fn lock_repository(&self) -> Result<StorageGuard, SaveError> {
+        wait_for_lock(|| self.storage.try_lock_repository())
+    }
+    /// Caller holds the repository lock through image and save publication.
+    fn import_image_unlocked(&self, hash: ImageHash, bytes: &[u8]) -> Result<(), SaveError> {
         if image_hash(bytes) != hash {
             return Err(SaveError::CorruptImage(
                 "Original bytes do not match image identity",
@@ -75,6 +107,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         checkpoint: PuzzleCheckpoint,
         original_bytes: Option<&[u8]>,
     ) -> Result<SaveMetadata, SaveError> {
+        let _transaction = self.lock_repository()?;
         let now = timestamp();
         self.create_with_metadata(
             PuzzleSave {
@@ -120,6 +153,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         is_autosave: bool,
         id_source: impl FnMut() -> u128,
     ) -> Result<SaveMetadata, SaveError> {
+        let _transaction = self.lock_repository()?;
         let now = timestamp();
         self.create_with_metadata(
             PuzzleSave {
@@ -164,6 +198,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         original_bytes: Option<&[u8]>,
         max_saves_per_game: NonZeroU32,
     ) -> Result<SaveOutcome, SaveError> {
+        let _transaction = self.lock_repository()?;
         if let Some((id, expected_revision)) = previous {
             let header = self.read_header(id)?;
             if header.metadata.revision != expected_revision {
@@ -233,7 +268,7 @@ impl<S: SaveStorage> SaveRepository<S> {
             .len()
             .saturating_sub(max_saves_per_game.get() as usize - 1);
         for old in history.into_iter().take(excess) {
-            if let Err(error) = self.delete(old.id) {
+            if let Err(error) = self.delete_unlocked(old.id) {
                 rotation_error.get_or_insert(error);
             }
         }
@@ -243,7 +278,8 @@ impl<S: SaveStorage> SaveRepository<S> {
         })
     }
     /// Reject a stale session before encoding or publishing any data.
-    /// Concurrent writers still need backend-specific atomic conflict handling.
+    /// The repository lock keeps the revision check and publication atomic
+    /// with respect to cooperating writers and image collection.
     pub fn update(
         &self,
         id: SaveId,
@@ -271,6 +307,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         original_bytes: Option<&[u8]>,
         is_autosave: bool,
     ) -> Result<SaveMetadata, SaveError> {
+        let _transaction = self.lock_repository()?;
         let previous = self.read_header(id)?;
         if previous.metadata.revision != expected_revision {
             return Err(SaveError::Conflict {
@@ -308,7 +345,7 @@ impl<S: SaveStorage> SaveRepository<S> {
         let encoded = SaveCodec::encode(&save)?;
         let hash = save.checkpoint.image_hash;
         if let Some(bytes) = original_bytes {
-            self.import_image(hash, bytes)?;
+            self.import_image_unlocked(hash, bytes)?;
         } else if !self.storage.exists(StorageKey::Image(hash))? {
             return Err(SaveError::MissingImage(hash));
         }
@@ -334,9 +371,18 @@ impl<S: SaveStorage> SaveRepository<S> {
         Ok(header)
     }
     pub fn load(&self, id: SaveId) -> Result<LoadedSave, SaveError> {
+        let transaction = self.lock_repository()?;
         let save = self.read_save(id)?;
+        let image_lease = self.retain_image(save.checkpoint.image_hash)?;
+        // The lease protects the image across decode and reply delivery. No
+        // repository-wide lock is needed for the potentially large image read.
+        drop(transaction);
         let image_bytes = self.read_image(save.checkpoint.image_hash)?;
-        Ok(LoadedSave { save, image_bytes })
+        Ok(LoadedSave {
+            save,
+            image_bytes,
+            image_lease,
+        })
     }
     pub fn list(&self) -> Result<Vec<SaveListEntry>, SaveError> {
         let mut entries = Vec::new();
@@ -375,6 +421,10 @@ impl<S: SaveStorage> SaveRepository<S> {
         Ok(entries)
     }
     pub fn delete(&self, id: SaveId) -> Result<(), SaveError> {
+        let _transaction = self.lock_repository()?;
+        self.delete_unlocked(id)
+    }
+    fn delete_unlocked(&self, id: SaveId) -> Result<(), SaveError> {
         self.storage.delete(StorageKey::Save(id))?;
         // Cleanup must not turn an already successful save deletion into a
         // failure. Leave any images we cannot safely remove for the next delete.
@@ -396,7 +446,13 @@ impl<S: SaveStorage> SaveRepository<S> {
         for key in self.storage.list(StorageNamespace::Images)? {
             if let StorageKey::Image(hash) = key {
                 if !referenced.contains(&hash) {
-                    if let Err(error) = self.storage.delete(key) {
+                    let result = self.storage.try_lock_image(hash).and_then(|guard| {
+                        let Some(_guard) = guard else {
+                            return Ok(());
+                        };
+                        self.storage.delete(key)
+                    });
+                    if let Err(error) = result {
                         bevy::log::warn!("Could not delete an unreferenced puzzle image");
                         bevy::log::debug!(
                             filename = %key.filename(),
@@ -408,6 +464,18 @@ impl<S: SaveStorage> SaveRepository<S> {
             }
         }
         Ok(())
+    }
+}
+fn wait_for_lock(
+    mut acquire: impl FnMut() -> Result<Option<StorageGuard>, StorageError>,
+) -> Result<StorageGuard, SaveError> {
+    loop {
+        if let Some(guard) = acquire()? {
+            return Ok(guard);
+        }
+        // Only a repository worker waits. Storage executor operations stay
+        // nonblocking so another holder can finish I/O and release its lock.
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 fn timestamp() -> u64 {
