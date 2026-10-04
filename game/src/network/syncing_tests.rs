@@ -510,6 +510,116 @@ fn baseline_wait_is_host_capacity_and_stalled_slot_is_immediately_reusable() {
 }
 
 #[test]
+fn local_sync_prerequisite_failures_preserve_admission_credit() {
+    use crate::network::lifecycle::{JOIN_ADMISSION_BURST, ORIGIN_JOIN_BURST};
+    for origin in [None, Some(Origin::Ip("192.0.2.21".parse().unwrap()))] {
+        for failure in [
+            "missing metadata",
+            "changed scope",
+            "frozen",
+            "already syncing",
+        ] {
+            let mut p = Pair::new("correct password");
+            p.ht.backend_mut().origin = origin;
+            p.authenticate();
+            let mut s = Scenario::new();
+            let expected = match failure {
+                "missing metadata" => {
+                    p.host =
+                        HostBootstrap::new(password("correct password"), metadata(), [], p.now);
+                    SyncError::NotSyncing
+                }
+                "changed scope" => {
+                    s.host.session = AuthoritySession::new(
+                        SessionDefinition {
+                            id: SessionId(999),
+                            ..SESSION
+                        },
+                        HOST,
+                        metadata().cursor,
+                    );
+                    SyncError::AuthorityChanged
+                }
+                "frozen" => {
+                    s.host.session.begin_graceful(B).unwrap();
+                    SyncError::AuthorityChanged
+                }
+                "already syncing" => {
+                    p.host.begin_sync(p.host_connection).unwrap();
+                    SyncError::Bootstrap(BootstrapError::InvalidTransition)
+                }
+                _ => unreachable!(),
+            };
+            let mut host =
+                HostSyncCoordinator::new(JoinCatchUpCoordinator::new(Default::default()));
+            let sent = p.ht.backend_mut().sent.len();
+            let bootstrap_state = p.host.state(p.host_connection);
+            // Keep the supplied clock fixed so rate-limit refill cannot hide a
+            // token consumed by one of these local prerequisite refusals.
+            for _ in 0..=JOIN_ADMISSION_BURST {
+                assert_eq!(
+                    host.start(
+                        &mut p.host,
+                        p.host_connection,
+                        &mut p.ht,
+                        &authority(&s),
+                        p.now
+                    )
+                    .as_ref()
+                    .err(),
+                    Some(&expected),
+                    "{failure}, origin {origin:?}"
+                );
+                assert_eq!(host.resources().peers, 0);
+                assert_eq!(p.ht.backend_mut().sent.len(), sent);
+                assert_eq!(p.host.state(p.host_connection), bootstrap_state);
+            }
+            let s = Scenario::new();
+            let burst = if origin.is_some() {
+                ORIGIN_JOIN_BURST
+            } else {
+                JOIN_ADMISSION_BURST
+            };
+            for attempt in 0..=burst {
+                let mut healthy = Pair::new("correct password");
+                healthy.now = p.now;
+                healthy.host_connection = ConnectionId::new(10000 + attempt);
+                healthy.ht.backend_mut().origin = origin;
+                healthy.authenticate();
+                let result = host.start(
+                    &mut healthy.host,
+                    healthy.host_connection,
+                    &mut healthy.ht,
+                    &authority(&s),
+                    healthy.now,
+                );
+                if attempt < burst {
+                    result.unwrap();
+                    assert_eq!(
+                        host.phase(healthy.host_connection),
+                        Some(SyncPhase::ImageNegotiation)
+                    );
+                    assert_eq!(
+                        healthy.host.state(healthy.host_connection),
+                        Some(ConnectionState::Syncing)
+                    );
+                    host.disconnect(healthy.host_connection);
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(SyncError::Admission(DisconnectReason::RateLimited))
+                    );
+                    assert_eq!(
+                        healthy.host.state(healthy.host_connection),
+                        Some(ConnectionState::Authenticated)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn authenticated_origin_flood_and_reconnect_cannot_acquire_all_join_slots() {
     let origin = Origin::Ip("192.0.2.17".parse().unwrap());
     let mut h = BaselineSlots::with_origin(

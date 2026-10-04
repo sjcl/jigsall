@@ -333,8 +333,14 @@ Final correctness comes from ReleaseCommitted's final delta and fingerprint.
 
 GNS handles UDP reliability, fragmentation, reassembly and native service threads.
 The application does not implement UDP reliability or an extra background thread.
-`poll(&mut events)` runs callbacks, normalizes lifecycle transitions, then receives
-up to 128 callbacks per socket and drains messages in reusable 32-slot chunks.
+`poll(&mut events)` runs native callbacks, handles up to 128 state callbacks per
+socket, then expires overdue Connecting slots before receiving messages. Expiry
+checks the current native state so a completed connection or terminal transition
+behind the callback batch limit takes precedence over a Connecting timeout.
+Only native Connecting/FindingRoute states receive that timeout; unavailable
+native state is BackendFailure without an origin penalty. Native establishment
+does not authenticate a connection or mark it Ready.
+Messages drain in reusable 32-slot chunks.
 Sockets take turns until their queues are empty or a shared 512-message budget
 is reached. The next poll resumes with the next socket. Unknown/invalid messages
 also consume this budget. A final partial chunk receives only the remaining budget,
@@ -931,8 +937,10 @@ Sync errors distinguish inbound protocol validation from local capture/encoding,
 allocation, registration, authority changes and transport failures. Local failures
 close with ConnectionProblem, BackendFailure or JoinCapacity and do not penalize
 the origin; peer protocol violations and authentication/sync stalls still do.
-Join admission spends origin/global tokens only after both limits pass. Client
-packet processing and frame expiry use the same authenticated-handoff timeout.
+Join admission checks bootstrap metadata, authority identity/active state and the
+Authenticated handoff phase before consuming credit or mutating bootstrap state.
+It spends origin/global tokens only after both limits pass. Client packet
+processing and frame expiry use the same authenticated-handoff timeout.
 Delegating Transport implementations must forward origin, reliable_egress and
 mark_ready; unavailable egress telemetry fails closed for Bulk. The client shares
 the delivery policy and frees its receiver/declared budget on failure; waits for a

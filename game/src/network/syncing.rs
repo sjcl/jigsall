@@ -630,11 +630,6 @@ impl HostSyncCoordinator {
         if self.peers.contains_key(&connection) || !transport.has_channel(connection) {
             return Err(SyncError::NotSyncing);
         }
-        let origin = transport.origin(connection);
-        let pending = self.peers.values().filter(|p| p.origin == origin).count();
-        self.admission
-            .admit(origin, pending, now)
-            .map_err(SyncError::Admission)?;
         let authenticated = bootstrap
             .metadata(connection)
             .ok_or(SyncError::NotSyncing)?;
@@ -646,6 +641,14 @@ impl HostSyncCoordinator {
         let player = bootstrap
             .assigned_player(connection)
             .ok_or(SyncError::NotSyncing)?;
+        if bootstrap.state(connection) != Some(ConnectionState::Authenticated) {
+            return Err(SyncError::Bootstrap(BootstrapError::InvalidTransition));
+        }
+        let origin = transport.origin(connection);
+        let pending = self.peers.values().filter(|p| p.origin == origin).count();
+        self.admission
+            .admit(origin, pending, now)
+            .map_err(SyncError::Admission)?;
         bootstrap
             .begin_sync(connection)
             .map_err(SyncError::Bootstrap)?;

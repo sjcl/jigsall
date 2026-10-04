@@ -111,6 +111,13 @@ impl Socket {
             bulk.pending_bytes_reliable() as u64 + bulk.bytes_sent_unacked_reliable() as u64,
         ))
     }
+    fn connection_state(&self, native: GnsConnection) -> Option<State> {
+        match self {
+            Self::Server(s) => s.get_connection_info(native),
+            Self::Client(s) => s.get_connection_info(native),
+        }
+        .map(|info| info.state())
+    }
     fn events(&self) -> Vec<GnsConnectionEvent> {
         match self {
             Self::Server(s) => s.receive_events().take(CALLBACK_BATCH).collect(),
@@ -322,7 +329,16 @@ impl GnsDirectIp {
         let Some(id) = id else {
             return Ok(());
         };
-        match info.state() {
+        self.apply_connection_state(id, info.state(), events);
+        Ok(())
+    }
+    fn apply_connection_state(
+        &mut self,
+        id: ConnectionId,
+        state: State,
+        events: &mut Vec<TransportEvent>,
+    ) {
+        match state {
             State::k_ESteamNetworkingConnectionState_Connected => {
                 if let Some(connection) = self.connections.get_mut(&id) {
                     if !connection.connected {
@@ -339,7 +355,6 @@ impl GnsDirectIp {
             }
             _ => {}
         }
-        Ok(())
     }
     fn expire_connecting(&mut self, now: Instant, events: &mut Vec<TransportEvent>) {
         let expired: Vec<_> = self
@@ -351,7 +366,28 @@ impl GnsDirectIp {
             .map(|(&id, _)| id)
             .collect();
         for id in expired {
-            self.terminate_at(id, DisconnectReason::BackendConnectionTimeout, events, now);
+            let connection = &self.connections[&id];
+            // A listener's bounded callback batch may leave a completed state
+            // transition queued. Inspect only overdue Connecting slots (at most
+            // MAX_CONNECTING) before assigning a peer-stall timeout/penalty.
+            let state = self
+                .sockets
+                .get(&connection.endpoint)
+                .and_then(|socket| socket.connection_state(connection.native));
+            match state {
+                Some(
+                    state @ (State::k_ESteamNetworkingConnectionState_Connected
+                    | State::k_ESteamNetworkingConnectionState_ClosedByPeer
+                    | State::k_ESteamNetworkingConnectionState_ProblemDetectedLocally),
+                ) => self.apply_connection_state(id, state, events),
+                Some(
+                    State::k_ESteamNetworkingConnectionState_Connecting
+                    | State::k_ESteamNetworkingConnectionState_FindingRoute,
+                ) => {
+                    self.terminate_at(id, DisconnectReason::BackendConnectionTimeout, events, now);
+                }
+                _ => self.terminate_at(id, DisconnectReason::BackendFailure, events, now),
+            }
         }
     }
 }
@@ -403,7 +439,6 @@ impl Transport for GnsDirectIp {
     }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.pending);
-        self.expire_connecting(Instant::now(), events);
         self.global.poll_callbacks();
         let callbacks: Vec<_> = self
             .sockets
@@ -418,6 +453,7 @@ impl Transport for GnsDirectIp {
         for (endpoint, event) in callbacks {
             self.state_change(endpoint, event, events)?;
         }
+        self.expire_connecting(Instant::now(), events);
         let mut endpoints: VecDeque<_> = self.sockets.keys().copied().collect();
         if let Some(next) = self.next_receive_endpoint {
             let start = endpoints
@@ -774,6 +810,127 @@ mod tests {
         assert!(backend.native_ids.is_empty());
         assert!(backend.sockets.is_empty());
         backend.connect(sink.local_addr().unwrap()).unwrap();
+    }
+
+    fn native_state(transport: &GnsDirectIp, id: ConnectionId) -> Option<State> {
+        let connection = &transport.connections[&id];
+        transport.sockets[&connection.endpoint].connection_state(connection.native)
+    }
+
+    #[test]
+    fn gns_localhost_pending_state_wins_over_connecting_timeout() {
+        for process_callbacks in [true, false] {
+            for closed in [false, true] {
+                let mut host = GnsDirectIp::new().unwrap();
+                let mut client = GnsDirectIp::new().unwrap();
+                let listener = host
+                    .listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+                    .unwrap();
+                let outgoing = client
+                    .connect(host.listener_address(listener).unwrap())
+                    .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(15);
+                let mut incoming = None;
+                // Poll the host/global callbacks, leaving the client's real
+                // Connected callback queued and its application state unchanged.
+                while incoming.is_none()
+                    || native_state(&client, outgoing)
+                        != Some(State::k_ESteamNetworkingConnectionState_Connected)
+                {
+                    assert!(Instant::now() < deadline, "timeout connecting UDP loopback");
+                    for event in poll(&mut host) {
+                        let TransportEvent::Connected { connection } = event else {
+                            panic!("unexpected host event: {event:?}");
+                        };
+                        incoming = Some(connection);
+                    }
+                    std::thread::park_timeout(Duration::from_millis(1));
+                }
+                if closed {
+                    host.close(incoming.unwrap(), DisconnectReason::Requested)
+                        .unwrap();
+                    while native_state(&client, outgoing)
+                        != Some(State::k_ESteamNetworkingConnectionState_ClosedByPeer)
+                    {
+                        assert!(Instant::now() < deadline, "timeout closing UDP loopback");
+                        client.global.poll_callbacks();
+                        std::thread::park_timeout(Duration::from_millis(1));
+                    }
+                }
+                let now = Instant::now();
+                let connection = client.connections.get_mut(&outgoing).unwrap();
+                assert!(!connection.connected);
+                connection.created = now - CONNECTING_TIMEOUT - Duration::from_secs(1);
+                let origin = connection.origin;
+                // A false timeout would be the third failure and trigger cooldown.
+                for _ in 0..lifecycle::COOLDOWN_FAILURES - 1 {
+                    client.admission.penalize(Some(origin), now);
+                }
+                let mut events = Vec::new();
+                if process_callbacks {
+                    client.poll(&mut events).unwrap();
+                } else {
+                    // Also exercise expiry while callbacks remain queued, as
+                    // happens beyond the per-socket CALLBACK_BATCH limit.
+                    client.expire_connecting(now, &mut events);
+                }
+                assert!(!events.iter().any(|event| matches!(
+                    event,
+                    TransportEvent::ConnectionFailed {
+                        reason: DisconnectReason::BackendConnectionTimeout,
+                        ..
+                    }
+                )));
+                if closed {
+                    assert!(events.iter().any(|event| matches!(
+                        event,
+                        TransportEvent::ConnectionFailed {
+                            connection,
+                            reason: DisconnectReason::RemoteClosed,
+                        } | TransportEvent::Disconnected {
+                            connection,
+                            reason: DisconnectReason::RemoteClosed,
+                        } if *connection == outgoing
+                    )));
+                    assert!(!client.connections.contains_key(&outgoing));
+                    assert!(client.native_ids.is_empty());
+                    assert!(client.sockets.is_empty());
+                } else {
+                    assert_eq!(
+                        events,
+                        vec![TransportEvent::Connected {
+                            connection: outgoing,
+                        }]
+                    );
+                    assert!(client.connections[&outgoing].connected);
+                    assert!(!client.connections[&outgoing].authenticated);
+                    assert!(!client.connections[&outgoing].ready);
+                    assert_eq!(client.native_ids.len(), 1);
+                    assert_eq!(client.sockets.len(), 1);
+                    // The queued callback must not emit Connected a second time.
+                    assert!(poll(&mut client).is_empty());
+                }
+                client.admission.admit(Some(origin), 0, now).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn gns_poll_stalled_connecting_still_times_out() {
+        let sink = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut backend = GnsDirectIp::new().unwrap();
+        let id = backend.connect(sink.local_addr().unwrap()).unwrap();
+        backend.connections.get_mut(&id).unwrap().created = Instant::now() - CONNECTING_TIMEOUT;
+        assert_eq!(
+            poll(&mut backend),
+            vec![TransportEvent::ConnectionFailed {
+                connection: id,
+                reason: DisconnectReason::BackendConnectionTimeout,
+            }]
+        );
+        assert!(backend.connections.is_empty());
+        assert!(backend.native_ids.is_empty());
+        assert!(backend.sockets.is_empty());
     }
 
     fn poll(transport: &mut GnsDirectIp) -> Vec<TransportEvent> {
