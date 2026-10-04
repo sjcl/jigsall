@@ -7,6 +7,10 @@ use puzzella_game::resources::*;
 
 pub(crate) mod image_picker;
 
+pub(crate) fn randomize_seed(mut config: ResMut<PuzzleConfig>) {
+    config.seed = rand::random();
+}
+
 #[allow(clippy::too_many_arguments)] // Explicit ECS resources include image load failures.
 pub fn draw_game_setup_ui(
     i18n: Res<Localization>,

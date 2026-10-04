@@ -33,6 +33,7 @@ impl Plugin for GameUiPlugin {
             .add_systems(First, multiplayer::start_prepared_host)
             .add_systems(OnEnter(AppState::Menu), multiplayer::reset_on_menu)
             .init_resource::<game_setup::image_picker::ImagePicker>()
+            .add_systems(OnEnter(AppState::GameSetup), game_setup::randomize_seed)
             .add_systems(Update, game_setup::image_picker::finish_image_selection)
             .add_systems(
                 OnExit(AppState::GameSetup),
