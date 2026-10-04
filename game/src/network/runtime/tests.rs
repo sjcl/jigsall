@@ -1,4 +1,5 @@
 use super::*;
+mod disconnected_save_tests;
 mod local_rotation_tests;
 mod pending_release_tests;
 mod presence_tests;
@@ -1127,6 +1128,17 @@ fn ready_host_connection_loss_keeps_its_category_after_menu_cleanup() {
         assert_eq!(status.error, Some(format!("{reason:?}")));
         pair.client.update();
         let status = pair.client.world().resource::<NetworkStatus>();
+        assert!(status.has_disconnected_game());
+        assert!(pair
+            .client
+            .world()
+            .contains_resource::<OriginalPuzzleImage>());
+        assert!(pair.client.world().contains_resource::<PuzzleDefinition>());
+        assert!(pair.client.world().contains_non_send::<NetworkSession>());
+        assert!(!world_offline(pair.client.world()));
+        stop_session(pair.client.world_mut());
+        pair.client.update();
+        let status = pair.client.world().resource::<NetworkStatus>();
         assert_eq!(status.role, None);
         assert_eq!(status.failure, Some(NetworkFailureKind::ConnectionLost));
     }
@@ -2161,6 +2173,19 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         client.world().resource::<OriginalPuzzleImage>().hash,
         pair.host.world().resource::<OriginalPuzzleImage>().hash
     );
+    stop_session(pair.host.world_mut());
+    client.update();
+    client.update();
+    assert!(client
+        .world()
+        .resource::<NetworkStatus>()
+        .has_disconnected_game());
+    assert_eq!(
+        *client.world().resource::<State<AppState>>().get(),
+        AppState::InGame
+    );
+    assert_eq!(client.world().resource::<PieceDataStore>().len(), 4);
+    assert!(client.world().contains_resource::<OriginalPuzzleImage>());
     client
         .world_mut()
         .resource_mut::<NextState<AppState>>()
@@ -2172,4 +2197,6 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         LocalPlayerId::default()
     );
     assert!(client.world().resource::<PieceDataStore>().is_empty());
+    assert!(!client.world().contains_resource::<OriginalPuzzleImage>());
+    assert!(!client.world().contains_resource::<PuzzleDefinition>());
 }

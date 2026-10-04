@@ -273,6 +273,9 @@ impl MultiplayerUi {
 pub(crate) fn connection_screen_hidden(ui: Res<MultiplayerUi>, status: Res<NetworkStatus>) -> bool {
     !ui.connection_screen(&status)
 }
+pub(crate) fn disconnected_game_available(status: Res<NetworkStatus>) -> bool {
+    status.has_disconnected_game()
+}
 
 pub(crate) fn sync_local_gameplay_block(
     ui: Res<MultiplayerUi>,
@@ -766,12 +769,19 @@ fn paint_host_retry(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_connection_ui(
     mut contexts: EguiContexts,
     i18n: Res<Localization>,
     status: Res<NetworkStatus>,
     mut state: ResMut<MultiplayerUi>,
     profile: Res<PlayerSettingsState>,
+    mut saves: ResMut<crate::persistence::SaveDialogs>,
+    mut persistence: ResMut<PersistenceState>,
+    definition: Option<Res<puzzella_core::PuzzleDefinition>>,
+    original: Option<Res<OriginalPuzzleImage>>,
+    store: Res<PieceDataStore>,
+    app_state: Option<Res<State<AppState>>>,
 ) {
     if status.role == Some(RuntimeRole::Client) && status.phase == RuntimePhase::Ready {
         state.connecting = false;
@@ -807,6 +817,8 @@ pub(crate) fn draw_connection_ui(
         .show(ctx, |ui| {
             theme::frame().show(ui, |ui| {
                 ui.set_width((screen.width() - 96.0).clamp(160.0, 480.0));
+                // Save outcomes can grow the card beyond the Area's previous size.
+                ui.set_max_height((screen.height() - 160.0).max(80.0));
                 egui::ScrollArea::vertical()
                     .max_height((screen.height() - 160.0).max(80.0))
                     .show(ui, |ui| {
@@ -834,31 +846,64 @@ pub(crate) fn draw_connection_ui(
                             });
                         }
                         ui.add_space(12.0);
-                        if theme::button(
-                            ui,
-                            i18n.text(if error.is_some() {
-                                "common-back"
-                            } else {
-                                "common-cancel"
-                            }),
-                            ui.available_width(),
-                            false,
-                        )
-                        .clicked()
+                        if status.has_disconnected_game()
+                            && app_state.as_ref().is_some_and(|state| {
+                                matches!(state.get(), AppState::InGame | AppState::GameComplete)
+                            })
                         {
-                            if error.is_some() && state.retry_host.is_some() {
-                                state.editing_host_retry = true;
-                                state.submitted = false;
-                                state.error = None;
-                            } else {
-                                let join_failed =
-                                    error.is_some() && state.screen == MenuScreen::Join;
-                                state.cancel();
-                                if join_failed {
-                                    state.screen = MenuScreen::Join;
-                                }
-                            }
+                            theme::hint(ui, i18n.text("multiplayer-save-disconnected-hint"));
+                            crate::persistence::status(ui, &persistence, &i18n);
+                            ui.add_enabled_ui(
+                                !persistence.busy
+                                    && !persistence.title_dialog_open
+                                    && definition.is_some()
+                                    && original.is_some()
+                                    && !store.is_empty(),
+                                |ui| {
+                                    if theme::button(
+                                        ui,
+                                        i18n.text("multiplayer-save-disconnected"),
+                                        ui.available_width(),
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
+                                        saves.open_title(&mut persistence, &i18n);
+                                    }
+                                },
+                            );
+                            ui.add_space(8.0);
                         }
+                        ui.add_enabled_ui(
+                            !persistence.busy && !persistence.title_dialog_open,
+                            |ui| {
+                                if theme::button(
+                                    ui,
+                                    i18n.text(if error.is_some() {
+                                        "common-back"
+                                    } else {
+                                        "common-cancel"
+                                    }),
+                                    ui.available_width(),
+                                    false,
+                                )
+                                .clicked()
+                                {
+                                    if error.is_some() && state.retry_host.is_some() {
+                                        state.editing_host_retry = true;
+                                        state.submitted = false;
+                                        state.error = None;
+                                    } else {
+                                        let join_failed =
+                                            error.is_some() && state.screen == MenuScreen::Join;
+                                        state.cancel();
+                                        if join_failed {
+                                            state.screen = MenuScreen::Join;
+                                        }
+                                    }
+                                }
+                            },
+                        );
                     });
             });
         });

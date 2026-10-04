@@ -2,6 +2,7 @@ use super::*;
 use crate::localization::{LanguagePreference, Locale};
 use bevy::ecs::system::RunSystemOnce;
 mod departure;
+mod disconnection;
 mod native;
 
 fn screen_world() -> (World, Entity, egui::Context) {
@@ -25,6 +26,7 @@ fn screen_world() -> (World, Entity, egui::Context) {
     world.init_resource::<crate::persistence::SaveDialogs>();
     world.init_resource::<crate::settings::SettingsDialog>();
     world.init_resource::<PersistenceState>();
+    world.init_resource::<PieceDataStore>();
     world.insert_resource(PersistenceService::with_storage_requests().0);
     world.insert_resource(puzzella_game::settings::DisplaySettingsState::load(None));
     world.insert_resource(PlayerSettingsState::load(None));
@@ -220,6 +222,7 @@ fn click_label(app: &mut App, ctx: &egui::Context, label: &str) {
     let point = output
         .shapes
         .iter()
+        .rev()
         .find_map(|shape| match &shape.shape {
             egui::Shape::Text(text) if text.galley.job.text == label => {
                 Some(text.pos + text.galley.size() * 0.5)

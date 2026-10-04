@@ -143,6 +143,17 @@ impl Default for NetworkStatus {
         }
     }
 }
+impl NetworkStatus {
+    /// A client that reached Ready can save its last confirmed replica after loss.
+    pub fn has_disconnected_game(&self) -> bool {
+        self.role == Some(RuntimeRole::Client)
+            && self.local_player.is_some()
+            && matches!(
+                self.phase,
+                RuntimePhase::Failed | RuntimePhase::Disconnected
+            )
+    }
+}
 #[derive(Debug, PartialEq, Eq)]
 pub enum RuntimeStartError {
     AlreadyActive,

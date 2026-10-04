@@ -23,6 +23,8 @@ use puzzella_game::resources::{AppState, GameCompleteSubState, GameSubState};
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GameplayUi;
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SaveUi;
 
 pub struct GameUiPlugin;
 impl Plugin for GameUiPlugin {
@@ -69,16 +71,24 @@ fn register_screens(app: &mut App) {
             multiplayer::connection_screen_hidden.or_else(window_close::exit_dialog_pending),
         ),
     )
+    .configure_sets(
+        EguiPrimaryContextPass,
+        SaveUi.after(multiplayer::draw_connection_ui).run_if(
+            multiplayer::connection_screen_hidden
+                .or_else(window_close::exit_dialog_pending)
+                .or_else(multiplayer::disconnected_game_available),
+        ),
+    )
     .add_systems(
         EguiPrimaryContextPass,
         (
             persistence::draw_save_dialogs
-                .in_set(GameplayUi)
+                .in_set(SaveUi)
                 .after(menu::draw_menu_ui)
                 .after(overlays::draw_in_game_menu_ui)
                 .after(completion::draw_completion_ui),
             persistence::process_departure
-                .in_set(GameplayUi)
+                .in_set(SaveUi)
                 .after(persistence::draw_save_dialogs),
             menu::draw_menu_ui.run_if(in_state(AppState::Menu)),
             settings::draw_settings_ui
@@ -93,6 +103,7 @@ fn register_screens(app: &mut App) {
                 .after(game_setup::draw_game_setup_ui),
             multiplayer::process_actions
                 .after(GameplayUi)
+                .after(SaveUi)
                 .after(menu::draw_menu_ui)
                 .after(game_setup::draw_game_setup_ui)
                 .after(persistence::draw_save_dialogs)

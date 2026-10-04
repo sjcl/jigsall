@@ -191,8 +191,10 @@ localized error category; the runtime keeps the diagnostic. Connection failures
 and timeouts after the client reaches Ready use a separate connection-lost message;
 initial connection/authentication/sync failures retain their specific categories.
 The shared GameplayUi condition excludes the HUD, roster, performance, pause,
-completion and save/settings dialogs while the connection screen is visible. It
-runs after the connection screen so Ready can restore the normal UI in the same pass.
+completion and settings dialogs while the connection screen is visible. It runs
+after the connection screen so Ready can restore the normal UI in the same pass.
+SaveUi separately permits the manual-save modal for a disconnected game and the
+existing native-window exit flow; gameplay remains blocked during recovery saves.
 
 The UI updates the game-owned LocalGameplayBlocked before Update and after egui
 actions. Local picking, rotation, camera controls and gameplay menu shortcuts are
@@ -454,6 +456,17 @@ retention failure is reported separately and cannot suppress Ready publication.
 Client host loss (including ConnectionFailed before Connected), protocol errors,
 decode failure and sync timeout end the session safely, without host migration.
 A failed session gates offline authority until Menu cleanup.
+
+After a Ready client loses its host, teardown clears holds, local prediction,
+pending Release and remote presentation, but retains the CPU store, definition
+and original image until Back. The empty NetworkSession continues to gate offline
+authority and LocalGameplayBlocked suppresses input. The connection screen offers
+Save Last State through the existing manual-save modal and worker. Capture happens
+only on an explicit save and includes confirmed canonical state, excluding
+Transient and unacknowledged movement/rotation. Saving blocks Back, reports
+success on the connection screen and allows retry after failure. Initial join
+failures still return to Menu and do not offer recovery saves. Back/Stop/Menu
+performs the usual game cleanup; saving does not resume offline gameplay.
 
 Stop/Menu closes listener and connections, destroys transport channels, passwords,
 bootstrap, sync state, mappings, contexts/replica, worker receiver and sender.

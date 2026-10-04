@@ -337,6 +337,15 @@ fn drive(world: &mut World, commands: bool) {
             driver.poll(world);
         }
         if !driver.active() {
+            let retain_game = world.resource::<NetworkStatus>().has_disconnected_game()
+                && world
+                    .get_resource::<State<AppState>>()
+                    .is_some_and(|state| {
+                        matches!(state.get(), AppState::InGame | AppState::GameComplete)
+                    })
+                && world.contains_resource::<PuzzleDefinition>()
+                && world.contains_resource::<OriginalPuzzleImage>()
+                && !world.resource::<PieceDataStore>().is_empty();
             driver.teardown(world);
             session.driver = None;
             *world.resource_mut::<PieceInteraction>() = default();
@@ -345,7 +354,12 @@ fn drive(world: &mut World, commands: bool) {
             {
                 selection.cancel();
             }
-            if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
+            if retain_game {
+                // Keep the confirmed store and original image for an explicit save.
+                // The empty NetworkSession still gates offline authority.
+                world.init_resource::<LocalGameplayBlocked>();
+                world.resource_mut::<LocalGameplayBlocked>().0 = true;
+            } else if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
                 next.set(AppState::Menu);
             }
         }

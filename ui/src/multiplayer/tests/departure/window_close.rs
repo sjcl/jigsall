@@ -273,3 +273,35 @@ fn window_close_save_dialog_is_accessible_while_retrying_a_prepared_host() {
     click_label(&mut app, &ctx, "Exit Without Saving");
     assert_departed(&app, DepartureAction::Exit);
 }
+
+#[test]
+fn window_close_during_disconnected_save_waits_for_success_before_exit() {
+    for game_state in [GameSubState::Playing, GameSubState::Initializing] {
+        let (mut app, ctx, primary) = window_game(Some(RuntimeRole::Client), false);
+        app.world_mut()
+            .resource_mut::<NextState<GameSubState>>()
+            .set(game_state);
+        app.world_mut().run_schedule(StateTransition);
+        {
+            let mut status = app.world_mut().resource_mut::<NetworkStatus>();
+            status.local_player = Some(puzzella_core::PlayerId(1));
+            status.phase = RuntimePhase::Disconnected;
+            status.failure = Some(NetworkFailureKind::ConnectionLost);
+        }
+        click_label(&mut app, &ctx, "Save Last State");
+        click_save_button(&mut app, &ctx, "Save Game");
+        assert!(app.world().resource::<PersistenceState>().busy);
+        close(&mut app, primary);
+        close(&mut app, primary);
+        render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        assert!(app.world().resource::<Messages<AppExit>>().is_empty());
+        assert!(app.world().get::<Window>(primary).is_some());
+        assert!(app.world().resource::<PersistenceState>().title_dialog_open);
+        let mut state = app.world_mut().resource_mut::<PersistenceState>();
+        state.busy = false;
+        state.title_dialog_open = false;
+        state.message = Some(PersistenceNotice::Saved);
+        render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        assert_departed(&app, DepartureAction::Exit);
+    }
+}

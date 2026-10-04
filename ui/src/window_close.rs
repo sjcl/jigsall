@@ -13,7 +13,8 @@ use puzzella_game::{
 };
 
 pub(crate) fn exit_dialog_pending(dialogs: Res<SaveDialogs>, status: Res<NetworkStatus>) -> bool {
-    dialogs.exit_pending() && status.role != Some(RuntimeRole::Client)
+    dialogs.exit_pending()
+        && (status.role != Some(RuntimeRole::Client) || status.has_disconnected_game())
 }
 
 /// PreUpdate runs before state transitions, so pausing releases the local drag
@@ -55,11 +56,12 @@ pub(crate) fn handle_close_requests(
         return;
     }
     let playing = *app_state.get() == AppState::InGame
-        && game_state.is_some_and(|state| {
-            matches!(state.get(), GameSubState::Playing | GameSubState::Paused)
-        });
+        && (status.has_disconnected_game()
+            || game_state.is_some_and(|state| {
+                matches!(state.get(), GameSubState::Playing | GameSubState::Paused)
+            }));
     let completed = *app_state.get() == AppState::GameComplete;
-    if status.role == Some(RuntimeRole::Client)
+    if (status.role == Some(RuntimeRole::Client) && !status.has_disconnected_game())
         || definition.is_none()
         || store.is_empty()
         || !(playing || completed)
