@@ -71,6 +71,9 @@ fn register_screens(app: &mut App) {
                 .after(menu::draw_menu_ui)
                 .after(overlays::draw_in_game_menu_ui)
                 .after(completion::draw_completion_ui),
+            persistence::process_departure
+                .in_set(GameplayUi)
+                .after(persistence::draw_save_dialogs),
             menu::draw_menu_ui.run_if(in_state(AppState::Menu)),
             settings::draw_settings_ui
                 .in_set(GameplayUi)

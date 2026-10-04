@@ -9,17 +9,14 @@ use puzzella_game::resources::*;
 pub fn draw_in_game_menu_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
-    mut next_state: ResMut<NextState<AppState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
     completion_state: Option<Res<State<GameCompleteSubState>>>,
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
-    mut exit: MessageWriter<AppExit>,
     network_status: Res<puzzella_game::network::runtime::NetworkStatus>,
-    mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
 ) {
-    if persistence.title_dialog_open {
+    if persistence.title_dialog_open || dialogs.departure_pending() {
         return;
     }
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -71,14 +68,20 @@ pub fn draw_in_game_menu_ui(
                         if theme::button(ui, i18n.text("common-return-title"), width, false)
                             .clicked()
                         {
-                            if network_status.role.is_some() {
-                                multiplayer.return_to_title();
-                            } else {
-                                next_state.set(AppState::Menu);
-                            }
+                            dialogs.request_departure(
+                                crate::persistence::DepartureAction::Title,
+                                network_status.role,
+                                &mut persistence,
+                                &i18n,
+                            );
                         }
                         if theme::danger_button(ui, i18n.text("pause-exit"), width).clicked() {
-                            exit.write(AppExit::Success);
+                            dialogs.request_departure(
+                                crate::persistence::DepartureAction::Exit,
+                                network_status.role,
+                                &mut persistence,
+                                &i18n,
+                            );
                         }
                     });
                     crate::persistence::status(ui, &persistence, &i18n);

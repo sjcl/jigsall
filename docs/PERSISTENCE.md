@@ -2,6 +2,8 @@
 
 2026-10-04。Main Menu の **Load Game** から保存一覧を開き、Pause Menu / 完成後の Puzzle Menu / 完成カードの **Save Game** からタイトルを入力して保存します。ホストのプレイ中にはオートセーブも行います。Save As・Steam Cloud は未実装です。
 
+シングルプレイ・ホストの **Return to Title** / **Exit Game** は保存画面を開きます。`ui/src/persistence/departure.rs` が離脱先と確認・保存待ちを管理し、手動保存の成功後だけ既存のタイトル遷移・network teardown / AppExit を実行します。失敗時はタイトル入力と離脱先を保持して再試行できます。保存せず離脱するには追加の確認が必要で、確認のキャンセル・Esc は入力画面へ戻り、入力画面のキャンセル・Esc は離脱を取り消します。クライアントの離脱は従来の直接遷移を維持します。
+
 ## オートセーブ
 
 Settings の一般タブで有効・無効、間隔（1–60分）、ゲームごとの保存件数上限（1件以上）を変更できます。初期値は有効・5分・1件です。変更は即時反映し、`<OS user local application data>/puzzella/settings.json` の `autosave` セクションに保存します。`interval_minutes: null` は無効、正の整数は分単位の間隔です。`max_saves_per_game` はゲームごとに保持するオートセーブ件数で、省略時は1です。0や不正なJSONはエラーを表示して初期値を使います。上限を減らした場合は、そのゲームの次のオートセーブ成功後に超過分を削除します。共通のファイル形式と保存処理は [SETTINGS.md](SETTINGS.md) を参照してください。

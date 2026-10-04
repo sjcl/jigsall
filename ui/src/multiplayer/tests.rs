@@ -1,6 +1,7 @@
 use super::*;
 use crate::localization::{LanguagePreference, Locale};
 use bevy::ecs::system::RunSystemOnce;
+mod departure;
 mod native;
 
 fn screen_world() -> (World, Entity, egui::Context) {

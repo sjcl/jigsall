@@ -15,13 +15,14 @@ pub fn draw_completion_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     store: Res<PieceDataStore>,
-    mut next_state: ResMut<NextState<AppState>>,
     mut next_completion_state: ResMut<NextState<GameCompleteSubState>>,
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<puzzella_game::persistence::runtime::PersistenceState>,
     network_status: Res<puzzella_game::network::runtime::NetworkStatus>,
-    mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
 ) {
+    if persistence.title_dialog_open || dialogs.departure_pending() {
+        return;
+    }
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
@@ -127,11 +128,12 @@ pub fn draw_completion_ui(
                                 )
                                 .clicked()
                             {
-                                if network_status.role.is_some() {
-                                    multiplayer.return_to_title();
-                                } else {
-                                    next_state.set(AppState::Menu);
-                                }
+                                dialogs.request_departure(
+                                    crate::persistence::DepartureAction::Title,
+                                    network_status.role,
+                                    &mut persistence,
+                                    &i18n,
+                                );
                             }
                             if ui
                                 .add_enabled(
