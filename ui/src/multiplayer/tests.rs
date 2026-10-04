@@ -264,6 +264,111 @@ fn click_label(app: &mut App, ctx: &egui::Context, label: &str) {
 }
 
 #[test]
+fn holding_tab_shows_players_without_capturing_gameplay_keyboard_input() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut()
+        .init_resource::<bevy_egui::input::EguiWantsInput>();
+    // Egui measures new windows in an invisible sizing pass.
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .reset_all();
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+
+    for _ in 0..2 {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Tab);
+        for events in [
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: default(),
+            }],
+            vec![],
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: true,
+                modifiers: default(),
+            }],
+            vec![],
+        ] {
+            let output = render_schedule(&mut app, &ctx, events);
+            let text: Vec<_> = labels(&output).into_iter().map(str::to_owned).collect();
+            let players_visible = labels(&output).contains(&"Players");
+            output.drop_without_applying_deltas();
+            app.world_mut()
+                .run_system_once(bevy_egui::input::write_egui_wants_input_system)
+                .unwrap();
+            assert!(ctx.memory(|memory| memory.focused().is_none()));
+            assert!(!app
+                .world()
+                .resource::<bevy_egui::input::EguiWantsInput>()
+                .wants_any_keyboard_input());
+            assert!(players_visible, "{text:?}");
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Tab);
+        let output = render_schedule(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: default(),
+            }],
+        );
+        let players_visible = labels(&output).contains(&"Players");
+        output.drop_without_applying_deltas();
+        assert!(!players_visible);
+    }
+}
+
+#[test]
+fn hud_buttons_accept_clicks_and_pause_menu_keeps_tab_navigation() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .reset_all();
+    click_label(&mut app, &ctx, "How to Play");
+    assert!(egui::Popup::is_any_open(&ctx));
+    click_label(&mut app, &ctx, "How to Play");
+    assert!(!egui::Popup::is_any_open(&ctx));
+    assert!(ctx.memory(|memory| memory.focused().is_none()));
+
+    click_label(&mut app, &ctx, "Menu · Esc");
+    assert!(matches!(
+        app.world().resource::<NextState<GameSubState>>(),
+        NextState::Pending(GameSubState::Paused)
+    ));
+    app.world_mut()
+        .insert_resource(State::new(GameSubState::Paused));
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    render_schedule(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: default(),
+        }],
+    )
+    .drop_without_applying_deltas();
+    assert!(ctx.memory(|memory| memory.focused().is_some()));
+    assert!(ctx.egui_wants_keyboard_input());
+}
+
+#[test]
 fn join_failure_back_keeps_address_clears_password_and_returns_to_join_form() {
     let (mut app, ctx) = scheduled_screens();
     let mut ui = app.world_mut().resource_mut::<MultiplayerUi>();

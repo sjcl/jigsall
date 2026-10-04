@@ -64,7 +64,11 @@ pub fn draw_game_ui(
             paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();
-            ui.menu_button(i18n.text("game-controls"), |ui| {
+            // HUD buttons must not capture Tab or block gameplay key bindings.
+            egui::containers::menu::MenuButton::from_button(
+                egui::Button::new(i18n.text("game-controls")).sense(egui::Sense::CLICK),
+            )
+            .ui(ui, |ui| {
                 paint_controls(
                     ui,
                     &bindings,
@@ -75,7 +79,7 @@ pub fn draw_game_ui(
             if ui
                 .add_enabled(
                     *sub_state.get() == GameSubState::Playing,
-                    egui::Button::new(i18n.text("game-menu")),
+                    egui::Button::new(i18n.text("game-menu")).sense(egui::Sense::CLICK),
                 )
                 .clicked()
             {
