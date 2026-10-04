@@ -47,11 +47,27 @@ pub struct PuzzleDefinition {
     pub seed: u64,
     pub grid_size: UVec2,
     pub image_size: UVec2,
+    /// Frozen for saves and multiplayer; new games derive this from nominal cell size.
     pub snap_distance: f32,
     /// Frozen game rule: seeded initial quarter turns and rotation commands.
     pub rotation_enabled: bool,
 }
 impl PuzzleDefinition {
+    /// Create a new puzzle with a snap radius of 20% of the piece's shorter side.
+    /// Logical image dimensions keep texture resolution and zoom from affecting it.
+    /// Call `validate` before using the definition.
+    pub fn new(seed: u64, grid_size: UVec2, image_size: UVec2, rotation_enabled: bool) -> Self {
+        let piece_size = image_size.as_vec2() / grid_size.as_vec2();
+        Self {
+            generator_version: GENERATOR_VERSION,
+            seed,
+            grid_size,
+            image_size,
+            snap_distance: piece_size.min_element() / 5.0,
+            rotation_enabled,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.generator_version != GENERATOR_VERSION {
             return Err("Unsupported puzzle generator version");
@@ -267,6 +283,68 @@ pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_snap_distance_scales_with_piece_short_side() {
+        for (image_size, grid_size, expected) in [
+            (UVec2::new(1000, 600), UVec2::splat(10), 12.0),
+            (UVec2::new(1000, 600), UVec2::new(20, 5), 10.0),
+            (UVec2::new(1000, 600), UVec2::new(5, 20), 6.0),
+            (UVec2::new(2000, 1200), UVec2::splat(10), 24.0),
+            (UVec2::new(1000, 600), UVec2::splat(20), 6.0),
+            (UVec2::ONE, UVec2::splat(1000), 0.0002),
+            (UVec2::splat(16384), UVec2::ONE, 3276.8),
+        ] {
+            let definition = PuzzleDefinition::new(42, grid_size, image_size, false);
+            assert!(definition.validate().is_ok());
+            assert!(
+                (definition.snap_distance - expected).abs() <= expected * f32::EPSILON * 2.0,
+                "{image_size:?} / {grid_size:?}: {} != {expected}",
+                definition.snap_distance
+            );
+            for seed in [0, 42, u64::MAX] {
+                let repeated = PuzzleDefinition::new(seed, grid_size, image_size, true);
+                let transposed = PuzzleDefinition::new(
+                    seed,
+                    UVec2::new(grid_size.y, grid_size.x),
+                    UVec2::new(image_size.y, image_size.x),
+                    false,
+                );
+                assert_eq!(
+                    repeated.snap_distance.to_bits(),
+                    definition.snap_distance.to_bits()
+                );
+                assert_eq!(
+                    transposed.snap_distance.to_bits(),
+                    definition.snap_distance.to_bits()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn automatic_snap_distance_preserves_strict_snap_boundary() {
+        let definition = PuzzleDefinition::new(42, UVec2::splat(10), UVec2::new(1000, 600), false);
+        for (offset, target) in [
+            (Vec2::ZERO, None),
+            (Vec2::new(100.0, 50.0), Some(PieceId(1))),
+        ] {
+            assert!(crate::SnapCandidate::new(
+                offset + Vec2::new(12.0, 0.0),
+                offset,
+                target,
+                definition.snap_distance
+            )
+            .is_none());
+            assert!(crate::SnapCandidate::new(
+                offset + Vec2::new(11.99, 0.0),
+                offset,
+                target,
+                definition.snap_distance
+            )
+            .is_some());
+        }
+    }
+
     #[test]
     fn image_fit_rounds_consistently_without_upscaling_or_overflow() {
         for (source, limit, expected) in [

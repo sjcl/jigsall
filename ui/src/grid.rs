@@ -35,10 +35,13 @@ pub fn calculate_grid_from_config(
 
         PieceMode::SquarePieces => {
             // 新ロジック：縦横比保持スケールから計算
-            let (grid_width, grid_height, _, _) =
-                calculate_aspect_ratio_grid(image_width, image_height, config.target_piece_size);
+            let (grid_width, grid_height, _, _) = calculate_aspect_ratio_grid(
+                image_width,
+                image_height,
+                (config.target_piece_count as f32).sqrt(),
+            );
 
-            Some((grid_width, grid_height))
+            Some((grid_width.clamp(1, 1000), grid_height.clamp(1, 1000)))
         }
     }
 }

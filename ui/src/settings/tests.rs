@@ -1490,13 +1490,29 @@ fn native_settings_ui_probe() {
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path("setup-ui-image-ja.png")));
             }
-            21 => next_app.set(puzzella_game::resources::AppState::InGame),
+            21 => {
+                commands.queue(|world: &mut World| {
+                    use puzzella_game::resources::{PieceMode, PuzzleConfig};
+                    let mut config = world.resource_mut::<PuzzleConfig>();
+                    config.piece_mode = PieceMode::ManualGrid;
+                    config.grid_size = (8, 4);
+                    config.rotation_enabled = true;
+                });
+            }
             22 => {
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(screenshot_path(
+                        "setup-ui-rotation-warning-ja.png",
+                    )));
+            }
+            23 => next_app.set(puzzella_game::resources::AppState::InGame),
+            24 => {
                 commands
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path("playing-ui-ja.png")));
             }
-            23 => {
+            25 => {
                 commands.queue(|world: &mut World| {
                     use puzzella_game::resources::GameSubState;
                     assert_eq!(
@@ -1508,12 +1524,12 @@ fn native_settings_ui_probe() {
                         .set(GameSubState::Paused);
                 });
             }
-            24 => {
+            26 => {
                 commands
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path("pause-ui-ja.png")));
             }
-            25 => {
+            27 => {
                 commands.queue(|world: &mut World| {
                     world
                         .resource_mut::<puzzella_game::resources::GameData>()
@@ -1523,12 +1539,12 @@ fn native_settings_ui_probe() {
                         .set(puzzella_game::resources::AppState::GameComplete);
                 });
             }
-            26 => {
+            28 => {
                 commands
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(screenshot_path("complete-ui-ja.png")));
             }
-            27 => {
+            29 => {
                 exit.write(AppExit::Success);
             }
             _ => {}
@@ -1574,6 +1590,7 @@ fn native_settings_ui_probe() {
         "setup-ui-ja.png",
         "setup-ui-en-small.png",
         "setup-ui-image-ja.png",
+        "setup-ui-rotation-warning-ja.png",
         "playing-ui-ja.png",
         "pause-ui-ja.png",
         "complete-ui-ja.png",

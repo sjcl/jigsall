@@ -27,11 +27,17 @@ Windows向けのビルドでは、ルートの`build.rs`が`assets/icon.ico`を�
 通常の`cargo build`で適用され、配布時にアイコンファイルを同梱する必要はありません。
 Windows以外のターゲットではこの埋め込み処理を行いません。
 
+ウィンドウのタイトルは`Puzzella`です。ウィンドウ生成時に、メニューと共通の
+`assets/menu-icon.png`を埋め込み画像から読み込み、タイトルバーとWindowsのタスクバーのアイコンに設定します。
+この画像も実行ファイルに含まれるため、起動時の作業ディレクトリや外部のアイコンファイルに依存しません。
+
+元画像は`assets/icon.svg`で、`viewBox`を背景の外周に合わせて透明な余白を除いています。
 `icon.ico`はメニューと共通の`assets/menu-icon.png`を元に、16 / 24 / 32 / 48 / 64 / 128 / 256 pxの
-画像を格納しています。元画像を更新した場合は、ImageMagickで再生成してください。
+画像を格納しています。SVGを更新した場合は、ImageMagickでPNGとICOを再生成してください。
 ImageMagickはアイコンの再生成時だけ必要で、通常のビルドには不要です。
 
 ```powershell
+magick -background none assets/icon.svg -resize 384x384 -depth 8 PNG32:assets/menu-icon.png
 magick assets/menu-icon.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/icon.ico
 ```
 

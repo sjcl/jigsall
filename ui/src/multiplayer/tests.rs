@@ -511,6 +511,33 @@ fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switc
     }
 }
 
+#[cfg(feature = "gns")]
+#[test]
+fn starting_a_new_host_opens_puzzle_settings_even_after_a_previous_network_tab() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut().insert_resource(State::new(AppState::Menu));
+    {
+        let mut state = app.world_mut().resource_mut::<MultiplayerUi>();
+        state.navigate(MenuScreen::Host);
+        state.host_settings_tab = true;
+    }
+    click_label(&mut app, &ctx, "New Puzzle");
+    let state = app.world().resource::<MultiplayerUi>();
+    assert!(state.host_setup);
+    assert!(!state.host_settings_tab);
+    assert!(matches!(
+        app.world().resource::<NextState<AppState>>(),
+        NextState::Pending(AppState::GameSetup)
+    ));
+    app.world_mut()
+        .insert_resource(State::new(AppState::GameSetup));
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    assert!(labels(&output).contains(&"Select Image"));
+    assert!(!labels(&output).contains(&"Accept connections at"));
+    output.drop_without_applying_deltas();
+}
+
 #[test]
 fn addresses_accept_dns_for_join_and_keep_bind_addresses_literal() {
     for address in [

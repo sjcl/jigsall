@@ -65,13 +65,16 @@ empty snapshotは初回と全員hiddenへの遷移時に1回だけ送り、visib
 `resources/remote_cursor.rs::RemoteCursorPresentation` はpieceに触れず、最大player数だけの
 target / displayed world positionを持ちます。`Time<Real>` の指数平滑化（25 ms）でtargetへ
 収束し、epsilonまたは250 msでexact settleし、settled frameの変更検知を進めません。
-prediction / extrapolationはありません。`ui/src/remote_cursor.rs` は受信側MainCameraで
-毎frame viewportへ投影し、一定screen sizeのpointer・PlayerId由来の色・roster名を描画します。
-camera pan / zoomに新packetは不要です。描画だけのegui background painterをHUDより先に
-使い、input capture / focusを登録せず、Playing以外では表示しません。
+prediction / extrapolationはありません。`ui/src/remote_cursor.rs` はroster名とlocalized fallbackを
+低頻度にCPU rasterizeして、bounded R8 texture atlasを作ります。既存の日本語font bytesを共有します。
+`render/remote_cursor.rs` はExtractScheduleでdisplayed world positionとatlas revisionを受け取り、
+puzzleの同frameの`clip_from_world` / viewportを共有する専用GPU marker・label passで描画します。
+pan / zoomで新packet・instance upload・atlas rebuildは不要です。logical sizeは一定で、DPI変更時に
+atlasを再生成します。puzzle / selection boxの後、egui HUD / menuの前で、Playing時だけ表示します。
+input capture / focusを登録しません。詳細とboundsは[GPU cursor presentation](REMOTE_CURSOR_GPU.md)を参照してください。
 
-cursorの通常処理は最大約64人のsmoothing / projectionで、100万pieceのstate・membership・
-component・GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
+cursorの通常処理は最大64 remote playersのsmoothing / instance描画で、100万pieceのstate・membership・
+component・piece GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
 snapshot / checkpoint / JoinBaseline / catch-up / save / autosaveから完全に分離します。
 disconnect / PlayerLeftは即削除、session / epoch / baseline / Ready replacementとteardownは
 全resetです。wire v11の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
@@ -103,6 +106,8 @@ GPU pick / selection mask
 ```
 
 Moveの最終座標を適用してからReleaseとsnapを処理します。bulk grabとreleaseはそれぞれ1つのClientCommandで、pieceごとの完了・配置Messageも生成しません。連結componentは選択・ownership・移動・配置の単位です。scalar Grab / Move / Releaseもcomponent全体に適用し、同じresolverを使います。snap閾値はstrict `distance < snap_distance`。配置済みcomponentは再Grabできません。保持者の異なる命令と非有限座標を拒否します。
+
+新規ゲームではcoreの`PuzzleDefinition::new`が`min(image_width / columns, image_height / rows) / 5`でsnap距離を決定します。論理画像寸法と確定gridだけを使い、seed・GPU textureの縮小・camera zoomに依存しません。固定の最小距離・最大距離を設けず、細かいgridでも短辺の20%を維持します。作成画面には調整項目を設けず、計算結果を`PuzzleDefinition.snap_distance`へ凍結してmultiplayer / saveで共有します。既存saveの復元とnetwork joinでは記録・受信した距離を維持します。
 
 永続連結は`PieceConnectivity`の`Vec<i32> parent_or_size`と`Vec<u32> next_member`で表現します。union-by-sizeとpath compressionを使い、循環listのsuccessor交換でmember listをO(1)結合します。余剰bitsに最小member IDを保存し、offsetの代表とRelease処理順をsnapshot復元前後で揃えます。100万ピースで追加8,000,000 bytes、componentごとのEntity / 恒久member Vecはありません。隣接はrow-major IDから上下左右だけを導出します。rotation == 0でRelease直後のoffsetがstrict threshold内ならboardを優先しZEROへ配置します。範囲外の場合だけ、同rotationの正しい隣接componentから最小offset距離、tieなら最小member PieceIdの順にtargetを1つ選びます。moving componentを一度だけ正規化し、以後のoffsetは固定します。固定final offsetへの再構成をmatches_transformで検証し、f32の算術丸めだけを許容した同rotation・同一translationのvalid・unheldな隣接componentをclosureへ加えます。targetの座標は動かしません。Release共通scratchは少数IDをstackへ保存し、容量を超えたsetだけdenseへ昇格します。target検証と解決済みrootのlogical offsetをcacheし、成長するcomponentの再走査を抑えます。scalar Releaseはrootを直接処理し、Group Releaseも全componentのauthority検証後にaccepted maskを再構築せずmemberを処理します。詳細・計算量・計測・制限は[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。
 

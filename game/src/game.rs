@@ -230,14 +230,12 @@ fn initialize_game(
         }
     }
     persistence.game_id = crate::persistence::GameId::default();
-    let definition = PuzzleDefinition {
-        generator_version: GENERATOR_VERSION,
-        seed: config.seed,
-        grid_size: UVec2::new(config.grid_size.0 as u32, config.grid_size.1 as u32),
-        image_size: image.logical_size,
-        snap_distance: config.snap_distance,
-        rotation_enabled: config.rotation_enabled,
-    };
+    let definition = PuzzleDefinition::new(
+        config.seed,
+        UVec2::new(config.grid_size.0 as u32, config.grid_size.1 as u32),
+        image.logical_size,
+        config.rotation_enabled,
+    );
     if let Err(error) = definition.validate() {
         progress.error = Some(GenerationError::InvalidDefinition(error.into()));
         progress.generation_phase = GenerationPhase::Failed;
@@ -543,6 +541,46 @@ mod tests {
     }
 
     #[test]
+    fn new_game_snap_distance_uses_logical_piece_size_in_every_mode() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        for piece_mode in [
+            PieceMode::TargetCount,
+            PieceMode::ManualGrid,
+            PieceMode::SquarePieces,
+        ] {
+            for texture_size in [UVec2::new(1000, 600), UVec2::new(100, 60)] {
+                let mut app = App::new();
+                app.init_resource::<LocalPlayerId>()
+                    .init_resource::<PersistenceState>()
+                    .init_resource::<GameData>()
+                    .init_resource::<PlayerRoster>()
+                    .init_resource::<PieceGenerationProgress>()
+                    .init_resource::<PieceDataStore>()
+                    .insert_resource(PuzzleConfig {
+                        grid_size: (10, 10),
+                        piece_mode,
+                        ..default()
+                    })
+                    .insert_resource(PuzzleImage {
+                        handle: default(),
+                        logical_size: UVec2::new(1000, 600),
+                        texture_size,
+                        opaque: true,
+                    });
+                for seed in [42, 123] {
+                    app.world_mut().resource_mut::<PuzzleConfig>().seed = seed;
+                    app.world_mut().run_system_once(initialize_game).unwrap();
+                    let definition = app.world().resource::<PuzzleDefinition>();
+                    assert_eq!(definition.seed, seed);
+                    assert_eq!(definition.snap_distance, 12.0);
+                    assert!(definition.validate().is_ok());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn returning_to_menu_clears_image_load_failure_and_external_paths() {
         let (service, _requests) = PersistenceService::with_storage_requests();
         let mut app = App::new();
@@ -765,6 +803,7 @@ mod tests {
                 progress.receiver.is_none(),
                 "Restore must never start random placement generation"
             );
+            assert_eq!(app.world().resource::<PuzzleDefinition>(), &definition);
             let store = app.world().resource::<PieceDataStore>();
             assert_eq!(
                 PuzzleCheckpoint::capture(store, &definition, image_hash(&encoded)).unwrap(),
