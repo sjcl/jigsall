@@ -509,26 +509,33 @@ fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switc
 }
 
 #[test]
-fn addresses_accept_ipv4_and_bracketed_ipv6_but_reject_dns_and_unspecified_join() {
-    for address in ["192.168.1.10:27015", "[2001:db8::1]:27015", " [::1]:27015 "] {
-        assert!(parse_address(address, false).is_ok(), "{address}");
+fn addresses_accept_dns_for_join_and_keep_bind_addresses_literal() {
+    for address in [
+        "192.168.1.10:27015",
+        "[2001:db8::1]:27015",
+        " [::1]:27015 ",
+        "example.com:27015",
+        "localhost:27015",
+    ] {
+        assert!(valid_address(address, false), "{address}");
     }
     for address in [
-        "example.com:27015",
+        "example.com",
         "2001:db8::1:27015",
         "127.0.0.1",
         "127.0.0.1:0",
         "0.0.0.0:27015",
         "[::]:27015",
     ] {
-        assert_eq!(
-            parse_address(address, false),
-            Err(UiError::Address),
-            "{address}"
-        );
+        assert!(!valid_address(address, false), "{address}");
     }
-    assert!(parse_address("0.0.0.0:27015", true).is_ok());
-    assert!(parse_address("[::]:27015", true).is_ok());
+    assert!(valid_address("0.0.0.0:27015", true));
+    assert!(valid_address("[::]:27015", true));
+    assert!(!valid_address("example.com:27015", true));
+    let mut draft = ConnectionDraft::new("example.com:27015");
+    *draft.password = "test password".into();
+    assert!(draft.valid(false));
+    assert!(!draft.valid(true));
 }
 
 #[test]
@@ -549,6 +556,171 @@ fn join_moves_password_once_and_uses_the_committed_profile() {
         state.action.is_none(),
         "a repeated click must not issue another start"
     );
+}
+
+fn submit_hostname(world: &mut World) {
+    let profile = PlayerSettingsState::load(None);
+    let mut state = world.resource_mut::<MultiplayerUi>();
+    state.join.address = "localhost:27015".into();
+    *state.join.password = "test password".into();
+    state.submit_join(&profile);
+    assert!(state.join.password.is_empty());
+    let Some(Action::Join(request)) = state.action.take() else {
+        panic!("hostname submission did not issue a join request");
+    };
+    assert_eq!(request.address.socket_addr(), None);
+    // Feed a controlled queued reply through the real poll API; UI lifecycle
+    // tests must not depend on the scheduling of OS resolver workers.
+    state.pending_join = Some(PendingJoin {
+        resolution: "127.0.0.1:27015"
+            .parse::<ServerAddress>()
+            .unwrap()
+            .resolve()
+            .unwrap(),
+        password: request.password,
+        display_name: request.display_name,
+    });
+    assert!(world.resource::<MultiplayerUi>().pending_join.is_some());
+    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+}
+
+#[test]
+fn hostname_join_cancel_or_navigation_discards_the_pending_request() {
+    for cleanup in ["cancel", "navigate", "menu"] {
+        let (mut world, _, _) = screen_world();
+        submit_hostname(&mut world);
+        match cleanup {
+            "cancel" => world.resource_mut::<MultiplayerUi>().cancel(),
+            "navigate" => world
+                .resource_mut::<MultiplayerUi>()
+                .navigate(MenuScreen::Multiplayer),
+            _ => world.run_system_once(reset_on_menu).unwrap(),
+        }
+        process_actions(&mut world);
+        process_actions(&mut world);
+        let state = world.resource::<MultiplayerUi>();
+        assert!(state.pending_join.is_none());
+        assert!(state.join.password.is_empty());
+        assert!(!state.connecting);
+        assert!(state.error.is_none());
+        assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    }
+}
+
+#[test]
+fn hostname_join_timeout_drops_credentials_and_shows_the_localized_error() {
+    let (mut world, _, _) = screen_world();
+    submit_hostname(&mut world);
+    finish_address_resolution(
+        &mut world,
+        Instant::now() + std::time::Duration::from_secs(11),
+    );
+    let state = world.resource::<MultiplayerUi>();
+    assert!(state.pending_join.is_none());
+    assert_eq!(state.error, Some(UiError::Resolution));
+    assert!(state.connection_screen(world.resource::<NetworkStatus>()));
+    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    process_actions(&mut world);
+    assert_eq!(
+        world.resource::<MultiplayerUi>().error,
+        Some(UiError::Resolution)
+    );
+}
+
+#[test]
+fn hostname_resolution_screen_shows_waiting_then_a_localized_failure() {
+    let (mut world, _, ctx) = screen_world();
+    // A previous connection's failure must not cover the new lookup spinner.
+    world.insert_resource(NetworkStatus {
+        phase: RuntimePhase::Disconnected,
+        error: Some("BackendFailure".into()),
+        ..default()
+    });
+    submit_hostname(&mut world);
+    for failed in [false, true] {
+        if failed {
+            finish_address_resolution(
+                &mut world,
+                Instant::now() + std::time::Duration::from_secs(11),
+            );
+        }
+        let mut render = || {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 500.0),
+                    )),
+                    ..default()
+                },
+                |_| {
+                    world.run_system_once(draw_connection_ui).unwrap();
+                },
+            )
+        };
+        render().drop_without_applying_deltas();
+        let output = render();
+        let labels: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let i18n = world.resource::<Localization>();
+        let expected = i18n.text(if failed {
+            "multiplayer-error-resolution"
+        } else {
+            "multiplayer-resolving"
+        });
+        assert!(labels.contains(&expected.as_str()));
+        assert!(labels.contains(&if failed { "Back" } else { "Cancel" }));
+        output.drop_without_applying_deltas();
+    }
+}
+
+#[cfg(feature = "gns")]
+#[test]
+fn gns_localhost_hostname_join_ui_hands_the_resolved_address_to_the_runtime_once() {
+    use puzzella_game::network::{gns::GnsDirectIp, transport::DirectIpTransport};
+    let mut host = GnsDirectIp::new().unwrap();
+    let listener = host.listen("127.0.0.1:0".parse().unwrap()).unwrap();
+    let address = host.listener_address(listener).unwrap();
+    let (mut world, _, _) = screen_world();
+    world.insert_resource(PuzzleImageLimits {
+        device_max_dimension: 8192,
+        gpu_memory_bytes: None,
+    });
+    world.insert_resource(puzzella_game::image_settings::ImageSettingsState::load(
+        None,
+    ));
+    let mut profile = PlayerSettingsState::load(None);
+    profile.commit("Alice");
+    {
+        let mut state = world.resource_mut::<MultiplayerUi>();
+        state.join.address = format!("localhost:{}", address.port());
+        *state.join.password = "test password".into();
+        state.submit_join(&profile);
+    }
+    process_actions(&mut world);
+    assert!(world.resource::<MultiplayerUi>().pending_join.is_some());
+    while world.resource::<MultiplayerUi>().pending_join.is_some() {
+        process_actions(&mut world);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(world.resource::<MultiplayerUi>().error.is_none());
+    assert_eq!(world.resource::<NetworkStatus>().address, Some(address));
+    assert_eq!(
+        world.resource::<NetworkStatus>().phase,
+        RuntimePhase::Connecting
+    );
+    assert!(world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
+    process_actions(&mut world);
+    assert_eq!(world.resource::<NetworkStatus>().address, Some(address));
+    world.resource_mut::<MultiplayerUi>().cancel();
+    process_actions(&mut world);
+    assert!(!world.contains_non_send::<puzzella_game::network::runtime::NetworkSession>());
 }
 
 #[test]

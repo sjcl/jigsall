@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use puzzella_game::{
     network::{
+        address::{AddressResolution, ResolutionError, ServerAddress},
         auth::{SessionPassword, MAX_PASSWORD_BYTES, MIN_PASSWORD_BYTES},
         runtime::{
             HostOptions, HostStartRequest, JoinOptions, NetworkFailureKind, NetworkStatus,
@@ -15,7 +16,7 @@ use puzzella_game::{
     player_settings::PlayerSettingsState,
     resources::*,
 };
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Instant};
 use zeroize::Zeroizing;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub(crate) enum MenuScreen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UiError {
     Address,
+    Resolution,
     Password,
     WrongPassword,
     Timeout,
@@ -46,6 +48,7 @@ impl UiError {
     pub(crate) fn key(self) -> &'static str {
         match self {
             Self::Address => "multiplayer-error-address",
+            Self::Resolution => "multiplayer-error-resolution",
             Self::Password => "multiplayer-error-password",
             Self::WrongPassword => "multiplayer-error-wrong-password",
             Self::Timeout => "multiplayer-error-timeout",
@@ -94,29 +97,42 @@ impl ConnectionDraft {
         }
     }
     pub fn valid(&self, host: bool) -> bool {
-        parse_address(&self.address, host).is_ok()
+        valid_address(&self.address, host)
             && (MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&self.password.len())
     }
-    fn take(&mut self, host: bool) -> Result<(SocketAddr, SessionPassword), UiError> {
-        let address = parse_address(&self.address, host)?;
-        let password = SessionPassword::new(std::mem::take(&mut *self.password))
-            .map_err(|_| UiError::Password)?;
-        Ok((address, password))
+    fn take_password(&mut self) -> Result<SessionPassword, UiError> {
+        SessionPassword::new(std::mem::take(&mut *self.password)).map_err(|_| UiError::Password)
     }
     pub fn clear_password(&mut self) {
         self.password = Zeroizing::new(String::new());
     }
 }
 
-fn parse_address(value: &str, host: bool) -> Result<SocketAddr, UiError> {
+fn parse_bind_address(value: &str) -> Result<SocketAddr, UiError> {
     let address: SocketAddr = value.trim().parse().map_err(|_| UiError::Address)?;
-    if address.port() == 0
-        || address.ip().is_multicast()
-        || (!host && address.ip().is_unspecified())
-    {
+    if address.port() == 0 || address.ip().to_canonical().is_multicast() {
         return Err(UiError::Address);
     }
     Ok(address)
+}
+
+fn valid_address(value: &str, host: bool) -> bool {
+    if host {
+        parse_bind_address(value).is_ok()
+    } else {
+        value.parse::<ServerAddress>().is_ok()
+    }
+}
+
+struct JoinRequest {
+    address: ServerAddress,
+    password: SessionPassword,
+    display_name: Option<puzzella_core::PlayerDisplayName>,
+}
+struct PendingJoin {
+    resolution: AddressResolution,
+    password: SessionPassword,
+    display_name: Option<puzzella_core::PlayerDisplayName>,
 }
 
 struct PendingHost {
@@ -124,7 +140,7 @@ struct PendingHost {
     password: SessionPassword,
 }
 enum Action {
-    Join(JoinOptions),
+    Join(JoinRequest),
     PrepareHost(PendingHost),
     Cancel,
 }
@@ -145,6 +161,7 @@ pub(crate) struct MultiplayerUi {
     retry_host: Option<HostStartRequest>,
     editing_host_retry: bool,
     retrying: bool,
+    pending_join: Option<PendingJoin>,
     action: Option<Action>,
 }
 impl Default for MultiplayerUi {
@@ -164,6 +181,7 @@ impl Default for MultiplayerUi {
             retry_host: None,
             editing_host_retry: false,
             retrying: false,
+            pending_join: None,
             action: None,
         }
     }
@@ -174,6 +192,9 @@ impl MultiplayerUi {
         self.join.clear_password();
         self.error = None;
         self.selected_save = None;
+        self.pending_join = None;
+        self.action = None;
+        self.connecting = false;
         self.submitted = false;
         self.screen = screen;
     }
@@ -185,7 +206,11 @@ impl MultiplayerUi {
         if self.submitted {
             return;
         }
-        match self.host.take(true) {
+        match parse_bind_address(&self.host.address).and_then(|address| {
+            self.host
+                .take_password()
+                .map(|password| (address, password))
+        }) {
             Ok((address, password)) => {
                 self.submitted = true;
                 self.connecting = true;
@@ -200,17 +225,25 @@ impl MultiplayerUi {
         if self.submitted {
             return;
         }
-        match self.join.take(false) {
+        match self
+            .join
+            .address
+            .parse::<ServerAddress>()
+            .map_err(|_| UiError::Address)
+            .and_then(|address| {
+                self.join
+                    .take_password()
+                    .map(|password| (address, password))
+            }) {
             Ok((address, password)) => {
                 self.submitted = true;
                 self.connecting = true;
                 self.owns_session = true;
                 self.error = None;
-                self.action = Some(Action::Join(JoinOptions {
+                self.action = Some(Action::Join(JoinRequest {
                     address,
                     password,
                     display_name: profile.current.display_name.clone(),
-                    cached_image: None,
                 }));
             }
             Err(error) => self.error = Some(error),
@@ -223,6 +256,7 @@ impl MultiplayerUi {
         self.retry_host = None;
         self.retrying = false;
         self.editing_host_retry = false;
+        self.pending_join = None;
         self.action = Some(Action::Cancel);
         self.submitted = true;
         self.screen = MenuScreen::Multiplayer;
@@ -256,6 +290,7 @@ pub(crate) fn sync_local_gameplay_block(
 /// Runs after all screens have issued their one-shot actions, within the egui pass.
 pub(crate) fn process_actions(world: &mut World) {
     let Some(action) = world.resource_mut::<MultiplayerUi>().action.take() else {
+        finish_address_resolution(world, Instant::now());
         return;
     };
     match action {
@@ -273,16 +308,20 @@ pub(crate) fn process_actions(world: &mut World) {
             ui.join.address = join_address;
             puzzella_game::network::runtime::stop_session(world);
         }
-        Action::Join(options) => {
-            #[cfg(feature = "gns")]
-            let result = puzzella_game::network::runtime::start_join(world, options);
-            #[cfg(not(feature = "gns"))]
-            let result: Result<(), RuntimeStartError> = {
-                drop(options);
-                Err(RuntimeStartError::InvalidWorld)
-            };
-            if let Err(error) = result {
-                world.resource_mut::<MultiplayerUi>().error = Some(UiError::start(error));
+        Action::Join(request) => {
+            if let Some(address) = request.address.socket_addr() {
+                start_resolved_join(world, address, request.password, request.display_name);
+            } else {
+                match request.address.resolve() {
+                    Ok(resolution) => {
+                        world.resource_mut::<MultiplayerUi>().pending_join = Some(PendingJoin {
+                            resolution,
+                            password: request.password,
+                            display_name: request.display_name,
+                        });
+                    }
+                    Err(error) => resolution_failed(world, error),
+                }
             }
         }
         Action::PrepareHost(host) => {
@@ -314,6 +353,51 @@ pub(crate) fn process_actions(world: &mut World) {
                     .set(AppState::InGame);
             }
         }
+    }
+}
+
+fn finish_address_resolution(world: &mut World, now: Instant) {
+    let mut ui = world.resource_mut::<MultiplayerUi>();
+    let Some(result) = ui
+        .pending_join
+        .as_mut()
+        .and_then(|join| join.resolution.poll(now))
+    else {
+        return;
+    };
+    let join = ui.pending_join.take().unwrap();
+    match result {
+        Ok(address) => start_resolved_join(world, address, join.password, join.display_name),
+        Err(error) => resolution_failed(world, error),
+    }
+}
+
+fn resolution_failed(world: &mut World, error: ResolutionError) {
+    warn!("Multiplayer address resolution failed: {error:?}");
+    world.resource_mut::<MultiplayerUi>().error = Some(UiError::Resolution);
+}
+
+fn start_resolved_join(
+    world: &mut World,
+    address: SocketAddr,
+    password: SessionPassword,
+    display_name: Option<puzzella_core::PlayerDisplayName>,
+) {
+    let options = JoinOptions {
+        address,
+        password,
+        display_name,
+        cached_image: None,
+    };
+    #[cfg(feature = "gns")]
+    let result = puzzella_game::network::runtime::start_join(world, options);
+    #[cfg(not(feature = "gns"))]
+    let result: Result<(), RuntimeStartError> = {
+        drop(options);
+        Err(RuntimeStartError::InvalidWorld)
+    };
+    if let Err(error) = result {
+        world.resource_mut::<MultiplayerUi>().error = Some(UiError::start(error));
     }
 }
 
@@ -440,6 +524,9 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
     ui.retry_host = None;
     ui.editing_host_retry = false;
     ui.retrying = false;
+    if ui.pending_join.take().is_some() {
+        ui.connecting = false;
+    }
     if ui.owns_session
         && status.error.is_some()
         && matches!(
@@ -527,7 +614,7 @@ pub(crate) fn paint_connection_fields(
             "multiplayer-address-hint"
         }),
     );
-    if parse_address(&draft.address, host).is_err() {
+    if !valid_address(&draft.address, host) {
         ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-address"));
     }
     ui.label(i18n.text("multiplayer-password"));
@@ -645,7 +732,7 @@ fn paint_host_retry(
     theme::hint(ui, i18n.text("multiplayer-retry-prepared"));
     ui.label(i18n.text("multiplayer-bind-address"));
     ui.add(egui::TextEdit::singleline(&mut state.host.address).desired_width(f32::INFINITY));
-    let address = parse_address(&state.host.address, true);
+    let address = parse_bind_address(&state.host.address);
     if address.is_err() {
         ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-address"));
     }
@@ -700,6 +787,7 @@ pub(crate) fn draw_connection_ui(
         status.phase,
         RuntimePhase::Failed | RuntimePhase::Disconnected
     ) && state.pending_host.is_none()
+        && state.pending_join.is_none()
         && state.action.is_none();
     let error = state.error.or_else(|| {
         failed.then(|| UiError::failure(status.failure.unwrap_or(NetworkFailureKind::Connection)))
@@ -734,6 +822,8 @@ pub(crate) fn draw_connection_ui(
                                         || matches!(state.action, Some(Action::PrepareHost(_)))
                                     {
                                         "multiplayer-preparing-host"
+                                    } else if state.pending_join.is_some() {
+                                        "multiplayer-resolving"
                                     } else {
                                         connection_text(&status)
                                     },

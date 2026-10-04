@@ -1,6 +1,7 @@
 //! Opt-in, frame-driven networking beneath the existing authority and replicas.
 //! Establishment/authentication belong to a backend/session; gameplay sees only
 //! opaque connections and protocol objects. No network work runs on idle pieces.
+pub mod address;
 pub mod auth;
 pub mod bootstrap;
 pub mod bulk;

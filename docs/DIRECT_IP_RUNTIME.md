@@ -105,8 +105,21 @@ saves retain the shared encoded Arc, and load_for_host returns verified encoded
 bytes from the persistence worker. Offline imports/saves/loads still release
 them. Menu cleanup resets retention and drops the original image.
 
-Join only asks for an IP literal with port and a session password. SocketAddr
-input supports IPv4 and bracketed IPv6 (e.g. [2001:db8::1]:27015), not DNS names.
+Join asks for a hostname or IP literal with an explicit nonzero port and a session
+password. Input supports ASCII DNS names (e.g. example.com:27015, localhost:27015),
+IPv4 and bracketed IPv6 (e.g. [2001:db8::1]:27015). Bind input remains an IP literal.
+`network::address::ServerAddress` validates syntax without resolving during UI
+painting. On submission, an OS resolver worker returns one usable endpoint,
+preferring IPv4 in resolver order to match the default IPv4 listener, or the
+first IPv6 endpoint for an IPv6-only name. Unspecified/multicast answers are
+excluded. Literal IPs bypass resolution. There is no retry across DNS answers.
+The resolved SocketAddr goes through the existing start_join/authentication path;
+the programmatic JoinOptions and transport APIs continue to take SocketAddr.
+Resolution has a 10-second deadline and a localized waiting/failure display.
+Cancel, navigation and Menu cleanup drop the request and its owned password;
+late replies cannot start a session or affect a newer request. The worker owns
+neither secrets nor World/GPU resources. OS lookups cannot be forcibly cancelled;
+at most four workers may remain outstanding, including timed-out/cancelled ones.
 The connection screen replaces GameSetup's image/piece controls throughout
 Connecting, Authenticating and Syncing. It shows a spinner with localized status,
 not phase-count percentages or internal enum names. Failure/disconnect shows a

@@ -1562,11 +1562,23 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
         },
     )
     .unwrap();
+    let mut resolution = format!("localhost:{}", address.port())
+        .parse::<crate::network::address::ServerAddress>()
+        .unwrap()
+        .resolve()
+        .unwrap();
+    let resolved = loop {
+        if let Some(result) = resolution.poll(Instant::now()) {
+            break result.unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert_eq!(resolved, address);
     start_join(
         client.world_mut(),
         JoinOptions {
             display_name: None,
-            address,
+            address: resolved,
             password: password(),
             cached_image: None,
         },
