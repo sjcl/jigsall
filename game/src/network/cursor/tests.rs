@@ -276,6 +276,42 @@ fn cursor_full_snapshot_order_presence_reorder_and_loss_self_heal() {
 }
 
 #[test]
+fn cursor_host_empty_snapshot_stops_until_visible_and_resets_with_scope() {
+    let now = Instant::now();
+    let mut s = state();
+    let r = roster();
+    let first = s.snapshot(PlayerId(0), &r, now).unwrap();
+    assert!(first.entries.is_empty());
+    assert_eq!(first.sequence, 0);
+    for frame in 1..360 {
+        assert!(s
+            .snapshot(
+                PlayerId(0),
+                &r,
+                now + Duration::from_secs_f64(frame as f64 / 360.),
+            )
+            .is_none());
+    }
+    let visible_at = now + Duration::from_secs(1);
+    s.accept_update(PlayerId(1), update(0, Some(Vec2::ONE)), visible_at);
+    let visible = s.snapshot(PlayerId(0), &r, visible_at).unwrap();
+    assert_eq!(visible.sequence, 1);
+    assert_eq!(visible.entries.len(), 1);
+    let expired_at = visible_at + CURSOR_TIMEOUT;
+    s.expire(expired_at);
+    let empty = s.snapshot(PlayerId(0), &r, expired_at).unwrap();
+    assert!(empty.entries.is_empty());
+    assert_eq!(empty.sequence, 2);
+    assert!(s
+        .snapshot(PlayerId(0), &r, expired_at + CURSOR_INTERVAL)
+        .is_none());
+    s.synchronize(SessionId(1), AuthorityEpoch(3));
+    let reset = s.snapshot(PlayerId(0), &r, expired_at).unwrap();
+    assert!(reset.entries.is_empty());
+    assert_eq!(reset.sequence, 0);
+}
+
+#[test]
 fn cursor_360hz_is_20hz_stationary_heartbeat_immediate_hide_and_no_wrap() {
     let now = Instant::now();
     let mut s = state();

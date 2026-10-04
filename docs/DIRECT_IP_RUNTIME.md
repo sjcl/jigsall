@@ -15,9 +15,12 @@ Window focus/cursor validity, Playing state and pending state transitions gate
 the cached sample even when paused input systems stop running. None means hidden,
 and a hide bypasses the 50 ms sampler timer. Host expiry is 400 ms; the client
 does not send periodic updates while hidden. A lost hide is repaired by expiry.
-The client also removes presentation when batches stall for 400 ms. Invalid coordinates
-(nonfinite or beyond +/-1,000,000) hide benignly. Cursor send backpressure does
-not fail gameplay. Host remote targets update directly from accepted samples;
+The client also removes presentation when batches stall for 400 ms.
+An empty batch is sent once initially and once after all cursors become hidden;
+further batches stop until a visible cursor returns. If the final empty batch is
+lost, the client's 400 ms expiry still clears the previous visible set.
+Invalid coordinates (nonfinite or beyond +/-1,000,000) hide benignly. Cursor send
+backpressure does not fail gameplay. Host remote targets update directly from accepted samples;
 client targets update from full snapshots, with own/unknown roster IDs filtered.
 
 ReadyCommit overtaking is a benign Syncing drop, with recovery on the next 20 Hz

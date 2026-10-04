@@ -59,6 +59,8 @@ duplicateを無視します。full snapshotから消えたentryはhiddenにな�
 次のheartbeat / full snapshotで自己修復します。Syncing中のReadyCommit追い越しと
 roster未登録IDはbenign dropです。名前の正本はPlayerRosterで、名前・色・cameraをwireへ
 送りません。None・pause・focus loss・window外はhidden、hideは即sample、失効は400 msです。
+empty snapshotは初回と全員hiddenへの遷移時に1回だけ送り、visible cursorが戻るまで停止します。
+最後のemptyが失われた場合もclientの400 ms expiryで表示を消します。
 
 `resources/remote_cursor.rs::RemoteCursorPresentation` はpieceに触れず、最大player数だけの
 target / displayed world positionを持ちます。`Time<Real>` の指数平滑化（25 ms）でtargetへ

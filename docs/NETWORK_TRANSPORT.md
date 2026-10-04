@@ -531,6 +531,9 @@ Counters stop on exhaustion and never wrap.
 Visible-to-hidden sampling bypasses the periodic timer. The host's own hide can
 trigger an immediate full batch; incoming client hides remain periodically batched.
 Hidden clients send no periodic updates; stationary visible cursors heartbeat.
+An empty full batch is sent once initially and once after the visible set becomes
+empty; further batches stop until a visible cursor returns. A lost final empty
+batch is repaired by the client's 400 ms snapshot expiry.
 Lost hides/stalled heartbeats expire at 400 ms on the host. Clients also clear a
 stalled snapshot set after 400 ms. Coordinate validation requires finite axes
 within +/-1,000,000 world units; invalid positions benignly hide that entry.

@@ -135,6 +135,78 @@ fn cursor_runtime_authenticated_identity_ordering_full_batch_loss_and_cleanup() 
 }
 
 #[test]
+fn cursor_runtime_idle_stops_after_lost_empty_and_resumes_for_late_ready_peer() {
+    let bus = Arc::new(Mutex::new(Bus::default()));
+    let mut host = Endpoint::host(&bus);
+    let mut a = Endpoint::client(&bus, 1);
+    join(&mut host, &mut [&mut a]);
+    let now = Instant::now();
+    host.runtime.cursor_frame(Some(Vec2::ONE), now);
+    poll_at(&mut a, now);
+    assert_eq!(cursor(&a, PlayerId(0)), Some(Vec2::ONE));
+
+    bus.lock().unwrap().sent.clear();
+    bus.lock().unwrap().drop_transient = true;
+    let hidden_at = now + Duration::from_millis(1);
+    host.runtime.cursor_frame(None, hidden_at);
+    assert_eq!(
+        bus.lock()
+            .unwrap()
+            .sent
+            .iter()
+            .filter(|(_, class, _)| *class == MessageClass::Transient)
+            .count(),
+        1,
+        "send the final empty batch once"
+    );
+    bus.lock().unwrap().drop_transient = false;
+
+    let mut b = Endpoint::client(&bus, 2);
+    join(&mut host, &mut [&mut a, &mut b]);
+    assert!(cursor(&b, PlayerId(0)).is_none());
+    a.runtime
+        .cursor_frame(None, now + CURSOR_TIMEOUT - Duration::from_millis(1));
+    assert!(cursor(&a, PlayerId(0)).is_some());
+    a.runtime.cursor_frame(None, now + CURSOR_TIMEOUT);
+    assert!(cursor(&a, PlayerId(0)).is_none());
+
+    bus.lock().unwrap().sent.clear();
+    for frame in 0..360 {
+        host.runtime.cursor_frame(
+            None,
+            hidden_at + Duration::from_secs_f64(frame as f64 / 360.),
+        );
+    }
+    assert!(bus
+        .lock()
+        .unwrap()
+        .sent
+        .iter()
+        .all(|(_, class, _)| *class != MessageClass::Transient));
+
+    let resumed_at = now + Duration::from_secs(2);
+    host.runtime
+        .cursor_frame(Some(Vec2::splat(42.)), resumed_at);
+    poll_at(&mut a, resumed_at);
+    poll_at(&mut b, resumed_at);
+    for client in [&a, &b] {
+        assert_eq!(cursor(client, PlayerId(0)), Some(Vec2::splat(42.)));
+    }
+    host.runtime
+        .cursor_frame(Some(Vec2::splat(42.)), resumed_at + CURSOR_INTERVAL);
+    assert_eq!(
+        bus.lock()
+            .unwrap()
+            .sent
+            .iter()
+            .filter(|(_, class, _)| *class == MessageClass::Transient)
+            .count(),
+        4,
+        "resume stationary heartbeats to both Ready peers"
+    );
+}
+
+#[test]
 fn cursor_runtime_ready_gating_batch_recipients_and_best_effort_failure() {
     let bus = Arc::new(Mutex::new(Bus::default()));
     let mut host = Endpoint::host(&bus);

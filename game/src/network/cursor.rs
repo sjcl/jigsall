@@ -99,6 +99,7 @@ pub(super) struct CursorPresence {
     last_snapshot: Option<Instant>,
     next_sample: Option<Instant>,
     next_snapshot: Option<Instant>,
+    last_snapshot_empty: bool,
     local_visible: bool,
     pub presentation: RemoteCursorPresentation,
 }
@@ -237,12 +238,7 @@ impl CursorPresence {
             return None;
         }
         self.next_snapshot = Some(now + CURSOR_INTERVAL);
-        let sequence = match self.snapshot_sequence {
-            None => 0,
-            Some(s) => s.checked_add(1)?,
-        };
-        self.snapshot_sequence = Some(sequence);
-        let entries = self
+        let entries: Vec<_> = self
             .latest
             .iter()
             .filter_map(|(&player, c)| {
@@ -252,6 +248,17 @@ impl CursorPresence {
                     .map(|position| CursorEntry { player, position })
             })
             .collect();
+        // One empty batch hides the last visible set. If it is lost, client
+        // expiry repairs it; visible sets still need periodic heartbeats.
+        if entries.is_empty() && self.last_snapshot_empty {
+            return None;
+        }
+        let sequence = match self.snapshot_sequence {
+            None => 0,
+            Some(s) => s.checked_add(1)?,
+        };
+        self.snapshot_sequence = Some(sequence);
+        self.last_snapshot_empty = entries.is_empty();
         self.presentation.remove(local);
         Some(CursorSnapshot {
             session,
