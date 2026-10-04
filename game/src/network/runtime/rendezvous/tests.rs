@@ -17,6 +17,8 @@ struct ControlState {
     joins: Vec<String>,
     stopped: bool,
     released: Vec<PeerId>,
+    confirmed: BTreeSet<PeerId>,
+    revoked: Vec<PeerId>,
     routes: BTreeMap<PeerId, bool>,
     pending_signals: BTreeSet<PeerId>,
 }
@@ -82,6 +84,13 @@ impl ControlPlane for Control {
     fn shutdown(&mut self) {
         self.0.borrow_mut().stopped = true;
     }
+    fn confirm_peer(&mut self, peer: PeerId) {
+        self.0.borrow_mut().confirmed.insert(peer);
+    }
+    fn revoke_peer(&mut self, peer: PeerId) {
+        self.0.borrow_mut().revoked.push(peer);
+        self.release_route(peer);
+    }
     fn release_route(&mut self, peer: PeerId) {
         let mut state = self.0.borrow_mut();
         state.routes.remove(&peer);
@@ -96,6 +105,7 @@ struct PeerOnly {
     calls: Rc<RefCell<Vec<PeerId>>>,
     dropped: Rc<RefCell<bool>>,
     handles: Rc<RefCell<BTreeMap<ConnectionId, PeerId>>>,
+    retired: BTreeSet<PeerId>,
 }
 impl Drop for PeerOnly {
     fn drop(&mut self) {
@@ -116,7 +126,9 @@ impl Transport for PeerOnly {
                 }
                 TransportEvent::Disconnected { connection, .. }
                 | TransportEvent::ConnectionFailed { connection, .. } => {
-                    self.handles.borrow_mut().remove(connection);
+                    if let Some(peer) = self.handles.borrow_mut().remove(connection) {
+                        self.retired.insert(peer);
+                    }
                 }
                 _ => {}
             }
@@ -132,7 +144,9 @@ impl Transport for PeerOnly {
         self.inner.send(id, class, payload)
     }
     fn close(&mut self, id: ConnectionId, reason: DisconnectReason) -> Result<(), TransportError> {
-        self.handles.borrow_mut().remove(&id);
+        if let Some(peer) = self.handles.borrow_mut().remove(&id) {
+            self.retired.insert(peer);
+        }
         self.inner.close(id, reason)
     }
     fn reliable_egress(&self, id: ConnectionId) -> Result<ReliableEgress, TransportError> {
@@ -154,6 +168,9 @@ impl PeerTransport for PeerOnly {
     }
     fn has_peer(&self, peer: PeerId) -> bool {
         self.handles.borrow().values().any(|&p| p == peer)
+    }
+    fn take_retired_peers(&mut self) -> Vec<PeerId> {
+        std::mem::take(&mut self.retired).into_iter().collect()
     }
 }
 fn peer() -> PeerId {
@@ -199,6 +216,7 @@ fn join_options() -> RendezvousJoinOptions {
 }
 fn backend(id: u64, bus: &Arc<Mutex<fixtures::Bus>>) -> PeerOnly {
     PeerOnly {
+        retired: default(),
         inner: fixtures::Fake {
             id,
             bus: bus.clone(),
@@ -514,6 +532,75 @@ fn rendezvous_unconnected_peer_churn_releases_routes() {
     }
 }
 #[test]
+fn rendezvous_native_failure_without_control_loss_revokes_and_late_errors_keep_room() {
+    let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+    let (control, state) = control();
+    let backend = backend(0, &bus);
+    let pending = ConnectionId::new(901);
+    backend.handles.borrow_mut().insert(pending, peer());
+    let mut driver = RendezvousRuntimeDriver::host(backend, control, host_options(), prepared());
+    let mut app = fixtures::app();
+    fixtures::host_world(&mut app);
+    state.borrow_mut().events.extend([
+        welcome(),
+        created(),
+        RendezvousEvent::PeerJoined {
+            peer_id: peer(),
+            member_id: MemberId([9; 16]),
+        },
+    ]);
+    bus.lock()
+        .unwrap()
+        .inbox
+        .entry(0)
+        .or_default()
+        .push_back(TransportEvent::ConnectionFailed {
+            connection: pending,
+            reason: DisconnectReason::BackendConnectionTimeout,
+        });
+    RuntimeDriver::poll(&mut driver, app.world_mut());
+    assert_eq!(state.borrow().revoked, [peer()]);
+    assert!(state.borrow().confirmed.is_empty());
+    assert!(driver.runtime.as_ref().unwrap().live.is_empty());
+    for code in [ErrorCode::UnknownTarget, ErrorCode::JoinTimeout] {
+        state
+            .borrow_mut()
+            .events
+            .push_back(RendezvousEvent::ServerError(code));
+        RuntimeDriver::poll(&mut driver, app.world_mut());
+        assert!(driver.active);
+        assert!(!state.borrow().stopped);
+        assert!(driver.status().room_code.is_some());
+    }
+}
+#[test]
+fn rendezvous_wrong_password_revokes_before_ready() {
+    let bus = Arc::new(Mutex::new(fixtures::Bus::default()));
+    let (hc, hs) = control();
+    let (cc, cs) = control();
+    let mut host = fixtures::app();
+    fixtures::host_world(&mut host);
+    let mut client = fixtures::app();
+    let mut hd = RendezvousRuntimeDriver::host(backend(0, &bus), hc, host_options(), prepared());
+    let mut options = join_options();
+    options.password = SessionPassword::new("wrong password".into()).unwrap();
+    let mut cd = RendezvousRuntimeDriver::join(backend(1, &bus), cc, options, limits());
+    world::prepare_join_world(client.world_mut());
+    hs.borrow_mut().events.extend([welcome(), created()]);
+    cs.borrow_mut().events.extend([welcome(), ready()]);
+    for _ in 0..100 {
+        RuntimeDriver::poll(&mut hd, host.world_mut());
+        RuntimeDriver::poll(&mut cd, client.world_mut());
+        if !hs.borrow().revoked.is_empty() {
+            break;
+        }
+    }
+    assert_eq!(hs.borrow().revoked, [peer()]);
+    assert!(hs.borrow().confirmed.is_empty());
+    assert!(hd.active);
+    assert_ne!(cd.status().phase, RuntimePhase::Ready);
+}
+#[test]
 fn rendezvous_host_pending_failure_reclaims_route_without_a_connected_event() {
     for loss in [
         RendezvousEvent::PeerUnavailable { peer_id: peer() },
@@ -754,13 +841,23 @@ fn rendezvous_runtime_ready_command_roundtrip_survives_control_loss_then_tears_d
     hs.borrow_mut().events.extend([welcome(), created()]);
     cs.borrow_mut().events.extend([welcome(), ready()]);
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    let mut confirmed_before_ready = false;
     while client.world().resource::<NetworkStatus>().phase != RuntimePhase::Ready {
         assert!(Instant::now() < deadline);
         host.update();
+        if hs.borrow().confirmed.contains(&peer()) {
+            confirmed_before_ready = true;
+            assert_ne!(
+                client.world().resource::<NetworkStatus>().phase,
+                RuntimePhase::Ready
+            );
+        }
         client.update();
         std::thread::yield_now();
     }
     host.update();
+    assert!(confirmed_before_ready);
+    assert!(cs.borrow().confirmed.is_empty());
     for state in [&hs, &cs] {
         state.borrow_mut().events.extend([
             RendezvousEvent::PeerUnavailable { peer_id: peer() },

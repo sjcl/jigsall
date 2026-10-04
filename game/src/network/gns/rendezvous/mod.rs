@@ -123,6 +123,9 @@ struct Bound {
     pending: Option<JoinId>,
     active: bool,
     available: bool,
+    confirmed: bool,
+    revoking: bool,
+    lifecycle: Option<ClientMessage>,
 }
 pub struct RendezvousAdapter {
     io: worker::Worker,
@@ -205,6 +208,37 @@ impl RendezvousAdapter {
         self.routes.remove(&peer);
         self.signaling.revoke_peer(peer);
     }
+    /// Called only after the game owner's SPAKE2 authenticated gate.
+    pub fn confirm_peer(&mut self, peer: PeerId) {
+        if !matches!(self.phase, Phase::Host(_)) {
+            return;
+        }
+        if let Some(route) = self.routes.get_mut(&peer) {
+            if route.active && route.available && !route.confirmed && !route.revoking {
+                route.lifecycle = Some(ClientMessage::ConfirmPeer {
+                    peer_id: protocol::PeerId(peer.to_bytes()),
+                    member_id: route.member,
+                });
+            }
+        }
+    }
+    /// Retain the bounded notification and routing tombstone until the server
+    /// reports PeerUnavailable. Late in-flight signals cannot reopen admission.
+    pub fn revoke_peer(&mut self, peer: PeerId) {
+        if !matches!(self.phase, Phase::Host(_)) {
+            return;
+        }
+        if let Some(route) = self.routes.get_mut(&peer) {
+            if route.active && route.available && !route.revoking {
+                route.revoking = true;
+                route.lifecycle = Some(ClientMessage::RevokePeer {
+                    peer_id: protocol::PeerId(peer.to_bytes()),
+                    member_id: route.member,
+                });
+                self.signaling.revoke_peer(peer);
+            }
+        }
+    }
     pub(crate) fn has_pending_signal(&self, peer: PeerId) -> bool {
         self.signaling.has_pending_inbound(peer)
     }
@@ -271,6 +305,9 @@ impl RendezvousAdapter {
                 pending,
                 active: pending.is_none(),
                 available: true,
+                confirmed: false,
+                revoking: false,
+                lifecycle: None,
             },
         );
         Ok(())
@@ -286,6 +323,7 @@ impl RendezvousAdapter {
         }
         for bound in self.routes.values_mut() {
             bound.available = false;
+            bound.lifecycle = None;
         }
         self.deferred = None;
         self.phase = Phase::Closed;
@@ -374,6 +412,7 @@ impl RendezvousAdapter {
                     .ok_or(RendezvousError::ProtocolViolation)?;
                 if r.active {
                     r.available = false;
+                    r.lifecycle = None;
                 } else {
                     self.release_route(id);
                 }
@@ -396,6 +435,9 @@ impl RendezvousAdapter {
                 }
                 let bytes = protocol::decode_signal(&payload_base64)
                     .map_err(|_| RendezvousError::ProtocolViolation)?;
+                if self.routes[&id].revoking {
+                    return Ok(());
+                }
                 match self.signaling.receive(id, &bytes) {
                     Ok(()) => {}
                     Err(TransportError::Backpressure) => {
@@ -431,6 +473,25 @@ impl RendezvousAdapter {
             }
             Err((error, _)) => Err(error),
         }
+    }
+    fn flush_lifecycle(&mut self) -> Result<(), RendezvousError> {
+        for route in self.routes.values_mut() {
+            let Some(message) = route.lifecycle.take() else {
+                continue;
+            };
+            let confirm = matches!(message, ClientMessage::ConfirmPeer { .. });
+            match self.io.send_owned(message) {
+                Ok(()) => {
+                    route.confirmed |= confirm;
+                }
+                Err((RendezvousError::Backpressure, message)) => {
+                    route.lifecycle = Some(message);
+                    break;
+                }
+                Err((error, _)) => return Err(error),
+            }
+        }
+        Ok(())
     }
     /// Call each frame alongside (before) the existing GNS/SecureTransport poll.
     /// Work and returned events per call are bounded; I/O stays on the worker.
@@ -513,6 +574,7 @@ impl RendezvousAdapter {
                 return Ok(());
             }
         }
+        self.flush_lifecycle()?;
         for _ in 0..CHANNEL_CAPACITY {
             let Some(signal) = self.signaling.pop_outbound() else {
                 break;
@@ -520,7 +582,7 @@ impl RendezvousAdapter {
             if !self
                 .routes
                 .get(&signal.peer)
-                .is_some_and(|r| r.active && r.available)
+                .is_some_and(|r| r.active && r.available && !r.revoking)
             {
                 continue;
             }

@@ -72,6 +72,87 @@ fn adapter(url: EndpointUrl) -> RendezvousAdapter {
     RendezvousAdapter::from_routed(url, PeerId::from_bytes(id(9)), SignalingEndpoint::routed())
         .unwrap()
 }
+#[tokio::test]
+async fn lifecycle_backpressure_retains_revoke_and_discards_inflight_signal() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url =
+        EndpointUrl::loopback_for_test(&format!("ws://{}/v1/ws", listener.local_addr().unwrap()))
+            .unwrap();
+    let mut a = adapter(url);
+    for _ in 0..CHANNEL_CAPACITY {
+        a.io.send(ClientMessage::LeaveRoom {}).unwrap();
+    }
+    a.authority = Some(AuthorityId(id(1)));
+    let room = RoomBinding {
+        room: RoomId(id(2)),
+        member: MemberId(id(3)),
+    };
+    a.phase = Phase::Host(room);
+    let peer = PeerId::from_bytes(id(5));
+    a.bind(peer, MemberId(id(6)), room, None).unwrap();
+    a.confirm_peer(peer);
+    a.flush_lifecycle().unwrap();
+    assert!(matches!(
+        a.routes[&peer].lifecycle,
+        Some(ClientMessage::ConfirmPeer { .. })
+    ));
+    a.revoke_peer(peer);
+    a.confirm_peer(peer); // Cannot replace a rejection with a confirmation.
+    a.flush_lifecycle().unwrap();
+    assert!(matches!(
+        a.routes[&peer].lifecycle,
+        Some(ClientMessage::RevokePeer { .. })
+    ));
+    a.handle(
+        ServerMessage::Signal {
+            from_peer_id: protocol::PeerId(id(5)),
+            payload_base64: "AP8H".into(),
+        },
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(a.signaling.pop_inbound().is_none());
+    assert!(a.routes.contains_key(&peer));
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        for _ in 0..CHANNEL_CAPACITY {
+            assert_eq!(receive(&mut socket).await, ClientMessage::LeaveRoom {});
+        }
+        assert_eq!(
+            receive(&mut socket).await,
+            ClientMessage::RevokePeer {
+                peer_id: protocol::PeerId(id(5)),
+                member_id: MemberId(id(6))
+            }
+        );
+        emit(
+            &mut socket,
+            ServerMessage::PeerUnavailable {
+                peer_id: protocol::PeerId(id(5)),
+            },
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    });
+    timeout(Duration::from_secs(3), async {
+        loop {
+            if a.poll_with_peer_connections(|_| false)
+                .iter()
+                .any(|e| matches!(e, RendezvousEvent::PeerUnavailable { .. }))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    a.reclaim_unavailable_routes(|_| false);
+    assert!(!a.routes.contains_key(&peer));
+    finish(&mut a).await;
+    task.await.unwrap();
+}
 async fn until(
     adapter: &mut RendezvousAdapter,
     predicate: impl Fn(&RendezvousEvent) -> bool,
@@ -412,7 +493,7 @@ async fn bounded_commands_retain_ack_and_shutdown_cancels_handshake() {
     finish(&mut a).await;
 }
 #[tokio::test]
-async fn worker_inbound_queue_is_bounded_and_reports_overflow_without_blocking() {
+async fn worker_inbound_queue_is_bounded_and_reports_stalled_owner_backpressure() {
     let (url, task) = fixture(|mut socket| async move {
         for _ in 0..CHANNEL_CAPACITY + 1 {
             emit(&mut socket, welcome()).await;
@@ -434,6 +515,120 @@ async fn worker_inbound_queue_is_bounded_and_reports_overflow_without_blocking()
     }
     assert_eq!(count, CHANNEL_CAPACITY);
     assert_eq!(worker.terminal(), Some(RendezvousError::Backpressure));
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn simultaneous_auth_expiry_preserves_control_and_accepts_next_join() {
+    let (url, task) = fixture(|mut socket| async move {
+        for n in 10..74 {
+            emit(
+                &mut socket,
+                ServerMessage::PeerUnavailable {
+                    peer_id: protocol::PeerId(id(n)),
+                },
+            )
+            .await;
+        }
+        emit(
+            &mut socket,
+            ServerMessage::AuthorizePeer {
+                join_id: JoinId(id(160)),
+                peer_id: protocol::PeerId(id(80)),
+                member_id: MemberId(id(180)),
+            },
+        )
+        .await;
+        assert_eq!(
+            receive(&mut socket).await,
+            ClientMessage::AuthorizeAck {
+                join_id: JoinId(id(160))
+            }
+        );
+        emit(
+            &mut socket,
+            ServerMessage::PeerJoined {
+                peer_id: protocol::PeerId(id(80)),
+                member_id: MemberId(id(180)),
+            },
+        )
+        .await;
+        let _ = socket.next().await;
+    })
+    .await;
+    let mut a = adapter(url);
+    a.authority = Some(AuthorityId(id(1)));
+    let room = RoomBinding {
+        room: RoomId(id(2)),
+        member: MemberId(id(3)),
+    };
+    a.phase = Phase::Host(room);
+    for n in 10..74 {
+        a.bind(PeerId::from_bytes(id(n)), MemberId(id(n + 80)), room, None)
+            .unwrap();
+    }
+    timeout(Duration::from_secs(3), async {
+        while a.io.queued_events() < CHANNEL_CAPACITY {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // A complete expiry batch arrives between owner polls.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(
+        !a.worker_finished(),
+        "a 64-member expiry burst must retain the room"
+    );
+    timeout(Duration::from_secs(3), async {
+        loop {
+            let events = a.poll_with_peer_connections(|_| false);
+            assert!(!events
+                .iter()
+                .any(|e| matches!(e, RendezvousEvent::Disconnected(_))));
+            if events
+                .iter()
+                .any(|e| matches!(e, RendezvousEvent::PeerJoined { .. }))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(a.routes.len(), 1);
+    assert!(a.routes[&PeerId::from_bytes(id(80))].active);
+    assert_eq!(a.room_id(), Some(room.room));
+    finish(&mut a).await;
+    task.await.unwrap();
+}
+#[tokio::test]
+async fn worker_shutdown_interrupts_full_inbound_queue() {
+    let (url, task) = fixture(|mut socket| async move {
+        for _ in 0..CHANNEL_CAPACITY + 1 {
+            emit(&mut socket, welcome()).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    })
+    .await;
+    let mut worker = worker::Worker::start(url).unwrap();
+    timeout(Duration::from_secs(3), async {
+        while worker.queued_events() < CHANNEL_CAPACITY {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    worker.shutdown();
+    // Do not drain the queue: shutdown must interrupt its blocked send.
+    timeout(Duration::from_secs(1), async {
+        while !worker.finished() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(worker.queued_events(), CHANNEL_CAPACITY);
     task.await.unwrap();
 }
 #[tokio::test]
@@ -559,7 +754,8 @@ async fn adapter_drop_cleans_pending_authorization_and_preserves_active_binding(
 
 #[tokio::test]
 async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
-    let (url, task) = fixture(|mut socket| async move {
+    let (acks_tx, acks_rx) = tokio::sync::oneshot::channel();
+    let (url, task) = fixture(move |mut socket| async move {
         for n in 80..86 {
             emit(
                 &mut socket,
@@ -594,6 +790,7 @@ async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
                 }
             );
         }
+        acks_tx.send(()).unwrap();
         let _ = socket.next().await;
     })
     .await;
@@ -624,6 +821,10 @@ async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
     a.bind(PeerId::from_bytes(id(90)), MemberId(id(160)), room, None)
         .unwrap();
     assert!(a.signaling.origin(PeerId::from_bytes(id(90))).is_ok());
+    timeout(Duration::from_secs(3), acks_rx)
+        .await
+        .unwrap()
+        .unwrap();
     finish(&mut a).await;
     task.await.unwrap();
 }

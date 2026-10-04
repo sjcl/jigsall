@@ -34,6 +34,7 @@ pub(super) trait PeerTransport: Transport {
     fn connect_peer(&mut self, peer: PeerId) -> Result<ConnectionId, TransportError>;
     fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId>;
     fn has_peer(&self, peer: PeerId) -> bool;
+    fn take_retired_peers(&mut self) -> Vec<PeerId>;
 }
 impl PeerTransport for GnsP2p {
     fn connect_peer(&mut self, peer: PeerId) -> Result<ConnectionId, TransportError> {
@@ -45,6 +46,9 @@ impl PeerTransport for GnsP2p {
     fn has_peer(&self, peer: PeerId) -> bool {
         self.has_peer(peer)
     }
+    fn take_retired_peers(&mut self) -> Vec<PeerId> {
+        self.take_retired_peers()
+    }
 }
 pub(super) trait ControlPlane {
     fn poll(&mut self, has_peer: &dyn Fn(PeerId) -> bool) -> Vec<RendezvousEvent>;
@@ -53,6 +57,8 @@ pub(super) trait ControlPlane {
     fn create_room(&mut self) -> Result<(), RendezvousError>;
     fn join_room(&mut self, code: RoomCode) -> Result<(), RendezvousError>;
     fn release_route(&mut self, peer: PeerId);
+    fn confirm_peer(&mut self, peer: PeerId);
+    fn revoke_peer(&mut self, peer: PeerId);
     fn shutdown(&mut self);
 }
 impl ControlPlane for RendezvousAdapter {
@@ -73,6 +79,12 @@ impl ControlPlane for RendezvousAdapter {
     }
     fn release_route(&mut self, peer: PeerId) {
         self.release_route(peer);
+    }
+    fn confirm_peer(&mut self, peer: PeerId) {
+        self.confirm_peer(peer);
+    }
+    fn revoke_peer(&mut self, peer: PeerId) {
+        self.revoke_peer(peer);
     }
     fn shutdown(&mut self) {
         self.shutdown();
@@ -250,7 +262,11 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RendezvousRuntimeDriver<T, C> 
             RendezvousEvent::ServerError(code) => {
                 let kind = server_error_kind(code);
                 if matches!(self.stage, Stage::Running | Stage::PeerConnecting) {
-                    if !matches!(code, ErrorCode::Backpressure | ErrorCode::RateLimited) {
+                    let lifecycle_race = self.status().role == Some(RuntimeRole::Host)
+                        && matches!(code, ErrorCode::UnknownTarget | ErrorCode::JoinTimeout);
+                    if !lifecycle_race
+                        && !matches!(code, ErrorCode::Backpressure | ErrorCode::RateLimited)
+                    {
                         self.control_lost(kind, code);
                         self.adapter.shutdown();
                     }
@@ -323,25 +339,25 @@ impl<T: PeerTransport + 'static, C: ControlPlane> RuntimeDriver for RendezvousRu
         self.poll_control(Instant::now());
         if self.active && matches!(self.stage, Stage::Running | Stage::PeerConnecting) {
             let runtime = self.runtime.as_mut().unwrap();
-            // Retain route identity before native poll can remove disconnected handles.
-            let peers: Vec<_> = runtime
-                .live
-                .iter()
-                .filter_map(|&id| {
-                    runtime
-                        .transport
-                        .backend()
-                        .remote_peer(id)
-                        .map(|peer| (id, peer))
-                })
-                .collect();
             RuntimeDriver::poll(runtime, world);
-            for (id, peer) in peers {
-                if !runtime.live.contains(&id)
-                    && !runtime.transport.backend().has_peer(peer)
-                    && !self.adapter.has_pending_signal(peer)
-                {
-                    self.adapter.release_route(peer);
+            if let Role::Host(host) = &runtime.role {
+                // Sync starts in the same common-runtime poll as Authenticated.
+                // assigned_player also covers that state, without waiting for Ready.
+                for &id in &runtime.live {
+                    if host.bootstrap.assigned_player(id).is_some() {
+                        if let Some(peer) = runtime.transport.backend().remote_peer(id) {
+                            self.adapter.confirm_peer(peer);
+                        }
+                    }
+                }
+            }
+            for peer in runtime.transport.backend_mut().take_retired_peers() {
+                if !runtime.transport.backend().has_peer(peer) {
+                    if matches!(runtime.role, Role::Host(_)) {
+                        self.adapter.revoke_peer(peer);
+                    } else if !self.adapter.has_pending_signal(peer) {
+                        self.adapter.release_route(peer);
+                    }
                 }
             }
             // Native failures before Connected never entered runtime.live.

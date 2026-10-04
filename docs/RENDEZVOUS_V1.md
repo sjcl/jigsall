@@ -41,12 +41,16 @@ adapter exchange typed commands/events using separate bounded 32-slot channels;
 there is no unbounded queue. Frame/message limits are 24 KiB, opaque signaling
 is 16 KiB maximum. TLS connection deadline is 10 seconds, writes 2 seconds,
 client Ping/matching-Pong deadline 15/15 seconds. A fixed window bounds inbound
-frames at 512/second. Worker overflow reports Backpressure and closes only the
-control plane; the terminal status uses one bounded slot.
+frames at 512/second. A full event queue pauses worker reads for up to 2 seconds,
+so a room-wide 64-member expiry burst survives between owner polls. A stalled
+owner or frame-rate exhaustion reports Backpressure and closes only the control
+plane; the terminal status uses one bounded slot. Owner poll and shutdown remain
+nonblocking, and cancellation interrupts the worker's pending queue send.
 
 `poll()` consumes at most 32 worker events and 32 GNS outbound signals per call.
-It retains at most one unsent command under backpressure, including an ACK; the
+It retains at most one unsent ACK/signal command under backpressure; the
 route is installed first and that ACK is retried before reading more messages.
+Up to 64 routes also retain one lifecycle command each until the worker accepts it.
 GNS's own fair bounded signaling mailbox and per-route limits still apply.
 Inbound mailbox congestion emits SignalBackpressure and sheds that signal,
 allowing other routes to continue. Unknown/unavailable senders, conflicting
@@ -241,6 +245,31 @@ the control socket, Available status and host code remain usable. A later actual
 Disconnected still marks control Unavailable, and protocol errors still shut down
 the control plane. Before RoomCreated/HostReady, typed establishment failures are
 unchanged.
+
+### Game-authenticated membership
+
+The unreleased v1 schema is updated together with `puzzella-rendezvous`.
+AuthorizeAck opens routing, with a fixed 30-second deadline for game authentication.
+The host runtime sends ConfirmPeer(peer_id, member_id) as soon as its existing
+SPAKE2 bootstrap reaches Authenticated (or Syncing in that same poll), before
+Ready/image transfer/baseline/catch-up. No password, PAKE bytes or player identity
+is sent to the server. Only the current room host may confirm the exact
+server-issued MemberId. Established members have no game-auth deadline.
+
+Silent Routed members expire even while answering Ping/Pong; signals cannot renew
+the deadline. Expiry frees the member slot and sends PeerUnavailable to the host.
+Definitive native/auth/bootstrap failure sends RevokePeer when the last native
+handle for that peer is gone, including failures before Connected or within one
+poll. A Pending sibling preserves the member. Native retirement notices and
+unsent lifecycle commands are bounded; per-route commands survive worker channel
+backpressure, with Revoke superseding an unsent Confirm. Revoking routes retain
+their binding until PeerUnavailable and discard in-flight signals. Host
+UnknownTarget/JoinTimeout responses are nonfatal races with server cleanup.
+
+Pending (12-second ACK deadline), Routed (30-second game-auth deadline), and
+Established members all count toward the server's room capacity. These deadlines
+limit unauthenticated occupancy; room codes and anonymous memberships still have
+no account/Sybil guarantee. A Host must poll promptly to send its notifications.
 
 Cancel/Leave/Menu stop the adapter worker asynchronously, explicitly close game
 connections, then drop bootstrap/sync/secure channels, backend and pending owned

@@ -162,7 +162,12 @@ async fn run(
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         let message = protocol::parse_server(&text).map_err(|_| RendezvousError::ProtocolViolation)?;
-                        events.try_send(message).map_err(|_| RendezvousError::Backpressure)?;
+                        // A room-wide expiry can deliver 64 notifications between
+                        // owner polls. Keep the queue bounded and pause reads;
+                        // a stalled owner still fails within the I/O deadline.
+                        timeout(Duration::from_secs(2), events.send(message)).await
+                            .map_err(|_| RendezvousError::Backpressure)?
+                            .map_err(|_| RendezvousError::Requested)?;
                     }
                     Some(Ok(Message::Ping(_))) => {
                         timeout(Duration::from_secs(2), sink.flush()).await.map_err(|_| RendezvousError::Timeout)?.map_err(|_| RendezvousError::Network)?;

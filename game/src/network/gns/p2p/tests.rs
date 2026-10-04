@@ -380,6 +380,12 @@ fn gns_p2p_child() {
                 assert!(transport.has_channel(id));
                 assert!(connections.player(id).is_none()); // PAKE success != Ready
                 authenticated = true;
+                #[cfg(feature = "rendezvous")]
+                if host {
+                    if let Some(adapter) = &mut rendezvous {
+                        adapter.confirm_peer(PeerId::from_bytes(remote));
+                    }
+                }
                 records.lock().unwrap().clear();
                 emit(Frame::Authenticated);
             }
