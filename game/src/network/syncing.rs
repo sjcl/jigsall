@@ -200,30 +200,94 @@ pub enum SyncError {
     WrongIdentity,
     WrongGeneration,
     WrongFinalization,
+    /// Local authority/session scope changed since authentication.
+    AuthorityChanged,
+    HostImageUnavailable,
     Roster(RosterError),
+    HostRoster(RosterError),
     FinalizationExhausted,
     FinalDrag(FinalDragError),
+    HostFinalDrag(FinalDragError),
     UnofferedTransfer,
     TransferMismatch,
     ImageHashMismatch,
     MalformedBaseline,
+    BaselineEncoding,
     Baseline(JoinBaselineError),
     CatchUp(CatchUpError),
+    HostCatchUp(CatchUpError),
     Replication(ReplicationError),
     Bulk(BulkTransferError),
+    HostBulk(BulkTransferError),
     Wire(WireError),
+    Encoding(WireError),
     Transport(TransportError),
 }
 impl SyncError {
     pub fn disconnect_reason(&self) -> DisconnectReason {
         match self {
-            Self::TooManyJoins => DisconnectReason::JoinCapacity,
-            Self::Admission(reason) => *reason,
+            Self::TooManyJoins
+            | Self::HostRoster(RosterError::TooManyPlayers)
+            | Self::HostCatchUp(CatchUpError::TooManyPendingJoins) => {
+                DisconnectReason::JoinCapacity
+            }
+            Self::Admission(reason) | Self::Bootstrap(BootstrapError::Rejected(reason)) => *reason,
             Self::PhaseTimeout(_) => DisconnectReason::SyncPhaseTimeout,
             Self::LifetimeTimeout => DisconnectReason::SyncLifetime,
             Self::CapacityWaitTimeout => DisconnectReason::HostCapacityTimeout,
             Self::BulkStalled => DisconnectReason::BulkStalled,
-            _ => DisconnectReason::ProtocolViolation,
+            Self::Transport(error) | Self::Bootstrap(BootstrapError::Transport(error)) => {
+                match error {
+                    TransportError::UnknownConnection
+                    | TransportError::NotConnected
+                    | TransportError::Backpressure => DisconnectReason::ConnectionProblem,
+                    TransportError::Capacity => DisconnectReason::JoinCapacity,
+                    // These Transport errors arise from local sends/telemetry.
+                    // Peer protocol validation has its own SyncError variants.
+                    TransportError::UnknownListener
+                    | TransportError::PayloadTooLarge
+                    | TransportError::ProtocolViolation
+                    | TransportError::Backend(_)
+                    | TransportError::EgressUnavailable => DisconnectReason::BackendFailure,
+                }
+            }
+            Self::NotSyncing | Self::AuthorityChanged => DisconnectReason::ConnectionProblem,
+            Self::Bootstrap(
+                BootstrapError::InvalidTransition | BootstrapError::Registration(_),
+            )
+            | Self::HostImageUnavailable
+            | Self::HostRoster(_)
+            | Self::FinalizationExhausted
+            | Self::HostFinalDrag(_)
+            | Self::BaselineEncoding
+            | Self::HostCatchUp(_)
+            | Self::HostBulk(_)
+            | Self::Encoding(_)
+            | Self::Bulk(
+                BulkTransferError::AllocationFailed | BulkTransferError::CounterExhausted,
+            )
+            | Self::CatchUp(
+                CatchUpError::NotJoining
+                | CatchUpError::WrongPhase(_)
+                | CatchUpError::RestartRequired(_),
+            ) => DisconnectReason::BackendFailure,
+            Self::WrongConnection
+            | Self::WrongDirection
+            | Self::WrongPhase
+            | Self::WrongIdentity
+            | Self::WrongGeneration
+            | Self::WrongFinalization
+            | Self::Roster(_)
+            | Self::FinalDrag(_)
+            | Self::UnofferedTransfer
+            | Self::TransferMismatch
+            | Self::ImageHashMismatch
+            | Self::MalformedBaseline
+            | Self::Baseline(_)
+            | Self::CatchUp(_)
+            | Self::Replication(_)
+            | Self::Bulk(_)
+            | Self::Wire(_) => DisconnectReason::ProtocolViolation,
         }
     }
 }
@@ -294,18 +358,18 @@ impl SendingTransfer {
         kind: BulkTransferKind,
         bytes: Arc<[u8]>,
     ) -> Result<Self, SyncError> {
-        Self::from_outbound(sender.begin(kind, bytes).map_err(SyncError::Bulk)?)
+        Self::from_outbound(sender.begin(kind, bytes).map_err(SyncError::HostBulk)?)
     }
     fn image(
         sender: &mut BulkTransferSender,
         image: &VerifiedPuzzleImage,
     ) -> Result<Self, SyncError> {
-        Self::from_outbound(sender.begin_image(image).map_err(SyncError::Bulk)?)
+        Self::from_outbound(sender.begin_image(image).map_err(SyncError::HostBulk)?)
     }
     fn from_outbound(mut outbound: OutboundBulkTransfer) -> Result<Self, SyncError> {
         let start = outbound
             .next_message()
-            .map_err(SyncError::Bulk)?
+            .map_err(SyncError::HostBulk)?
             .expect("new sender starts");
         let BulkTransferMessage::Start {
             transfer_id,
@@ -349,6 +413,15 @@ struct HostSyncPeer {
     final_revision: u64,
     candidate: Option<FinalizationCandidate>,
     timing: SyncTiming,
+}
+impl HostSyncPeer {
+    fn resume_catch_up(&mut self) {
+        self.phase = SyncPhase::CatchingUp;
+        self.candidate = None;
+        // The retired Finalize no longer expects an ACK. This is host activity,
+        // not peer progress; CatchUpAck timing starts at the next actual send.
+        self.timing.response_wait = None;
+    }
 }
 
 struct FinalizationCandidate {
@@ -565,9 +638,10 @@ impl HostSyncCoordinator {
         let authenticated = bootstrap
             .metadata(connection)
             .ok_or(SyncError::NotSyncing)?;
-        require_identity(authenticated, authority.metadata())?;
+        require_identity(authenticated, authority.metadata())
+            .map_err(|_| SyncError::AuthorityChanged)?;
         if !authority.session.is_active() {
-            return Err(SyncError::WrongPhase);
+            return Err(SyncError::AuthorityChanged);
         }
         let player = bootstrap
             .assigned_player(connection)
@@ -628,8 +702,7 @@ impl HostSyncCoordinator {
         if outcome.authority_event.is_some() {
             for peer in self.peers.values_mut() {
                 if peer.phase == SyncPhase::Finalizing {
-                    peer.phase = SyncPhase::CatchingUp;
-                    peer.candidate = None;
+                    peer.resume_catch_up();
                 }
             }
         }
@@ -646,8 +719,7 @@ impl HostSyncCoordinator {
         self.invalidate_restarts();
         for peer in self.peers.values_mut() {
             if peer.phase == SyncPhase::Finalizing {
-                peer.phase = SyncPhase::CatchingUp;
-                peer.candidate = None;
+                peer.resume_catch_up();
             }
         }
         result
@@ -766,7 +838,8 @@ impl HostSyncCoordinator {
             .peers
             .get_mut(&connection)
             .ok_or(SyncError::NotSyncing)?;
-        require_identity(peer.authenticated, authority.metadata())?;
+        require_identity(peer.authenticated, authority.metadata())
+            .map_err(|_| SyncError::AuthorityChanged)?;
         let WireMessage::SyncControl(control) = message else {
             return Err(SyncError::WrongDirection);
         };
@@ -797,14 +870,14 @@ impl HostSyncCoordinator {
                     if self.image.is_none() {
                         self.image = Some(
                             VerifiedPuzzleImage::verify(
-                                image.ok_or(SyncError::WrongPhase)?,
+                                image.ok_or(SyncError::HostImageUnavailable)?,
                                 peer.authenticated.definition,
                             )
-                            .map_err(SyncError::Bulk)?,
+                            .map_err(SyncError::HostBulk)?,
                         );
                     }
                     if self.image.as_ref().unwrap().session() != peer.authenticated.definition {
-                        return Err(SyncError::ImageHashMismatch);
+                        return Err(SyncError::AuthorityChanged);
                     }
                     peer.timing.peer_progress(now);
                     peer.phase = SyncPhase::AwaitingImageSlot;
@@ -898,7 +971,7 @@ impl HostSyncCoordinator {
                 let acknowledged = self
                     .catch_up
                     .status(peer.player)
-                    .map_err(SyncError::CatchUp)?
+                    .map_err(SyncError::HostCatchUp)?
                     .acknowledged_cursor;
                 if cursor <= acknowledged {
                     return Ok(());
@@ -929,7 +1002,7 @@ impl HostSyncCoordinator {
                     || candidate.store_epoch != authority.store.epoch
                     || !authority.session.is_active()
                 {
-                    return Err(SyncError::WrongIdentity);
+                    return Err(SyncError::AuthorityChanged);
                 }
                 peer.timing.peer_progress(now);
                 let current = self
@@ -940,15 +1013,14 @@ impl HostSyncCoordinator {
                         authority.session,
                         authority.store,
                     )
-                    .map_err(SyncError::CatchUp)?;
+                    .map_err(SyncError::HostCatchUp)?;
                 if !current || token.cursor != authority.session.cursor() {
-                    peer.candidate = None;
-                    peer.phase = SyncPhase::CatchingUp;
+                    peer.resume_catch_up();
                     return Ok(());
                 }
                 let drags =
                     FinalDragSet::capture(authority.contexts, authority.session, authority.store)
-                        .map_err(SyncError::FinalDrag)?;
+                        .map_err(SyncError::HostFinalDrag)?;
                 if drags != candidate.drags {
                     peer.candidate = None;
                     // No Reliable replay is needed. The next pump sends a fresh revision.
@@ -959,7 +1031,7 @@ impl HostSyncCoordinator {
                         player: peer.player,
                         display_name: peer.display_name.clone(),
                     })
-                    .map_err(SyncError::Roster)?;
+                    .map_err(SyncError::HostRoster)?;
                 let snapshot = next_roster.snapshot();
                 let permit = SyncReadyPermit {
                     connection,
@@ -1005,10 +1077,10 @@ impl HostSyncCoordinator {
         {
             return Ok(());
         }
-        let image = self.image.as_ref().ok_or(SyncError::WrongPhase)?;
+        let image = self.image.as_ref().ok_or(SyncError::HostImageUnavailable)?;
         let peer = self.peers.get_mut(&connection).expect("queued sync peer");
         if image.session() != peer.authenticated.definition {
-            return Err(SyncError::ImageHashMismatch);
+            return Err(SyncError::AuthorityChanged);
         }
         self.image_waiters.pop_front();
         let sending = SendingTransfer::image(&mut peer.sender, image)?;
@@ -1038,9 +1110,10 @@ impl HostSyncCoordinator {
             return Ok(());
         }
         let peer = self.peers.get_mut(&connection).expect("queued sync peer");
-        require_identity(peer.authenticated, authority.metadata())?;
+        require_identity(peer.authenticated, authority.metadata())
+            .map_err(|_| SyncError::AuthorityChanged)?;
         if !authority.session.is_active() {
-            return Err(SyncError::WrongPhase);
+            return Err(SyncError::AuthorityChanged);
         }
         // Reserve before capture/encoding. Even a failed send keeps its slot
         // until runtime teardown, rather than leaving uncapped retained state.
@@ -1064,7 +1137,7 @@ impl HostSyncCoordinator {
                 authority.definition,
             )
         }
-        .map_err(SyncError::CatchUp)?;
+        .map_err(SyncError::HostCatchUp)?;
         Self::offer_baseline(peer, connection, transport, start, self.policy, now)
     }
 
@@ -1083,7 +1156,7 @@ impl HostSyncCoordinator {
         peer.generation = Some(generation);
         peer.baseline_cursor = Some(cursor);
         let bytes =
-            postcard::to_allocvec(&start.baseline).map_err(|_| SyncError::MalformedBaseline)?;
+            postcard::to_allocvec(&start.baseline).map_err(|_| SyncError::BaselineEncoding)?;
         let sending = SendingTransfer::new(
             &mut peer.sender,
             BulkTransferKind::JoinBaseline,
@@ -1114,9 +1187,17 @@ impl HostSyncCoordinator {
         peer: &mut HostSyncPeer,
         connection: ConnectionId,
         transport: &mut SecureTransport<T>,
-    ) -> Result<(), SyncError> {
+    ) -> Result<bool, SyncError> {
         if let Some((generation, transfer)) = peer.obsolete {
             if let Some(transfer_id) = transfer {
+                let egress = transport
+                    .reliable_egress(connection)
+                    .map_err(SyncError::Transport)?;
+                // Same conservative small-message reservation as Bulk Start,
+                // including secure-record and native framing overhead.
+                if egress.queued_bytes.saturating_add(96 + 128) > MAX_BULK_QUEUE_BYTES {
+                    return Ok(false);
+                }
                 send_bulk(
                     transport,
                     connection,
@@ -1126,7 +1207,7 @@ impl HostSyncCoordinator {
             send(transport, connection, Control::Restart { generation })?;
             peer.obsolete = None;
         }
-        Ok(())
+        Ok(true)
     }
     pub fn restart<T: Transport>(
         &mut self,
@@ -1149,8 +1230,11 @@ impl HostSyncCoordinator {
         }
         // PAKE's immutable session/host/epoch binding needs fresh authentication if
         // it changes. A same-session store restore can reuse the verified image.
-        require_identity(peer.authenticated, authority.metadata())?;
-        Self::flush_obsolete(peer, connection, transport)?;
+        require_identity(peer.authenticated, authority.metadata())
+            .map_err(|_| SyncError::AuthorityChanged)?;
+        if !Self::flush_obsolete(peer, connection, transport)? {
+            return Ok(());
+        }
         peer.phase = SyncPhase::AwaitingBaselineSlot;
         peer.timing.phase_entered = now;
         self.baseline_waiters.push_back(connection);
@@ -1190,8 +1274,11 @@ impl HostSyncCoordinator {
             .peers
             .get_mut(&connection)
             .ok_or(SyncError::NotSyncing)?;
-        Self::flush_obsolete(peer, connection, transport)?;
-        require_identity(peer.authenticated, authority.metadata())?;
+        if !Self::flush_obsolete(peer, connection, transport)? {
+            return Ok(());
+        }
+        require_identity(peer.authenticated, authority.metadata())
+            .map_err(|_| SyncError::AuthorityChanged)?;
         if let Some(sending) = peer.sending.as_mut() {
             if !sending.accepted {
                 return Ok(());
@@ -1219,7 +1306,10 @@ impl HostSyncCoordinator {
             let message = if let Some(start) = sending.start.take() {
                 Some(start)
             } else {
-                sending.outbound.next_message().map_err(SyncError::Bulk)?
+                sending
+                    .outbound
+                    .next_message()
+                    .map_err(SyncError::HostBulk)?
             };
             if let Some(message) = message {
                 let finished = matches!(message, BulkTransferMessage::Finish { .. });
@@ -1236,14 +1326,14 @@ impl HostSyncCoordinator {
             let status = self
                 .catch_up
                 .status(peer.player)
-                .map_err(SyncError::CatchUp)?;
+                .map_err(SyncError::HostCatchUp)?;
             // One outstanding Reliable event limits publication work and ACKs to
             // cursors actually sent. History remains owned by the CPU coordinator.
             if peer.sent_cursor == Some(status.acknowledged_cursor) {
                 if let Some(event) = self
                     .catch_up
                     .pending_events(peer.player, generation, 1)
-                    .map_err(SyncError::CatchUp)?
+                    .map_err(SyncError::HostCatchUp)?
                     .pop()
                 {
                     let cursor = event.cursor;
@@ -1262,7 +1352,7 @@ impl HostSyncCoordinator {
                         authority.session,
                         authority.store,
                     )
-                    .map_err(SyncError::CatchUp)?
+                    .map_err(SyncError::HostCatchUp)?
                 {
                     send(
                         transport,
@@ -1281,9 +1371,9 @@ impl HostSyncCoordinator {
             if !self
                 .catch_up
                 .is_reliable_caught_up(peer.player, generation, authority.session, authority.store)
-                .map_err(SyncError::CatchUp)?
+                .map_err(SyncError::HostCatchUp)?
             {
-                peer.phase = SyncPhase::CatchingUp;
+                peer.resume_catch_up();
                 return Ok(());
             }
             let revision = peer
@@ -1297,7 +1387,7 @@ impl HostSyncCoordinator {
             };
             let drags =
                 FinalDragSet::capture(authority.contexts, authority.session, authority.store)
-                    .map_err(SyncError::FinalDrag)?;
+                    .map_err(SyncError::HostFinalDrag)?;
             send(
                 transport,
                 connection,
@@ -1507,7 +1597,7 @@ impl ClientSyncRouter {
             || self.store_epoch.is_some_and(|epoch| epoch != store.epoch)
         {
             self.invalidate();
-            return Err(identity.err().unwrap_or(SyncError::WrongPhase));
+            return Err(SyncError::AuthorityChanged);
         }
         let outcome = match message {
             WireMessage::SyncControl(control) => match control {
@@ -1978,7 +2068,7 @@ fn send<T: Transport>(
     connection: ConnectionId,
     control: Control,
 ) -> Result<(), SyncError> {
-    let bytes = wire::encode(&WireMessage::SyncControl(control)).map_err(SyncError::Wire)?;
+    let bytes = wire::encode(&WireMessage::SyncControl(control)).map_err(SyncError::Encoding)?;
     transport
         .send(connection, MessageClass::Control, &bytes)
         .map_err(SyncError::Transport)
@@ -1988,7 +2078,7 @@ fn send_bulk<T: Transport>(
     connection: ConnectionId,
     message: BulkTransferMessage,
 ) -> Result<(), SyncError> {
-    let bytes = wire::encode(&WireMessage::BulkTransfer(message)).map_err(SyncError::Wire)?;
+    let bytes = wire::encode(&WireMessage::BulkTransfer(message)).map_err(SyncError::Encoding)?;
     transport
         .send(connection, MessageClass::Bulk, &bytes)
         .map_err(SyncError::Transport)

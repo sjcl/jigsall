@@ -51,6 +51,196 @@ fn assert_expired_join(h: &mut Harness, wait: ResponseWait) {
 }
 
 #[test]
+fn sync_disconnect_reasons_preserve_peer_blame_and_local_failure_provenance() {
+    use crate::network::lifecycle::is_abuse;
+    use crate::{multiplayer::finalization::FinalDragError, players::RosterError};
+    for (error, expected) in [
+        (
+            SyncError::Transport(TransportError::Backpressure),
+            DisconnectReason::ConnectionProblem,
+        ),
+        (
+            SyncError::Transport(TransportError::EgressUnavailable),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Transport(TransportError::Backend("backend failure".into())),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Transport(TransportError::NotConnected),
+            DisconnectReason::ConnectionProblem,
+        ),
+        (
+            SyncError::Transport(TransportError::UnknownConnection),
+            DisconnectReason::ConnectionProblem,
+        ),
+        (
+            SyncError::Transport(TransportError::UnknownListener),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Transport(TransportError::Capacity),
+            DisconnectReason::JoinCapacity,
+        ),
+        (
+            SyncError::Transport(TransportError::PayloadTooLarge),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Transport(TransportError::ProtocolViolation),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Bootstrap(BootstrapError::Transport(TransportError::EgressUnavailable)),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Bootstrap(BootstrapError::InvalidTransition),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Bulk(BulkTransferError::AllocationFailed),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Bulk(BulkTransferError::CounterExhausted),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::HostBulk(BulkTransferError::HashMismatch),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::HostFinalDrag(FinalDragError::ContextMismatch),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::HostRoster(RosterError::TooManyPlayers),
+            DisconnectReason::JoinCapacity,
+        ),
+        (
+            SyncError::HostRoster(RosterError::RevisionExhausted),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::HostCatchUp(CatchUpError::GenerationExhausted),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::HostCatchUp(CatchUpError::TooManyPendingJoins),
+            DisconnectReason::JoinCapacity,
+        ),
+        (
+            SyncError::FinalizationExhausted,
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::BaselineEncoding,
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::Encoding(WireError::Oversized),
+            DisconnectReason::BackendFailure,
+        ),
+        (
+            SyncError::AuthorityChanged,
+            DisconnectReason::ConnectionProblem,
+        ),
+        (
+            SyncError::CapacityWaitTimeout,
+            DisconnectReason::HostCapacityTimeout,
+        ),
+    ] {
+        assert_eq!(error.disconnect_reason(), expected, "{error:?}");
+        assert!(!is_abuse(error.disconnect_reason()), "{error:?}");
+    }
+    for error in [
+        SyncError::WrongPhase,
+        SyncError::WrongIdentity,
+        SyncError::MalformedBaseline,
+        SyncError::Wire(WireError::Oversized),
+        SyncError::Bulk(BulkTransferError::HashMismatch),
+        SyncError::FinalDrag(FinalDragError::ContextMismatch),
+        SyncError::Roster(RosterError::TooManyPlayers),
+        SyncError::CatchUp(CatchUpError::FutureAcknowledgement),
+    ] {
+        assert_eq!(
+            error.disconnect_reason(),
+            DisconnectReason::ProtocolViolation,
+            "{error:?}"
+        );
+        assert!(is_abuse(error.disconnect_reason()));
+    }
+    for reason in [
+        DisconnectReason::AuthenticationTimeout,
+        DisconnectReason::AuthenticatedHandoffTimeout,
+    ] {
+        let error = SyncError::Bootstrap(BootstrapError::Rejected(reason));
+        assert_eq!(error.disconnect_reason(), reason);
+        assert!(is_abuse(error.disconnect_reason()));
+    }
+    for error in [
+        SyncError::PhaseTimeout(ResponseWait::CatchUpAck),
+        SyncError::LifetimeTimeout,
+        SyncError::BulkStalled,
+    ] {
+        assert!(is_abuse(error.disconnect_reason()));
+    }
+}
+
+#[test]
+fn local_egress_failures_do_not_penalize_an_origin_across_reconnects() {
+    for error in [
+        TransportError::Backpressure,
+        TransportError::EgressUnavailable,
+        TransportError::Backend("backend failure".into()),
+    ] {
+        let origin = Origin::Ip("192.0.2.20".parse().unwrap());
+        let mut h = BaselineSlots::with_origin(3, Default::default(), Some(origin));
+        for n in 0..3 {
+            h.ready(n);
+            let id = h.id(n);
+            let transfer_id = h.host.transfer_binding(id).unwrap().transfer_id;
+            h.control(n, Control::TransferAccepted { transfer_id })
+                .unwrap();
+            let p = &mut h.pairs[n];
+            p.ht.backend_mut().egress_error = Some(error.clone());
+            assert_eq!(
+                h.host.expire_connection(
+                    &mut SyncHost {
+                        roster: &mut p.host_roster,
+                        bootstrap: &mut p.host,
+                        connections: &mut p.host_connections,
+                    },
+                    id,
+                    &mut p.ht,
+                    p.now
+                ),
+                Some(SyncError::Transport(error.clone()))
+            );
+            assert!(!p.ht.has_channel(id));
+        }
+        assert_eq!(h.host.resources().peers, 0);
+        let mut p = Pair::new("correct password");
+        p.now = h.pairs.iter().map(|p| p.now).max().unwrap() + Duration::from_secs(20);
+        p.host_connection = ConnectionId::new(9997);
+        p.ht.backend_mut().origin = Some(origin);
+        p.authenticate();
+        // Rate tokens have refilled; three local failures must not impose cooldown.
+        h.host
+            .start(
+                &mut p.host,
+                p.host_connection,
+                &mut p.ht,
+                &authority(&h.s),
+                p.now,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
 fn configured_session_image_accepts_equal_content_from_a_fresh_arc() {
     let mut h = Harness::new(false, Default::default());
     h.host.set_image(
@@ -214,6 +404,72 @@ fn duplicate_catchup_and_obsolete_finalize_acks_cannot_extend_response_deadline(
     }
     h.p.now = entered;
     assert_expired_join(&mut h, ResponseWait::FinalizeAck);
+}
+
+#[test]
+fn invalidated_finalization_starts_catchup_deadline_only_after_sending() {
+    for authority_event in [false, true] {
+        let mut h = Harness::new(true, Default::default());
+        if authority_event {
+            h.apply_grab();
+        }
+        h.reach(SyncPhase::Finalizing);
+        let entered = h.p.now;
+        let progress = h.host.timing(HA).unwrap().last_peer_progress;
+        assert_eq!(
+            h.host.timing(HA).unwrap().waiting_for(),
+            Some(ResponseWait::FinalizeAck)
+        );
+        h.p.now = entered + Duration::from_secs(11);
+        // The client has received Finalize, but its ACK is still in flight.
+        h.host_to_client().unwrap();
+        if authority_event {
+            let cancelled =
+                h.s.contexts
+                    .cancel_replicated(&mut h.s.host.session, &mut h.s.host.store, B)
+                    .unwrap()
+                    .unwrap();
+            h.host
+                .record_authority_event(
+                    &h.s.host.session,
+                    &h.s.host.store,
+                    &cancelled.authority_event,
+                )
+                .unwrap();
+        } else {
+            h.apply_grab();
+        }
+        assert_eq!(h.host.phase(HA), Some(SyncPhase::CatchingUp));
+        assert_eq!(h.host.timing(HA).unwrap().waiting_for(), None);
+        assert_eq!(h.host.timing(HA).unwrap().last_peer_progress, progress);
+        h.client_to_host().unwrap(); // Obsolete FinalizeAck cannot renew progress.
+        assert_eq!(h.host.timing(HA).unwrap().last_peer_progress, progress);
+        assert_eq!(h.host.timeout(HA, entered + Duration::from_secs(12)), None);
+        // Host scheduling can delay the send past the retired FinalizeAck deadline.
+        h.p.now = entered + Duration::from_secs(13);
+        h.host
+            .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+            .unwrap();
+        assert_eq!(
+            h.host.timing(HA).unwrap().waiting_for(),
+            Some(ResponseWait::CatchUpAck)
+        );
+        assert_eq!(
+            h.host.timeout(
+                HA,
+                h.p.now + Duration::from_secs(12) - Duration::from_nanos(1)
+            ),
+            None
+        );
+        assert_eq!(
+            h.host.timeout(HA, h.p.now + Duration::from_secs(12)),
+            Some(SyncError::PhaseTimeout(ResponseWait::CatchUpAck))
+        );
+        h.host_to_client().unwrap(); // Keep CatchUpAck in flight for 11 seconds.
+        h.p.now += Duration::from_secs(11);
+        h.reach(SyncPhase::Ready);
+        assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
+    }
 }
 
 #[test]
@@ -1087,7 +1343,7 @@ fn final_ack_cannot_cross_host_scope_or_freeze_changes() {
             result.unwrap();
             assert_eq!(h.host.phase(HA), Some(SyncPhase::RestartRequired));
         } else {
-            assert_eq!(result, Err(SyncError::WrongIdentity));
+            assert_eq!(result, Err(SyncError::AuthorityChanged));
         }
         assert_eq!(h.p.host_connections.player(HA), None);
         assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
@@ -1907,7 +2163,7 @@ fn waiting_baseline_rechecks_scope_and_frozen_authority_before_capture() {
     }
     h.host.disconnect(h.id(0));
     h.s.host.session.begin_graceful(B).unwrap();
-    assert_eq!(h.pump(2), Err(SyncError::WrongPhase));
+    assert_eq!(h.pump(2), Err(SyncError::AuthorityChanged));
     assert_eq!(
         h.host.catch_up().status(h.player(2)),
         Err(CatchUpError::NotJoining)
@@ -1928,7 +2184,7 @@ fn waiting_baseline_rechecks_scope_and_frozen_authority_before_capture() {
         HOST,
         AuthorityCursor::new(3, 0),
     );
-    assert_eq!(h.pump(2), Err(SyncError::WrongIdentity));
+    assert_eq!(h.pump(2), Err(SyncError::AuthorityChanged));
     assert_eq!(
         h.host.catch_up().status(h.player(2)),
         Err(CatchUpError::NotJoining)
@@ -2013,6 +2269,80 @@ fn restart_before_offer_delivery_cannot_send_abort_ahead_of_control() {
     h.reach(SyncPhase::Finalizing);
     assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
     assert_eq!(h.s.peers[0].store.states, h.s.host.store.states);
+}
+
+#[test]
+fn obsolete_abort_waits_for_queue_capacity_before_restart_or_new_baseline() {
+    use crate::network::lifecycle::MAX_BULK_QUEUE_BYTES;
+    for via_pump in [false, true] {
+        let mut h = Harness::new(
+            true,
+            CatchUpLimits {
+                max_events: 0,
+                ..Default::default()
+            },
+        );
+        h.reach(SyncPhase::BaselineTransfer);
+        h.client_to_host().unwrap();
+        h.host
+            .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+            .unwrap();
+        h.host_to_client().unwrap();
+        assert!(h.client.declared_in_flight_bytes() > 0);
+        h.apply_grab();
+        let delivered = h.p.ht.backend_mut().bulk_sent;
+        h.p.ht.backend_mut().bulk_queue_limit = Some(MAX_BULK_QUEUE_BYTES);
+        for queued in [MAX_BULK_QUEUE_BYTES, MAX_BULK_QUEUE_BYTES - 1] {
+            h.p.ht.backend_mut().egress = Some(ReliableEgress {
+                queued_bytes: queued,
+                bulk_queued_bytes: queued,
+                bulk_delivered_bytes: delivered,
+            });
+            h.p.now += Duration::from_secs(1);
+            if via_pump {
+                h.host
+                    .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+                    .unwrap();
+            } else {
+                h.host
+                    .restart(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+                    .unwrap();
+            }
+            assert_eq!(h.host.phase(HA), Some(SyncPhase::RestartRequired));
+            assert!(h.p.ht.backend_mut().sent.is_empty());
+            assert!(h.p.ht.has_channel(HA));
+            assert_eq!(h.host.transfer_binding(HA), None);
+        }
+        h.p.ht.backend_mut().egress = None;
+        if via_pump {
+            h.host
+                .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+                .unwrap();
+            assert_eq!(h.p.ht.backend_mut().sent.len(), 2); // Abort, then Restart.
+        }
+        h.host
+            .restart(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+            .unwrap();
+        assert_eq!(
+            h.p.ht
+                .backend_mut()
+                .sent
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    TransportEvent::Message {
+                        class: MessageClass::Bulk,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+        h.host_to_client().unwrap();
+        assert_eq!(h.client.generation(), Some(1));
+        assert_eq!(h.client.declared_in_flight_bytes(), 0);
+        h.reach(SyncPhase::Ready);
+    }
 }
 
 #[test]
@@ -2382,7 +2712,14 @@ fn exact_offer_metadata_and_local_scope_changes_fail_without_install() {
     h.host
         .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
         .unwrap();
-    assert!(matches!(h.host_to_client(), Err(SyncError::WrongPhase)));
+    assert!(matches!(
+        h.host_to_client(),
+        Err(SyncError::AuthorityChanged)
+    ));
+    assert_eq!(
+        h.p.client.failure(),
+        Some(DisconnectReason::ConnectionProblem)
+    );
     assert_eq!(h.client.phase(), SyncPhase::RestartRequired);
     assert_eq!(h.client.declared_in_flight_bytes(), 0);
 }

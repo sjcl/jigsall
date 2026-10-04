@@ -594,12 +594,8 @@ impl ClientBootstrap {
                 Ok(BootstrapOutcome::Consumed)
             }
             TransportEvent::Message { class, payload, .. } => {
-                if self.timed_out(now) {
-                    return Err(self.reject(
-                        DisconnectReason::AuthenticationTimeout,
-                        transport,
-                        connections,
-                    ));
+                if let Some(reason) = self.timeout_reason(now) {
+                    return Err(self.reject(reason, transport, connections));
                 }
                 let Ok(route) = wire::frame_route_for_class(payload, *class) else {
                     return Err(self.reject(
@@ -734,22 +730,20 @@ impl ClientBootstrap {
             }
         }
     }
-    fn timed_out(&self, now: Instant) -> bool {
-        if self.state == Some(ConnectionState::Authenticated) {
-            return self.started.is_some_and(|t| {
-                now.saturating_duration_since(t) >= AUTHENTICATED_HANDOFF_TIMEOUT
-            });
-        }
-        matches!(
-            self.state,
-            Some(
-                ConnectionState::TransportConnected
-                    | ConnectionState::Authenticating
-                    | ConnectionState::Securing
-            )
-        ) && self
-            .started
-            .is_some_and(|t| now.saturating_duration_since(t) >= AUTH_TIMEOUT)
+    fn timeout_reason(&self, now: Instant) -> Option<DisconnectReason> {
+        let (limit, reason) = match self.state? {
+            ConnectionState::Authenticated => (
+                AUTHENTICATED_HANDOFF_TIMEOUT,
+                DisconnectReason::AuthenticatedHandoffTimeout,
+            ),
+            ConnectionState::TransportConnected
+            | ConnectionState::Authenticating
+            | ConnectionState::Securing => (AUTH_TIMEOUT, DisconnectReason::AuthenticationTimeout),
+            ConnectionState::Syncing | ConnectionState::Ready => return None,
+        };
+        self.started
+            .filter(|t| now.saturating_duration_since(*t) >= limit)
+            .map(|_| reason)
     }
     pub fn expire(
         &mut self,
@@ -757,16 +751,8 @@ impl ClientBootstrap {
         connections: &mut SessionConnections,
         now: Instant,
     ) -> Result<(), BootstrapError> {
-        if self.timed_out(now) {
-            return Err(self.reject(
-                if self.state == Some(ConnectionState::Authenticated) {
-                    DisconnectReason::AuthenticatedHandoffTimeout
-                } else {
-                    DisconnectReason::AuthenticationTimeout
-                },
-                transport,
-                connections,
-            ));
+        if let Some(reason) = self.timeout_reason(now) {
+            return Err(self.reject(reason, transport, connections));
         }
         Ok(())
     }

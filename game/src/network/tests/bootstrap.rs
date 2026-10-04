@@ -10,6 +10,46 @@ use std::time::{Duration, Instant};
 mod syncing;
 
 #[test]
+fn client_process_uses_the_same_timeout_reason_as_expiry() {
+    use crate::network::lifecycle::AUTHENTICATED_HANDOFF_TIMEOUT;
+    for authenticated in [false, true] {
+        for via_process in [false, true] {
+            let mut p = Pair::new("correct password");
+            let (timeout, reason) = if authenticated {
+                p.authenticate();
+                (
+                    AUTHENTICATED_HANDOFF_TIMEOUT,
+                    DisconnectReason::AuthenticatedHandoffTimeout,
+                )
+            } else {
+                p.connect();
+                (AUTH_TIMEOUT, DisconnectReason::AuthenticationTimeout)
+            };
+            let result = if via_process {
+                p.client
+                    .process(
+                        &TransportEvent::Message {
+                            connection: CLIENT_HOST,
+                            class: MessageClass::Control,
+                            payload: Vec::new(),
+                        },
+                        &mut p.ct,
+                        &mut p.client_connections,
+                        p.now + timeout,
+                    )
+                    .map(|_| ())
+            } else {
+                p.client
+                    .expire(&mut p.ct, &mut p.client_connections, p.now + timeout)
+            };
+            assert_eq!(result, Err(BootstrapError::Rejected(reason)));
+            assert_eq!(p.client.failure(), Some(reason));
+            assert!(!p.ct.has_channel(CLIENT_HOST));
+        }
+    }
+}
+
+#[test]
 fn authenticated_handoff_has_a_fresh_clock_and_sync_is_not_bootstrap_owned() {
     use crate::network::lifecycle::AUTHENTICATED_HANDOFF_TIMEOUT as HANDOFF;
     let mut p = Pair::new("correct password");

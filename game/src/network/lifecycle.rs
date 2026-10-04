@@ -78,7 +78,7 @@ impl Bucket {
             ..Self::new(burst, Duration::from_secs(1), now)
         }
     }
-    pub fn take(&mut self, amount: u64, now: Instant) -> bool {
+    pub fn available(&mut self, amount: u64, now: Instant) -> bool {
         self.credit = self
             .credit
             .saturating_add(
@@ -88,11 +88,13 @@ impl Bucket {
             )
             .min(self.burst as u128 * self.interval.as_nanos());
         self.updated = self.updated.max(now);
-        let cost = amount as u128 * self.interval.as_nanos();
-        if self.credit < cost {
+        self.credit >= amount as u128 * self.interval.as_nanos()
+    }
+    pub fn take(&mut self, amount: u64, now: Instant) -> bool {
+        if !self.available(amount, now) {
             return false;
         }
-        self.credit -= cost;
+        self.credit -= amount as u128 * self.interval.as_nanos();
         true
     }
 }
@@ -158,7 +160,7 @@ impl Admission {
                 .entry(origin, now)
                 .ok_or(DisconnectReason::RateLimited)?;
             s.touched = now;
-            if s.cooldown.is_some_and(|until| now < until) || !s.bucket.take(1, now) {
+            if s.cooldown.is_some_and(|until| now < until) || !s.bucket.available(1, now) {
                 return Err(DisconnectReason::RateLimited);
             }
         }
@@ -170,6 +172,11 @@ impl Admission {
             {
                 return Err(DisconnectReason::RateLimited);
             }
+        }
+        // Both limits passed. A global refusal must not spend origin credit,
+        // and an origin refusal must not spend global credit.
+        if let Some(s) = origin.and_then(|o| self.origins.get_mut(&o)) {
+            s.bucket.take(1, now);
         }
         Ok(())
     }
@@ -232,6 +239,36 @@ mod tests {
         );
         gate.admit(Some(origin(1)), 0, now + ORIGIN_COOLDOWN)
             .unwrap();
+    }
+    #[test]
+    fn global_refusal_preserves_origin_credit_and_origin_refusal_preserves_global_credit() {
+        let now = Instant::now();
+        let mut gate = Admission::joins();
+        for _ in 0..JOIN_ADMISSION_BURST {
+            gate.admit(None, 0, now).unwrap();
+        }
+        for _ in 0..ORIGIN_JOIN_BURST {
+            assert_eq!(
+                gate.admit(Some(origin(1)), 0, now),
+                Err(DisconnectReason::RateLimited)
+            );
+        }
+        gate.admit(Some(origin(1)), 0, now + JOIN_ADMISSION_INTERVAL)
+            .unwrap();
+        let mut gate = Admission::joins();
+        for _ in 0..ORIGIN_JOIN_BURST {
+            gate.admit(Some(origin(1)), 0, now).unwrap();
+        }
+        for _ in 0..JOIN_ADMISSION_BURST {
+            assert_eq!(
+                gate.admit(Some(origin(1)), 0, now),
+                Err(DisconnectReason::RateLimited)
+            );
+        }
+        for _ in ORIGIN_JOIN_BURST..JOIN_ADMISSION_BURST {
+            gate.admit(None, 0, now).unwrap();
+        }
+        assert_eq!(gate.admit(None, 0, now), Err(DisconnectReason::RateLimited));
     }
     #[test]
     fn successful_authentication_cannot_bypass_global_join_rate() {

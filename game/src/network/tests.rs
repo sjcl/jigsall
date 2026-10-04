@@ -98,6 +98,8 @@ fn connected(connections: &mut SessionConnections, connection: ConnectionId, pla
 #[derive(Default)]
 pub(super) struct FakeTransport {
     pub(super) egress: Option<ReliableEgress>,
+    pub(super) egress_error: Option<TransportError>,
+    pub(super) bulk_queue_limit: Option<u64>,
     pub(super) bulk_sent: u64,
     pub(super) origin: Option<Origin>,
     pub(super) inbox: Vec<TransportEvent>,
@@ -111,6 +113,9 @@ impl Transport for FakeTransport {
         self.origin
     }
     fn reliable_egress(&self, _: ConnectionId) -> Result<ReliableEgress, TransportError> {
+        if let Some(error) = &self.egress_error {
+            return Err(error.clone());
+        }
         Ok(self.egress.unwrap_or(ReliableEgress {
             bulk_delivered_bytes: self.bulk_sent,
             ..Default::default()
@@ -136,6 +141,15 @@ impl Transport for FakeTransport {
             return Err(TransportError::NotConnected);
         }
         if class == MessageClass::Bulk {
+            if self.bulk_queue_limit.is_some_and(|limit| {
+                self.egress
+                    .unwrap_or_default()
+                    .queued_bytes
+                    .saturating_add(payload.len() as u64)
+                    > limit
+            }) {
+                return Err(TransportError::Backpressure);
+            }
             self.bulk_sent += payload.len() as u64;
         }
         self.sent.push(TransportEvent::Message {

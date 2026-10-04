@@ -892,6 +892,9 @@ installation. ImageReady/BaselineInstalled remain the authoritative milestones.
 Moving bytes from pending to sent, or retransmitting, is not progress. Preflight
 runs before allocating a chunk or advancing its sender/AEAD counter. Native sends
 also enforce the queue cap; errors retain strict secure-channel failure semantics.
+Obsolete-transfer Abort uses the same queue preflight. If it cannot fit, the host
+keeps the obsolete transfer pending and retries on a later frame; Restart and the
+next baseline offer wait until Abort has been enqueued.
 
 Bulk delivery allows 30 s idle and a 30 s initial throughput allowance, then
 requires cumulative delivery of at least `(elapsed - grace) * 128 KiB/s`.
@@ -901,6 +904,9 @@ Sync's fixed start-clock limit is 300 s plus transfer budget credited **once per
 kind**, without renewal by messages or baseline restarts. Finish-enqueue is still
 transfer time; the 12 s application response clock starts only after native Bulk
 drain. A bounded queue with no drain therefore expires even if pump keeps running.
+Reliable authority events that invalidate Finalizing retire its FinalizeAck wait
+without recording peer progress. The next CatchUpAck deadline starts only when
+the corresponding CatchUpEvent is sent; stale ACKs cannot renew it.
 Host generation additionally reserves at most 128 KiB/frame and 4 MiB/s; round-robin
 runtime pumping avoids starving later peers. No transfer pre-generates its chunks.
 
@@ -921,6 +927,12 @@ so they do not generate drag cancellation. Ready disconnect cancellation remains
 replicated exactly once. Host status/errors distinguish authentication timeout,
 handoff timeout, phase + expected response, Bulk stall, join capacity, rate limit,
 host-capacity wait expiry and backend Connecting timeout. Logs contain no secrets.
+Sync errors distinguish inbound protocol validation from local capture/encoding,
+allocation, registration, authority changes and transport failures. Local failures
+close with ConnectionProblem, BackendFailure or JoinCapacity and do not penalize
+the origin; peer protocol violations and authentication/sync stalls still do.
+Join admission spends origin/global tokens only after both limits pass. Client
+packet processing and frame expiry use the same authenticated-handoff timeout.
 Delegating Transport implementations must forward origin, reliable_egress and
 mark_ready; unavailable egress telemetry fails closed for Bulk. The client shares
 the delivery policy and frees its receiver/declared budget on failure; waits for a
