@@ -21,6 +21,20 @@ cargo build --locked --release
 参加者は「みんなで遊ぶ → 部屋に参加」でIPアドレス・ポートとパスワードを入力します。
 game layerのprogrammatic APIは[Direct-IP runtime](DIRECT_IP_RUNTIME.md)を参照してください。
 
+## 実行ファイルのアイコン
+
+Windows向けのビルドでは、ルートの`build.rs`が`assets/icon.ico`を実行ファイルへ埋め込みます。
+通常の`cargo build`で適用され、配布時にアイコンファイルを同梱する必要はありません。
+Windows以外のターゲットではこの埋め込み処理を行いません。
+
+`icon.ico`はメニューと共通の`assets/menu-icon.png`を元に、16 / 24 / 32 / 48 / 64 / 128 / 256 pxの
+画像を格納しています。元画像を更新した場合は、ImageMagickで再生成してください。
+ImageMagickはアイコンの再生成時だけ必要で、通常のビルドには不要です。
+
+```powershell
+magick assets/menu-icon.png -define icon:auto-resize=256,128,64,48,32,24,16 assets/icon.ico
+```
+
 ## 開発チェック
 
 ```powershell

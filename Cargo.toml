@@ -43,6 +43,7 @@ crossbeam = "0.8"
 zeroize = "1.9"
 instant = "0.1"
 rstar = "0.12"
+winresource = "0.1.31"
 
 # wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
 # Keep the compatible patch until upstream aligns these dependencies.
@@ -62,6 +63,9 @@ publish.workspace = true
 bevy.workspace = true
 puzzella-game.workspace = true
 puzzella-ui.workspace = true
+
+[build-dependencies]
+winresource.workspace = true
 
 [features]
 default = []

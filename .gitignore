@@ -1,4 +1,5 @@
 /target
 /assets/*
 !/assets/icon.svg
+!/assets/icon.ico
 !/assets/menu-icon.png
