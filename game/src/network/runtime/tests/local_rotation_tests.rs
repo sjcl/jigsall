@@ -69,13 +69,13 @@ fn connected_pair() -> Pair {
             store.states[id.0 as usize].position =
                 def.correct_position(id) + Vec2::new(140.0, 60.0);
         }
-        store.snap_unheld_component(PieceId(0), &def);
+        store.snap_fixture_component(PieceId(0), &def);
         assert!(store.connectivity.same_component(PieceId(0), PieceId(1)));
         for id in [PieceId(2), PieceId(3)] {
             store.states[id.0 as usize].position =
                 def.correct_position(id) + Vec2::new(-140.0, -60.0);
         }
-        store.snap_unheld_component(PieceId(2), &def);
+        store.snap_fixture_component(PieceId(2), &def);
         assert!(store.connectivity.same_component(PieceId(2), PieceId(3)));
     }
     pair.ready();

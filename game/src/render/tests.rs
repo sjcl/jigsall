@@ -1194,7 +1194,7 @@ fn gpu_radix_sort_visible_counts_and_ties() {
             }
             for &id in &expected {
                 let state = &mut store.states[id as usize];
-                state.position = def.piece(id, Vec2::ZERO).correct_position;
+                state.position = def.correct_position(PieceId(id));
                 state.z_order = match id % 11 {
                     0 => 0,
                     1 => 254,
@@ -1290,7 +1290,6 @@ fn visible_ids(app: &App) -> Vec<u32> {
 #[ignore = "release benchmark on a real GPU"]
 fn procedural_gpu_benchmark() {
     use bevy::ecs::system::RunSystemOnce;
-    use puzzella_puzzle::placement::generate_placement_grid;
     let (mut app, camera, _) = gpu_app(1024);
     let side = 4096u32;
     let mut rgba = Vec::with_capacity((side * side * 4) as usize);
@@ -1322,7 +1321,7 @@ fn procedural_gpu_benchmark() {
         texture_size: UVec2::splat(side),
         opaque: true,
     });
-    let mut csv=String::from("pieces,view,visible,placement_ms,state_ms,initial_upload_prep_ms,dirty_prep_us,frame_ms,cull_gpu_ms,draw_gpu_ms,point_gpu_ms,rectangle_gpu_ms,cpu_state_bytes,gpu_state_bytes,visible_bytes,selectable_bytes,cpu_image_bytes,gpu_image_bytes,pick_visible_bytes,sort_gpu_ms,selection_and_staging_bytes,meshes,piece_entities,draw_calls,sort_workgroups,sort_dispatches,sort_scratch_bytes\n");
+    let mut csv=String::from("pieces,view,visible,generation_ms,state_ms,initial_upload_prep_ms,dirty_prep_us,frame_ms,cull_gpu_ms,draw_gpu_ms,point_gpu_ms,rectangle_gpu_ms,cpu_state_bytes,gpu_state_bytes,visible_bytes,selectable_bytes,cpu_image_bytes,gpu_image_bytes,pick_visible_bytes,sort_gpu_ms,selection_and_staging_bytes,meshes,piece_entities,draw_calls,sort_workgroups,sort_dispatches,sort_scratch_bytes\n");
     for grid in [
         UVec2::new(40, 25),
         UVec2::splat(100),
@@ -1345,26 +1344,18 @@ fn procedural_gpu_benchmark() {
         let size = def.image_size.as_vec2() / grid.as_vec2();
         let count = def.piece_count();
         let start = Instant::now();
-        let positions = generate_placement_grid(
-            grid.x as usize,
-            grid.y as usize,
-            size.x,
-            size.y,
-            def.image_size.x as f32,
-            def.image_size.y as f32,
-            def.seed,
-        );
-        let placement = start.elapsed().as_secs_f64() * 1000.0;
+        let states = crate::resources::DensePieceStates::generate(&def);
+        let generation = start.elapsed().as_secs_f64() * 1000.0;
         let start = Instant::now();
         app.world_mut()
             .resource_mut::<PieceDataStore>()
-            .initialize(positions);
+            .initialize_dense(states);
         let state_ms = start.elapsed().as_secs_f64() * 1000.0;
         // Assemble the same authoritative states for a dense, fully visible worst case.
         {
             let mut store = app.world_mut().resource_mut::<PieceDataStore>();
             for (i, state) in store.states.iter_mut().enumerate() {
-                state.position = def.piece(i as u32, Vec2::ZERO).correct_position;
+                state.position = def.correct_position(PieceId(i as u32));
             }
         }
         app.world_mut().insert_resource(def.clone());
@@ -1544,7 +1535,7 @@ fn procedural_gpu_benchmark() {
                 assert!(b.sort.is_none(), "opaque puzzles need no radix scratch");
                 (0, 0)
             };
-            let row=format!("{count},{name},{},{placement:.4},{state_ms:.4},{prep:.4},{dirty:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{image_bytes},{image_bytes},{pick_bytes},{sort_ms:.4},{selection_bytes},{meshes},0,1,{sort_workgroups},{sort_dispatches},{sort_bytes}\n",ids.len(),frame/30.0,cull/30.0,draw/30.0,point/5.0,rectangle/5.0,app.world().resource::<PieceDataStore>().states.capacity()*16,b.states.size(),b.visible.size(),b.selectable.size());
+            let row=format!("{count},{name},{},{generation:.4},{state_ms:.4},{prep:.4},{dirty:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{},{},{image_bytes},{image_bytes},{pick_bytes},{sort_ms:.4},{selection_bytes},{meshes},0,1,{sort_workgroups},{sort_dispatches},{sort_bytes}\n",ids.len(),frame/30.0,cull/30.0,draw/30.0,point/5.0,rectangle/5.0,app.world().resource::<PieceDataStore>().states.capacity()*16,b.states.size(),b.visible.size(),b.selectable.size());
             csv.push_str(&row);
         }
     }

@@ -1,5 +1,7 @@
 # タブ付け根の修正結果（generator v4）
 
+2026-10-05追記: 旧 v2 の CPU メッシュ生成・CPU picking と専用 feature / example は削除済みです。以下の旧実装・比較コマンドは当時の記録です。現行の構成と検証コマンドは [DEVELOPMENT.md](DEVELOPMENT.md) を参照してください。
+
 本書は開発時v4の記録です。付け根の式を維持して辺の識別性を高めた現在のgenerator v1（開発時v5）は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 2026-10-01。commit 4994851のprocedural v3を基準に、sd_tabの横長shoulderを凹形の楕円弧へ置き換えました。head・stem、hash、EdgeProfile、GPU renderer、picking、dense state、placementは維持しています。

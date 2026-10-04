@@ -125,7 +125,7 @@ fn snapshot_render_edges_are_derived_from_authority_including_sparse_cycles() {
             .map(|id| d.correct_position(PieceId(id)) + Vec2::splat(100.0))
             .collect(),
     );
-    source.snap_unheld_component(PieceId(0), &d);
+    source.snap_fixture_component(PieceId(0), &d);
     let render_flags: Vec<_> = source
         .states
         .iter()

@@ -1,5 +1,7 @@
 # Procedural renderer 移行結果
 
+2026-10-05追記: 旧 v2 の CPU メッシュ生成・CPU picking と専用 feature / example は削除済みです。以下の旧実装・比較コマンドは当時の記録です。現行の構成と検証コマンドは [DEVELOPMENT.md](DEVELOPMENT.md) を参照してください。
+
 本書は開発時generator v3移行時の記録です。以下の性能・メモリ数値は旧bitonic sort経路の実測です。現在の可視数に応じたradix sortと追加scratch領域は[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、開発時v4の付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のgenerator v1（開発時v5）のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 2026-10-01、基準22e0aa135c5bdc6a881a3fe2ab6d976087d728baからgenerator v3へ移行しました。100万ピースで個別Mesh・描画Entityは0、通常ピース描画は1 draw、CPU正本とGPU stateは各16 bytes/pieceです。実GPUで1k / 10k / 100k / 1Mを計測し、100万ピース全体表示を確認しました。

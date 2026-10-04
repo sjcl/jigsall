@@ -2093,10 +2093,6 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         .world_mut()
         .spawn(crate::components::GridReference)
         .id();
-    let old_selection = client
-        .world_mut()
-        .spawn(crate::components::SelectionBox)
-        .id();
     {
         use crate::persistence::{GameId, SaveId, SaveMetadata, SaveTitle};
         let mut persistence = client
@@ -2131,7 +2127,6 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
     )
     .unwrap();
     assert!(client.world().get_entity(old_reference).is_err());
-    assert!(client.world().get_entity(old_selection).is_err());
     let persistence = client
         .world()
         .resource::<crate::persistence::runtime::PersistenceState>();

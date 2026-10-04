@@ -70,16 +70,6 @@ impl ExternalFileRegistry {
         })
     }
 
-    /// Identifies virtual keys, including those whose mappings have been released.
-    pub fn is_external_key(&self, key: &str) -> bool {
-        key.starts_with("external_file_")
-    }
-
-    /// Checks whether a puzzle image path is an external file key.
-    pub fn is_external_image_path(&self, image_path: &str) -> bool {
-        self.is_external_key(image_path)
-    }
-
     /// Returns the original filename for display in the image picker.
     pub fn get_original_filename(&self, virtual_key: &str) -> Option<String> {
         if let Some(real_path) = self.resolve_path(virtual_key) {
@@ -718,7 +708,6 @@ pub(crate) mod tests {
         assert_eq!(registry.unregister_file(&first), None);
         assert_eq!(registry.resolve_path(&first), None);
         assert_eq!(registry.get_original_filename(&first), None);
-        assert!(registry.is_external_image_path(&first));
         assert_eq!(
             registry.resolve_path(&second),
             Some(PathBuf::from("second.jpg"))

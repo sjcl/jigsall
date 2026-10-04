@@ -1,5 +1,7 @@
 # 永続的なconnected-piece snapping
 
+2026-10-05追記: 旧 v2 の CPU メッシュ生成・CPU picking と専用 feature / example は削除済みです。以下の旧実装・比較コマンドは当時の記録です。現行の構成と検証コマンドは [DEVELOPMENT.md](DEVELOPMENT.md) を参照してください。
+
 2026-10-04追記: 初回リリースのsnapshot schemaは1（開発時schema 5と同じlayout）、generatorはv1（開発時v5と同じ生成結果）です。本書の旧schemaやgenerator番号は開発時の記録で、互換decoderは提供しません。現在の構成は[ARCHITECTURE.md](ARCHITECTURE.md)を参照してください。
 
 2026-10-02。`4b1f01de5db1247fdc627c156d6840e74673f8e7`で単一translationのresolverをmasterへ統合しました。続いて、そのmasterを基準にbranch `codex/rounded-closure-scratch`でf32丸めを含むclosure判定と少数Releaseのscratchを改善しました。2026-10-03に90°単位の剛体回転へ拡張しました。以下は現行仕様です。

@@ -31,9 +31,6 @@ enum Gesture {
         anchor: Vec2,
     },
     BoxSelecting {
-        #[allow(dead_code)] // World-space gesture anchor is also used by CPU gesture tests.
-        anchor: Vec2,
-        current: Vec2,
         screen_anchor: Vec2,
         screen_current: Vec2,
         original: PieceBitSet,
@@ -324,20 +321,6 @@ impl PieceInteraction {
             }
         }
     }
-    #[cfg(test)]
-    pub fn selection_rect(&self) -> Option<Rect> {
-        if let Gesture::BoxSelecting {
-            anchor, current, ..
-        } = self.gesture
-        {
-            Some(Rect {
-                min: anchor.min(current),
-                max: anchor.max(current),
-            })
-        } else {
-            None
-        }
-    }
     pub(crate) fn network_gesture_token(&self) -> std::sync::Arc<()> {
         self.network_gesture.clone()
     }
@@ -488,8 +471,6 @@ impl PieceInteraction {
                         store.selected_pieces.clear();
                     }
                     self.gesture = Gesture::BoxSelecting {
-                        anchor: *anchor,
-                        current: *current,
                         screen_anchor: *screen_anchor,
                         screen_current: *screen_current,
                         original: original.clone(),
@@ -517,7 +498,6 @@ impl PieceInteraction {
                 }
             }
             Gesture::BoxSelecting {
-                current,
                 screen_anchor,
                 screen_current,
                 original,
@@ -529,9 +509,6 @@ impl PieceInteraction {
             } => {
                 let was_released = *released;
                 if !*released {
-                    if let Some(point) = point {
-                        *current = point;
-                    }
                     if let Some(screen) = screen {
                         *screen_current = screen;
                     }

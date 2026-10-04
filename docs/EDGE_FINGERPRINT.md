@@ -1,5 +1,7 @@
 # 辺の視覚的識別性の改善（generator v5）
 
+2026-10-05追記: 旧 v2 の CPU メッシュ生成・CPU picking と専用 feature / example は削除済みです。以下の旧実装・比較コマンドは当時の記録です。現行の構成と検証コマンドは [DEVELOPMENT.md](DEVELOPMENT.md) を参照してください。
+
 2026-10-04追記: 初回リリースでは本書の開発時generator v5をv1に整理しました。形状・hash・seed・配置の計算は同じです。以下のv4/v5表記、測定値と既存benchmarksは記録当時の番号を維持します。
 
 本書は初期v5の形状変更の記録です。意図的に特徴を選んだ旧matching図も含みます。形状を固定した無作為matching・縦横比・macro軸別の追加評価と人間向けtoolは[EDGE_FINGERPRINT_EVALUATION.md](EDGE_FINGERPRINT_EVALUATION.md)を参照してください。
@@ -144,7 +146,7 @@ cargo test --locked
 cargo test --locked --all-features
 cargo build --locked
 cargo test -p puzzella-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
-cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example edge_fingerprint_preview -- target
+cargo run --release --locked -p puzzella-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
 cargo run --release --locked -p puzzella-puzzle --features cpu-geometry-reference --example shape_comparison -- target/fingerprint-v2-v5.svg
 ```
 

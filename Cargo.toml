@@ -28,11 +28,9 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "bevy_sprite_render", "bevy_gizmos_render",
     "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace",
 ] }
-bevy_asset = "0.19.1"
 bevy_ecs = "0.19.1"
 bevy_log = "0.19.1"
 bevy_math = { version = "0.19.1", features = ["serialize"] }
-bevy_mesh = "0.19.1"
 bevy_egui = "0.42"
 ab_glyph = "0.2"
 serde = { version = "1.0", features = ["derive"] }
@@ -42,13 +40,9 @@ fast_image_resize = { version = "6.1", default-features = false, features = ["st
 rand = "0.10"
 rand_chacha = "0.10"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
-rayon = "1.11"
-lyon = "1.0"
-lyon_tessellation = "1.0"
 crossbeam = "0.8"
 zeroize = "1.9"
 instant = "0.1"
-rstar = "0.12"
 winresource = "0.1.31"
 winit = { version = "0.30.13", default-features = false }
 
@@ -77,8 +71,6 @@ winresource.workspace = true
 [features]
 default = []
 gns = ["puzzella-game/gns", "puzzella-ui/gns"]
-cpu-geometry-reference = ["puzzella-game/cpu-geometry-reference"]
-cpu-picking-debug = ["puzzella-game/cpu-picking-debug"]
 # Tracy Profilerを使用する場合（高度なプロファイリング）
 tracy = ["bevy/trace_tracy"]
 # Chrome Tracingを使用する場合（ブラウザでの分析）

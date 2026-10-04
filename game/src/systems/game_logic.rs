@@ -1,4 +1,4 @@
-use crate::{components::*, resources::*};
+use crate::resources::*;
 use bevy::prelude::*;
 use puzzella_core::ClientCommand;
 use puzzella_core::*;
@@ -65,33 +65,14 @@ pub fn apply_piece_commands(
     perf.end_system_timing("apply_piece_commands", start);
 }
 
-// Kept for independent producers of single release notifications. Bulk authority
-// applies snap synchronously without a per-member PieceMoveCompleted/Placed event.
-pub fn check_piece_placement_event_driven(
-    mut moves: MessageReader<PieceMoveCompleted>,
-    definition: Option<Res<PuzzleDefinition>>,
-    mut store: ResMut<PieceDataStore>,
-) {
-    let Some(definition) = definition else {
-        return;
-    };
-    for event in moves.read() {
-        store.snap_unheld_component(event.id, &definition);
-    }
-}
-
-pub fn update_game_state_event_driven(
-    mut placed: MessageReader<PiecePlacedEvent>,
+pub fn update_game_progress(
     state: Option<Res<State<GameSubState>>>,
     store: Res<PieceDataStore>,
     mut game: ResMut<GameData>,
     mut next: ResMut<NextState<AppState>>,
     mut perf: ResMut<PerformanceMonitor>,
 ) {
-    let start = perf.start_system_timing("update_game_state_event_driven");
-    for event in placed.read() {
-        let _ = event.id;
-    }
+    let start = perf.start_system_timing("update_game_progress");
     // Cached placed_count changes only on authority commits: O(1) even for 1M.
     if !store.is_empty() {
         game.puzzle_progress = store.placed_count as f32 / store.len() as f32;
@@ -104,5 +85,5 @@ pub fn update_game_state_event_driven(
             next.set(AppState::GameComplete);
         }
     }
-    perf.end_system_timing("update_game_state_event_driven", start);
+    perf.end_system_timing("update_game_progress", start);
 }

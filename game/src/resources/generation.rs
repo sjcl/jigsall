@@ -17,7 +17,7 @@ pub struct PieceGenerationProgress {
     pub generation_phase: GenerationPhase,
     pub grid_size: (usize, usize),
     pub pieces_created: usize,
-    pub receiver: Option<channel::Receiver<Result<DensePieceStates, String>>>,
+    pub receiver: Option<channel::Receiver<DensePieceStates>>,
     pub error: Option<GenerationError>,
 }
 
@@ -25,6 +25,5 @@ pub struct PieceGenerationProgress {
 pub enum GenerationError {
     WorkerStopped,
     InvalidDefinition(String),
-    State(String),
     Renderer(String),
 }

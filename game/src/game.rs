@@ -39,8 +39,6 @@ impl Plugin for GamePlugin {
                 crate::keybindings::sample_key_presses.after(bevy::input::InputSystems),
             )
             .add_message::<ClientCommand>()
-            .add_message::<PieceMoveCompleted>()
-            .add_message::<PiecePlacedEvent>()
             .init_resource::<PersistenceService>()
             .init_resource::<PersistenceState>()
             .init_resource::<crate::persistence::autosave::AutosaveSettingsState>()
@@ -131,9 +129,7 @@ impl Plugin for GamePlugin {
                 PostUpdate,
                 (
                     apply_piece_commands.run_if(crate::network::runtime::world_offline),
-                    check_piece_placement_event_driven
-                        .run_if(crate::network::runtime::world_offline),
-                    update_game_state_event_driven,
+                    update_game_progress,
                     render_selection_box,
                 )
                     .chain()
@@ -249,7 +245,7 @@ fn initialize_game(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn cleanup_game(
     mut commands: Commands,
-    entities: Query<Entity, Or<(With<GridReference>, With<SelectionBox>)>>,
+    entities: Query<Entity, With<GridReference>>,
     mut store: ResMut<PieceDataStore>,
     mut input: ResMut<InputState>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
@@ -300,14 +296,8 @@ fn reset_local_player(mut local_player: ResMut<LocalPlayerId>, mut host: ResMut<
     *host = default();
 }
 
-fn clear_session_messages(
-    mut intents: ResMut<Messages<ClientCommand>>,
-    mut moves: ResMut<Messages<PieceMoveCompleted>>,
-    mut placed: ResMut<Messages<PiecePlacedEvent>>,
-) {
+fn clear_session_messages(mut intents: ResMut<Messages<ClientCommand>>) {
     intents.clear();
-    moves.clear();
-    placed.clear();
 }
 
 #[cfg(test)]
@@ -362,8 +352,7 @@ mod tests {
         world.insert_resource(State::new(GameSubState::Initializing));
         world.resource_mut::<LocalGameplayBlocked>().0 = true;
         let (tx, rx) = crossbeam::channel::bounded(1);
-        tx.send(Ok(DensePieceStates::generate(&definition)))
-            .unwrap();
+        tx.send(DensePieceStates::generate(&definition)).unwrap();
         world.insert_resource(PieceGenerationProgress {
             receiver: Some(rx),
             generation_phase: GenerationPhase::GeneratingState,
@@ -1059,8 +1048,7 @@ mod tests {
                 let position = app
                     .world()
                     .resource::<PuzzleDefinition>()
-                    .piece(id.0, Vec2::ZERO)
-                    .correct_position;
+                    .correct_position(id);
                 for command in [
                     PieceCommand::Grab(id),
                     PieceCommand::Move { id, position },

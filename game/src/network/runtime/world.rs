@@ -221,10 +221,7 @@ pub fn join_with_transport<T: DirectIpTransport + 'static>(
     // Joining can replace an offline puzzle without first visiting Menu.
     // These are game-level presentation entities, never per-piece entities.
     let old_entities: Vec<_> = world
-        .query_filtered::<Entity, Or<(
-            With<crate::components::GridReference>,
-            With<crate::components::SelectionBox>,
-        )>>()
+        .query_filtered::<Entity, With<crate::components::GridReference>>()
         .iter(world)
         .collect();
     for entity in old_entities {

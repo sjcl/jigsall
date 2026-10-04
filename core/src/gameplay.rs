@@ -1,6 +1,6 @@
 //! Input- and rendering-independent definitions and authoritative decisions.
 use crate::PieceBitSet;
-use bevy_ecs::prelude::{Component, Resource};
+use bevy_ecs::prelude::Resource;
 use bevy_math::{UVec2, Vec2};
 use serde::{Deserialize, Serialize};
 
@@ -114,18 +114,6 @@ impl PuzzleDefinition {
     pub fn neighbors(&self, id: PieceId) -> [Option<PieceId>; 4] {
         grid_neighbors(self.grid_size, id)
     }
-    #[inline]
-    pub fn piece(&self, index: u32, initial_position: Vec2) -> PuzzlePiece {
-        let grid_position = UVec2::new(index % self.grid_size.x, index / self.grid_size.x);
-        let size = self.image_size.as_vec2() / self.grid_size.as_vec2();
-        let offset = grid_position.as_vec2() - (self.grid_size.as_vec2() - Vec2::ONE) * 0.5;
-        PuzzlePiece {
-            id: PieceId(index),
-            grid_position,
-            correct_position: Vec2::new(offset.x * size.x, -offset.y * size.y),
-            initial_position,
-        }
-    }
 }
 /// Release-local coordinate constants; no persistent per-piece allocation.
 #[derive(Clone, Copy)]
@@ -164,27 +152,11 @@ fn grid_neighbors(grid: UVec2, id: PieceId) -> [Option<PieceId>; 4] {
     ]
 }
 
-#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct PuzzlePiece {
-    pub id: PieceId,
-    pub grid_position: UVec2,
-    pub correct_position: Vec2,
-    pub initial_position: Vec2,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PieceState {
     pub position: Vec2,
     pub placed: bool,
     pub held_by: Option<PlayerId>,
-}
-impl PieceState {
-    pub fn new(position: Vec2) -> Self {
-        Self {
-            position,
-            placed: false,
-            held_by: None,
-        }
-    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PieceCommand {
@@ -216,70 +188,6 @@ pub enum PieceCommand {
         quarter_turns: i8,
     },
 }
-impl PieceCommand {
-    pub fn piece_id(&self) -> Option<PieceId> {
-        match *self {
-            Self::Grab(id) | Self::Move { id, .. } | Self::Release(id) => Some(id),
-            Self::GrabGroup { .. }
-            | Self::ReleaseGroup { .. }
-            | Self::Rotate { .. }
-            | Self::RotateDrag { .. } => None,
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum CommandOutcome {
-    Grabbed,
-    Moved,
-    Released,
-}
-
-/// Caller supplies an authenticated identity when a transport is added.
-pub fn apply_piece_command(
-    state: &mut PieceState,
-    player: PlayerId,
-    command: &PieceCommand,
-) -> Option<CommandOutcome> {
-    if state.placed {
-        return None;
-    }
-    match *command {
-        PieceCommand::Grab(_) if state.held_by.is_none() => {
-            state.held_by = Some(player);
-            Some(CommandOutcome::Grabbed)
-        }
-        PieceCommand::Move { position, .. }
-            if state.held_by == Some(player) && position.is_finite() =>
-        {
-            state.position = position;
-            Some(CommandOutcome::Moved)
-        }
-        PieceCommand::Release(_) if state.held_by == Some(player) => {
-            state.held_by = None;
-            Some(CommandOutcome::Released)
-        }
-        _ => None,
-    }
-}
-/// Called after an accepted release; no mouse, UI, or Transform dependency.
-pub fn snap_piece(piece: &PuzzlePiece, state: &mut PieceState, distance: f32) -> bool {
-    if state.placed
-        || state.held_by.is_some()
-        || !state.position.is_finite()
-        || !distance.is_finite()
-        || distance <= 0.0
-    {
-        return false;
-    }
-    if state.position.distance(piece.correct_position) < distance {
-        state.position = piece.correct_position;
-        state.placed = true;
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,7 +321,10 @@ mod tests {
             };
             let geometry = d.geometry();
             for id in 0..d.piece_count() as u32 {
-                let expected = d.piece(id, Vec2::ZERO).correct_position;
+                let cell = UVec2::new(id % grid_size.x, id / grid_size.x);
+                let size = image_size.as_vec2() / grid_size.as_vec2();
+                let offset = cell.as_vec2() - (grid_size.as_vec2() - Vec2::ONE) * 0.5;
+                let expected = Vec2::new(offset.x * size.x, -offset.y * size.y);
                 let actual = geometry.correct_position(PieceId(id));
                 assert_eq!(
                     actual.to_array().map(f32::to_bits),
@@ -444,70 +355,5 @@ mod tests {
                 Err("Unsupported puzzle generator version")
             );
         }
-    }
-    #[test]
-    fn validates_ownership_and_finite_moves() {
-        let mut s = PieceState::new(Vec2::ZERO);
-        let id = PieceId(7);
-        let other = PlayerId(1);
-        assert_eq!(
-            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Grab(id)),
-            Some(CommandOutcome::Grabbed)
-        );
-        assert_eq!(
-            apply_piece_command(&mut s, other, &PieceCommand::Grab(id)),
-            None
-        );
-        assert_eq!(
-            apply_piece_command(
-                &mut s,
-                other,
-                &PieceCommand::Move {
-                    id,
-                    position: Vec2::ONE
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            apply_piece_command(
-                &mut s,
-                LOCAL_PLAYER,
-                &PieceCommand::Move {
-                    id,
-                    position: Vec2::splat(f32::NAN)
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            apply_piece_command(&mut s, other, &PieceCommand::Release(id)),
-            None
-        );
-        assert_eq!(s.position, Vec2::ZERO);
-        assert_eq!(
-            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Release(id)),
-            Some(CommandOutcome::Released)
-        );
-    }
-    #[test]
-    fn release_snap_locks_piece_and_preserves_threshold() {
-        let p = PuzzlePiece {
-            id: PieceId(0),
-            grid_position: UVec2::ZERO,
-            correct_position: Vec2::ZERO,
-            initial_position: Vec2::ONE,
-        };
-        let mut s = PieceState::new(Vec2::new(5.0, 0.0));
-        assert!(!snap_piece(&p, &mut s, 5.0));
-        s.held_by = Some(LOCAL_PLAYER);
-        assert!(!snap_piece(&p, &mut s, 10.0));
-        apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Release(p.id));
-        assert!(snap_piece(&p, &mut s, 10.0));
-        assert_eq!(s.position, Vec2::ZERO);
-        assert_eq!(
-            apply_piece_command(&mut s, LOCAL_PLAYER, &PieceCommand::Grab(p.id)),
-            None
-        );
     }
 }

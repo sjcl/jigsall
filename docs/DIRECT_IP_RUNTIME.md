@@ -248,9 +248,9 @@ and poll at 2 ms intervals; this covers image transfer/decode and Ready, without
 native-window rendering. It is one local test result, not a throughput guarantee.
 
 PostUpdate handles commands after existing egui, camera and piece input. With no
-`NetworkSession`, the established `apply_piece_commands` and legacy snap
-notification path operate directly; no sender, serialization or network poll
-runs. Network mode gates those authority systems off. Host local controls use
+`NetworkSession`, `apply_piece_commands` applies commands and release-time snap
+through `PieceDataStore` directly; no sender, serialization or network poll runs.
+Network mode gates the offline authority system off. Host local controls use
 `ProtocolDragContexts::apply_replicated`, immediate catch-up recording, and the
 same Ready publication as remote controls. Clients only submit commands; canonical
 gameplay changes come from authenticated Reliable authority events through

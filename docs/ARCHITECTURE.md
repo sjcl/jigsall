@@ -1,6 +1,6 @@
 # Puzzella のアーキテクチャ
 
-2026-10-04。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2を参照として残し、procedural GPU rendererへ移行しました。現在は開発時v4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v1（開発時v5）です。初回リリース向けにgeneratorとsnapshot schemaをそれぞれ5→1に整理し、生成結果とsnapshotのlayoutは維持しています。開発中の形式との互換性や移行は提供しません。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
+2026-10-05。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2からprocedural GPU rendererへ移行済みです。移行検証用の旧 CPU メッシュ生成と CPU picking は削除しました。現在は開発時v4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v1（開発時v5）です。初回リリース向けにgeneratorとsnapshot schemaをそれぞれ5→1に整理し、生成結果とsnapshotのlayoutは維持しています。開発中の形式との互換性や移行は提供しません。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 ## Workspaceと責務
 
@@ -15,16 +15,15 @@ puzzella
 
 | ファイル | 責務 |
 | --- | --- |
-| `core/src/gameplay.rs` / `commands.rs` | row-major PieceId、PuzzleDefinition、CPU命令検証、snap |
+| `core/src/gameplay.rs` / `commands.rs` | row-major PieceId、PuzzleDefinition、命令型・座標定義 |
 | `core/src/connectivity.rs` / `snapping.rs` | DSUと循環member list、正しいgrid隣接、同rotationのtranslation candidateの決定 |
-| `puzzle/src/procedural.rs` | u32 hash、packed EdgeProfile、解析形状・UVのCPU参照 |
-| `puzzle/src/fingerprint.rs` | feature / test限定のmacro fingerprint、輪郭descriptor、凍結v4測定参照 |
+| `puzzle/src/procedural.rs` | u32 hash、packed EdgeProfile、解析形状のCPU参照 |
+| `puzzle/src/fingerprint.rs` | shape-analysis / test限定のmacro fingerprint、輪郭descriptor、凍結v4測定参照 |
 | `puzzle/src/placement.rs` / `grid.rs` | O(N)格子リング配置、seed付きshuffle、grid |
-| `puzzle/src/shapes.rs` / `generation.rs` | feature / test限定のv2 Bezier・lyon・Rayon・U16 geometry |
 | `game/src/resources/pieces.rs` | 16-byte dense正本、dense owner IDs、selection / dirty mask、bulk authority、drag bitset / delta、dirty upload |
 | `game/src/resources/pieces/snapping.rs` | Release単位の単一snap判定、固定offsetのunion closure・一括配置 |
 | `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
-| `game/src/systems/game_logic.rs` | 命令適用、Release後のsnap、イベント駆動の進捗 |
+| `game/src/systems/game_logic.rs` | 命令適用、Release時のsnap、正本に基づく進捗 |
 | `game/src/network/runtime.rs` / `runtime/` | Direct-IP session lifecycle、local command bridge、World同期、切断とMenu cleanup（[仕様](DIRECT_IP_RUNTIME.md)） |
 | `game/src/network/address.rs` | 参加先の構文検証とworkerによるDNS解決、timeout、IPv4 / IPv6 endpoint選択 |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
@@ -38,7 +37,7 @@ puzzella
 | `game/src/checkpoint.rs` | multiplayer / persistent 共通 capture・validation・DSU 復元・install |
 | `game/src/persistence/` | versioned binary codec、画像 content addressing、backend 非依存 repository / logical storage、I/O worker |
 
-通常依存からlyon、lyon_tessellation、Rayonを外しました。`cpu-geometry-reference`はv2参照を、`cpu-picking-debug`は加えてCPU triangle判定を有効にします。通常の選択はGPUです。
+旧 v2 の Bezier・lyon tessellation、CPU triangle / R-tree picking、専用 example と feature を削除し、lyon・lyon_tessellation・Rayon・rstar の依存を除去しました。現行 shader との比較に使う解析 SDF と形状評価 example は維持します。`puzzella-puzzle/shape-analysis` は fingerprint 評価用です。入力テストは選択結果を明示的に注入し、実 GPU の coverage は render tests で検証します。
 
 ## CPU正本と入力
 
@@ -89,7 +88,7 @@ display name は core の validated `PlayerDisplayName` で、protocol identity 
 roster は session metadata で、snapshot / save / piece state へ含めません。
 詳細は [Direct-IP runtime](DIRECT_IP_RUNTIME.md#player-profiles-and-presence) を参照してください。
 
-`PieceDataStore.states: DensePieceStates`が正本です。内部は固定長の`Arc<[GpuPieceState]>`で、`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分のPuzzlePieceやTransformは保存しません。確定選択とdirty IDは`PieceBitSet`、holderはdense PlayerIdとoccupancy maskです。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPU maskへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。[MILLION_SELECTION.md](MILLION_SELECTION.md)に移行・計測・メモリを記載しています。
+`PieceDataStore.states: DensePieceStates`が正本です。内部は固定長の`Arc<[GpuPieceState]>`で、`PieceId(n)`は`states[n]`を直接参照します。position、u32 z_order、flagsの16 bytesです。grid位置、正解位置、size、UV、辺パラメータ、boundsは定義とIDから導出します。全ピース分の component や Transform は保存しません。旧 `PuzzlePiece`・単体 state 用命令検証 / snap API と、発行元のない配置通知経路も削除しました。命令適用は `PieceDataStore::apply_command`、進捗更新は正本の `placed_count` を参照します。確定選択とdirty IDは`PieceBitSet`、holderはdense PlayerIdとoccupancy maskです。矩形previewはGPU bitsetを直接outlineへ利用し、release時だけCPU maskへreadbackします。drag中の一時移動は固定membership bitsetとdeltaで表現し、最終座標だけをrelease時にCPU正本へ反映します。[MILLION_SELECTION.md](MILLION_SELECTION.md)に移行・計測・メモリを記載しています。
 
 ```text
 GPU pick / selection mask
