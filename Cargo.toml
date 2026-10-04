@@ -49,6 +49,7 @@ zeroize = "1.9"
 instant = "0.1"
 rstar = "0.12"
 winresource = "0.1.31"
+winit = { version = "0.30.13", default-features = false }
 
 # wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
 # Keep the compatible patch until upstream aligns these dependencies.
