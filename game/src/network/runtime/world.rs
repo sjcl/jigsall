@@ -97,50 +97,79 @@ pub fn host_with_transport<T: DirectIpTransport + 'static>(
     backend: T,
     options: HostOptions,
 ) -> Result<SocketAddr, RuntimeStartError> {
-    if network_active(world) {
-        return Err(RuntimeStartError::AlreadyActive);
+    HostStartRequest::new(options).start_with_transport(world, backend)
+}
+
+impl HostStartRequest {
+    pub fn start_with_transport<T: DirectIpTransport + 'static>(
+        &mut self,
+        world: &mut World,
+        backend: T,
+    ) -> Result<SocketAddr, RuntimeStartError> {
+        if network_active(world) {
+            return Err(RuntimeStartError::AlreadyActive);
+        }
+        let options = self
+            .options
+            .as_ref()
+            .ok_or(RuntimeStartError::AlreadyActive)?;
+        let definition = world
+            .get_resource::<PuzzleDefinition>()
+            .cloned()
+            .ok_or(RuntimeStartError::DefinitionUnavailable)?;
+        if definition.validate().is_err()
+            || world.get_resource::<PieceDataStore>().is_none_or(|store| {
+                store.len() != definition.piece_count() || !store.held_by.is_empty()
+            })
+            || world
+                .get_resource::<PieceGenerationProgress>()
+                .is_some_and(|progress| progress.is_generating || progress.receiver.is_some())
+            || world
+                .get_resource::<PuzzleImage>()
+                .is_some_and(|image| image.logical_size != definition.image_size)
+            || menu_pending(world)
+        {
+            return Err(RuntimeStartError::InvalidWorld);
+        }
+        let image = world
+            .get_resource::<OriginalPuzzleImage>()
+            .and_then(|original| original.encoded.clone());
+        if world
+            .get_resource::<OriginalPuzzleImage>()
+            .is_some_and(|original| original.hash != options.session.image_hash)
+        {
+            return Err(RuntimeStartError::ImageHashMismatch);
+        }
+        let runtime = Runtime::host_request(
+            backend,
+            &mut self.options,
+            definition,
+            image,
+            Instant::now(),
+        )?;
+        let address = runtime.status.address.unwrap();
+        world.insert_resource(LocalPlayerId(runtime.status.local_player.unwrap()));
+        world.insert_resource(SessionHostId(runtime.status.host.unwrap()));
+        if let Some(mut persistence) =
+            world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
+        {
+            persistence.generation = persistence.generation.wrapping_add(1);
+            persistence.busy = false;
+            persistence.autosaving = false;
+            persistence.capture = None;
+        }
+        install_driver(world, runtime);
+        Ok(address)
     }
-    let definition = world
-        .get_resource::<PuzzleDefinition>()
-        .cloned()
-        .ok_or(RuntimeStartError::DefinitionUnavailable)?;
-    if definition.validate().is_err()
-        || world.get_resource::<PieceDataStore>().is_none_or(|store| {
-            store.len() != definition.piece_count() || !store.held_by.is_empty()
-        })
-        || world
-            .get_resource::<PieceGenerationProgress>()
-            .is_some_and(|progress| progress.is_generating || progress.receiver.is_some())
-        || world
-            .get_resource::<PuzzleImage>()
-            .is_some_and(|image| image.logical_size != definition.image_size)
-        || menu_pending(world)
-    {
-        return Err(RuntimeStartError::InvalidWorld);
+    #[cfg(feature = "gns")]
+    pub fn start(&mut self, world: &mut World) -> Result<SocketAddr, RuntimeStartError> {
+        if network_active(world) {
+            return Err(RuntimeStartError::AlreadyActive);
+        }
+        let backend =
+            super::super::gns::GnsDirectIp::new().map_err(RuntimeStartError::Transport)?;
+        self.start_with_transport(world, backend)
     }
-    let image = world
-        .get_resource::<OriginalPuzzleImage>()
-        .and_then(|original| original.encoded.clone());
-    if world
-        .get_resource::<OriginalPuzzleImage>()
-        .is_some_and(|original| original.hash != options.session.image_hash)
-    {
-        return Err(RuntimeStartError::ImageHashMismatch);
-    }
-    let runtime = Runtime::host(backend, options, definition, image, Instant::now())?;
-    let address = runtime.status.address.unwrap();
-    world.insert_resource(LocalPlayerId(runtime.status.local_player.unwrap()));
-    world.insert_resource(SessionHostId(runtime.status.host.unwrap()));
-    if let Some(mut persistence) =
-        world.get_resource_mut::<crate::persistence::runtime::PersistenceState>()
-    {
-        persistence.generation = persistence.generation.wrapping_add(1);
-        persistence.busy = false;
-        persistence.autosaving = false;
-        persistence.capture = None;
-    }
-    install_driver(world, runtime);
-    Ok(address)
 }
 /// Authentication, image decode and baseline installation advance in frames.
 pub fn join_with_transport<T: DirectIpTransport + 'static>(
@@ -227,14 +256,7 @@ pub fn start_host(
     world: &mut World,
     options: HostOptions,
 ) -> Result<SocketAddr, RuntimeStartError> {
-    if network_active(world) {
-        return Err(RuntimeStartError::AlreadyActive);
-    }
-    host_with_transport(
-        world,
-        super::super::gns::GnsDirectIp::new().map_err(RuntimeStartError::Transport)?,
-        options,
-    )
+    HostStartRequest::new(options).start(world)
 }
 #[cfg(feature = "gns")]
 pub fn start_join(world: &mut World, options: JoinOptions) -> Result<(), RuntimeStartError> {
@@ -433,7 +455,10 @@ impl<T: DirectIpTransport> Runtime<T> {
         if let Some(decoded) = self.decoded.take() {
             if let Some(definition) = &self.definition {
                 if decoded.logical_size != definition.image_size {
-                    self.fail("image dimensions differ from session definition");
+                    self.fail(RuntimeFailure::new(
+                        NetworkFailureKind::Image,
+                        "image dimensions differ from session definition",
+                    ));
                     return;
                 }
             }
@@ -471,7 +496,10 @@ impl<T: DirectIpTransport> Runtime<T> {
             {
                 let definition = self.definition.as_ref().unwrap();
                 if world.resource::<PuzzleImage>().logical_size != definition.image_size {
-                    self.fail("image dimensions differ from session definition");
+                    self.fail(RuntimeFailure::new(
+                        NetworkFailureKind::Image,
+                        "image dimensions differ from session definition",
+                    ));
                     return;
                 }
                 let store = world.resource::<PieceDataStore>();

@@ -52,6 +52,7 @@ impl Plugin for GamePlugin {
             .init_resource::<PuzzleConfig>()
             .init_resource::<InputState>()
             .init_resource::<GameUiPointerCapture>()
+            .init_resource::<LocalGameplayBlocked>()
             .init_resource::<crate::interaction::PieceInteraction>()
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<PerformanceMonitor>()
@@ -83,6 +84,14 @@ impl Plugin for GamePlugin {
             )
             .add_systems(OnEnter(GameCompleteSubState::Paused), release_local_drag)
             .add_systems(
+                PostUpdate,
+                release_local_drag
+                    .after(EguiPostUpdateSet::EndPass)
+                    .before(handle_camera_zoom)
+                    .before(handle_piece_input)
+                    .run_if(local_gameplay_just_blocked),
+            )
+            .add_systems(
                 Update,
                 handle_image_load_results.run_if(in_state(AppState::GameSetup)),
             )
@@ -101,7 +110,8 @@ impl Plugin for GamePlugin {
                     .run_if(
                         in_state(GameSubState::Playing)
                             .or_else(in_state(GameCompleteSubState::Viewing)),
-                    ),
+                    )
+                    .run_if(local_gameplay_enabled),
             )
             .add_systems(
                 PostUpdate,
@@ -114,7 +124,8 @@ impl Plugin for GamePlugin {
                     .after(EguiPostUpdateSet::EndPass)
                     .after(bevy::camera::CameraUpdateSystems)
                     .before(apply_piece_commands)
-                    .run_if(in_state(GameSubState::Playing)),
+                    .run_if(in_state(GameSubState::Playing))
+                    .run_if(local_gameplay_enabled),
             )
             .add_systems(
                 PostUpdate,
@@ -133,14 +144,19 @@ impl Plugin for GamePlugin {
             .add_systems(
                 Update,
                 toggle_completed_puzzle_menu
+                    .run_if(local_gameplay_enabled)
                     .run_if(in_state(AppState::GameComplete).and_then(escape_just_pressed)),
             )
             .add_systems(
                 Update,
                 (
-                    toggle_game_menu.run_if(escape_just_pressed),
+                    toggle_game_menu
+                        .run_if(escape_just_pressed)
+                        .run_if(local_gameplay_enabled),
                     (
-                        toggle_performance_debug.run_if(performance_key_just_pressed),
+                        toggle_performance_debug
+                            .run_if(performance_key_just_pressed)
+                            .run_if(local_gameplay_enabled),
                         sample_performance_frame.run_if(performance_monitoring_enabled),
                     )
                         .chain(),
@@ -302,6 +318,195 @@ mod tests {
         asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
         transform::TransformPlugin,
     };
+
+    #[test]
+    fn modal_session_blocks_game_inputs_and_cancels_gestures_while_generation_continues() {
+        use crate::selection::{PuzzleSelection, SelectionMode, SelectionPayload, SelectionResult};
+        use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+        let mut app = App::new();
+        app.insert_resource(PersistenceService::with_storage_requests().0)
+            .insert_resource(crate::keybindings::KeyBindingsState::load(None))
+            .insert_resource(crate::player_settings::PlayerSettingsState::load(None))
+            .insert_resource(crate::image_settings::ImageSettingsState::load(None))
+            .add_plugins((
+                MinimalPlugins,
+                StatesPlugin,
+                InputPlugin,
+                TransformPlugin,
+                AssetPlugin::default(),
+                crate::asset_reader::DirectFileAssetPlugin,
+                GamePlugin,
+            ))
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<ColorMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<bevy_egui::EguiUserTextures>();
+        app.update();
+        let world = app.world_mut();
+        let window = world
+            .spawn((Window::default(), bevy::window::PrimaryWindow))
+            .id();
+        world
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(Vec2::splat(200.0)));
+        let definition = PuzzleDefinition {
+            generator_version: GENERATOR_VERSION,
+            seed: 37,
+            grid_size: UVec2::splat(2),
+            image_size: UVec2::splat(128),
+            snap_distance: 0.01,
+        };
+        world.insert_resource(definition.clone());
+        world.insert_resource(State::new(AppState::InGame));
+        world.insert_resource(State::new(GameSubState::Initializing));
+        world.resource_mut::<LocalGameplayBlocked>().0 = true;
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        tx.send(Ok(DensePieceStates::generate(&definition)))
+            .unwrap();
+        world.insert_resource(PieceGenerationProgress {
+            receiver: Some(rx),
+            generation_phase: GenerationPhase::GeneratingState,
+            is_generating: true,
+            ..default()
+        });
+        world.run_schedule(Update);
+        assert_eq!(
+            world.resource::<PieceGenerationProgress>().generation_phase,
+            GenerationPhase::Completed
+        );
+        assert_eq!(world.resource::<PieceDataStore>().len(), 4);
+        world.insert_resource(State::new(GameSubState::Playing));
+        world.insert_resource(NextState::<GameSubState>::Unchanged);
+
+        // Establish a real gesture with a completed asynchronous pick and an
+        // authority-approved grab before the modal begins.
+        let player = world.resource::<LocalPlayerId>().0;
+        let mut interaction = world
+            .remove_resource::<crate::interaction::PieceInteraction>()
+            .unwrap();
+        let mut store = world.remove_resource::<PieceDataStore>().unwrap();
+        let mut selection = world.remove_resource::<PuzzleSelection>().unwrap();
+        let frame = |just_pressed| crate::interaction::PointerFrame {
+            position: Some(Vec2::ZERO),
+            screen_position: Some(Vec2::splat(200.0)),
+            pressed: true,
+            just_pressed,
+            ctrl: false,
+            over_ui: false,
+            focused: true,
+        };
+        interaction.update(frame(true), &mut store, &mut selection, player);
+        let request = selection.latest.unwrap();
+        selection.completed = Some(SelectionResult {
+            request_id: request.request_id,
+            mode: SelectionMode::Point,
+            payload: SelectionPayload::Point(Some(PieceId(0))),
+            error: None,
+        });
+        for command in interaction.update(frame(false), &mut store, &mut selection, player) {
+            store.apply_command(player, &command, Some(&definition), player);
+        }
+        interaction.update(frame(false), &mut store, &mut selection, player);
+        assert!(interaction.is_dragging());
+        assert!(!store.held_by.is_empty());
+        world.insert_resource(store);
+        world.insert_resource(selection);
+        world.insert_resource(interaction);
+        world.resource_mut::<InputState>().is_camera_dragging = true;
+        world.resource_mut::<InputState>().last_cursor_position = Some(Vec2::ZERO);
+        world
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Right);
+        world
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        world
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        world
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::F3);
+        world
+            .resource_mut::<Messages<MouseWheel>>()
+            .write(MouseWheel {
+                unit: MouseScrollUnit::Line,
+                phase: bevy::input::touch::TouchPhase::Moved,
+                x: 0.0,
+                y: 1.0,
+                window,
+            });
+        let transform = *world
+            .query_filtered::<&Transform, With<MainCamera>>()
+            .single(world)
+            .unwrap();
+        world.run_schedule(Update);
+        world.run_schedule(PostUpdate);
+        assert!(matches!(
+            world.resource::<NextState<GameSubState>>(),
+            NextState::Unchanged
+        ));
+        assert_eq!(
+            world.resource::<PerformanceMonitor>().debug_level,
+            PerformanceDebugLevel::Off
+        );
+        assert!(!world
+            .resource::<crate::interaction::PieceInteraction>()
+            .is_dragging());
+        assert!(world.resource::<PieceDataStore>().held_by.is_empty());
+        assert!(world.resource::<PuzzleSelection>().latest.is_none());
+        assert!(!world.resource::<InputState>().is_camera_dragging);
+        assert_eq!(
+            *world
+                .query_filtered::<&Transform, With<MainCamera>>()
+                .single(world)
+                .unwrap(),
+            transform
+        );
+        // Repeated clicks cannot start another pick while the modal remains.
+        world.run_schedule(PostUpdate);
+        assert!(world.resource::<PuzzleSelection>().latest.is_none());
+        // Completion viewing and Escape-to-resume obey the same contract.
+        world.insert_resource(State::new(AppState::GameComplete));
+        world.remove_resource::<State<GameSubState>>();
+        world.insert_resource(State::new(GameCompleteSubState::Viewing));
+        world.run_schedule(Update);
+        world.run_schedule(PostUpdate);
+        assert!(matches!(
+            world.resource::<NextState<GameCompleteSubState>>(),
+            NextState::Unchanged
+        ));
+        assert_eq!(
+            *world
+                .query_filtered::<&Transform, With<MainCamera>>()
+                .single(world)
+                .unwrap(),
+            transform
+        );
+        world.resource_mut::<LocalGameplayBlocked>().0 = false;
+        world
+            .resource_mut::<Messages<MouseWheel>>()
+            .write(MouseWheel {
+                unit: MouseScrollUnit::Line,
+                phase: bevy::input::touch::TouchPhase::Moved,
+                x: 0.0,
+                y: 1.0,
+                window,
+            });
+        world.run_schedule(Update);
+        world.run_schedule(PostUpdate);
+        assert!(matches!(
+            world.resource::<NextState<GameCompleteSubState>>(),
+            NextState::Pending(GameCompleteSubState::Paused)
+        ));
+        assert_ne!(
+            *world
+                .query_filtered::<&Transform, With<MainCamera>>()
+                .single(world)
+                .unwrap(),
+            transform
+        );
+    }
 
     #[test]
     fn returning_to_menu_clears_image_load_failure_and_external_paths() {

@@ -13,6 +13,10 @@ use std::{
 
 #[derive(Default)]
 struct Bus {
+    fail_listen: bool,
+    fail_listener_address: bool,
+    listened: Vec<SocketAddr>,
+    closed_listeners: usize,
     bulk_sent: BTreeMap<ConnectionId, u64>,
     inbox: BTreeMap<u64, VecDeque<TransportEvent>>,
     routes: BTreeMap<ConnectionId, (u64, ConnectionId)>,
@@ -199,13 +203,22 @@ impl Transport for Fake {
     }
 }
 impl DirectIpTransport for Fake {
-    fn listen(&mut self, _: SocketAddr) -> Result<ListenerId, TransportError> {
+    fn listen(&mut self, address: SocketAddr) -> Result<ListenerId, TransportError> {
+        let mut bus = self.bus.lock().unwrap();
+        bus.listened.push(address);
+        if bus.fail_listen {
+            return Err(TransportError::Backend("port in use".into()));
+        }
         Ok(ListenerId::new(1))
     }
     fn listener_address(&self, _: ListenerId) -> Result<SocketAddr, TransportError> {
+        if self.bus.lock().unwrap().fail_listener_address {
+            return Err(TransportError::Backend("listener lookup failed".into()));
+        }
         Ok("127.0.0.1:10000".parse().unwrap())
     }
     fn close_listener(&mut self, _: ListenerId) -> Result<(), TransportError> {
+        self.bus.lock().unwrap().closed_listeners += 1;
         Ok(())
     }
     fn connect(&mut self, _: SocketAddr) -> Result<ConnectionId, TransportError> {
@@ -300,6 +313,118 @@ fn host_world(app: &mut App) -> SessionDefinition {
         image_lease: None,
     });
     session
+}
+
+#[test]
+fn failed_host_request_retries_same_puzzle_and_password_on_another_port_once() {
+    let mut host = app();
+    let session = host_world(&mut host);
+    host.world_mut()
+        .init_resource::<crate::persistence::runtime::PersistenceState>();
+    let epoch = host.world().resource::<PieceDataStore>().epoch;
+    let states = host.world().resource::<PieceDataStore>().states.clone();
+    let image = host
+        .world()
+        .resource::<OriginalPuzzleImage>()
+        .encoded
+        .clone()
+        .unwrap();
+    let persistence_generation = host
+        .world()
+        .resource::<crate::persistence::runtime::PersistenceState>()
+        .generation;
+    let bus = Arc::new(Mutex::new(Bus {
+        fail_listen: true,
+        ..default()
+    }));
+    let mut request = HostStartRequest::new(HostOptions {
+        display_name: None,
+        address: "127.0.0.1:27015".parse().unwrap(),
+        session,
+        host: PlayerId(0),
+        password: password(),
+    });
+    let backend = || Fake {
+        id: 0,
+        bus: bus.clone(),
+    };
+    assert!(matches!(
+        request.start_with_transport(host.world_mut(), backend()),
+        Err(RuntimeStartError::Transport(_))
+    ));
+    assert!(!host.world().contains_non_send::<NetworkSession>());
+    assert!(request.options.is_some());
+    assert_eq!(
+        host.world()
+            .resource::<crate::persistence::runtime::PersistenceState>()
+            .generation,
+        persistence_generation
+    );
+    // Even failure after listen must close the partial listener and keep the secret.
+    bus.lock().unwrap().fail_listen = false;
+    bus.lock().unwrap().fail_listener_address = true;
+    assert!(matches!(
+        request.start_with_transport(host.world_mut(), backend()),
+        Err(RuntimeStartError::Transport(_))
+    ));
+    assert_eq!(bus.lock().unwrap().closed_listeners, 1);
+    bus.lock().unwrap().fail_listener_address = false;
+    request.set_address("127.0.0.1:30123".parse().unwrap());
+    request
+        .start_with_transport(host.world_mut(), backend())
+        .unwrap();
+    assert!(request.options.is_none());
+    assert_eq!(
+        bus.lock().unwrap().listened.last(),
+        Some(&"127.0.0.1:30123".parse().unwrap())
+    );
+    assert_eq!(host.world().resource::<PieceDataStore>().epoch, epoch);
+    assert_eq!(host.world().resource::<PieceDataStore>().states, states);
+    assert!(Arc::ptr_eq(
+        host.world()
+            .resource::<OriginalPuzzleImage>()
+            .encoded
+            .as_ref()
+            .unwrap(),
+        &image
+    ));
+    assert_eq!(host.world().resource::<PuzzleDefinition>(), &definition());
+    assert_eq!(
+        host.world()
+            .resource::<crate::persistence::runtime::PersistenceState>()
+            .generation,
+        persistence_generation + 1
+    );
+    assert_eq!(
+        request.start_with_transport(host.world_mut(), backend()),
+        Err(RuntimeStartError::AlreadyActive)
+    );
+    // A fresh client authenticates with the same password after the retry.
+    let mut pair = Pair {
+        host,
+        client: app(),
+        bus,
+    };
+    let backend = Fake {
+        id: 1,
+        bus: pair.bus.clone(),
+    };
+    join_with_transport(
+        pair.client.world_mut(),
+        backend,
+        JoinOptions {
+            display_name: None,
+            address: "127.0.0.1:10000".parse().unwrap(),
+            password: password(),
+            cached_image: None,
+        },
+    )
+    .unwrap();
+    pair.ready();
+    assert_eq!(
+        pair.client.world().resource::<NetworkStatus>().phase,
+        RuntimePhase::Ready
+    );
 }
 fn send(app: &mut App, command: PieceCommand) {
     let player = app.world().resource::<LocalPlayerId>().0;
@@ -476,6 +601,7 @@ fn joined_image_rejects_oversized_sources_from_transfer_and_cache() {
             pair.frame();
             let status = pair.client.world().resource::<NetworkStatus>();
             if status.phase == RuntimePhase::Failed {
+                assert_eq!(status.failure, Some(NetworkFailureKind::Image));
                 assert!(
                     status
                         .error
@@ -889,6 +1015,10 @@ fn failure_before_connected_blocks_offline_commands_then_menu_releases_session()
     assert_eq!(
         client.world().resource::<NetworkStatus>().phase,
         RuntimePhase::Disconnected
+    );
+    assert_eq!(
+        client.world().resource::<NetworkStatus>().failure,
+        Some(NetworkFailureKind::Connection)
     );
     assert!(!client.world().contains_non_send::<NetworkSession>());
     assert!(client

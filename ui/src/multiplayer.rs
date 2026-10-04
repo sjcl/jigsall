@@ -5,7 +5,10 @@ use bevy_egui::{egui, EguiContexts};
 use puzzella_game::{
     network::{
         auth::{SessionPassword, MAX_PASSWORD_BYTES, MIN_PASSWORD_BYTES},
-        runtime::{JoinOptions, NetworkStatus, RuntimePhase, RuntimeRole, RuntimeStartError},
+        runtime::{
+            HostOptions, HostStartRequest, JoinOptions, NetworkFailureKind, NetworkStatus,
+            RuntimePhase, RuntimeRole, RuntimeStartError,
+        },
         syncing::SyncPhase,
     },
     persistence::{runtime::*, SaveId},
@@ -54,32 +57,14 @@ impl UiError {
             Self::AlreadyActive => "multiplayer-error-active",
         }
     }
-    // The runtime retains diagnostics for logging. Only these categories reach UI.
-    fn diagnostic(error: Option<&str>) -> Self {
-        let error = error.unwrap_or_default();
-        if error.contains("AuthenticationFailed") {
-            Self::WrongPassword
-        } else if error.contains("JoinCapacity")
-            || error.contains("TooManyJoins")
-            || error.contains("CapacityWaitTimeout")
-            || error.contains("HostCapacityTimeout")
-        {
-            Self::ServerFull
-        } else if error.contains("Timeout")
-            || error.contains("SyncLifetime")
-            || error.contains("BulkStalled")
-        {
-            Self::Timeout
-        } else if error.contains("Image") || error.contains("image") {
-            Self::ImageUnavailable
-        } else if error.contains("UnsupportedVersion")
-            || error.contains("ProtocolViolation")
-            || error.contains("WrongPhase")
-            || error.contains("MalformedBaseline")
-        {
-            Self::ProtocolMismatch
-        } else {
-            Self::ConnectionFailed
+    fn failure(kind: NetworkFailureKind) -> Self {
+        match kind {
+            NetworkFailureKind::Authentication => Self::WrongPassword,
+            NetworkFailureKind::Timeout => Self::Timeout,
+            NetworkFailureKind::Capacity => Self::ServerFull,
+            NetworkFailureKind::Protocol => Self::ProtocolMismatch,
+            NetworkFailureKind::Image => Self::ImageUnavailable,
+            NetworkFailureKind::Connection => Self::ConnectionFailed,
         }
     }
     fn start(error: RuntimeStartError) -> Self {
@@ -89,7 +74,9 @@ impl UiError {
                 Self::PuzzleUnavailable
             }
             RuntimeStartError::ImageHashMismatch => Self::ImageUnavailable,
-            RuntimeStartError::Transport(_) => Self::ConnectionFailed,
+            RuntimeStartError::Transport(error) => {
+                Self::failure(NetworkFailureKind::transport(&error))
+            }
         }
     }
 }
@@ -155,6 +142,9 @@ pub(crate) struct MultiplayerUi {
     connecting: bool,
     owns_session: bool,
     pending_host: Option<PendingHost>,
+    retry_host: Option<HostStartRequest>,
+    editing_host_retry: bool,
+    retrying: bool,
     action: Option<Action>,
 }
 impl Default for MultiplayerUi {
@@ -171,6 +161,9 @@ impl Default for MultiplayerUi {
             connecting: false,
             owns_session: false,
             pending_host: None,
+            retry_host: None,
+            editing_host_retry: false,
+            retrying: false,
             action: None,
         }
     }
@@ -227,6 +220,9 @@ impl MultiplayerUi {
         self.host.clear_password();
         self.join.clear_password();
         self.pending_host = None;
+        self.retry_host = None;
+        self.retrying = false;
+        self.editing_host_retry = false;
         self.action = Some(Action::Cancel);
         self.submitted = true;
         self.screen = MenuScreen::Multiplayer;
@@ -237,6 +233,26 @@ impl MultiplayerUi {
     }
 }
 
+pub(crate) fn connection_screen_hidden(ui: Res<MultiplayerUi>, status: Res<NetworkStatus>) -> bool {
+    !ui.connection_screen(&status)
+}
+
+pub(crate) fn sync_local_gameplay_block(
+    ui: Res<MultiplayerUi>,
+    status: Res<NetworkStatus>,
+    next: Res<NextState<AppState>>,
+    mut blocked: ResMut<LocalGameplayBlocked>,
+) {
+    let value = ui.connection_screen(&status)
+        || matches!(
+            *next,
+            NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu)
+        );
+    if blocked.0 != value {
+        blocked.0 = value;
+    }
+}
+
 /// Runs after all screens have issued their one-shot actions, within the egui pass.
 pub(crate) fn process_actions(world: &mut World) {
     let Some(action) = world.resource_mut::<MultiplayerUi>().action.take() else {
@@ -244,11 +260,17 @@ pub(crate) fn process_actions(world: &mut World) {
     };
     match action {
         Action::Cancel => {
-            let screen = world.resource::<MultiplayerUi>().screen;
+            let mut ui = world.resource_mut::<MultiplayerUi>();
+            let screen = ui.screen;
+            let host_address = std::mem::take(&mut ui.host.address);
+            let join_address = std::mem::take(&mut ui.join.address);
             *world.resource_mut::<MultiplayerUi>() = MultiplayerUi {
                 screen,
                 ..default()
             };
+            let mut ui = world.resource_mut::<MultiplayerUi>();
+            ui.host.address = host_address;
+            ui.join.address = join_address;
             puzzella_game::network::runtime::stop_session(world);
         }
         Action::Join(options) => {
@@ -303,10 +325,14 @@ pub(crate) fn start_prepared_host(world: &mut World) {
         Some(NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu))
     );
     if menu_pending {
-        world.resource_mut::<MultiplayerUi>().pending_host = None;
+        let mut ui = world.resource_mut::<MultiplayerUi>();
+        ui.pending_host = None;
+        ui.retry_host = None;
         return;
     }
-    if world.resource::<MultiplayerUi>().pending_host.is_none() {
+    if world.resource::<MultiplayerUi>().pending_host.is_none()
+        && !world.resource::<MultiplayerUi>().retrying
+    {
         return;
     }
     let app_state = *world.resource::<State<AppState>>().get();
@@ -324,8 +350,11 @@ pub(crate) fn start_prepared_host(world: &mut World) {
     }
     let progress = world.resource::<PieceGenerationProgress>();
     if progress.error.is_some() {
-        world.resource_mut::<MultiplayerUi>().pending_host = None;
-        world.resource_mut::<MultiplayerUi>().error = Some(UiError::PuzzleUnavailable);
+        let mut ui = world.resource_mut::<MultiplayerUi>();
+        ui.pending_host = None;
+        ui.retry_host = None;
+        ui.retrying = false;
+        ui.error = Some(UiError::PuzzleUnavailable);
         return;
     }
     if progress.is_generating
@@ -341,23 +370,33 @@ pub(crate) fn start_prepared_host(world: &mut World) {
     {
         return;
     }
-    let host = world
-        .resource_mut::<MultiplayerUi>()
-        .pending_host
-        .take()
-        .unwrap();
     let Some(image_hash) = world
         .get_resource::<OriginalPuzzleImage>()
         .filter(|image| image.encoded.is_some())
         .map(|image| image.hash)
     else {
-        world.resource_mut::<MultiplayerUi>().error = Some(UiError::ImageUnavailable);
+        let mut ui = world.resource_mut::<MultiplayerUi>();
+        ui.pending_host = None;
+        ui.retry_host = None;
+        ui.retrying = false;
+        ui.error = Some(UiError::ImageUnavailable);
         return;
     };
-    #[cfg(feature = "gns")]
-    let result = {
+    #[allow(unused_mut)] // Only the native backend consumes the request.
+    let mut request = if world.resource::<MultiplayerUi>().retrying {
+        world
+            .resource_mut::<MultiplayerUi>()
+            .retry_host
+            .take()
+            .unwrap()
+    } else {
+        let host = world
+            .resource_mut::<MultiplayerUi>()
+            .pending_host
+            .take()
+            .unwrap();
         use puzzella_core::session::{SessionDefinition, SessionId};
-        let options = puzzella_game::network::runtime::HostOptions {
+        HostStartRequest::new(HostOptions {
             address: host.address,
             password: host.password,
             display_name: world
@@ -370,22 +409,26 @@ pub(crate) fn start_prepared_host(world: &mut World) {
                 id: SessionId(rand::random()),
                 image_hash,
             },
-        };
-        puzzella_game::network::runtime::start_host(world, options)
+        })
     };
+    #[cfg(feature = "gns")]
+    let result = request.start(world);
     #[cfg(not(feature = "gns"))]
-    let result: Result<SocketAddr, RuntimeStartError> = {
-        let _ = (host.address, host.password, image_hash);
-        Err(RuntimeStartError::InvalidWorld)
-    };
+    let result: Result<SocketAddr, RuntimeStartError> = { Err(RuntimeStartError::InvalidWorld) };
     let mut ui = world.resource_mut::<MultiplayerUi>();
+    ui.retrying = false;
     match result {
         Ok(_) => {
             ui.connecting = false;
             ui.host_setup = false;
             ui.submitted = false;
         }
-        Err(error) => ui.error = Some(UiError::start(error)),
+        Err(error) => {
+            if matches!(error, RuntimeStartError::Transport(_)) {
+                ui.retry_host = Some(request);
+            }
+            ui.error = Some(UiError::start(error));
+        }
     }
 }
 
@@ -394,6 +437,9 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
     ui.join.clear_password();
     ui.host_setup = false;
     ui.pending_host = None;
+    ui.retry_host = None;
+    ui.editing_host_retry = false;
+    ui.retrying = false;
     if ui.owns_session
         && status.error.is_some()
         && matches!(
@@ -407,7 +453,7 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
         ui.submitted = false;
         ui.owns_session = false;
         ui.selected_save = None;
-        if ui.screen != MenuScreen::Multiplayer {
+        if !matches!(ui.screen, MenuScreen::Multiplayer | MenuScreen::Join) {
             ui.screen = MenuScreen::Title;
         }
     }
@@ -583,11 +629,59 @@ fn connection_text(status: &NetworkStatus) -> &'static str {
     }
 }
 
+fn paint_host_retry(
+    ui: &mut egui::Ui,
+    state: &mut MultiplayerUi,
+    profile: &PlayerSettingsState,
+    i18n: &Localization,
+) {
+    ui.label(i18n.text("multiplayer-host-settings"));
+    if let Some(name) = &profile.current.display_name {
+        theme::hint(
+            ui,
+            i18n.format("multiplayer-player-name", &[("name", name.as_ref().into())]),
+        );
+    }
+    theme::hint(ui, i18n.text("multiplayer-retry-prepared"));
+    ui.label(i18n.text("multiplayer-bind-address"));
+    ui.add(egui::TextEdit::singleline(&mut state.host.address).desired_width(f32::INFINITY));
+    let address = parse_address(&state.host.address, true);
+    if address.is_err() {
+        ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-address"));
+    }
+    theme::hint(ui, i18n.text("multiplayer-bind-hint"));
+    paint_connection_help(ui, true, None, i18n);
+    theme::hint(ui, i18n.text("multiplayer-retry-password"));
+    ui.add_enabled_ui(address.is_ok() && !state.submitted, |ui| {
+        if theme::button(
+            ui,
+            i18n.text("multiplayer-start-host"),
+            ui.available_width(),
+            true,
+        )
+        .clicked()
+        {
+            state
+                .retry_host
+                .as_mut()
+                .unwrap()
+                .set_address(address.unwrap());
+            state.retrying = true;
+            state.editing_host_retry = false;
+            state.submitted = true;
+        }
+    });
+    if theme::button(ui, i18n.text("common-cancel"), ui.available_width(), false).clicked() {
+        state.cancel();
+    }
+}
+
 pub(crate) fn draw_connection_ui(
     mut contexts: EguiContexts,
     i18n: Res<Localization>,
     status: Res<NetworkStatus>,
     mut state: ResMut<MultiplayerUi>,
+    profile: Res<PlayerSettingsState>,
 ) {
     if status.role == Some(RuntimeRole::Client) && status.phase == RuntimePhase::Ready {
         state.connecting = false;
@@ -607,10 +701,17 @@ pub(crate) fn draw_connection_ui(
         RuntimePhase::Failed | RuntimePhase::Disconnected
     ) && state.pending_host.is_none()
         && state.action.is_none();
-    let error = state
-        .error
-        .or_else(|| failed.then(|| UiError::diagnostic(status.error.as_deref())));
-    egui::Area::new("multiplayer_connection".into())
+    let error = state.error.or_else(|| {
+        failed.then(|| UiError::failure(status.failure.unwrap_or(NetworkFailureKind::Connection)))
+    });
+    // The retry form needs a fresh layout/scroll extent instead of retaining
+    // the compact error card's constrained height.
+    let area_id = if state.editing_host_retry {
+        "multiplayer_host_retry"
+    } else {
+        "multiplayer_connection"
+    };
+    egui::Area::new(area_id.into())
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
             theme::frame().show(ui, |ui| {
@@ -619,6 +720,10 @@ pub(crate) fn draw_connection_ui(
                     .max_height((screen.height() - 160.0).max(80.0))
                     .show(ui, |ui| {
                         theme::heading(ui, i18n.text("menu-multiplayer"));
+                        if state.editing_host_retry {
+                            paint_host_retry(ui, &mut state, &profile, &i18n);
+                            return;
+                        }
                         if let Some(error) = error {
                             ui.colored_label(theme::DANGER, i18n.text(error.key()));
                         } else {
@@ -648,7 +753,18 @@ pub(crate) fn draw_connection_ui(
                         )
                         .clicked()
                         {
-                            state.cancel();
+                            if error.is_some() && state.retry_host.is_some() {
+                                state.editing_host_retry = true;
+                                state.submitted = false;
+                                state.error = None;
+                            } else {
+                                let join_failed =
+                                    error.is_some() && state.screen == MenuScreen::Join;
+                                state.cancel();
+                                if join_failed {
+                                    state.screen = MenuScreen::Join;
+                                }
+                            }
                         }
                     });
             });

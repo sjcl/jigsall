@@ -22,7 +22,8 @@ pub use images::{
     ImageDecodeLimits, ImageLoadChannels, ImageLoadError, ImageLoadSender, PuzzleImage,
     PuzzleImageLimits,
 };
-pub use input::{GameUiPointerCapture, InputState};
+pub(crate) use input::local_gameplay_just_blocked;
+pub use input::{local_gameplay_enabled, GameUiPointerCapture, InputState, LocalGameplayBlocked};
 pub use performance::{PerformanceDebugLevel, PerformanceMonitor, SystemTiming};
 pub use pieces::{DensePieceStates, GpuPieceState, PieceDataStore, PieceUpload};
 pub use puzzella_core::PieceId;

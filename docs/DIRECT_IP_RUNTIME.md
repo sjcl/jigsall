@@ -83,6 +83,9 @@ makes the World invalid; hosting also rejects unfinished offline generation.
 
 UI reads `NetworkStatus`: role, phase, listener/endpoint, assigned local and host
 identity, peer connection states, image readiness/source availability, and error.
+`failure: Option<NetworkFailureKind>` carries Authentication, Timeout, Capacity,
+Protocol, Image or Connection separately from the diagnostic `error` string.
+Presentation must use the typed category, never parse diagnostic text.
 `NetworkSession::authority()` and `replica()` expose read-only session/remote drag
 state. UI need not access native sockets, bootstrap, or sync internals. Server
 browser, lobby, NAT traversal, cursor rendering and migration remain future work.
@@ -107,8 +110,25 @@ input supports IPv4 and bracketed IPv6 (e.g. [2001:db8::1]:27015), not DNS names
 The connection screen replaces GameSetup's image/piece controls throughout
 Connecting, Authenticating and Syncing. It shows a spinner with localized status,
 not phase-count percentages or internal enum names. Failure/disconnect shows a
-localized error category; the runtime keeps the diagnostic. Cancel/Back calls
-stop_session so sockets, bootstrap, sync and Bulk ownership are discarded.
+localized error category; the runtime keeps the diagnostic. The shared GameplayUi
+condition excludes the HUD, roster, performance, pause, completion and save/settings
+dialogs while the connection screen is visible. It runs after the connection screen
+so Ready can restore the normal UI in the same pass.
+
+The UI updates the game-owned LocalGameplayBlocked before Update and after egui
+actions. Local picking, rotation, camera controls and gameplay menu shortcuts are
+suspended during preparation, connection, failure and retry settings. Existing
+gestures are cancelled through the ordinary release-command path. Generation,
+GPU upload, authority and network polling continue. Pending Menu also blocks local
+input so a Cancel click cannot reopen interaction before the state transition.
+
+Cancel calls stop_session so sockets, bootstrap, sync and Bulk ownership are
+discarded. Join failure Back returns to its form with the address retained and
+password cleared. A host transport-start failure offers Back to Room Settings;
+editing its bind address/port retries the prepared puzzle without regeneration.
+HostStartRequest owns the single password until startup succeeds or cancellation
+drops it; a successful listen consumes the options into bootstrap. Partial
+listeners are closed on startup failure. Submission remains latched during retry.
 
 UI drafts are memory-only. Password buffers are zeroized when forms close or
 Settings opens, and moved into SessionPassword once on submission. Display names

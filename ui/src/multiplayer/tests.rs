@@ -140,6 +140,325 @@ fn actual_join_setup_draws_only_connection_status_and_no_image_or_piece_controls
     }
 }
 
+fn scheduled_screens() -> (App, egui::Context) {
+    let (mut world, _, ctx) = screen_world();
+    world.insert_resource(State::new(AppState::InGame));
+    world.insert_resource(State::new(GameSubState::Playing));
+    world.init_resource::<NextState<GameSubState>>();
+    world.init_resource::<NextState<GameCompleteSubState>>();
+    world.init_resource::<LocalGameplayBlocked>();
+    world.init_resource::<GameData>();
+    world.init_resource::<GameUiPointerCapture>();
+    world.init_resource::<PlayerRoster>();
+    world.init_resource::<PieceDataStore>();
+    world.init_resource::<PieceGenerationProgress>();
+    world.init_resource::<PerformanceMonitor>();
+    world.insert_resource(PuzzleImageLimits {
+        device_max_dimension: 8192,
+        gpu_memory_bytes: None,
+    });
+    world.init_resource::<crate::persistence::thumbnails::SaveThumbnails>();
+    world.insert_resource(puzzella_game::image_settings::ImageSettingsState::load(
+        None,
+    ));
+    world.insert_resource(puzzella_game::keybindings::KeyBindingsState::load(None));
+    world.insert_resource(crate::preferences::UiPreferences::load(None));
+    world.init_resource::<puzzella_game::settings::DisplayCapabilities>();
+    world.init_resource::<Messages<puzzella_game::settings::DisplaySettingsAction>>();
+    world.insert_resource(puzzella_game::persistence::autosave::AutosaveSettingsState::load(None));
+    world.init_resource::<Messages<bevy::input::keyboard::KeyboardInput>>();
+    world.init_resource::<ButtonInput<KeyCode>>();
+    world
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::Tab);
+    world.resource_mut::<PerformanceMonitor>().debug_level = PerformanceDebugLevel::Verbose;
+    let mut app = App::new();
+    world.init_resource::<bevy::ecs::schedule::Schedules>();
+    *app.world_mut() = world;
+    crate::register_screens(&mut app);
+    (app, ctx)
+}
+
+fn render_schedule(
+    app: &mut App,
+    ctx: &egui::Context,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events,
+            ..default()
+        },
+        |_| {
+            app.world_mut()
+                .run_schedule(bevy_egui::EguiPrimaryContextPass)
+        },
+    )
+}
+
+fn labels(output: &egui::FullOutput) -> Vec<&str> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn click_label(app: &mut App, ctx: &egui::Context, label: &str) {
+    render_schedule(app, ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(app, ctx, vec![]);
+    let point = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == label => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "missing {label}: {:?}; text bounds {:?}",
+                labels(&output),
+                output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) =>
+                            Some((&text.galley.job.text, text.pos, shape.clip_rect)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            )
+        });
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        render_schedule(
+            app,
+            ctx,
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+}
+
+#[test]
+fn join_failure_back_keeps_address_clears_password_and_returns_to_join_form() {
+    let (mut app, ctx) = scheduled_screens();
+    let mut ui = app.world_mut().resource_mut::<MultiplayerUi>();
+    ui.screen = MenuScreen::Join;
+    ui.connecting = true;
+    ui.join.address = "[2001:db8::1]:30123".into();
+    *ui.join.password = "draft secret".into();
+    app.world_mut().insert_resource(NetworkStatus {
+        role: Some(RuntimeRole::Client),
+        phase: RuntimePhase::Failed,
+        failure: Some(NetworkFailureKind::Authentication),
+        // Deliberately misleading diagnostic: the UI must use only the enum.
+        error: Some("Timeout".into()),
+        ..default()
+    });
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    assert!(labels(&output).contains(
+        &app.world()
+            .resource::<Localization>()
+            .text("multiplayer-error-wrong-password")
+            .as_str()
+    ));
+    output.drop_without_applying_deltas();
+    click_label(&mut app, &ctx, "Back");
+    assert!(
+        app.world().resource::<LocalGameplayBlocked>().0,
+        "Menu transition must finish before input returns"
+    );
+    assert_eq!(app.world().resource::<NetworkStatus>().role, None);
+    app.world_mut().run_system_once(reset_on_menu).unwrap();
+    let ui = app.world().resource::<MultiplayerUi>();
+    assert_eq!(ui.join.address, "[2001:db8::1]:30123");
+    assert!(ui.join.password.is_empty());
+    assert!(ui.screen == MenuScreen::Join);
+    app.world_mut().insert_resource(State::new(AppState::Menu));
+    app.world_mut()
+        .insert_resource(NextState::<AppState>::Unchanged);
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    assert!(labels(&output).contains(&"[2001:db8::1]:30123"));
+    output.drop_without_applying_deltas();
+}
+
+#[test]
+fn host_failure_back_edits_port_without_reentering_setup_or_retaining_a_password_draft() {
+    use puzzella_core::session::{SessionDefinition, SessionId};
+    let (mut app, ctx) = scheduled_screens();
+    let mut ui = app.world_mut().resource_mut::<MultiplayerUi>();
+    ui.connecting = true;
+    ui.error = Some(UiError::ConnectionFailed);
+    ui.retry_host = Some(HostStartRequest::new(HostOptions {
+        address: "0.0.0.0:27015".parse().unwrap(),
+        password: SessionPassword::new("test password".into()).unwrap(),
+        display_name: None,
+        host: puzzella_core::PlayerId(0),
+        session: SessionDefinition {
+            id: SessionId(42),
+            image_hash: puzzella_core::session::ImageHash([0; 32]),
+        },
+    }));
+    click_label(&mut app, &ctx, "Back");
+    assert!(app.world().resource::<MultiplayerUi>().editing_host_retry);
+    app.world_mut().resource_mut::<MultiplayerUi>().host.address = "example.com:30123".into();
+    click_label(&mut app, &ctx, "Open Room & Play");
+    assert!(
+        !app.world().resource::<MultiplayerUi>().retrying,
+        "invalid address stays disabled"
+    );
+    app.world_mut().resource_mut::<MultiplayerUi>().host.address = "[::]:30123".into();
+    click_label(&mut app, &ctx, "Open Room & Play");
+    let ui = app.world().resource::<MultiplayerUi>();
+    assert!(ui.retrying && ui.submitted);
+    assert!(ui.pending_host.is_none());
+    assert!(ui.host.password.is_empty());
+    assert!(ui.retry_host.is_some());
+    assert_eq!(
+        *app.world().resource::<State<AppState>>().get(),
+        AppState::InGame
+    );
+    assert!(app.world().resource::<LocalGameplayBlocked>().0);
+    click_label(&mut app, &ctx, "Cancel");
+    assert!(app.world().resource::<MultiplayerUi>().retry_host.is_none());
+    assert!(matches!(
+        app.world().resource::<NextState<AppState>>(),
+        NextState::Pending(AppState::Menu)
+    ));
+}
+
+#[test]
+fn registered_screens_exclude_hud_roster_performance_pause_completion_and_save_during_connection() {
+    let (mut app, ctx) = scheduled_screens();
+    app.world_mut()
+        .resource_mut::<PersistenceState>()
+        .title_dialog_open = true;
+    app.world_mut()
+        .resource_mut::<PieceGenerationProgress>()
+        .is_generating = true;
+    for (state, sub, completion) in [
+        (AppState::InGame, GameSubState::Initializing, None),
+        (AppState::InGame, GameSubState::Playing, None),
+        (AppState::InGame, GameSubState::Paused, None),
+        (
+            AppState::GameComplete,
+            GameSubState::Playing,
+            Some(GameCompleteSubState::Summary),
+        ),
+        (
+            AppState::GameComplete,
+            GameSubState::Playing,
+            Some(GameCompleteSubState::Viewing),
+        ),
+        (
+            AppState::GameComplete,
+            GameSubState::Playing,
+            Some(GameCompleteSubState::Paused),
+        ),
+    ] {
+        app.world_mut().insert_resource(State::new(state));
+        app.world_mut().insert_resource(State::new(sub));
+        if let Some(completion) = completion {
+            app.world_mut().insert_resource(State::new(completion));
+        } else {
+            app.world_mut()
+                .remove_resource::<State<GameCompleteSubState>>();
+        }
+        for error in [None, Some(UiError::ConnectionFailed)] {
+            let mut ui = app.world_mut().resource_mut::<MultiplayerUi>();
+            ui.connecting = true;
+            ui.error = error;
+            ui.pending_host = error.is_none().then(|| PendingHost {
+                address: "127.0.0.1:27015".parse().unwrap(),
+                password: SessionPassword::new("test password".into()).unwrap(),
+            });
+            render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+            let output = render_schedule(&mut app, &ctx, vec![]);
+            let i18n = app.world().resource::<Localization>();
+            let text = labels(&output);
+            let expected = i18n.text(
+                error
+                    .map(UiError::key)
+                    .unwrap_or("multiplayer-preparing-host"),
+            );
+            assert!(
+                text.contains(&expected.as_str()),
+                "{state:?}/{sub:?}: {text:?}"
+            );
+            for key in [
+                "game-menu",
+                "game-controls",
+                "game-players",
+                "pause-title",
+                "completion-title",
+                "completion-puzzle",
+                "common-save-game",
+                "generation-state",
+            ] {
+                assert!(!text.contains(&i18n.text(key).as_str()), "{key}: {text:?}");
+            }
+            let progress = i18n.format("game-progress", &[("percent", "0.0".into())]);
+            assert!(!text.contains(&progress.as_str()));
+            assert!(!text.iter().any(|text| text.contains("FPS")));
+            assert!(app.world().resource::<LocalGameplayBlocked>().0);
+            output.drop_without_applying_deltas();
+        }
+    }
+    // A Ready client clears the modal before the shared condition is evaluated,
+    // so HUD and inputs return together in the same egui pass.
+    app.world_mut()
+        .insert_resource(State::new(AppState::InGame));
+    app.world_mut()
+        .insert_resource(State::new(GameSubState::Playing));
+    app.world_mut()
+        .remove_resource::<State<GameCompleteSubState>>();
+    app.world_mut()
+        .resource_mut::<PersistenceState>()
+        .title_dialog_open = false;
+    app.world_mut()
+        .resource_mut::<PieceGenerationProgress>()
+        .is_generating = false;
+    app.world_mut().insert_resource(NetworkStatus {
+        role: Some(RuntimeRole::Client),
+        phase: RuntimePhase::Ready,
+        ..default()
+    });
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    let text = labels(&output);
+    let i18n = app.world().resource::<Localization>();
+    assert!(
+        text.contains(
+            &i18n
+                .format("game-progress", &[("percent", "0.0".into())])
+                .as_str()
+        ),
+        "{text:?}"
+    );
+    assert!(!app.world().resource::<LocalGameplayBlocked>().0);
+    output.drop_without_applying_deltas();
+}
+
 #[test]
 fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switching() {
     let (mut world, _, ctx) = screen_world();
@@ -316,17 +635,16 @@ fn joining_suppresses_setup_through_every_sync_phase() {
 }
 
 #[test]
-fn network_diagnostics_map_to_readable_error_categories() {
-    for (error, category) in [
-        ("Rejected(AuthenticationFailed)", UiError::WrongPassword),
-        ("BackendConnectionTimeout", UiError::Timeout),
-        ("JoinCapacity", UiError::ServerFull),
-        ("CapacityWaitTimeout", UiError::ServerFull),
-        ("BackendFailure", UiError::ConnectionFailed),
-        ("Wire(UnsupportedVersion(99))", UiError::ProtocolMismatch),
-        ("ImageHashMismatch", UiError::ImageUnavailable),
+fn typed_network_failures_map_to_readable_error_categories() {
+    for (kind, category) in [
+        (NetworkFailureKind::Authentication, UiError::WrongPassword),
+        (NetworkFailureKind::Timeout, UiError::Timeout),
+        (NetworkFailureKind::Capacity, UiError::ServerFull),
+        (NetworkFailureKind::Connection, UiError::ConnectionFailed),
+        (NetworkFailureKind::Protocol, UiError::ProtocolMismatch),
+        (NetworkFailureKind::Image, UiError::ImageUnavailable),
     ] {
-        assert_eq!(UiError::diagnostic(Some(error)), category);
+        assert_eq!(UiError::failure(kind), category);
     }
 }
 
@@ -338,6 +656,8 @@ fn cancel_uses_runtime_teardown_and_drops_pending_host() {
     world.init_resource::<NextState<AppState>>();
     {
         let mut state = world.resource_mut::<MultiplayerUi>();
+        state.join.address = "[2001:db8::1]:30123".into();
+        *state.join.password = "another secret".into();
         *state.host.password = "test password".into();
         state.submit_host();
     }
@@ -349,6 +669,12 @@ fn cancel_uses_runtime_teardown_and_drops_pending_host() {
     world.resource_mut::<MultiplayerUi>().cancel();
     process_actions(&mut world);
     assert!(world.resource::<MultiplayerUi>().pending_host.is_none());
+    assert!(world.resource::<MultiplayerUi>().host.password.is_empty());
+    assert!(world.resource::<MultiplayerUi>().join.password.is_empty());
+    assert_eq!(
+        world.resource::<MultiplayerUi>().join.address,
+        "[2001:db8::1]:30123"
+    );
     assert_eq!(
         world.resource::<NetworkStatus>().phase,
         RuntimePhase::Disconnected

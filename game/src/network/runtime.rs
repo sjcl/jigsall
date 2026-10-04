@@ -1,6 +1,9 @@
 //! One owner for Direct-IP bootstrap, sync, gameplay, and connection teardown.
 //! The CPU store is borrowed from the game World; no parallel gameplay state exists.
 mod bridge;
+mod failure;
+pub use failure::NetworkFailureKind;
+use failure::RuntimeFailure;
 mod presentation;
 mod world;
 pub use bridge::BridgeError;
@@ -50,6 +53,23 @@ pub struct HostOptions {
     pub session: SessionDefinition,
     pub host: PlayerId,
     pub password: SessionPassword,
+}
+/// Owns the password once. A failed listen keeps the request available for a
+/// port/address retry; success transfers it into the runtime and consumes it.
+pub struct HostStartRequest {
+    options: Option<HostOptions>,
+}
+impl HostStartRequest {
+    pub fn new(options: HostOptions) -> Self {
+        Self {
+            options: Some(options),
+        }
+    }
+    pub fn set_address(&mut self, address: SocketAddr) {
+        if let Some(options) = &mut self.options {
+            options.address = address;
+        }
+    }
 }
 pub struct JoinOptions {
     pub display_name: Option<puzzella_core::PlayerDisplayName>,
@@ -104,6 +124,7 @@ pub struct NetworkStatus {
     pub image_source: HostImageSource,
     pub peers: Vec<RuntimePeer>,
     pub error: Option<String>,
+    pub failure: Option<NetworkFailureKind>,
 }
 impl Default for NetworkStatus {
     fn default() -> Self {
@@ -117,6 +138,7 @@ impl Default for NetworkStatus {
             image_source: HostImageSource::Unavailable,
             peers: Vec::new(),
             error: None,
+            failure: None,
         }
     }
 }
@@ -184,8 +206,8 @@ fn publish_presence(
     transport: &mut dyn Transport,
     source: Option<ConnectionId>,
     event: PresenceMessage,
-) -> Result<Vec<ConnectionId>, String> {
-    let payload = wire::encode(&WireMessage::Presence(event)).map_err(|e| format!("{e:?}"))?;
+) -> Result<Vec<ConnectionId>, RuntimeFailure> {
+    let payload = wire::encode(&WireMessage::Presence(event)).map_err(RuntimeFailure::protocol)?;
     let mut failures = Vec::new();
     for peer in connections
         .peers()
@@ -202,6 +224,7 @@ fn publish_presence(
 }
 
 impl<T: DirectIpTransport> Runtime<T> {
+    #[cfg(test)]
     fn host(
         backend: T,
         options: HostOptions,
@@ -209,9 +232,19 @@ impl<T: DirectIpTransport> Runtime<T> {
         image: Option<Arc<[u8]>>,
         now: Instant,
     ) -> Result<Self, RuntimeStartError> {
+        Self::host_request(backend, &mut Some(options), definition, image, now)
+    }
+    fn host_request(
+        backend: T,
+        options: &mut Option<HostOptions>,
+        definition: PuzzleDefinition,
+        image: Option<Arc<[u8]>>,
+        now: Instant,
+    ) -> Result<Self, RuntimeStartError> {
+        let request = options.as_ref().ok_or(RuntimeStartError::AlreadyActive)?;
         let verified_image = image
             .as_ref()
-            .map(|bytes| super::bulk::VerifiedPuzzleImage::verify(bytes.clone(), options.session))
+            .map(|bytes| super::bulk::VerifiedPuzzleImage::verify(bytes.clone(), request.session))
             .transpose()
             .map_err(|_| RuntimeStartError::ImageHashMismatch)?;
         let mut sync = HostSyncCoordinator::default();
@@ -220,11 +253,16 @@ impl<T: DirectIpTransport> Runtime<T> {
         }
         let mut transport = SecureTransport::new(backend);
         let listener = transport
-            .listen(options.address)
+            .listen(request.address)
             .map_err(RuntimeStartError::Transport)?;
-        let address = transport
-            .listener_address(listener)
-            .map_err(RuntimeStartError::Transport)?;
+        let address = match transport.listener_address(listener) {
+            Ok(address) => address,
+            Err(error) => {
+                let _ = transport.close_listener(listener);
+                return Err(RuntimeStartError::Transport(error));
+            }
+        };
+        let options = options.take().unwrap();
         let metadata = SessionMetadata {
             definition: options.session,
             host: options.host,
@@ -314,8 +352,9 @@ impl<T: DirectIpTransport> Runtime<T> {
             },
         })
     }
-    fn fail(&mut self, error: impl std::fmt::Debug) {
-        self.status.error = Some(format!("{error:?}"));
+    fn fail(&mut self, error: RuntimeFailure) {
+        self.status.failure = Some(error.kind);
+        self.status.error = Some(error.diagnostic);
         self.status.phase = RuntimePhase::Failed;
         self.active = false;
     }
@@ -345,7 +384,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         source: Option<ConnectionId>,
         outcome: &HostCommandOutcome,
         store: &mut PieceDataStore,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeFailure> {
         if let Some(event) = &outcome.authority_event {
             let Role::Host(host) = &self.role else {
                 unreachable!()
@@ -374,7 +413,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 definition: self.definition.as_ref(),
             }
             .publish(&mut self.transport, source, outcome)
-            .map_err(|e| format!("{e:?}"))?
+            .map_err(RuntimeFailure::protocol)?
         };
         for (connection, _) in failures {
             self.disconnect(connection, DisconnectReason::ConnectionProblem, None, store)?;
@@ -389,7 +428,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         reason: DisconnectReason,
         retained: Option<PlayerId>,
         store: &mut PieceDataStore,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeFailure> {
         let mut pending = vec![(connection, reason, retained)];
         while let Some((connection, reason, retained)) = pending.pop() {
             if !self.live.remove(&connection) {
@@ -413,7 +452,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                         if let Some(cancel) = host
                             .contexts
                             .cancel_replicated(session, store, player)
-                            .map_err(|e| format!("{e:?}"))?
+                            .map_err(RuntimeFailure::protocol)?
                         {
                             self.presentation.event(
                                 self.status.local_player.unwrap(),
@@ -427,7 +466,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 store,
                                 &cancel.authority_event,
                             ) {
-                                self.status.error = Some(format!("{e:?}"));
+                                self.status.set_failure(NetworkFailureKind::Protocol, &e);
                             }
                             let failures = HostRouter {
                                 local_player: self.status.local_player.unwrap(),
@@ -438,7 +477,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 definition: self.definition.as_ref(),
                             }
                             .publish_authority_event(&mut self.transport, &cancel.authority_event)
-                            .map_err(|e| format!("{e:?}"))?;
+                            .map_err(RuntimeFailure::protocol)?;
                             pending.extend(
                                 failures
                                     .into_iter()
@@ -449,7 +488,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                             let left = self
                                 .roster
                                 .remove_ready(player)
-                                .map_err(|e| format!("{e:?}"))?;
+                                .map_err(RuntimeFailure::protocol)?;
                             let failures = publish_presence(
                                 &self.connections,
                                 &mut self.transport,
@@ -484,7 +523,8 @@ impl<T: DirectIpTransport> Runtime<T> {
                     // reason only says that the protocol was rejected.
                     if self.status.error.is_none() || reason != DisconnectReason::ProtocolViolation
                     {
-                        self.status.error = Some(format!("{reason:?}"));
+                        self.status
+                            .set_failure(NetworkFailureKind::disconnect(reason), reason);
                     }
                     self.active = false;
                 }
@@ -497,7 +537,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         store: &mut PieceDataStore,
         interaction: &mut PieceInteraction,
         now: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeFailure> {
         if let Some(session) = &self.session {
             self.presentation.synchronize(session, store);
             self.bridge.synchronize(session, interaction, store);
@@ -505,7 +545,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         let mut events = Vec::new();
         self.transport
             .poll(&mut events)
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(RuntimeFailure::transport)?;
         for event in events {
             if !self.active {
                 break;
@@ -520,7 +560,8 @@ impl<T: DirectIpTransport> Runtime<T> {
             | TransportEvent::ConnectionFailed { reason, .. } = event
             {
                 if reason == DisconnectReason::BackendConnectionTimeout {
-                    self.status.error = Some(format!("{reason:?}"));
+                    self.status
+                        .set_failure(NetworkFailureKind::disconnect(reason), reason);
                 }
                 self.disconnect(connection, reason, None, store)?;
                 continue;
@@ -549,7 +590,8 @@ impl<T: DirectIpTransport> Runtime<T> {
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    self.status.error = Some(format!("{error:?}"));
+                    self.status
+                        .set_failure(NetworkFailureKind::bootstrap(&error), &error);
                     self.disconnect(
                         connection,
                         DisconnectReason::ProtocolViolation,
@@ -597,7 +639,8 @@ impl<T: DirectIpTransport> Runtime<T> {
                     };
                     if let Err(error) = result {
                         let reason = error.disconnect_reason();
-                        self.status.error = Some(format!("{error:?}"));
+                        self.status
+                            .set_failure(NetworkFailureKind::sync(&error), &error);
                         if super::lifecycle::is_abuse(reason)
                             && host.sync.phase(connection).is_some()
                         {
@@ -624,14 +667,16 @@ impl<T: DirectIpTransport> Runtime<T> {
                         match routed {
                             Ok(routed) => {
                                 if let Err(error) = routed.retention {
-                                    self.status.error = Some(format!("{error:?}"));
+                                    self.status
+                                        .set_failure(NetworkFailureKind::Protocol, &error);
                                 }
                                 if let HostRouteOutcome::Applied(outcome) = routed.gameplay {
                                     self.publish(Some(connection), &outcome, store)?;
                                 }
                             }
                             Err(error) => {
-                                self.status.error = Some(format!("{error:?}"));
+                                self.status
+                                    .set_failure(NetworkFailureKind::Protocol, &error);
                                 self.disconnect(
                                     connection,
                                     DisconnectReason::ProtocolViolation,
@@ -676,7 +721,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                             client.display_name.clone(),
                             now,
                         )
-                        .map_err(|e| format!("{e:?}"))?;
+                        .map_err(RuntimeFailure::sync)?;
                         let cached = sync
                             .image_ready()
                             .then(|| client.cached_image.take())
@@ -703,7 +748,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 },
                                 now,
                             )
-                            .map_err(|e| format!("{e:?}"))?;
+                            .map_err(RuntimeFailure::sync)?;
                         if let Some(definition) = sync.definition() {
                             self.definition = Some(definition.clone());
                         }
@@ -754,10 +799,10 @@ impl<T: DirectIpTransport> Runtime<T> {
                             definition: self.definition.as_ref(),
                         }
                         .route(&event)
-                        .map_err(|e| format!("{e:?}"))?;
+                        .map_err(RuntimeFailure::protocol)?;
                         if let TransportEvent::Message { class, payload, .. } = &event {
                             match wire::decode_for_class(payload, *class)
-                                .map_err(|e| format!("{e:?}"))?
+                                .map_err(RuntimeFailure::protocol)?
                             {
                                 WireMessage::AuthorityEvent(envelope) => {
                                     let drag = client.replica.remote_drag(
@@ -769,7 +814,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                         .event(player, &envelope.event, drag, store);
                                     self.bridge
                                         .reconcile(player, &envelope.event, interaction, store)
-                                        .map_err(|e| format!("{e:?}"))?;
+                                        .map_err(RuntimeFailure::protocol)?;
                                     // Exclusive PreUpdate: canonical apply + prefix retirement
                                     // + suffix replay complete before Last/upload/extraction.
                                     self.bridge.refresh_prediction(
@@ -819,7 +864,8 @@ impl<T: DirectIpTransport> Runtime<T> {
                     host.sync.disconnect(id);
                     host.joining.remove(&id);
                     self.live.remove(&id);
-                    self.status.error = Some(format!("{error:?}"));
+                    self.status
+                        .set_failure(NetworkFailureKind::bootstrap(&error), &error);
                 }
                 for (id, error) in host.sync.expire(
                     &mut SyncHost {
@@ -832,7 +878,8 @@ impl<T: DirectIpTransport> Runtime<T> {
                 ) {
                     host.joining.remove(&id);
                     self.live.remove(&id);
-                    self.status.error = Some(format!("{error:?}"));
+                    self.status
+                        .set_failure(NetworkFailureKind::sync(&error), &error);
                 }
                 let mut joining: Vec<_> = host.joining.iter().copied().collect();
                 if let Some(next) = host.next_pump {
@@ -874,7 +921,8 @@ impl<T: DirectIpTransport> Runtime<T> {
                         if super::lifecycle::is_abuse(reason) {
                             host.sync.penalize(self.transport.origin(id), now);
                         }
-                        self.status.error = Some(format!("{error:?}"));
+                        self.status
+                            .set_failure(NetworkFailureKind::sync(&error), &error);
                         self.disconnect(id, reason, None, store)?;
                     }
                 }
@@ -895,11 +943,11 @@ impl<T: DirectIpTransport> Runtime<T> {
                 client
                     .bootstrap
                     .expire(&mut self.transport, &mut self.connections, now)
-                    .map_err(|e| format!("{e:?}"))?;
+                    .map_err(RuntimeFailure::bootstrap)?;
                 if let Some(error) = client.sync.as_ref().and_then(|sync| sync.timeout(now)) {
                     client.sync.as_mut().unwrap().invalidate();
                     client.sync = None;
-                    return Err(format!("{error:?}"));
+                    return Err(RuntimeFailure::sync(error));
                 }
             }
         }
@@ -910,9 +958,14 @@ impl<T: DirectIpTransport> Runtime<T> {
                     self.decode = None;
                     self.status.image = ImageReadiness::Decoded;
                 }
-                Ok(Err(error)) => return Err(error),
+                Ok(Err(error)) => {
+                    return Err(RuntimeFailure::new(NetworkFailureKind::Image, error))
+                }
                 Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                    return Err("image worker stopped".into())
+                    return Err(RuntimeFailure::new(
+                        NetworkFailureKind::Image,
+                        "image worker stopped",
+                    ))
                 }
                 Err(crossbeam::channel::TryRecvError::Empty) => {}
             }
@@ -925,7 +978,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         store: &mut PieceDataStore,
         interaction: &mut PieceInteraction,
         pointer: Option<Vec2>,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeFailure> {
         if let Some(session) = &self.session {
             self.presentation.synchronize(session, store);
             self.bridge.synchronize(session, interaction, store);
@@ -956,12 +1009,12 @@ impl<T: DirectIpTransport> Runtime<T> {
                     pointer,
                     interaction.network_gesture_token(),
                 )
-                .map_err(|e| format!("{e:?}"))?;
+                .map_err(RuntimeFailure::protocol)?;
         }
         while let Some(command) = self
             .bridge
             .next(self.session.as_ref().unwrap(), player, store)
-            .map_err(|e| format!("{e:?}"))?
+            .map_err(RuntimeFailure::protocol)?
         {
             self.bridge.present_release(interaction, store);
             self.send_local(command, store, interaction)?;
@@ -974,7 +1027,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         if let Some(command) = self
             .bridge
             .drag_update(self.session.as_ref().unwrap(), player, store)
-            .map_err(|e| format!("{e:?}"))?
+            .map_err(RuntimeFailure::protocol)?
         {
             self.send_local(command, store, interaction)?;
         }
@@ -985,7 +1038,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         command: ProtocolCommandEnvelope,
         store: &mut PieceDataStore,
         interaction: &mut PieceInteraction,
-    ) -> Result<(), String> {
+    ) -> Result<(), RuntimeFailure> {
         let player = self.status.local_player.unwrap();
         match &mut self.role {
             Role::Host(host) => {
@@ -1002,23 +1055,25 @@ impl<T: DirectIpTransport> Runtime<T> {
                         if let Err(error) =
                             host.sync.record_command_outcome(session, store, &outcome)
                         {
-                            self.status.error = Some(format!("{error:?}"));
+                            self.status
+                                .set_failure(NetworkFailureKind::Protocol, &error);
                         }
                         if let Some(event) = &outcome.authority_event {
                             self.bridge
                                 .reconcile(player, &event.event, interaction, store)
-                                .map_err(|e| format!("{e:?}"))?;
+                                .map_err(RuntimeFailure::protocol)?;
                         }
                         self.publish(None, &outcome, store)?;
                     }
                     Err(error) => {
                         self.bridge.reject(interaction, store);
-                        self.status.error = Some(format!("{error:?}"));
+                        self.status
+                            .set_failure(NetworkFailureKind::Protocol, &error);
                         if matches!(
                             error,
                             crate::multiplayer::protocol::ProtocolCommandError::Sequence(_)
                         ) {
-                            return Err(format!("{error:?}"));
+                            return Err(RuntimeFailure::protocol(error));
                         }
                     }
                 }
@@ -1034,7 +1089,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 definition: self.definition.as_ref(),
             }
             .send_command(&mut self.transport, &command)
-            .map_err(|e| format!("{e:?}"))?,
+            .map_err(RuntimeFailure::send)?,
         }
         Ok(())
     }
