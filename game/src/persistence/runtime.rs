@@ -1229,6 +1229,45 @@ mod tests {
     }
 
     #[test]
+    fn load_and_thumbnail_reject_oversized_sources_in_verified_containers() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+        // Pixel data must never be decoded even though the container hash is valid.
+        let bytes = crate::asset_reader::tests::image_with_claimed_dimensions(
+            image::ImageFormat::Gif,
+            24000,
+            16000,
+        );
+        let hash = image_hash(&bytes);
+        let definition = PuzzleDefinition {
+            generator_version: puzzella_core::GENERATOR_VERSION,
+            seed: 42,
+            grid_size: UVec2::ONE,
+            image_size: UVec2::new(16384, 10923),
+            snap_distance: 5.0,
+        };
+        let mut store = PieceDataStore::default();
+        store.initialize(vec![Vec2::ZERO]);
+        let checkpoint = PuzzleCheckpoint::capture(&store, &definition, hash).unwrap();
+        let metadata = repo
+            .create(
+                SaveTitle::new("Oversized source").unwrap(),
+                checkpoint,
+                Some(&bytes),
+            )
+            .unwrap();
+        let repository = Ok(repo);
+        assert!(
+            matches!(run_thumbnail(&repository, hash), Err(SaveError::Decode(reason)) if reason == "Image size exceeds limit")
+        );
+        for cap in [128, 16384] {
+            assert!(
+                matches!(run_request(&repository, Request::Load(metadata.id, ImageDecodeLimits { max_texture_dimension: cap })), Reply::Loaded(_, Err(SaveError::Decode(reason))) if reason == "Image size exceeds limit")
+            );
+        }
+    }
+
+    #[test]
     fn thumbnail_worker_reads_only_the_image_and_keeps_foreground_replies_separate() {
         let mut bytes = std::io::Cursor::new(Vec::new());
         image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(

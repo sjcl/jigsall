@@ -384,6 +384,9 @@ impl Pair {
         Self::with_image_options(8192, None)
     }
     fn with_image_options(cap: u32, cached_image: Option<Arc<[u8]>>) -> Self {
+        Self::with_image_bytes(cap, cached_image, encoded())
+    }
+    fn with_image_bytes(cap: u32, cached_image: Option<Arc<[u8]>>, bytes: Arc<[u8]>) -> Self {
         let bus = Arc::new(Mutex::new(Bus::default()));
         let mut host = app();
         let mut client = app();
@@ -391,7 +394,13 @@ impl Pair {
             .world_mut()
             .resource_mut::<PuzzleImageLimits>()
             .device_max_dimension = cap;
-        let session = host_world(&mut host);
+        let mut session = host_world(&mut host);
+        session.image_hash = crate::persistence::image_hash(&bytes);
+        host.world_mut().insert_resource(OriginalPuzzleImage {
+            hash: session.image_hash,
+            encoded: Some(bytes),
+            image_lease: None,
+        });
         host_with_transport(
             host.world_mut(),
             Fake {
@@ -448,6 +457,46 @@ impl Pair {
         for _ in 0..20 {
             self.frame();
         }
+    }
+}
+
+#[test]
+fn joined_image_rejects_oversized_sources_from_transfer_and_cache() {
+    let bytes: Arc<[u8]> = crate::asset_reader::tests::image_with_claimed_dimensions(
+        image::ImageFormat::Gif,
+        24000,
+        16000,
+    )
+    .into();
+    for cached in [false, true] {
+        let mut pair = Pair::with_image_bytes(128, cached.then(|| bytes.clone()), bytes.clone());
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            pair.frame();
+            let status = pair.client.world().resource::<NetworkStatus>();
+            if status.phase == RuntimePhase::Failed {
+                assert!(
+                    status
+                        .error
+                        .as_ref()
+                        .unwrap()
+                        .contains("Image size exceeds limit"),
+                    "{:?}",
+                    status.error
+                );
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "oversized image was not rejected"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!pair.client.world().contains_resource::<PuzzleImage>());
+        assert!(!pair
+            .client
+            .world()
+            .contains_resource::<OriginalPuzzleImage>());
     }
 }
 

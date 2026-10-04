@@ -18,6 +18,8 @@ cargo run --locked --release
 3. アスペクト比・目標ピース数・手動グリッドからサイズを設定し、seedとスナップ距離を調整します。画像のプレビューと最終ピース数を確認できます。
 4. 「Start Game」で初期配置とdense stateを生成します。GPU bufferとpipelineの準備後、プレイに進みます。
 
+元画像は512 MiB、各辺32768 px、総画素数67,108,864（8192×8192相当）まで読み込めます。上限を超える画像は縮小・デコード前に拒否します。描画用の画像はGPU上限と設定の画像メモリ予算に合わせて縮小します。詳細は[画像読み込みの制限](docs/ARCHITECTURE.md#生成と状態遷移)を参照してください。
+
 タイトルの「Settings」から解像度、Fullscreen / Borderless / Windowed、最大FPS（10〜1000、無制限あり）を変更できます。「Apply」で反映し、解像度・画面モードを変更した場合は15秒以内に「Keep Changes」で確定します。「Revert」または時間切れで元に戻ります。確定した設定は次回起動時も復元します。ボーダーレスはデスクトップの解像度を使用します。実装・保存先・検証方法は[DISPLAY_SETTINGS.md](docs/DISPLAY_SETTINGS.md)を参照してください。「Join Multiplayer」は未実装です。タイトル・新規ゲーム・ロード・セーブ・設定は共通の落ち着いた配色で表示し、小さいウィンドウではスクロールできます。ロゴは`assets/icon.svg`から変換したPNGを実行ファイルに同梱しています。
 
 UI は English (`en-US`) と日本語 (`ja`) に対応しています。Settings の Language（設定 → 言語）で自動・English・日本語を選ぶと、再起動なしで表示が切り替わり、次回起動時も設定を復元します。自動では OS の言語を使用し、未対応の場合は英語に戻ります。翻訳カタログ、保存方式、日本語フォント、将来の Steam 接続については [LOCALIZATION.md](docs/LOCALIZATION.md) を参照してください。

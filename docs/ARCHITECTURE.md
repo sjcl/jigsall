@@ -97,9 +97,13 @@ Generation: NotStarted → GeneratingState → UploadingGpu → Completed / Fail
 
 [CPU benchmark](../game/examples/initialization_bench.rs)と[CSV](../benchmarks/dense-initialization.csv)は4096²画像寸法・seed 42・releaseで各サイズ5回です。100万件の中央値はworker生成6.4783 ms、main側の所有権受け取り0.0024 ms、初回upload準備を含む`app.update` 0.0810 msでした。schedule overheadを含み、実GPU upload・GPU準備待ち・worker threadの起動時間は含みません。生成・受け取り・初回upload・共有解放後の編集で同じallocationを使うこともassertしています。論理allocationの削減であり、OS RSSのピークは未測定です。
 
-画像workerは元画像からdevice非依存のlogical size（最大辺16384 px、整数比率・最近傍の寸法丸め）を計算し、次にその端末のGPU辺上限と画像メモリ予算へ収まるtexture sizeを計算します。workerでLanczos3によりtexture sizeへ一度だけresizeし、`into_rgba8`で消費してからmain threadへ渡します。縮小不要で既にRGBA8ならpixel領域を再利用します。`PuzzleImage.logical_size`がゲーム定義・生成・カメラ・背景Sprite・UIの座標系で、`texture_size`は描画用の端末別解像度です。寸法を毎frame textureから上書きする経路はありません。main / point / rectangleは同じ縮小textureと正規化UVを共有し、shaderにdevice寸法を持ち込みません。
+画像workerは元画像からdevice非依存のlogical size（最大辺16384 px、整数比率・最近傍の寸法丸め）を計算し、次にその端末のGPU辺上限と画像メモリ予算へ収まるtexture sizeを計算します。workerで`into_rgba8`により最終GPU形式へ変換した後、`fast_image_resize`のU8x4 / Lanczos3によりtexture sizeへ一度だけresizeしてmain threadへ渡します。16bit入力も縮小前に8bitへ量子化します。従来と同じ独立したRGBA channel補間を使い、alpha乗除算による元画像サイズの追加コピーを作りません。縮小不要で既にRGBA8ならpixel領域を再利用します。`PuzzleImage.logical_size`がゲーム定義・生成・カメラ・背景Sprite・UIの座標系で、`texture_size`は描画用の端末別解像度です。寸法を毎frame textureから上書きする経路はありません。main / point / rectangleは同じ縮小textureと正規化UVを共有し、shaderにdevice寸法を持ち込みません。
 
-Startupで使用中のRenderDevice / RenderAdapterから`PuzzleImageLimits`を取得し、画像選択と保存loadのrequestには予算から算出した上限値だけをコピーします。workerはGPU resourcesへアクセスしません。予算は既定でGPU容量の20%を使う自動モードで、割合・手動予算をSettingsから変更できます。取得経路、fallback、設定の適用時期は[SETTINGS.md](SETTINGS.md)を参照してください。元encoded bytes / SHA-256は縮小と独立して保持します。encoded入力は512 MiB、decoderのallocation limitは4 GiBです。後者はresize等も含むCPUピーク全体の上限ではありません。
+Startupで使用中のRenderDevice / RenderAdapterから`PuzzleImageLimits`を取得し、画像選択と保存loadのrequestには予算から算出した上限値だけをコピーします。workerはGPU resourcesへアクセスしません。予算は既定でGPU容量の20%を使う自動モードで、割合・手動予算をSettingsから変更できます。取得経路、fallback、設定の適用時期は[SETTINGS.md](SETTINGS.md)を参照してください。元encoded bytes / SHA-256は縮小と独立して保持します。
+
+共通decoderはencoded入力512 MiB、各辺32768 px、総画素数67,108,864（8192²）以下を要求します。decoderのヘッダーから寸法を確認し、画素bufferの確保前に超過を拒否します。この制限は画像選択・保存load・サムネイル・ネットワークの転送済み／cache画像すべてに適用します。24000×16000などの超大画像と、それを元画像に持つ既存saveはload時にエラーになります。24000×16のような総画素数の少ない画像は引き続き縮小できます。decoderのallocation limitは512 MiBで、出力分を明示的に予約してからdecodeします。ただしcodec内部のallocation limitはbest-effortです。
+
+RGBA8の元画像・出力・縮小の中間画素bufferはそれぞれ最大256 MiBです。中間bufferは`元画像の幅 × 縮小後の高さ × 4 bytes`（alignmentを除く）以内で、従来のRgba32F / 16 bytesではありません。16bit RGBAのdecode結果は最大512 MiBで、RGBA8への変換中は両bufferが存在します。縮小の画素buffer合計は最大768 MiBですが、encoded bytes、codec内部、補間係数、allocator、別workerの同時処理、GPUの使用量は含みません。process全体のメモリ上限や実測RSSを示す値ではありません。
 
 画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.19.1のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldには寸法metadataとhandle、opaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
 

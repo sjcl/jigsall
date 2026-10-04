@@ -32,6 +32,7 @@ bevy_egui = "0.42"
 serde = { version = "1.0", features = ["derive"] }
 # Keep content-based decoding limited to the formats offered by the image picker.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp"] }
+fast_image_resize = { version = "6.1", default-features = false, features = ["std", "only_u8x4"] }
 rand = "0.10"
 rand_chacha = "0.10"
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }

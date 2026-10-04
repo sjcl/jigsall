@@ -14,6 +14,7 @@ bevy_egui.workspace = true
 serde.workspace = true
 serde_json = "1"
 image.workspace = true
+fast_image_resize.workspace = true
 rand.workspace = true
 uuid = { version = "1.26", features = ["v4"] }
 sha2 = "0.10"

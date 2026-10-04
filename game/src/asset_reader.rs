@@ -117,10 +117,29 @@ pub struct DecodedPuzzleImage {
     pub logical_size: UVec2,
 }
 
-/// Restrict puzzle inputs even if another dependency enables additional image codecs.
-pub(crate) fn decode_puzzle_image_bytes(encoded: &[u8]) -> image::ImageResult<image::DynamicImage> {
-    use image::{error::ImageFormatHint, ImageError, ImageFormat};
+// Source limits apply to files, saves, thumbnails and peer-supplied images alike.
+// Bound pixel storage independently of compressed size and the local GPU budget.
+const MAX_SOURCE_IMAGE_PIXELS: u64 = 64 * 1024 * 1024;
+const MAX_ENCODED_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_DIMENSION: u32 = 32768;
+const MAX_IMAGE_DECODER_ALLOC: u64 = 512 * 1024 * 1024;
 
+/// Restrict puzzle inputs before decoding their pixels, including thumbnail requests.
+pub(crate) fn decode_puzzle_image_bytes(encoded: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    image::DynamicImage::from_decoder(puzzle_image_decoder(encoded)?)
+}
+
+fn puzzle_image_decoder(encoded: &[u8]) -> image::ImageResult<impl image::ImageDecoder + '_> {
+    use image::{
+        error::{ImageFormatHint, LimitError, LimitErrorKind},
+        ImageDecoder, ImageError, ImageFormat,
+    };
+
+    if encoded.len() as u64 > MAX_ENCODED_IMAGE_BYTES {
+        return Err(ImageError::Limits(LimitError::from_kind(
+            LimitErrorKind::InsufficientMemory,
+        )));
+    }
     let format = image::guess_format(encoded)?;
     if !matches!(
         format,
@@ -134,14 +153,52 @@ pub(crate) fn decode_puzzle_image_bytes(encoded: &[u8]) -> image::ImageResult<im
             ImageFormatHint::Exact(format).into(),
         ));
     }
-    // Large source images are reduced before GPU upload, but decoding still
-    // needs the original pixels. Permit the documented 24k x 16k inputs while
-    // retaining a separate finite decoder allocation bound (not a VRAM budget).
     let mut reader = image::ImageReader::with_format(std::io::Cursor::new(encoded), format);
     let mut limits = image::Limits::default();
-    limits.max_alloc = Some(4 * 1024 * 1024 * 1024);
-    reader.limits(limits);
-    reader.decode()
+    limits.max_image_width = Some(MAX_SOURCE_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_SOURCE_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_IMAGE_DECODER_ALLOC);
+    reader.limits(limits.clone());
+    // Reuse this decoder: a second reader would parse the input again (JPEG also
+    // copies the encoded bytes). No full pixel buffer exists at this point.
+    let mut decoder = reader.into_decoder()?;
+    let (width, height) = decoder.dimensions();
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_SOURCE_IMAGE_PIXELS {
+        return Err(ImageError::Limits(LimitError::from_kind(
+            LimitErrorKind::DimensionError,
+        )));
+    }
+    // from_decoder does not reserve its output against max_alloc. Preserve the
+    // reservation performed by ImageReader::decode before allocating pixels.
+    limits.reserve(decoder.total_bytes())?;
+    decoder.set_limits(limits)?;
+    Ok(decoder)
+}
+
+fn resize_puzzle_rgba(
+    rgba: image::RgbaImage,
+    size: UVec2,
+    resizer: &mut fast_image_resize::Resizer,
+) -> Result<image::RgbaImage, String> {
+    use fast_image_resize::{images, FilterType, PixelType, ResizeAlg, ResizeOptions};
+
+    if rgba.dimensions() == (size.x, size.y) {
+        return Ok(rgba);
+    }
+    let source = images::ImageRef::new(rgba.width(), rgba.height(), &rgba, PixelType::U8x4)
+        .map_err(|error| error.to_string())?;
+    let mut destination = images::Image::new(size.x, size.y, PixelType::U8x4);
+    // Match image's independent RGBA channel filtering. Alpha premultiplication
+    // would both change existing coverage and allocate another source-size copy.
+    let options = ResizeOptions::new()
+        .resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3))
+        .use_alpha(false);
+    resizer
+        .resize(&source, &mut destination, &options)
+        .map_err(|error| error.to_string())?;
+    // U8x4 convolution needs at most source_width * destination_height * 4
+    // bytes (+ alignment), rather than image's 16-byte Rgba32F intermediate.
+    Ok(image::RgbaImage::from_raw(size.x, size.y, destination.into_vec()).unwrap())
 }
 
 /// Decode and resize on the worker, before any Bevy asset can be uploaded.
@@ -160,16 +217,13 @@ pub fn decode_image_bytes(
         return Err("Image dimensions must be positive".into());
     }
     let texture_size = fit_image_size(logical_size, limits.max_texture_dimension);
-    let decoded = if texture_size != source_size {
-        decoded.resize_exact(
-            texture_size.x,
-            texture_size.y,
-            image::imageops::FilterType::Lanczos3,
-        )
-    } else {
-        decoded
-    };
-    let rgba = decoded.into_rgba8();
+    // Normalize to the final GPU format before resizing, so 16-bit inputs also
+    // use bounded U8x4 scratch storage. Consuming RGBA8 reuses its pixel buffer.
+    let rgba = resize_puzzle_rgba(
+        decoded.into_rgba8(),
+        texture_size,
+        &mut fast_image_resize::Resizer::new(),
+    )?;
     let image = Image::new(
         bevy::render::render_resource::Extent3d {
             width: texture_size.x,
@@ -199,7 +253,7 @@ pub fn start_thread_image_load(
         let result =
             (|| -> Result<(DecodedPuzzleImage, crate::persistence::runtime::OriginalPuzzleImage), String> {
                 let file = std::fs::File::open(file_path).map_err(|e| e.to_string())?;
-                let limit = 512 * 1024 * 1024;
+                let limit = MAX_ENCODED_IMAGE_BYTES;
                 let mut bytes = Vec::new();
                 file.take(limit + 1)
                     .read_to_end(&mut bytes)
@@ -228,12 +282,254 @@ pub fn start_thread_image_load(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use bevy::{
         asset::RenderAssetUsages,
         render::{render_asset::RenderAsset, texture::GpuImage},
     };
+
+    pub(crate) fn image_with_claimed_dimensions(
+        format: image::ImageFormat,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        use image::ImageFormat;
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([30, 60, 90])))
+            .write_to(&mut bytes, format)
+            .unwrap();
+        let mut bytes = bytes.into_inner();
+        match format {
+            ImageFormat::Bmp => {
+                bytes[18..22].copy_from_slice(&width.to_le_bytes());
+                bytes[22..26].copy_from_slice(&height.to_le_bytes());
+            }
+            ImageFormat::Gif => {
+                bytes[6..8].copy_from_slice(&(width as u16).to_le_bytes());
+                bytes[8..10].copy_from_slice(&(height as u16).to_le_bytes());
+            }
+            ImageFormat::Jpeg => {
+                let sof = bytes
+                    .windows(2)
+                    .position(|bytes| bytes == [0xff, 0xc0])
+                    .unwrap();
+                bytes[sof + 5..sof + 7].copy_from_slice(&(height as u16).to_be_bytes());
+                bytes[sof + 7..sof + 9].copy_from_slice(&(width as u16).to_be_bytes());
+            }
+            ImageFormat::Png => {
+                bytes[16..20].copy_from_slice(&width.to_be_bytes());
+                bytes[20..24].copy_from_slice(&height.to_be_bytes());
+                // Keep IHDR valid, so the limit check is reached before IDAT decode.
+                let mut crc = u32::MAX;
+                for byte in &bytes[12..29] {
+                    crc ^= u32::from(*byte);
+                    for _ in 0..8 {
+                        crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+                    }
+                }
+                bytes[29..33].copy_from_slice(&(!crc).to_be_bytes());
+            }
+            ImageFormat::WebP => {
+                assert_eq!(&bytes[12..16], b"VP8L");
+                assert_eq!(bytes[20], 0x2f);
+                let bits = u32::from_le_bytes(bytes[21..25].try_into().unwrap());
+                let bits = (bits & 0xf000_0000) | (width - 1) | ((height - 1) << 14);
+                bytes[21..25].copy_from_slice(&bits.to_le_bytes());
+            }
+            _ => unreachable!(),
+        }
+        bytes
+    }
+
+    #[test]
+    fn source_limits_reject_oversized_headers_before_pixel_decode_in_every_codec() {
+        use image::{error::LimitErrorKind, ImageError, ImageFormat, ImageReader};
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Bmp,
+            ImageFormat::Gif,
+            ImageFormat::WebP,
+        ] {
+            for (width, height) in [(9000, 9000), (16000, 8192), (8192, 16000)] {
+                let bytes = image_with_claimed_dimensions(format, width, height);
+                let mut reader = ImageReader::with_format(std::io::Cursor::new(&bytes), format);
+                reader.no_limits();
+                assert_eq!(
+                    reader.into_dimensions().unwrap(),
+                    (width, height),
+                    "{format:?}"
+                );
+                let ImageError::Limits(error) = decode_puzzle_image_bytes(&bytes).unwrap_err()
+                else {
+                    panic!("{format:?} did not reject the source dimensions");
+                };
+                assert_eq!(error.kind(), LimitErrorKind::DimensionError);
+                for cap in [128, 8192, 16384] {
+                    assert!(decode_image_bytes(
+                        &bytes,
+                        ImageDecodeLimits {
+                            max_texture_dimension: cap
+                        }
+                    )
+                    .is_err());
+                }
+            }
+        }
+        for (width, height) in [
+            (24000, 16000),
+            (16000, 24000),
+            (32769, 1),
+            (1, 32769),
+            (65535, 65535),
+        ] {
+            let bytes = image_with_claimed_dimensions(ImageFormat::Bmp, width, height);
+            assert!(matches!(
+                decode_puzzle_image_bytes(&bytes),
+                Err(ImageError::Limits(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn source_limits_allow_the_pixel_boundary_and_long_narrow_images() {
+        use image::{ImageDecoder, ImageFormat};
+        for (width, height) in [
+            (8192, 8192),
+            (32768, 2048),
+            (2048, 32768),
+            (32768, 1),
+            (1, 32768),
+        ] {
+            let bytes = image_with_claimed_dimensions(ImageFormat::Bmp, width, height);
+            // Inspect preflight directly: boundary tests need no large pixel buffers.
+            assert_eq!(
+                puzzle_image_decoder(&bytes).unwrap().dimensions(),
+                (width, height)
+            );
+        }
+    }
+
+    #[test]
+    fn zero_or_overflowing_source_dimensions_are_rejected() {
+        use image::{ImageError, ImageFormat};
+        for (width, height) in [(0, 1), (1, 0), (i32::MAX as u32, i32::MAX as u32)] {
+            let bytes = image_with_claimed_dimensions(ImageFormat::Bmp, width, height);
+            assert!(decode_puzzle_image_bytes(&bytes).is_err());
+        }
+        // The pinned WebP decoder wraps its maximum VP8L width to zero.
+        let bytes = image_with_claimed_dimensions(ImageFormat::WebP, 16384, 8192);
+        assert!(matches!(
+            decode_puzzle_image_bytes(&bytes),
+            Err(ImageError::Limits(_))
+        ));
+    }
+
+    #[test]
+    fn rgba_resize_scratch_is_four_bytes_per_pixel_without_an_alpha_copy() {
+        for (source, destination) in [
+            (UVec2::new(1024, 768), UVec2::new(512, 384)),
+            (UVec2::new(768, 1024), UVec2::new(384, 512)),
+        ] {
+            let rgba =
+                image::RgbaImage::from_pixel(source.x, source.y, image::Rgba([30, 60, 90, 128]));
+            let mut resizer = fast_image_resize::Resizer::new();
+            let resized = resize_puzzle_rgba(rgba, destination, &mut resizer).unwrap();
+            assert_eq!(resized.dimensions(), (destination.x, destination.y));
+            assert!(resized.pixels().all(|pixel| pixel.0 == [30, 60, 90, 128]));
+            let scratch = resizer.size_of_internal_buffers();
+            assert!(scratch > 0);
+            assert!(
+                scratch <= source.x as usize * destination.y as usize * 4 + 4,
+                "scratch={scratch}"
+            );
+        }
+        let rgba = image::RgbaImage::from_pixel(8, 4, image::Rgba([30, 60, 90, 128]));
+        let pointer = rgba.as_ptr();
+        let mut resizer = fast_image_resize::Resizer::new();
+        let resized = resize_puzzle_rgba(rgba, UVec2::new(8, 4), &mut resizer).unwrap();
+        assert_eq!(resized.as_ptr(), pointer);
+        assert_eq!(resizer.size_of_internal_buffers(), 0);
+    }
+
+    #[test]
+    fn accepted_16_bit_png_is_normalized_to_the_gpu_format_before_resize() {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba16(image::ImageBuffer::from_pixel(
+            8,
+            4,
+            image::Rgba([0x1212u16, 0x3434, 0x5656, 0x8080]),
+        ))
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+        assert_eq!(
+            decode_puzzle_image_bytes(bytes.get_ref()).unwrap().color(),
+            image::ColorType::Rgba16
+        );
+        for cap in [2, 16384] {
+            let decoded = decode_image_bytes(
+                bytes.get_ref(),
+                ImageDecodeLimits {
+                    max_texture_dimension: cap,
+                },
+            )
+            .unwrap();
+            assert_eq!(decoded.logical_size, UVec2::new(8, 4));
+            assert!(decoded
+                .image
+                .data
+                .unwrap()
+                .chunks_exact(4)
+                .all(|pixel| pixel == [0x12, 0x34, 0x56, 0x80]));
+        }
+    }
+
+    #[test]
+    fn supported_codecs_still_decode_ordinary_images() {
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::Bmp,
+            image::ImageFormat::Gif,
+            image::ImageFormat::WebP,
+        ] {
+            let bytes = image_with_claimed_dimensions(format, 1, 1);
+            let decoded = decode_image_bytes(
+                &bytes,
+                ImageDecodeLimits {
+                    max_texture_dimension: 8192,
+                },
+            )
+            .unwrap();
+            assert_eq!(decoded.image.size(), UVec2::ONE);
+            assert_eq!(decoded.logical_size, UVec2::ONE);
+            assert_eq!(decoded.image.data.unwrap()[3], 255);
+        }
+    }
+
+    #[test]
+    fn file_worker_rejects_oversized_source_without_retaining_original_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized.bmp");
+        std::fs::write(
+            &path,
+            image_with_claimed_dimensions(image::ImageFormat::Bmp, 24000, 16000),
+        )
+        .unwrap();
+        let (tx, rx) = crossbeam::channel::bounded(1);
+        start_thread_image_load(
+            "oversized.bmp".into(),
+            path,
+            tx,
+            ImageDecodeLimits {
+                max_texture_dimension: 128,
+            },
+        );
+        let loaded = rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        assert_eq!(loaded.image.unwrap_err(), "Image size exceeds limit");
+        assert!(loaded.original.is_none());
+    }
 
     #[test]
     fn oversized_source_has_common_logical_size_and_local_texture_sizes() {
