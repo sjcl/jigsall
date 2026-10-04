@@ -77,6 +77,7 @@ fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
             if outcome == BootstrapOutcome::Syncing {
                 hs.route(
                     &mut SyncHost {
+                        roster: &mut s.host.roster,
                         bootstrap: &mut hb,
                         connections: &mut s.host.connections,
                     },
@@ -144,7 +145,17 @@ fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
                 )
                 .unwrap();
             if cb.state() == Some(ConnectionState::Authenticated) {
-                cs = Some(ClientSyncRouter::start(&mut cb, None, Instant::now()).unwrap());
+                cs = Some(
+                    ClientSyncRouter::start(
+                        &mut cb,
+                        None,
+                        Some(
+                            puzzella_core::PlayerDisplayName::from_user_input("GNS peer").unwrap(),
+                        ),
+                        Instant::now(),
+                    )
+                    .unwrap(),
+                );
             }
             if outcome == BootstrapOutcome::Syncing {
                 let peer = &mut s.peers[0];
@@ -157,6 +168,7 @@ fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
                         &event,
                         &mut client,
                         &mut SyncReplica {
+                            roster: &mut peer.roster,
                             replica: &mut peer.replica,
                             session: &mut peer.session,
                             store: &mut peer.store,
@@ -183,6 +195,18 @@ fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
         .is_some());
     let host_peer = host_peer.unwrap();
     let local_player = cb.assigned_player().unwrap();
+    assert_eq!(s.host.roster, s.peers[0].roster);
+    assert_eq!(
+        s.host
+            .roster
+            .get(local_player)
+            .unwrap()
+            .display_name
+            .as_ref()
+            .unwrap()
+            .as_ref(),
+        "GNS peer"
+    );
     assert_eq!(hb.state(host_peer), Some(ConnectionState::Ready));
     assert_eq!(cb.state(), Some(ConnectionState::Ready));
     assert_eq!(s.host.connections.player(host_peer), Some(local_player));
@@ -242,6 +266,7 @@ fn gns_localhost_syncing_image_baseline_final_barrier_ready_and_gameplay() {
                 == BootstrapOutcome::Gameplay
             {
                 let mut router = ClientRouter {
+                    roster: &mut peer.roster,
                     local_player,
                     host_connection: client_host,
                     connections: &peer.connections,
@@ -452,7 +477,8 @@ impl Live {
                                 assert_eq!(*class, MessageClass::Transient);
                                 self.drags[index] += 1;
                             }
-                            ClientRouteOutcome::DroppedTransient(_) => {}
+                            ClientRouteOutcome::DroppedTransient(_)
+                            | ClientRouteOutcome::Presence => {}
                         }
                     }
                     TransportEvent::ConnectionFailed { .. } => {

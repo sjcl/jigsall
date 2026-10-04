@@ -14,6 +14,8 @@ pub mod persistence;
 #[allow(dead_code)]
 mod piece_geometry;
 mod play_area;
+pub mod player_settings;
+pub mod players;
 pub mod render;
 pub mod resources;
 mod selection;

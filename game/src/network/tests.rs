@@ -160,6 +160,7 @@ impl Transport for FakeTransport {
 }
 
 struct State {
+    roster: crate::players::PlayerRoster,
     store: PieceDataStore,
     session: AuthoritySession,
     connections: SessionConnections,
@@ -202,6 +203,7 @@ impl Scenario {
                 )
                 .unwrap();
             State {
+                roster: crate::players::PlayerRoster::host_only(HOST, None),
                 store,
                 session: AuthoritySession::new(SESSION, HOST, cursor),
                 connections: SessionConnections::default(),
@@ -228,6 +230,7 @@ impl Scenario {
     fn client_router(&mut self, index: usize, host_connection: ConnectionId) -> ClientRouter<'_> {
         let peer = &mut self.peers[index];
         ClientRouter {
+            roster: &mut peer.roster,
             local_player: [A, B][index],
             host_connection,
             connections: &peer.connections,
@@ -331,6 +334,31 @@ fn wire_header_and_protocol_roundtrips() {
 }
 
 #[test]
+fn presence_is_reliable_gameplay_and_client_to_host_is_wrong_direction() {
+    use crate::players::PresenceMessage;
+    let mut s = Scenario::new();
+    connected(&mut s.host.connections, HA, A);
+    let message = WireMessage::Presence(PresenceMessage::PlayerLeft {
+        revision: 1,
+        player: B,
+    });
+    assert_eq!(message.class(), MessageClass::Control);
+    let bytes = wire::encode(&message).unwrap();
+    assert_eq!(
+        wire::frame_route_for_class(&bytes, MessageClass::Control),
+        Ok(wire::FrameRoute::Gameplay)
+    );
+    assert_eq!(
+        wire::decode_for_class(&bytes, MessageClass::Transient),
+        Err(WireError::WrongClass)
+    );
+    assert!(matches!(
+        s.host_router().route(&message_event(HA, &message)),
+        Err(HostRouteError::WrongDirection)
+    ));
+}
+
+#[test]
 fn wire_rejects_untrusted_headers_and_payloads() {
     let valid = wire::encode(&WireMessage::ClientCommand(grab())).unwrap();
     for len in 0..valid.len() {
@@ -340,7 +368,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [1u16, 2, 3, 4, 5, 6, 7, 9, u16::MAX] {
+    for version in [1u16, 2, 3, 4, 5, 6, 7, 8, 10, u16::MAX] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),

@@ -1,6 +1,63 @@
 use super::*;
 
 #[test]
+fn player_name_draft_does_not_save_until_commit_and_errors_are_visible() {
+    let mut state = PlayerSettingsState::load(None);
+    let mut draft = Some("Alice".to_owned());
+    let ctx = egui::Context::default();
+    let render = |draft: &mut Option<String>, state: &mut PlayerSettingsState, events| {
+        ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..default()
+            },
+            |ui| {
+                paint_player_settings(ui, draft, state, &english());
+            },
+        )
+    };
+    for _ in 0..3 {
+        render(&mut draft, &mut state, vec![]).drop_without_applying_deltas();
+    }
+    assert!(state.current.display_name.is_none());
+    assert!(!state.is_save_pending());
+    let output = render(&mut draft, &mut state, vec![]);
+    let pos = text_position(&output, "Save name");
+    output.drop_without_applying_deltas();
+    for pressed in [true, false] {
+        render(
+            &mut draft,
+            &mut state,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ],
+        )
+        .drop_without_applying_deltas();
+    }
+    assert_eq!(
+        state.current.display_name.as_ref().unwrap().as_ref(),
+        "Alice"
+    );
+    state.poll_save();
+    draft = Some("x".repeat(33));
+    assert!(!state.commit(draft.as_ref().unwrap()));
+    let output = render(&mut draft, &mut state, vec![]);
+    assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == english().text("settings-player-name-chars"))));
+    assert_eq!(
+        state.current.display_name.as_ref().unwrap().as_ref(),
+        "Alice"
+    );
+    assert!(!state.is_save_pending());
+    output.drop_without_applying_deltas();
+}
+
+#[test]
 fn image_widgets_persist_auto_manual_percentage_and_show_next_load_help() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
@@ -280,6 +337,7 @@ fn frame_with_state(
                 capabilities,
                 &mut english(),
                 &mut UiPreferences::load(None),
+                &mut PlayerSettingsState::load(None),
                 &mut AutosaveSettingsState::load(None),
                 &mut ImageSettingsState::load(None),
                 &PuzzleImageLimits {
@@ -611,6 +669,7 @@ fn localized_frame(
                 &capabilities(),
                 i18n,
                 preferences,
+                &mut PlayerSettingsState::load(None),
                 &mut AutosaveSettingsState::load(None),
                 &mut ImageSettingsState::load(None),
                 &PuzzleImageLimits {
@@ -752,6 +811,7 @@ fn key_frame(
                 &capabilities(),
                 &mut english(),
                 &mut UiPreferences::load(None),
+                &mut PlayerSettingsState::load(None),
                 &mut AutosaveSettingsState::load(None),
                 &mut ImageSettingsState::load(None),
                 &PuzzleImageLimits {
@@ -1053,7 +1113,7 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
                 };
                 let mut panels = vec![];
                 for _ in 0..6 {
-                    let output = localized_frame(
+                    let mut output = localized_frame(
                         &ctx,
                         &mut dialog,
                         &mut preferences,
@@ -1061,6 +1121,7 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
                         size,
                         std::mem::take(&mut events),
                     );
+                    output.textures_delta.clear();
                     let panel = output
                         .shapes
                         .iter()

@@ -29,6 +29,7 @@ use crate::{
         replication::{PeerReplicationState, ReplicationError},
         JoinBaseline, JoinBaselineError, SnapshotExpectation,
     },
+    players::{PlayerRoster, RosterError, RosterPlayer},
     resources::PieceDataStore,
 };
 use puzzella_core::{
@@ -199,6 +200,7 @@ pub enum SyncError {
     WrongIdentity,
     WrongGeneration,
     WrongFinalization,
+    Roster(RosterError),
     FinalizationExhausted,
     FinalDrag(FinalDragError),
     UnofferedTransfer,
@@ -266,6 +268,7 @@ pub struct SyncAuthority<'a> {
 
 /// Mutably borrow both routing gates throughout final validation/commit.
 pub struct SyncHost<'a> {
+    pub roster: &'a mut PlayerRoster,
     pub bootstrap: &'a mut HostBootstrap,
     pub connections: &'a mut SessionConnections,
 }
@@ -328,6 +331,8 @@ impl SendingTransfer {
 }
 
 struct HostSyncPeer {
+    profile_received: bool,
+    display_name: Option<puzzella_core::PlayerDisplayName>,
     origin: Option<Origin>,
     player: PlayerId,
     authenticated: SessionMetadata,
@@ -573,6 +578,8 @@ impl HostSyncCoordinator {
         self.peers.insert(
             connection,
             HostSyncPeer {
+                profile_received: false,
+                display_name: None,
                 origin,
                 player,
                 authenticated,
@@ -740,6 +747,7 @@ impl HostSyncCoordinator {
         now: Instant,
     ) -> Result<(), SyncError> {
         let SyncHost {
+            roster,
             bootstrap,
             connections,
         } = host;
@@ -763,11 +771,19 @@ impl HostSyncCoordinator {
             return Err(SyncError::WrongDirection);
         };
         match control {
+            Control::ClientProfile { display_name } => {
+                if peer.phase != SyncPhase::ImageNegotiation || peer.profile_received {
+                    return Err(SyncError::WrongPhase);
+                }
+                peer.profile_received = true;
+                peer.display_name = display_name;
+                // Keep the original ImageAvailability deadline; a profile cannot renew it.
+            }
             Control::ImageAvailability {
                 image_hash,
                 available,
             } => {
-                if peer.phase != SyncPhase::ImageNegotiation {
+                if peer.phase != SyncPhase::ImageNegotiation || !peer.profile_received {
                     return Err(SyncError::WrongPhase);
                 }
                 if image_hash != peer.authenticated.definition.image_hash {
@@ -938,6 +954,13 @@ impl HostSyncCoordinator {
                     // No Reliable replay is needed. The next pump sends a fresh revision.
                     return Ok(());
                 }
+                let next_roster = roster
+                    .prepare_join(RosterPlayer {
+                        player: peer.player,
+                        display_name: peer.display_name.clone(),
+                    })
+                    .map_err(SyncError::Roster)?;
+                let snapshot = next_roster.snapshot();
                 let permit = SyncReadyPermit {
                     connection,
                     metadata: peer.authenticated,
@@ -948,10 +971,18 @@ impl HostSyncCoordinator {
                 bootstrap
                     .promote_ready(connection, connections, &permit)
                     .map_err(SyncError::Bootstrap)?;
-                send(transport, connection, Control::ReadyCommit { token })?;
+                send(
+                    transport,
+                    connection,
+                    Control::ReadyCommit {
+                        token,
+                        roster: snapshot,
+                    },
+                )?;
                 transport
                     .mark_ready(connection)
                     .map_err(SyncError::Transport)?;
+                **roster = next_roster;
                 self.disconnect(connection);
                 return Ok(());
             }
@@ -1324,6 +1355,7 @@ pub enum ClientSyncOutcome {
 }
 
 pub struct ClientSyncRouter {
+    display_name: Option<puzzella_core::PlayerDisplayName>,
     connection: ConnectionId,
     player: PlayerId,
     authenticated: SessionMetadata,
@@ -1343,6 +1375,7 @@ pub struct ClientSyncRouter {
 }
 /// The existing replica/store/session are borrowed only while routing sync work.
 pub struct SyncReplica<'a> {
+    pub roster: &'a mut PlayerRoster,
     pub replica: &'a mut PeerReplicationState,
     pub session: &'a mut AuthoritySession,
     pub store: &'a mut PieceDataStore,
@@ -1353,6 +1386,7 @@ impl ClientSyncRouter {
     pub fn start(
         bootstrap: &mut ClientBootstrap,
         cached_image: Option<&[u8]>,
+        display_name: Option<puzzella_core::PlayerDisplayName>,
         now: Instant,
     ) -> Result<Self, SyncError> {
         let authenticated = bootstrap.metadata().ok_or(SyncError::NotSyncing)?;
@@ -1364,6 +1398,7 @@ impl ClientSyncRouter {
         let mut timing = SyncTiming::new(now);
         timing.wait(ResponseWait::Session, now);
         Ok(Self {
+            display_name,
             connection: bootstrap.host_connection(),
             player,
             authenticated,
@@ -1454,6 +1489,7 @@ impl ClientSyncRouter {
             return Err(SyncError::NotSyncing);
         }
         let SyncReplica {
+            roster,
             replica,
             session,
             store,
@@ -1487,6 +1523,13 @@ impl ClientSyncRouter {
                         return Err(SyncError::WrongIdentity);
                     }
                     self.definition = Some(definition);
+                    send(
+                        transport,
+                        connection,
+                        Control::ClientProfile {
+                            display_name: self.display_name.clone(),
+                        },
+                    )?;
                     send(
                         transport,
                         connection,
@@ -1655,7 +1698,10 @@ impl ClientSyncRouter {
                     });
                     ClientSyncOutcome::Finalized
                 }
-                Control::ReadyCommit { token } => {
+                Control::ReadyCommit {
+                    token,
+                    roster: snapshot,
+                } => {
                     if self.stale_generation(token.generation)?
                         || token.revision < self.final_revision
                         || self.phase == SyncPhase::RestartRequired
@@ -1673,6 +1719,12 @@ impl ClientSyncRouter {
                     {
                         return Err(SyncError::WrongFinalization);
                     }
+                    let next_roster = PlayerRoster::validated_snapshot(
+                        snapshot,
+                        self.authenticated.host,
+                        self.player,
+                    )
+                    .map_err(SyncError::Roster)?;
                     replica
                         .reconcile_final_drags(session, store, &candidate.drags)
                         .map_err(SyncError::FinalDrag)?;
@@ -1687,6 +1739,7 @@ impl ClientSyncRouter {
                     transport
                         .mark_ready(connection)
                         .map_err(SyncError::Transport)?;
+                    **roster = next_roster;
                     self.invalidate();
                     self.definition = None;
                     self.generation = None;

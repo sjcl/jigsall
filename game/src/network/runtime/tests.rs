@@ -1,5 +1,6 @@
 use super::*;
 mod pending_release_tests;
+mod presence_tests;
 mod presentation_tests;
 use crate::{persistence::runtime::OriginalPuzzleImage, resources::*};
 use bevy::state::app::StatesPlugin;
@@ -42,6 +43,7 @@ fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time(
             bus: bus.clone(),
         },
         HostOptions {
+            display_name: None,
             address: "127.0.0.1:0".parse().unwrap(),
             session,
             host: PlayerId(0),
@@ -58,6 +60,7 @@ fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time(
             bus: bus.clone(),
         },
         JoinOptions {
+            display_name: None,
             address: "127.0.0.1:10000".parse().unwrap(),
             password: password(),
             cached_image: None,
@@ -395,6 +398,7 @@ impl Pair {
                 bus: bus.clone(),
             },
             HostOptions {
+                display_name: None,
                 address: "127.0.0.1:0".parse().unwrap(),
                 session,
                 host: PlayerId(0),
@@ -409,6 +413,7 @@ impl Pair {
                 bus: bus.clone(),
             },
             JoinOptions {
+                display_name: None,
                 address: "127.0.0.1:10000".parse().unwrap(),
                 password: password(),
                 cached_image,
@@ -503,6 +508,7 @@ fn hosting_uses_logical_dimensions_when_local_texture_is_smaller() {
             bus: Arc::new(Mutex::new(Bus::default())),
         },
         HostOptions {
+            display_name: None,
             address: "127.0.0.1:0".parse().unwrap(),
             session,
             host: PlayerId(0),
@@ -692,6 +698,7 @@ fn second_client(pair: &mut Pair) -> App {
             bus: pair.bus.clone(),
         },
         JoinOptions {
+            display_name: None,
             address: "127.0.0.1:10000".parse().unwrap(),
             password: password(),
             cached_image: None,
@@ -810,6 +817,7 @@ fn failure_before_connected_blocks_offline_commands_then_menu_releases_session()
             bus: bus.clone(),
         },
         JoinOptions {
+            display_name: None,
             address: "127.0.0.1:10000".parse().unwrap(),
             password: password(),
             cached_image: None,
@@ -1224,6 +1232,7 @@ fn publication_failure_does_not_reapply_host_control_and_session_teardown_resets
                 bus: pair.bus.clone()
             },
             HostOptions {
+                display_name: None,
                 address: "127.0.0.1:0".parse().unwrap(),
                 session,
                 host: PlayerId(39),
@@ -1243,6 +1252,7 @@ fn publication_failure_does_not_reapply_host_control_and_session_teardown_resets
             bus: pair.bus.clone(),
         },
         HostOptions {
+            display_name: None,
             address: "127.0.0.1:0".parse().unwrap(),
             session,
             host: PlayerId(39),
@@ -1284,6 +1294,7 @@ fn image_identity_is_checked_before_host_listener_and_missing_bytes_remain_expli
                 bus: bus.clone()
             },
             HostOptions {
+                display_name: None,
                 address: "127.0.0.1:0".parse().unwrap(),
                 session,
                 host: PlayerId(9),
@@ -1299,6 +1310,7 @@ fn image_identity_is_checked_before_host_listener_and_missing_bytes_remain_expli
         host.world_mut(),
         Fake { id: 0, bus },
         HostOptions {
+            display_name: None,
             address: "127.0.0.1:0".parse().unwrap(),
             session,
             host: PlayerId(9),
@@ -1360,6 +1372,7 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
     let address = start_host(
         host.world_mut(),
         HostOptions {
+            display_name: None,
             address: "127.0.0.1:0".parse().unwrap(),
             session,
             host: PlayerId(0),
@@ -1370,6 +1383,7 @@ fn gns_localhost_runtime_entrypoints_join_ready_and_command_roundtrip() {
     start_join(
         client.world_mut(),
         JoinOptions {
+            display_name: None,
             address,
             password: password(),
             cached_image: None,
@@ -1542,6 +1556,7 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
             bus: pair.bus.clone(),
         },
         JoinOptions {
+            display_name: None,
             address: "127.0.0.1:10000".parse().unwrap(),
             password: password(),
             cached_image: None,

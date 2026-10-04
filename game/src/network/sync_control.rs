@@ -81,5 +81,9 @@ pub enum SyncControlMessage {
     },
     ReadyCommit {
         token: SyncFinalization,
+        roster: crate::players::RosterSnapshot,
+    },
+    ClientProfile {
+        display_name: Option<puzzella_core::PlayerDisplayName>,
     },
 }

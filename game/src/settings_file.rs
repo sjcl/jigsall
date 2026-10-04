@@ -16,6 +16,7 @@ pub enum SettingsSection {
     Autosave,
     Image,
     Preferences,
+    Player,
 }
 
 impl SettingsSection {
@@ -26,6 +27,7 @@ impl SettingsSection {
             Self::Autosave => "autosave",
             Self::Image => "image",
             Self::Preferences => "preferences",
+            Self::Player => "player",
         }
     }
 }

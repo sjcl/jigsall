@@ -78,6 +78,7 @@ fn remap(mut event: TransportEvent, id: ConnectionId) -> TransportEvent {
     event
 }
 struct Pair {
+    host_roster: crate::players::PlayerRoster,
     host_connection: ConnectionId,
     host: HostBootstrap,
     client: ClientBootstrap,
@@ -92,6 +93,7 @@ impl Pair {
     fn new(client_password: &str) -> Self {
         let now = Instant::now();
         Self {
+            host_roster: crate::players::PlayerRoster::host_only(HOST, None),
             host_connection: HA,
             host: HostBootstrap::new(password("correct password"), metadata(), [], now),
             client: ClientBootstrap::new(password(client_password), CLIENT_HOST),
@@ -265,6 +267,9 @@ fn correct_password_mutual_confirmation_and_explicit_ready_registration() {
 fn authenticated_sync_frames_require_explicit_begin_sync_on_both_sides() {
     for message in [
         bulk_chunk(vec![0]),
+        WireMessage::SyncControl(
+            crate::network::sync_control::SyncControlMessage::ClientProfile { display_name: None },
+        ),
         WireMessage::SyncControl(crate::network::sync_control::SyncControlMessage::Restart {
             generation: 0,
         }),
@@ -303,6 +308,9 @@ fn authenticated_sync_frames_require_explicit_begin_sync_on_both_sides() {
 fn sync_bulk_and_control_are_separate_from_ready_gameplay() {
     for message in [
         bulk_chunk(vec![0]),
+        WireMessage::SyncControl(
+            crate::network::sync_control::SyncControlMessage::ClientProfile { display_name: None },
+        ),
         WireMessage::SyncControl(crate::network::sync_control::SyncControlMessage::Restart {
             generation: 0,
         }),

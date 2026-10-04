@@ -10,6 +10,7 @@ use bevy_egui::{egui, EguiContexts};
 use puzzella_game::image_settings::{ImageSettingsError, ImageSettingsState, TextureBudget};
 use puzzella_game::keybindings::KeyBindingsState;
 use puzzella_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettingsState};
+use puzzella_game::player_settings::{PlayerSettingsError, PlayerSettingsState};
 use puzzella_game::resources::PuzzleImageLimits;
 use puzzella_game::settings::*;
 
@@ -30,10 +31,12 @@ pub struct SettingsDialog {
     confirming: bool,
     tab: SettingsTab,
     keys: KeyConfigEditor,
+    profile_draft: Option<String>,
 }
 
 impl SettingsDialog {
     pub fn open(&mut self, state: &DisplaySettingsState) {
+        self.profile_draft = None;
         self.tab = SettingsTab::General;
         self.keys = default();
         self.open = true;
@@ -68,6 +71,7 @@ pub fn reset_dialog(
 pub fn draw_settings_ui(
     mut i18n: ResMut<Localization>,
     mut preferences: ResMut<UiPreferences>,
+    mut profile: ResMut<PlayerSettingsState>,
     mut contexts: EguiContexts,
     mut dialog: ResMut<SettingsDialog>,
     state: Res<DisplaySettingsState>,
@@ -95,6 +99,7 @@ pub fn draw_settings_ui(
         &capabilities,
         &mut i18n,
         &mut preferences,
+        &mut profile,
         &mut autosave,
         &mut image_settings,
         &image_limits,
@@ -117,6 +122,57 @@ fn mode_label(mode: ScreenMode, i18n: &Localization) -> String {
     }
 }
 
+fn paint_player_settings(
+    ui: &mut egui::Ui,
+    draft: &mut Option<String>,
+    state: &mut PlayerSettingsState,
+    i18n: &Localization,
+) {
+    let input = draft.get_or_insert_with(|| {
+        state
+            .current
+            .display_name
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default()
+    });
+    ui.set_width(ui.available_width());
+    ui.label(i18n.text("settings-player-name"));
+    let response = ui.add(egui::TextEdit::singleline(input).desired_width(f32::INFINITY));
+    ui.label(egui::RichText::new(i18n.text("settings-player-name-help")).small());
+    let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    if (ui.button(i18n.text("settings-player-name-save")).clicked() || enter) && state.commit(input)
+    {
+        *input = state
+            .current
+            .display_name
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+    }
+    if let Some(error) = &state.error {
+        let text = match error {
+            PlayerSettingsError::Invalid(error) => i18n.text(match error {
+                puzzella_core::DisplayNameError::Empty => "settings-player-name-empty",
+                puzzella_core::DisplayNameError::TooManyChars => "settings-player-name-chars",
+                puzzella_core::DisplayNameError::TooManyBytes => "settings-player-name-bytes",
+                puzzella_core::DisplayNameError::ForbiddenCharacter => {
+                    "settings-player-name-control"
+                }
+            }),
+            PlayerSettingsError::Read(reason) => i18n.format(
+                "settings-read-failed",
+                &[("reason", reason.as_str().into())],
+            ),
+            PlayerSettingsError::Save(reason) => i18n.format(
+                "settings-save-failed",
+                &[("reason", reason.as_str().into())],
+            ),
+        };
+        ui.colored_label(theme::DANGER, text);
+    }
+}
+
 fn resolution_label(size: UVec2) -> String {
     format!("{} x {}", size.x, size.y)
 }
@@ -129,6 +185,7 @@ fn paint_settings(
     capabilities: &DisplayCapabilities,
     i18n: &mut Localization,
     preferences: &mut UiPreferences,
+    profile: &mut PlayerSettingsState,
     autosave: &mut AutosaveSettingsState,
     image_settings: &mut ImageSettingsState,
     image_limits: &PuzzleImageLimits,
@@ -256,6 +313,9 @@ fn paint_settings(
                                     i18n.format(key, &[("reason", reason.as_str().into())]),
                                 );
                             }
+                        });
+                        theme::card().show(ui, |ui| {
+                            paint_player_settings(ui, &mut dialog.profile_draft, profile, i18n);
                         });
                         ui.add_enabled_ui(seconds.is_none(), |ui| {
                             theme::card().show(ui, |ui| {

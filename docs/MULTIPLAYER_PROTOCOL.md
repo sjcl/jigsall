@@ -1,5 +1,29 @@
 # Multiplayer command protocol
 
+## Display metadata and session roster (wire v9)
+
+PlayerId is the protocol/ownership identity. PlayerDisplayName is a validated,
+optional display string; duplicate names are valid. Platform account identity is
+separate. Names do not authenticate commands or select routes, and never enter
+PAKE identity, save/snapshot identity, piece state or authority cursors.
+
+Host's PlayerRoster is authoritative session metadata, limited to 65 entries
+(host + 64 remote connections). Revision 0 contains only the host. Successful
+Ready join/leave uses checked revision + 1. Client installs a fully validated,
+ascending unique-ID snapshot including authenticated host and assigned self in
+ReadyCommit, then accepts only contiguous, consistent PlayerJoined/PlayerLeft.
+Gap, rollback, duplicate or inconsistent events terminate the connection.
+
+ClientProfile supplies only a validated optional name after secure Session and
+before ImageAvailability. Host uses the connection's reserved PlayerId; profile
+acceptance alone does not create presence. ReadyCommit enqueue succeeds before
+the host commits the join and broadcasts PlayerJoined to existing Ready peers.
+Same Reliable Control lane orders commit before later presence; disconnect orders
+DragCancelled before PlayerLeft. Publication failure cascades through runtime
+disconnect coordination. Roster/presence never enter JoinBaseline or durable data.
+See [runtime lifecycle](DIRECT_IP_RUNTIME.md#player-profiles-and-presence).
+Steam persona can later supply PlayerDisplayName without changing any identities.
+
 Same-epoch join now has a separate `JoinBaseline` CPU API: canonical GameSnapshot
 plus ephemeral active drag contexts at one command boundary. Schema 1 permits at
 most 64 drags, captured in ascending PlayerId order with bounded deserialization.
@@ -649,5 +673,5 @@ holds, deltas, ticks and bases stay intact.
 
 JoinBaseline at C followed by DragCancelled at C+1 is normal catch-up without
 replaying GrabAccepted. Migration still discards drags in a new epoch and does not
-require DragCancelled. Runtime disconnect wiring, PlayerLeft/roster UI and catch-up
-retention are separate future work; this layer adds no scheduled scans or benchmarks.
+require DragCancelled. Direct-IP runtime now coordinates cancellation, catch-up
+retention, PlayerLeft and the roster HUD; this layer adds no scheduled piece scans.

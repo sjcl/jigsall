@@ -8,7 +8,7 @@ use puzzella_core::protocol::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 8;
+pub const WIRE_VERSION: u16 = 9;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_SESSION_CONTROL_PAYLOAD: usize = 4096;
@@ -25,6 +25,7 @@ pub enum WireMessage {
     BulkTransfer(BulkTransferMessage),
     SessionControl(SessionControlMessage),
     SyncControl(SyncControlMessage),
+    Presence(crate::players::PresenceMessage),
 }
 
 impl WireMessage {
@@ -38,7 +39,8 @@ impl WireMessage {
             Self::ClientCommand(_)
             | Self::AuthorityEvent(_)
             | Self::SessionControl(_)
-            | Self::SyncControl(_) => MessageClass::Control,
+            | Self::SyncControl(_)
+            | Self::Presence(_) => MessageClass::Control,
             Self::DragUpdate(_) => MessageClass::Transient,
             Self::BulkTransfer(_) => MessageClass::Bulk,
         }
@@ -52,6 +54,7 @@ impl WireMessage {
             Self::BulkTransfer(_) => 5,
             Self::SessionControl(_) => 6,
             Self::SyncControl(_) => 7,
+            Self::Presence(_) => 8,
         }
     }
 }
@@ -88,8 +91,13 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
         WireMessage::AuthorityEvent(v) => binary(v)?,
         WireMessage::DragUpdate(v) => binary(v)?,
         WireMessage::SessionControl(v) => binary(v)?,
+        WireMessage::Presence(v) => binary(v)?,
         WireMessage::SyncControl(v) => {
             if matches!(v, SyncControlMessage::Finalize { drags, .. } if drags.entries.len() > crate::multiplayer::MAX_BASELINE_DRAGS)
+            {
+                return Err(WireError::Oversized);
+            }
+            if matches!(v, SyncControlMessage::ReadyCommit { roster, .. } if roster.players.len() > crate::players::MAX_ROSTER_PLAYERS)
             {
                 return Err(WireError::Oversized);
             }
@@ -154,7 +162,7 @@ fn checked_payload(frame: &[u8]) -> Result<(u8, MessageClass, &[u8]), WireError>
         return Err(WireError::UnsupportedVersion(version));
     }
     let class = match frame[6] {
-        1 | 2 | 6 | 7 => MessageClass::Control,
+        1 | 2 | 6 | 7 | 8 => MessageClass::Control,
         3 | 4 => MessageClass::Transient,
         5 => MessageClass::Bulk,
         kind => return Err(WireError::UnknownKind(kind)),
@@ -212,6 +220,7 @@ pub fn decode(frame: &[u8]) -> Result<WireMessage, WireError> {
         5 => WireMessage::BulkTransfer(parse(payload)?),
         6 => WireMessage::SessionControl(parse(payload)?),
         7 => WireMessage::SyncControl(parse(payload)?),
+        8 => WireMessage::Presence(parse(payload)?),
         _ => unreachable!("kind checked above"),
     };
     if message.class() != class {

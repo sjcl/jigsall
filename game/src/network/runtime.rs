@@ -32,6 +32,7 @@ use crate::{
         protocol::{HostCommandOutcome, ProtocolDragContexts},
         replication::PeerReplicationState,
     },
+    players::{PlayerRoster, PresenceMessage, RosterPlayer},
     resources::{ImageDecodeLimits, PieceDataStore},
 };
 use bevy::prelude::*;
@@ -42,12 +43,14 @@ use std::time::Duration;
 use std::{collections::BTreeSet, net::SocketAddr, sync::Arc, time::Instant};
 
 pub struct HostOptions {
+    pub display_name: Option<puzzella_core::PlayerDisplayName>,
     pub address: SocketAddr,
     pub session: SessionDefinition,
     pub host: PlayerId,
     pub password: SessionPassword,
 }
 pub struct JoinOptions {
+    pub display_name: Option<puzzella_core::PlayerDisplayName>,
     pub address: SocketAddr,
     pub password: SessionPassword,
     pub cached_image: Option<Arc<[u8]>>,
@@ -138,6 +141,7 @@ struct HostState {
     next_pump: Option<ConnectionId>,
 }
 struct ClientState {
+    display_name: Option<puzzella_core::PlayerDisplayName>,
     bootstrap: ClientBootstrap,
     sync: Option<ClientSyncRouter>,
     replica: PeerReplicationState,
@@ -154,6 +158,7 @@ struct DecodedImage {
     encoded: Arc<[u8]>,
 }
 struct Runtime<T> {
+    roster: PlayerRoster,
     transport: SecureTransport<T>,
     listener: Option<ListenerId>,
     connections: SessionConnections,
@@ -170,6 +175,28 @@ struct Runtime<T> {
     baseline_installed: bool,
     render_installed: bool,
     active: bool,
+}
+
+fn publish_presence(
+    connections: &SessionConnections,
+    transport: &mut dyn Transport,
+    source: Option<ConnectionId>,
+    event: PresenceMessage,
+) -> Result<Vec<ConnectionId>, String> {
+    let payload = wire::encode(&WireMessage::Presence(event)).map_err(|e| format!("{e:?}"))?;
+    let mut failures = Vec::new();
+    for peer in connections
+        .peers()
+        .filter(|p| p.player.is_some() && Some(p.connection) != source)
+    {
+        if transport
+            .send(peer.connection, MessageClass::Control, &payload)
+            .is_err()
+        {
+            failures.push(peer.connection);
+        }
+    }
+    Ok(failures)
 }
 
 impl<T: DirectIpTransport> Runtime<T> {
@@ -208,6 +235,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         };
         Ok(Self {
             transport,
+            roster: PlayerRoster::host_only(options.host, options.display_name),
             listener: Some(listener),
             connections: Default::default(),
             live: Default::default(),
@@ -254,10 +282,12 @@ impl<T: DirectIpTransport> Runtime<T> {
             .map_err(RuntimeStartError::Transport)?;
         Ok(Self {
             transport,
+            roster: PlayerRoster::default(),
             listener: None,
             connections: Default::default(),
             live: BTreeSet::from([connection]),
             role: Role::Client(Box::new(ClientState {
+                display_name: options.display_name,
                 bootstrap: ClientBootstrap::new(options.password, connection),
                 sync: None,
                 replica: Default::default(),
@@ -413,9 +443,27 @@ impl<T: DirectIpTransport> Runtime<T> {
                                     .map(|(id, _)| (id, DisconnectReason::ConnectionProblem, None)),
                             );
                         }
+                        if self.roster.get(player).is_some() {
+                            let left = self
+                                .roster
+                                .remove_ready(player)
+                                .map_err(|e| format!("{e:?}"))?;
+                            let failures = publish_presence(
+                                &self.connections,
+                                &mut self.transport,
+                                None,
+                                left,
+                            )?;
+                            pending.extend(
+                                failures
+                                    .into_iter()
+                                    .map(|id| (id, DisconnectReason::ConnectionProblem, None)),
+                            );
+                        }
                     }
                 }
                 Role::Client(client) => {
+                    self.roster.clear();
                     if let Some(sync) = &mut client.sync {
                         sync.invalidate();
                     }
@@ -516,6 +564,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                     let result = if outcome == BootstrapOutcome::Syncing {
                         host.sync.route(
                             &mut SyncHost {
+                                roster: &mut self.roster,
                                 bootstrap: &mut host.bootstrap,
                                 connections: &mut self.connections,
                             },
@@ -553,6 +602,8 @@ impl<T: DirectIpTransport> Runtime<T> {
                     if host.bootstrap.state(connection) == Some(ConnectionState::Ready) {
                         host.joining.remove(&connection);
                     }
+                    let joined_now = outcome == BootstrapOutcome::Syncing
+                        && host.bootstrap.state(connection) == Some(ConnectionState::Ready);
                     if outcome == BootstrapOutcome::Gameplay {
                         let routed = HostRouter {
                             local_player: self.status.local_player.unwrap(),
@@ -583,6 +634,26 @@ impl<T: DirectIpTransport> Runtime<T> {
                             }
                         }
                     }
+                    if joined_now {
+                        let player = self.connections.player(connection).unwrap();
+                        let info = self.roster.get(player).unwrap();
+                        let joined = PresenceMessage::PlayerJoined {
+                            revision: self.roster.revision(),
+                            player: RosterPlayer {
+                                player,
+                                display_name: info.display_name.clone(),
+                            },
+                        };
+                        let failures = publish_presence(
+                            &self.connections,
+                            &mut self.transport,
+                            Some(connection),
+                            joined,
+                        )?;
+                        for id in failures {
+                            self.disconnect(id, DisconnectReason::ConnectionProblem, None, store)?;
+                        }
+                    }
                 }
                 Role::Client(client) => {
                     if client.bootstrap.state() == Some(ConnectionState::Authenticated) {
@@ -595,6 +666,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                         let sync = ClientSyncRouter::start(
                             &mut client.bootstrap,
                             client.cached_image.as_deref(),
+                            client.display_name.clone(),
                             now,
                         )
                         .map_err(|e| format!("{e:?}"))?;
@@ -617,6 +689,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                                 &event,
                                 &mut self.transport,
                                 &mut SyncReplica {
+                                    roster: &mut self.roster,
                                     replica: &mut client.replica,
                                     session: self.session.as_mut().unwrap(),
                                     store,
@@ -662,6 +735,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                     } else if outcome == BootstrapOutcome::Gameplay {
                         let player = self.status.local_player.ok_or("missing Ready identity")?;
                         let routed = ClientRouter {
+                            roster: &mut self.roster,
                             local_player: player,
                             host_connection: client.bootstrap.host_connection(),
                             connections: &self.connections,
@@ -732,6 +806,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 }
                 for (id, error) in host.sync.expire(
                     &mut SyncHost {
+                        roster: &mut self.roster,
                         bootstrap: &mut host.bootstrap,
                         connections: &mut self.connections,
                     },
@@ -921,6 +996,7 @@ impl<T: DirectIpTransport> Runtime<T> {
                 }
             }
             Role::Client(client) => ClientRouter {
+                roster: &mut self.roster,
                 local_player: player,
                 host_connection: client.bootstrap.host_connection(),
                 connections: &self.connections,
@@ -935,6 +1011,7 @@ impl<T: DirectIpTransport> Runtime<T> {
         Ok(())
     }
     fn teardown(&mut self, store: &mut PieceDataStore) {
+        self.roster.clear();
         for connection in std::mem::take(&mut self.live) {
             let _ = self
                 .transport

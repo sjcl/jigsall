@@ -209,3 +209,10 @@ performance-system =
     { $name }
     { "  " }最新：{ $last } / 平均：{ $average }
     { "  " }最小：{ $min } / 最大：{ $max } / 呼び出し：{ $calls }
+settings-player-name = プレイヤー表示名
+settings-player-name-help = 32文字まで。空欄なら既定の名前を表示します。次のセッションから適用されます。
+settings-player-name-save = 名前を保存
+settings-player-name-empty = 表示名を入力してください。
+settings-player-name-chars = 32文字以内で入力してください。
+settings-player-name-bytes = UTF-8で128バイト以内で入力してください。
+settings-player-name-control = 制御文字や双方向表示の書式文字は使用できません。

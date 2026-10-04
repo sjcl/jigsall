@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use puzzella_core::{PlayerId, LOCAL_PLAYER};
-use serde::{Deserialize, Serialize};
 
 /// This process's session identity, independent of puzzle/snapshot state.
 /// Snapshot installation may replace PieceDataStore without resetting this resource.
@@ -26,7 +25,6 @@ impl Default for SessionHostId {
 
 #[derive(Resource, Default)]
 pub struct GameData {
-    pub players: Vec<PlayerInfo>,
     pub puzzle_completed: bool,
     pub puzzle_progress: f32,
 }
@@ -59,12 +57,4 @@ pub enum GameCompleteSubState {
     Summary,
     Viewing,
     Paused,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PlayerInfo {
-    pub id: PlayerId,
-    /// None has no user-supplied name; the UI supplies its localized default.
-    pub name: Option<String>,
-    pub score: u32,
 }

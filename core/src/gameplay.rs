@@ -12,7 +12,7 @@ impl std::fmt::Display for PieceId {
         self.0.fmt(f)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PlayerId(pub u64);
 pub const LOCAL_PLAYER: PlayerId = PlayerId(0);
 /// Version 5 retains the v4 fillets and decodes distinct macro shape classes.

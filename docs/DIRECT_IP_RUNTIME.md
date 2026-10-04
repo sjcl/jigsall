@@ -1,10 +1,64 @@
 # Direct-IP game runtime
 
+## Player profiles and presence
+
+`PlayerDisplayName` in core is display metadata only: Unicode whitespace trim,
+nonempty, at most 32 Unicode scalars / 128 UTF-8 bytes, no controls, line separators
+or bidi formatting controls. Empty user input becomes None. Serde validates borrowed
+Postcard strings before ownership allocation. Duplicate names are permitted.
+`PlayerId` remains the session protocol/ownership identity; platform account IDs
+remain separate. Names never enter authentication, routing, PAKE transcripts,
+piece state, authority cursors, save filenames or snapshot identities.
+
+World `PlayerRoster` is the only player list, bounded to host + MAX_CONNECTIONS
+(65). The runtime moves that resource at frame boundaries without a second roster
+mirror. Host starts at revision 0 with itself; each successful Ready join or Ready
+leave checked-increments the revision. Syncing peers remain absent.
+
+After encrypted Session, clients send mandatory ClientProfile (name only, including
+None), then ImageAvailability on Reliable Control. Host accepts the profile once
+and binds it to bootstrap's reserved PlayerId for the connection. Pending profiles
+survive baseline restarts but are discarded on sync failure/disconnect.
+
+Final ACK validation prepares a complete next roster before Ready registration.
+Host promotes the connection, enqueues ReadyCommit(token, roster), then commits
+its roster and discards sync/catch-up state. Immediate send failure rolls back
+registration and leaves roster/revision unchanged. Existing Ready peers receive
+PlayerJoined; the joiner gets its own entry in ReadyCommit only. Client validates
+count, ascending unique IDs, authenticated host, assigned self and revision before
+transactional install; later events require exactly revision + 1.
+
+Presence uses wire kind 8, Reliable Control, FrameRoute::Gameplay, Host→Client only.
+The same lane guarantees ReadyCommit(R) precedes PlayerJoined/PlayerLeft(R+1),
+even when another peer leaves immediately after registration. Pre-Ready Transient
+gameplay remains silently dropped by the client. Presence is never sent to Syncing
+peers or included in saves, snapshots, checkpoints or JoinBaseline.
+
+Runtime disconnect retains Ready identity and owns teardown once through `live`:
+DragCancelled publication → roster remove → PlayerLeft publication. Without a drag
+only the last two steps run. Syncing/duplicate disconnects produce no PlayerLeft
+or revision change. Publication failures enter the same coordinator; their leaves
+propagate to every remaining Ready endpoint in contiguous revision order.
+
+General settings edits a raw draft and validates on Save name / Enter. The `player`
+section of settings.json persists only display_name, using the existing settings
+worker. Host/Join UI can clone `PlayerSettingsState.current.display_name` into the
+options. Offline puzzle initialization uses the same preference (None in isolated
+tests). HUD count/overlay read PlayerRoster, retaining localized default names and
+score display. Menu/session teardown clears it. Settings edits apply next session.
+Future Steam integration can validate persona names into PlayerDisplayName without
+changing platform identity, PlayerId or roster APIs. Host/Join screens, rename,
+score replication, Steam and roster resync after divergence remain future work.
+
+Injected runtime tests cover named host/A/B joins and A leave, duplicate names,
+World resource lifecycle, cancellation-before-leave, duplicate/syncing disconnects,
+cascading publication failure and immediate join/leave after queued ReadyCommit.
+
 `GamePlugin` installs `NetworkRuntimePlugin`. A main-thread `NetworkSession` owns
 one secured transport, bootstrap, sync coordinator/router, Ready connections,
 authority session, host drag contexts or client replica, and local command sender.
 It borrows the existing World `PieceDataStore`; there is no second store or
-per-piece network Entity. The wire version remains 8, snapshot schema 4, and join
+per-piece network Entity. The wire version is 9, snapshot schema 4, and join
 baseline schema 1.
 
 ## Programmatic entrypoints
@@ -18,6 +72,7 @@ injected `DirectIpTransport` without GNS, including headless World tests.
 Joining requires `PuzzleImageLimits` and `ImageSettingsState`; headless callers
 must supply explicit limits and settings before connecting.
 
+Host/Join options also supply optional validated display names.
 Host options supply address, immutable `SessionDefinition`, host `PlayerId`, and
 `SessionPassword`. Join options supply endpoint, password, and optional encoded
 cache bytes. Passwords are owned by bootstrap and never written to settings.
@@ -30,7 +85,7 @@ UI reads `NetworkStatus`: role, phase, listener/endpoint, assigned local and hos
 identity, peer connection states, image readiness/source availability, and error.
 `NetworkSession::authority()` and `replica()` expose read-only session/remote drag
 state. UI need not access native sockets, bootstrap, or sync internals. No Host/Join
-screen, server browser, lobby, NAT traversal, cursor/name rendering or migration
+screen, server browser, lobby, NAT traversal, cursor rendering or migration
 is added.
 
 ## Frame order and canonical authority
@@ -153,7 +208,7 @@ Offline release continues to use immediate local authority without ACK state.
 
 Pending idle frames share the same 125,000-byte bitset for 1M members and update
 only scalar/Arc presentation state. They do not inspect canonical pieces, rebuild
-membership or request canonical uploads. Wire version 8, snapshot schema 4,
+membership or request canonical uploads. Wire version 9, snapshot schema 4,
 JoinBaseline schema 1 and the 16-byte GpuPieceState are unchanged.
 
 ## Joining World and image lifecycle

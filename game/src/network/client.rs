@@ -22,11 +22,13 @@ pub enum ClientRouteError {
     WrongDirection,
     Wire(WireError),
     Replication(ReplicationError),
+    Roster(crate::players::RosterError),
 }
 
 #[derive(Debug)]
 pub enum ClientRouteOutcome {
     Authority(AppliedCommand),
+    Presence,
     Drag(CommandSequenceStatus),
     DroppedTransient(TransientDrop),
 }
@@ -41,6 +43,7 @@ pub enum ClientSendError {
 /// A star-topology peer has one designated host connection. The trusted session
 /// mapping, not a wire host claim, provides the authenticated_host argument.
 pub struct ClientRouter<'a> {
+    pub roster: &'a mut crate::players::PlayerRoster,
     pub local_player: PlayerId,
     pub host_connection: ConnectionId,
     pub connections: &'a SessionConnections,
@@ -96,6 +99,11 @@ impl ClientRouter<'_> {
                     },
                 }
             }
+            WireMessage::Presence(event) => self
+                .roster
+                .apply_presence(event)
+                .map(|()| ClientRouteOutcome::Presence)
+                .map_err(ClientRouteError::Roster),
             _ => Err(ClientRouteError::WrongDirection),
         }
     }

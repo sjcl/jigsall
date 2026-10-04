@@ -210,3 +210,10 @@ performance-system =
     { $name }
     { "  " }last: { $last } / avg: { $average }
     { "  " }min: { $min } / max: { $max } / calls: { $calls }
+settings-player-name = Player display name
+settings-player-name-help = Up to 32 characters. Blank uses the default name. Applies to the next session.
+settings-player-name-save = Save name
+settings-player-name-empty = Enter a display name.
+settings-player-name-chars = Use at most 32 characters.
+settings-player-name-bytes = Use at most 128 UTF-8 bytes.
+settings-player-name-control = Control characters and bidirectional formatting are not allowed.

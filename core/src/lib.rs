@@ -8,6 +8,11 @@ pub use bitset::{PieceBitSet, MAX_PIECES};
 pub use connectivity::PieceConnectivity;
 pub use scratch::PieceScratchSet;
 mod gameplay;
+mod player;
+pub use player::{
+    DisplayNameError, PlayerDisplayName, MAX_PLAYER_DISPLAY_NAME_BYTES,
+    MAX_PLAYER_DISPLAY_NAME_CHARS,
+};
 mod rotation;
 pub use rotation::{
     add_quarter_turns, decode_rotation, rotate_quarter, with_rotation, ROTATION_MASK,

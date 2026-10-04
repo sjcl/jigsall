@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 single-player schedule or implement the Host/Join menu,
 interpolation, prediction, or migration orchestration.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v8 and snapshot schema 4. `core` has no transport/native dependency.
+wire v9 and snapshot schema 4. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
@@ -82,7 +82,7 @@ and no reassignment of a live connection remain enforced. Never derive `PlayerId
 from an IP, connection token, native handle or SteamID. Envelope identity claims
 are still validated separately by the existing adapters.
 
-Future disconnect runtime wiring must preserve the assigned PlayerId **before**
+The disconnect runtime preserves the assigned PlayerId **before**
 `SessionConnections::observe(Disconnected)` removes the mapping. Capture the player,
 call authority `cancel_replicated(player)` once, publish/retain a returned
 DragCancelled envelope, then remove the connection mapping (or remove it earlier
@@ -90,8 +90,9 @@ only after retaining the player and envelope). `HostRouter::publish_authority_ev
 sends to all currently assigned Ready remote peers as Reliable Control, without
 source exclusion or host loopback. It returns per-connection send failures while
 attempting the remaining peers; retry the original event, never reapply cancellation
-to create a replacement. No actual Bevy/transport disconnect coordinator, PlayerLeft
-is automatically scheduled. The opt-in Syncing coordinator retains catch-up events.
+to create a replacement. The Direct-IP runtime owns disconnect coordination, roster removal and PlayerLeft
+publication; failed publications cascade through the same live-connection owner.
+The Syncing coordinator retains catch-up authority events.
 Migration continues to discard drags in a new
 epoch without requiring cancellation events.
 
@@ -424,7 +425,7 @@ limiter in each connection and call it with the native `SteamNetworkingMessage_t
 length before copying or routing. The helper knows no GNS handles, addresses,
 SteamIDs or networking identities and is available without the `gns` feature.
 
-## Wire v8
+## Wire v9
 
 Each inner Puzzella frame has this header; after activation it is inside one
 secure record/native message, with no stream reassembly:
@@ -432,8 +433,8 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 8 |
-| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl |
+| 4..6 | u16 wire version, little-endian, currently 9 |
+| 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl, 8 Presence |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
 | 12.. | Postcard 1.x binary serialization of the indicated protocol type, including BulkTransferMessage |
@@ -445,7 +446,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v8 Postcard field order and enum representation are part of the wire contract.
+The v9 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -464,15 +465,20 @@ and gameplay layouts remain unchanged. Version 8 appends SyncControl indices
 (generation u64, AuthorityCursor, revision u64); Finalize additionally carries a
 bounded FinalDragSet (Vec of player, grab_sequence, basis_sequence, Option last_tick,
 Vec2 delta), in canonical PlayerId order, capped at 64. No targets are repeated.
-Only version 8 is decoded; pre-release versions 1 through 7 and future versions
+Version 9 appends ClientProfile at SyncControl index 14, extends ReadyCommit
+with RosterSnapshot (revision, bounded canonical players), and adds Presence kind 8
+on Reliable Control / Gameplay. Presence indices are 0 PlayerJoined (revision,
+RosterPlayer) and 1 PlayerLeft (revision, PlayerId). RosterPlayer carries PlayerId
+then Option<PlayerDisplayName>. Existing gameplay payloads remain unchanged.
+Only version 9 is decoded; pre-release versions 1 through 8 and future versions
 are rejected without a compatibility decoder.
 WIRE_VERSION also binds PAKE context, HKDF application keys and secure record AAD
-to v8. No cryptographic design change is made.
-Fixed v8 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+to v9. No cryptographic design change is made.
+Fixed v9 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
 AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl, including
-empty/active Finalize, FinalizeAck and ReadyCommit. Each checks encoding
+empty/active Finalize, FinalizeAck, ReadyCommit, ClientProfile and Presence. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
 cannot silently pass through an encoder/decoder roundtrip. Review the fixtures
 alongside any wire version change.
@@ -637,7 +643,8 @@ Routers borrow the existing session/store/context; they do not duplicate gamepla
 The foundation routers schedule no systems themselves. GamePlugin installs the
 runtime schedule; inactive networking is gated off and idle work never scans pieces.
 
-Start the client sync router after authentication, passing optional cached bytes;
+Start the client sync router after authentication, passing optional cached bytes
+and a validated optional display name;
 start the host sync coordinator for that connection to advertise the authenticated
 identity and puzzle definition. Keep sync state only while a join exists. Schedule
 bounded `pump` calls for joining peers and enforce timeouts using

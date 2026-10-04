@@ -10,9 +10,9 @@ pub mod performance;
 pub mod pieces;
 pub mod remote_drag;
 
+pub use crate::players::{PlayerInfo, PlayerRoster};
 pub use app::{
-    AppState, GameCompleteSubState, GameData, GameSubState, LocalPlayerId, PlayerInfo,
-    SessionHostId,
+    AppState, GameCompleteSubState, GameData, GameSubState, LocalPlayerId, SessionHostId,
 };
 #[cfg(any(test, feature = "cpu-picking-debug"))]
 pub use collision::{PieceCollisionData, PieceCollisionSystem};

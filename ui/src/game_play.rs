@@ -10,6 +10,7 @@ pub fn draw_game_ui(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
     game_state: Res<GameData>,
+    roster: Res<PlayerRoster>,
     bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
     persistence: Res<PersistenceState>,
@@ -41,10 +42,7 @@ pub fn draw_game_ui(
                 ),
             );
             ui.separator();
-            ui.label(i18n.format(
-                "game-player-count",
-                &[("count", game_state.players.len().into())],
-            ));
+            paint_player_count(ui, &roster, &i18n);
             paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();
@@ -105,7 +103,7 @@ fn paint_autosave_status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Loc
 pub fn draw_players_overlay(
     i18n: Res<Localization>,
     mut contexts: EguiContexts,
-    game_state: Res<GameData>,
+    roster: Res<PlayerRoster>,
 ) {
     let _span = info_span!("draw_players_overlay").entered();
 
@@ -154,41 +152,98 @@ pub fn draw_players_overlay(
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 10.0;
 
-                        if game_state.players.is_empty() {
-                            ui.centered_and_justified(|ui| {
-                                ui.label(i18n.text("game-no-players"));
-                            });
-                        } else {
-                            // プレイヤー一覧
-                            for player in &game_state.players {
-                                ui.group(|ui| {
-                                    ui.horizontal(|ui| {
-                                        if let Some(name) = &player.name {
-                                            ui.label(name);
-                                        } else {
-                                            ui.label(i18n.text("game-default-player"));
-                                        }
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                ui.label(i18n.format(
-                                                    "game-score",
-                                                    &[("score", player.score.into())],
-                                                ));
-                                            },
-                                        );
-                                    });
-                                });
-                            }
-                        }
+                        paint_players(ui, &roster, &i18n);
                     });
                 });
         });
 }
 
+fn paint_player_count(ui: &mut egui::Ui, roster: &PlayerRoster, i18n: &Localization) {
+    ui.label(i18n.format("game-player-count", &[("count", roster.len().into())]));
+}
+
+fn paint_players(ui: &mut egui::Ui, roster: &PlayerRoster, i18n: &Localization) {
+    if roster.is_empty() {
+        ui.centered_and_justified(|ui| {
+            ui.label(i18n.text("game-no-players"));
+        });
+    } else {
+        // プレイヤー一覧
+        for player in roster.players() {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    if let Some(name) = &player.display_name {
+                        ui.label(name.as_ref());
+                    } else {
+                        ui.label(i18n.text("game-default-player"));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(i18n.format("game-score", &[("score", player.score.into())]));
+                    });
+                });
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_and_overlay_render_roster_count_duplicate_names_default_and_scores() {
+        use puzzella_core::{PlayerDisplayName, PlayerId};
+        use puzzella_game::players::{RosterPlayer, RosterSnapshot};
+        let mut roster = PlayerRoster::default();
+        roster
+            .install_snapshot(
+                RosterSnapshot {
+                    revision: 2,
+                    players: (0..3)
+                        .map(|id| RosterPlayer {
+                            player: PlayerId(id),
+                            display_name: (id != 0)
+                                .then(|| PlayerDisplayName::from_user_input("Alice").unwrap()),
+                        })
+                        .collect(),
+                },
+                PlayerId(0),
+                PlayerId(1),
+            )
+            .unwrap();
+        let i18n = crate::localization::tests::english();
+        let ctx = egui::Context::default();
+        let output = ctx.run_ui(default(), |ui| {
+            paint_player_count(ui, &roster, &i18n);
+            paint_players(ui, &roster, &i18n);
+        });
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| {
+                if let egui::Shape::Text(text) = &s.shape {
+                    Some(text.galley.job.text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(texts.contains(
+            &i18n
+                .format("game-player-count", &[("count", 3usize.into())])
+                .as_str()
+        ));
+        assert_eq!(texts.iter().filter(|t| **t == "Alice").count(), 2);
+        assert!(texts.contains(&i18n.text("game-default-player").as_str()));
+        assert_eq!(
+            texts
+                .iter()
+                .filter(|t| **t == i18n.format("game-score", &[("score", 0u32.into())]))
+                .count(),
+            3
+        );
+        output.drop_without_applying_deltas();
+    }
 
     #[test]
     fn autosave_status_shows_work_and_failure_and_hides_after_completion() {

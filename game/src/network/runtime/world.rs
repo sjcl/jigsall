@@ -36,6 +36,7 @@ impl Plugin for NetworkRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStatus>()
             .init_resource::<remote_drag::RemoteDragPresentation>()
+            .init_resource::<PlayerRoster>()
             .add_systems(PreUpdate, poll_network.run_if(network_active))
             .add_systems(
                 PostUpdate,
@@ -67,7 +68,7 @@ fn menu_pending(world: &World) -> bool {
             )
         })
 }
-fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, runtime: Runtime<T>) {
+fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, mut runtime: Runtime<T>) {
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
     let mut presentation = world
@@ -78,6 +79,7 @@ fn install_driver<T: DirectIpTransport + 'static>(world: &mut World, runtime: Ru
         presentation.reset(store.epoch, store.len());
     }
     world.insert_resource(presentation);
+    world.insert_resource(std::mem::take(&mut runtime.roster));
     world.insert_resource(runtime.status.clone());
     let reader = world
         .get_resource::<Messages<ClientCommand>>()
@@ -252,6 +254,8 @@ pub fn stop_session(world: &mut World) {
     }
 }
 fn teardown_session(world: &mut World) {
+    world.init_resource::<PlayerRoster>();
+    world.resource_mut::<PlayerRoster>().clear();
     if let Some(mut session) = world.remove_non_send::<NetworkSession>() {
         if let Some(mut driver) = session.driver.take() {
             driver.teardown(world);
@@ -327,6 +331,7 @@ fn network_commands(world: &mut World) {
 }
 impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
     fn poll(&mut self, world: &mut World) {
+        self.roster = world.remove_resource::<PlayerRoster>().unwrap_or_default();
         self.presentation.state = world
             .remove_resource::<remote_drag::RemoteDragPresentation>()
             .unwrap_or_default();
@@ -344,10 +349,12 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
         if self.active {
             self.install_world(world);
         }
+        world.insert_resource(std::mem::take(&mut self.roster));
         world.insert_resource(std::mem::take(&mut self.presentation.state));
         world.insert_resource(self.status.clone());
     }
     fn commands(&mut self, world: &mut World, commands: Vec<ClientCommand>) {
+        self.roster = world.remove_resource::<PlayerRoster>().unwrap_or_default();
         self.presentation.state = world
             .remove_resource::<remote_drag::RemoteDragPresentation>()
             .unwrap_or_default();
@@ -365,10 +372,14 @@ impl<T: DirectIpTransport + 'static> RuntimeDriver for Runtime<T> {
         }
         world.insert_resource(store);
         world.insert_resource(interaction);
+        world.insert_resource(std::mem::take(&mut self.roster));
         world.insert_resource(std::mem::take(&mut self.presentation.state));
         world.insert_resource(self.status.clone());
     }
     fn teardown(&mut self, world: &mut World) {
+        self.roster.clear();
+        world.init_resource::<PlayerRoster>();
+        world.resource_mut::<PlayerRoster>().clear();
         let mut presentation = world
             .remove_resource::<remote_drag::RemoteDragPresentation>()
             .unwrap_or_default();
@@ -478,7 +489,6 @@ impl<T: DirectIpTransport> Runtime<T> {
                 world.insert_resource(GameData {
                     puzzle_progress: placed as f32 / len as f32,
                     puzzle_completed: placed == len,
-                    ..default()
                 });
                 self.render_installed = true;
                 if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {

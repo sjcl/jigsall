@@ -17,10 +17,14 @@ impl Plugin for GamePlugin {
         app.add_plugins(crate::selection::PuzzleSelectionPlugin)
             .init_resource::<crate::keybindings::KeyBindingsState>()
             .init_resource::<crate::image_settings::ImageSettingsState>()
+            .init_resource::<crate::player_settings::PlayerSettingsState>()
             .init_resource::<crate::keybindings::KeyPresses>()
             .add_systems(
                 Update,
                 (
+                    |mut state: ResMut<crate::player_settings::PlayerSettingsState>| {
+                        state.poll_save()
+                    },
                     |mut state: ResMut<crate::image_settings::ImageSettingsState>| {
                         state.poll_save()
                     },
@@ -42,6 +46,7 @@ impl Plugin for GamePlugin {
             .init_resource::<crate::persistence::autosave::AutosaveSettingsState>()
             .init_resource::<crate::persistence::autosave::AutosaveTimer>()
             .init_resource::<GameData>()
+            .init_resource::<PlayerRoster>()
             .init_resource::<LocalPlayerId>()
             .init_resource::<SessionHostId>()
             .init_resource::<PuzzleConfig>()
@@ -167,10 +172,12 @@ fn setup_game(mut commands: Commands) {
 #[allow(clippy::too_many_arguments)] // Explicit ECS resources include process identity.
 fn initialize_game(
     local_player: Res<LocalPlayerId>,
+    profile: Option<Res<crate::player_settings::PlayerSettingsState>>,
     mut commands: Commands,
     config: Res<PuzzleConfig>,
     image: Res<PuzzleImage>,
     mut game: ResMut<GameData>,
+    mut roster: ResMut<PlayerRoster>,
     mut progress: ResMut<PieceGenerationProgress>,
     mut store: ResMut<PieceDataStore>,
     pending: Option<ResMut<PendingRestore>>,
@@ -182,14 +189,11 @@ fn initialize_game(
     if network.is_some() {
         return;
     }
-    *game = GameData {
-        players: vec![PlayerInfo {
-            id: local_player.0,
-            name: None,
-            score: 0,
-        }],
-        ..default()
-    };
+    *game = GameData::default();
+    *roster = PlayerRoster::host_only(
+        local_player.0,
+        profile.and_then(|p| p.current.display_name.clone()),
+    );
     *progress = PieceGenerationProgress::default();
     if let Some(mut pending) = pending {
         if let Some(restored) = pending.0.take() {
@@ -237,6 +241,7 @@ pub(crate) fn cleanup_game(
     mut selection: ResMut<crate::selection::PuzzleSelection>,
     mut progress: ResMut<PieceGenerationProgress>,
     mut game: ResMut<GameData>,
+    mut roster: ResMut<PlayerRoster>,
     mut config: ResMut<PuzzleConfig>,
     file_registry: Res<crate::asset_reader::ExternalFileRegistry>,
     mut overlay: ResMut<crate::render::SelectionOverlay>,
@@ -253,6 +258,7 @@ pub(crate) fn cleanup_game(
     selection.cancel();
     *progress = default();
     *game = default();
+    roster.clear();
     file_registry.clear();
     config.image_path.clear();
     persistence.generation = persistence.generation.wrapping_add(1);
@@ -902,6 +908,7 @@ mod local_identity_tests {
                 .init_resource::<PersistenceState>()
                 .init_resource::<PuzzleConfig>()
                 .init_resource::<GameData>()
+                .init_resource::<PlayerRoster>()
                 .init_resource::<PieceGenerationProgress>()
                 .init_resource::<PieceDataStore>()
                 .insert_resource(PuzzleImage {
@@ -913,7 +920,15 @@ mod local_identity_tests {
             app.world_mut().run_system_once(initialize_game).unwrap();
             let first_game_id = app.world().resource::<PersistenceState>().game_id;
             assert_eq!(uuid::Uuid::from_u128(first_game_id.0).get_version_num(), 4);
-            assert_eq!(app.world().resource::<GameData>().players[0].id, local.0);
+            assert_eq!(
+                app.world()
+                    .resource::<PlayerRoster>()
+                    .players()
+                    .next()
+                    .unwrap()
+                    .id,
+                local.0
+            );
             let definition = PuzzleDefinition {
                 generator_version: GENERATOR_VERSION,
                 seed: 42,
@@ -942,12 +957,35 @@ mod local_identity_tests {
                 .unwrap();
             assert_eq!(*app.world().resource::<LocalPlayerId>(), local);
             assert_eq!(app.world().resource::<PieceDataStore>().len(), 2);
+            let mut profile = crate::player_settings::PlayerSettingsState::load(None);
+            assert!(profile.commit("Offline 🧩"));
+            app.insert_resource(profile);
             app.world_mut().run_system_once(initialize_game).unwrap();
+            assert_eq!(
+                app.world()
+                    .resource::<PlayerRoster>()
+                    .get(local.0)
+                    .unwrap()
+                    .display_name
+                    .as_ref()
+                    .unwrap()
+                    .as_ref(),
+                "Offline 🧩"
+            );
+            assert_eq!(app.world().resource::<PlayerRoster>().len(), 1);
             assert_ne!(
                 app.world().resource::<PersistenceState>().game_id,
                 first_game_id
             );
-            assert_eq!(app.world().resource::<GameData>().players[0].id, local.0);
+            assert_eq!(
+                app.world()
+                    .resource::<PlayerRoster>()
+                    .players()
+                    .next()
+                    .unwrap()
+                    .id,
+                local.0
+            );
         }
         assert_eq!(LocalPlayerId::default().0, PlayerId(0));
     }
@@ -996,7 +1034,12 @@ mod local_identity_tests {
         });
         app.world_mut().run_system_once(initialize_game).unwrap();
         assert_eq!(
-            app.world().resource::<GameData>().players[0].id,
+            app.world()
+                .resource::<PlayerRoster>()
+                .players()
+                .next()
+                .unwrap()
+                .id,
             PlayerId(0)
         );
     }

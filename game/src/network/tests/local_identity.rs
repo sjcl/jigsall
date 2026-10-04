@@ -108,6 +108,7 @@ fn routers_replay_own_42_and_remote_zero_grab_and_release_on_sparse_and_dense_pa
                     player != host_local
                 );
                 let mut client = ClientRouter {
+                    roster: &mut crate::players::PlayerRoster::default(),
                     local_player: local,
                     host_connection: HA,
                     connections: &peer_connections,

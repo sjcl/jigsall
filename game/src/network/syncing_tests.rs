@@ -12,6 +12,7 @@ use std::sync::Arc;
 fn expire_join(h: &mut Harness, now: Instant) -> Vec<(ConnectionId, SyncError)> {
     h.host.expire(
         &mut SyncHost {
+            roster: &mut h.p.host_roster,
             bootstrap: &mut h.p.host,
             connections: &mut h.p.host_connections,
         },
@@ -59,6 +60,8 @@ fn configured_session_image_accepts_equal_content_from_a_fresh_arc() {
     let fresh: Arc<[u8]> = Arc::from(h.image.as_ref());
     assert!(!Arc::ptr_eq(&h.image, &fresh));
     h.image = fresh;
+    h.send_client(Control::ClientProfile { display_name: None })
+        .unwrap();
     h.send_client(Control::ImageAvailability {
         image_hash: h.p.client.metadata().unwrap().definition.image_hash,
         available: false,
@@ -77,6 +80,8 @@ fn session_image_negotiation_and_offers_have_independent_short_deadlines() {
     let mut h = Harness::new(true, Default::default());
     assert_expired_join(&mut h, ResponseWait::ImageAvailability);
     let mut h = Harness::new(true, Default::default());
+    h.send_client(Control::ClientProfile { display_name: None })
+        .unwrap();
     h.send_client(Control::ImageAvailability {
         image_hash: h.p.client.metadata().unwrap().definition.image_hash,
         available: true,
@@ -226,6 +231,7 @@ fn baseline_wait_is_host_capacity_and_stalled_slot_is_immediately_reusable() {
     assert_eq!(
         h.host.expire_connection(
             &mut SyncHost {
+                roster: &mut p.host_roster,
                 bootstrap: &mut p.host,
                 connections: &mut p.host_connections
             },
@@ -303,6 +309,7 @@ fn repeated_sync_timeouts_keep_origin_cooldown_across_authenticated_reconnects()
         assert_eq!(
             h.host.expire_connection(
                 &mut SyncHost {
+                    roster: &mut p.host_roster,
                     bootstrap: &mut p.host,
                     connections: &mut p.host_connections,
                 },
@@ -369,6 +376,7 @@ fn client_stalled_host_releases_declared_bulk_budget_without_sleep() {
             },
             &mut h.p.ct,
             &mut SyncReplica {
+                roster: &mut peer.roster,
                 replica: &mut peer.replica,
                 session: &mut peer.session,
                 store: &mut peer.store
@@ -473,6 +481,8 @@ fn image_slots_are_fifo_and_share_one_payload_even_at_connection_capacity() {
     h.host
         .set_image(VerifiedPuzzleImage::verify(image.clone(), session).unwrap());
     for n in 0..MAX_PENDING_JOIN_SYNCS {
+        h.control(n, Control::ClientProfile { display_name: None })
+            .unwrap();
         h.control(
             n,
             Control::ImageAvailability {
@@ -772,6 +782,7 @@ fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
             assert_eq!(routed, BootstrapOutcome::Gameplay);
             let peer = &mut h.s.peers[0];
             let mut router = ClientRouter {
+                roster: &mut peer.roster,
                 local_player: player,
                 host_connection: CLIENT_HOST,
                 connections: &h.p.client_connections,
@@ -980,6 +991,8 @@ fn ready_commit_send_or_host_registration_failure_rolls_back_and_drops_join_stat
         );
         assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
         assert!(h.p.ht.backend_mut().sent.is_empty());
+        assert_eq!(h.p.host_roster.revision(), 0);
+        assert_eq!(h.p.host_roster.len(), 1);
     }
 }
 
@@ -1004,7 +1017,48 @@ fn stale_generation_ack_cannot_complete_restarted_finalization() {
     assert_eq!(h.client.generation(), Some(1));
     h.send_client(Control::FinalizeAck { token: old }).unwrap();
     assert_eq!(h.p.host_connections.player(HA), None);
+    assert_eq!(h.p.host_roster.revision(), 0);
+    assert_eq!(h.p.host_roster.len(), 1);
     h.reach(SyncPhase::Ready);
+}
+
+#[test]
+fn client_profile_is_mandatory_once_in_secure_sync_and_binds_reserved_identity() {
+    let mut h = Harness::new(true, Default::default());
+    let hash = h.p.client.metadata().unwrap().definition.image_hash;
+    assert_eq!(
+        h.send_client(Control::ImageAvailability {
+            image_hash: hash,
+            available: true
+        }),
+        Err(SyncError::WrongPhase)
+    );
+    assert_eq!(h.p.host_roster.revision(), 0);
+    let mut h = Harness::new(true, Default::default());
+    h.send_client(Control::ClientProfile { display_name: None })
+        .unwrap();
+    assert_eq!(h.p.host_roster.len(), 1);
+    assert_eq!(
+        h.send_client(Control::ClientProfile { display_name: None }),
+        Err(SyncError::WrongPhase)
+    );
+    assert_eq!(h.p.host_roster.revision(), 0);
+    let name = puzzella_core::PlayerDisplayName::from_user_input("日本語 🧩").unwrap();
+    let mut h = Harness::named(true, Default::default(), Some(name.clone()));
+    let player = h.p.host.assigned_player(HA).unwrap();
+    assert!(h.p.host_roster.get(player).is_none());
+    h.reach(SyncPhase::Ready);
+    assert_eq!(h.p.host_roster, h.s.peers[0].roster);
+    assert_eq!(
+        h.p.host_roster.get(player).unwrap().display_name,
+        Some(name)
+    );
+    assert!(h.p.host_roster.get(HOST).is_some());
+    assert!(h
+        .p
+        .host_roster
+        .get(h.p.client.assigned_player().unwrap())
+        .is_some());
 }
 
 #[test]
@@ -1140,6 +1194,85 @@ fn unissued_or_inconsistent_final_ack_cannot_mint_ready_capability() {
         assert_eq!(h.p.host_connections.player(HA), None);
         assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
         assert_eq!(h.host.phase(HA), None);
+        assert_eq!(h.p.host_roster.revision(), 0);
+        assert_eq!(h.p.host_roster.len(), 1);
+    }
+}
+
+#[test]
+fn ready_snapshot_is_validated_before_client_registration_and_transactional_replace() {
+    use crate::players::RosterPlayer;
+    for fault in 0..5 {
+        let mut h = Harness::new(true, Default::default());
+        h.reach(SyncPhase::Finalizing);
+        h.host_to_client().unwrap(); // Finalize reconciled; client has sent its ACK.
+        h.client_to_host().unwrap();
+        let messages = std::mem::take(&mut h.p.ht.backend_mut().sent);
+        h.p.ct
+            .backend_mut()
+            .inbox
+            .extend(messages.into_iter().map(|e| remap(e, CLIENT_HOST)));
+        let mut events = Vec::new();
+        h.p.ct.poll(&mut events).unwrap();
+        // Use the actual accepted finalization token, independent of pump revisions.
+        let (token, mut snapshot) = events
+            .into_iter()
+            .find_map(|event| {
+                let TransportEvent::Message { class, payload, .. } = event else {
+                    return None;
+                };
+                match wire::decode_for_class(&payload, class).unwrap() {
+                    WireMessage::SyncControl(Control::ReadyCommit { token, roster }) => {
+                        Some((token, roster))
+                    }
+                    _ => None,
+                }
+            })
+            .expect("host enqueued ReadyCommit");
+        let self_id = h.p.client.assigned_player().unwrap();
+        match fault {
+            0 => snapshot.players.reverse(),
+            1 => snapshot.players.push(RosterPlayer {
+                player: self_id,
+                display_name: None,
+            }),
+            2 => {
+                snapshot.players.remove(0);
+            }
+            3 => {
+                snapshot.players.pop();
+            }
+            _ => snapshot.revision = 0,
+        }
+        let peer = &mut h.s.peers[0];
+        let before = peer.roster.snapshot();
+        let result = h.client.route(
+            &mut h.p.client,
+            &mut h.p.client_connections,
+            &message_event(
+                CLIENT_HOST,
+                &WireMessage::SyncControl(Control::ReadyCommit {
+                    token,
+                    roster: snapshot,
+                }),
+            ),
+            &mut h.p.ct,
+            &mut SyncReplica {
+                roster: &mut peer.roster,
+                replica: &mut peer.replica,
+                session: &mut peer.session,
+                store: &mut peer.store,
+            },
+            h.p.now,
+        );
+        assert!(
+            matches!(result, Err(SyncError::Roster(_))),
+            "fault {fault}: {:?}",
+            result.err()
+        );
+        assert_eq!(peer.roster.snapshot(), before);
+        assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+        assert_eq!(h.client.phase(), SyncPhase::RestartRequired);
     }
 }
 
@@ -1161,6 +1294,13 @@ fn authority(s: &Scenario) -> SyncAuthority<'_> {
 }
 impl Harness {
     fn new(cached: bool, limits: CatchUpLimits) -> Self {
+        Self::named(cached, limits, None)
+    }
+    fn named(
+        cached: bool,
+        limits: CatchUpLimits,
+        display_name: Option<puzzella_core::PlayerDisplayName>,
+    ) -> Self {
         let image: Arc<[u8]> = Arc::from(b"immutable session image".as_slice());
         let definition = SessionDefinition {
             id: SESSION.id,
@@ -1179,9 +1319,13 @@ impl Harness {
             peer.session = AuthoritySession::new(definition, HOST, metadata.cursor);
         }
         let mut host = HostSyncCoordinator::new(JoinCatchUpCoordinator::new(limits));
-        let client =
-            ClientSyncRouter::start(&mut p.client, cached.then_some(image.as_ref()), p.now)
-                .unwrap();
+        let client = ClientSyncRouter::start(
+            &mut p.client,
+            cached.then_some(image.as_ref()),
+            display_name,
+            p.now,
+        )
+        .unwrap();
         host.start(&mut p.host, HA, &mut p.ht, &authority(&s), p.now)
             .unwrap();
         Self {
@@ -1223,6 +1367,7 @@ impl Harness {
                 &event,
                 &mut self.p.ct,
                 &mut SyncReplica {
+                    roster: &mut peer.roster,
                     replica: &mut peer.replica,
                     session: &mut peer.session,
                     store: &mut peer.store,
@@ -1268,6 +1413,7 @@ impl Harness {
             );
             self.host.route(
                 &mut SyncHost {
+                    roster: &mut self.p.host_roster,
                     bootstrap: &mut self.p.host,
                     connections: &mut self.p.host_connections,
                 },
@@ -1538,6 +1684,7 @@ impl BaselineSlots {
             );
             self.host.route(
                 &mut SyncHost {
+                    roster: &mut p.host_roster,
                     bootstrap: &mut p.host,
                     connections: &mut p.host_connections,
                 },
@@ -1551,6 +1698,8 @@ impl BaselineSlots {
         Ok(())
     }
     fn ready(&mut self, index: usize) {
+        self.control(index, Control::ClientProfile { display_name: None })
+            .unwrap();
         self.control(
             index,
             Control::ImageAvailability {

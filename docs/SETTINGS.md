@@ -1,8 +1,8 @@
 # 設定ファイル
 
-表示、キー割り当て、オートセーブ、画像、言語の設定はすべて、ユーザーデータディレクトリの `puzzella/settings.json` に保存します。Windowsでは `%LOCALAPPDATA%\puzzella\settings.json` です。
+表示、キー割り当て、オートセーブ、画像、言語、プレイヤー表示名の設定はすべて、ユーザーデータディレクトリの `puzzella/settings.json` に保存します。Windowsでは `%LOCALAPPDATA%\puzzella\settings.json` です。
 
-設定UIは「一般」「グラフィック」「キーコンフィグ」の3タブです。「一般」は言語とオートセーブを変更時に保存するため、適用ボタンを表示しません。「グラフィック」は表示モード・解像度・最大FPS・パズル画像のGPUメモリ予算をまとめます。「適用」は現在のタブの表示設定またはキー割り当てを反映し、画像のメモリ予算は変更時に自動保存します。
+設定UIは「一般」「グラフィック」「キーコンフィグ」の3タブです。「一般」は言語とオートセーブを変更時に保存し、プレイヤー表示名は「名前を保存」または入力欄のEnterで検証・保存します。タブ共通の適用ボタンは表示しません。「グラフィック」は表示モード・解像度・最大FPS・パズル画像のGPUメモリ予算をまとめます。「適用」は現在のタブの表示設定またはキー割り当てを反映し、画像のメモリ予算は変更時に自動保存します。
 
 ```json
 {
@@ -21,11 +21,18 @@
   },
   "preferences": {
     "language": "auto"
+  },
+  "player": {
+    "display_name": "日本語 🧩"
   }
 }
 ```
 
 `keybindings` の省略した操作は初期割り当てを使います。`autosave.interval_minutes` の `null` は無効、`display.max_fps` の `null` は無制限を表します。`autosave.max_saves_per_game` は同じゲームIDのオートセーブを保持する件数（1以上、既定1）です。上限変更は次回のオートセーブ成功後のローテーションに適用します。言語IDは `auto`、`en-US`、`ja` です。
+
+## プレイヤー表示名
+
+`player.display_name` は表示専用のローカル設定です。空欄は `null`（名前なし）になり、UIでは翻訳済みの既定名を表示します。前後のUnicode空白を除去し、32 Unicode scalar / UTF-8 128 bytes以内、control・bidi format文字なしを要求します。入力中はdraftだけを更新し、不正な値は保存せずエラーを表示します。保存した名前は次のoffline puzzleで使用し、将来のHost/Join UIから `HostOptions.display_name` / `JoinOptions.display_name` に渡せます。進行中のsessionの名前は変更しません。passwordや接続先secretはこのsectionへ保存しません。
 
 ## パズル画像のメモリ予算
 
