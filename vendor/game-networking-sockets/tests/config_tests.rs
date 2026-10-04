@@ -1,0 +1,104 @@
+//! Tests for configuration and debug output.
+//!
+//! These tests check that the wrapper sets configuration values and message
+//! flags correctly.
+
+use gns::sys::*;
+use gns::{GnsConfig, GnsGlobal, GnsSocket, SendFlags};
+
+use std::net::Ipv4Addr;
+
+mod common;
+use common::free_port;
+
+#[test]
+fn test_global_config_values() {
+    // Initialize GNS
+    let gns_global = GnsGlobal::get().expect("Failed to initialize GNS global");
+    let utils = gns_global.utils();
+
+    // Test setting float configuration value
+    let result = utils.set_global_config_value(
+        ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_TimeoutInitial,
+        GnsConfig::Float(15.0),
+    );
+    assert!(result.is_ok(), "Failed to set float config value");
+
+    // Test setting integer configuration value
+    let result = utils.set_global_config_value(
+        ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_FakePacketLag_Send,
+        GnsConfig::Int32(100),
+    );
+    assert!(result.is_ok(), "Failed to set integer config value");
+
+    // Test setting string configuration value
+    let result = utils.set_global_config_value(
+        ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_STUN_ServerList,
+        GnsConfig::String("stun1.example.com:3478"),
+    );
+    assert!(result.is_ok(), "Failed to set string config value");
+}
+
+#[test]
+fn test_message_flags() {
+    // Initialize GNS
+    let gns_global = GnsGlobal::get().expect("Failed to initialize GNS global");
+
+    // Allocate a message with reliable flag
+    let connection = gns::GnsConnection::default();
+    let message =
+        gns_global
+            .utils()
+            .allocate_message(connection, SendFlags::RELIABLE, &b"Test message"[..]);
+
+    // Verify flag is set correctly
+    assert!(
+        message.flags().contains(SendFlags::RELIABLE),
+        "Reliable flag not set correctly"
+    );
+
+    // Allocate a message with unreliable flag
+    let message = gns_global.utils().allocate_message(
+        connection,
+        SendFlags::UNRELIABLE,
+        &b"Test message"[..],
+    );
+
+    assert!(
+        message.flags().contains(SendFlags::UNRELIABLE),
+        "Unreliable flag not set correctly"
+    );
+
+    // Test setting user data
+    let user_data = 12345;
+    let message = gns_global
+        .utils()
+        .allocate_message(connection, SendFlags::RELIABLE, &b"Test message"[..])
+        .set_user_data(user_data);
+
+    // Verify user data is set correctly
+    assert_eq!(
+        message.user_data(),
+        user_data,
+        "User data not set correctly"
+    );
+}
+
+#[test]
+fn test_connection_info() {
+    // Initialize GNS
+    let gns_global = GnsGlobal::get().expect("Failed to initialize GNS global");
+
+    // Create a connection object
+    let conn = gns::GnsConnection::default();
+
+    // Check that get_connection_info does not crash and returns None for a
+    // default connection.
+    let info = GnsSocket::new(gns_global)
+        .listen(Ipv4Addr::LOCALHOST.into(), free_port())
+        .expect("Failed to create server socket")
+        .get_connection_info(conn);
+
+    // It should return None for an invalid connection
+    assert!(info.is_none(), "Expected None for invalid connection info");
+}

@@ -5,12 +5,16 @@ use super::{
     signaling::{PeerId, SignalingEndpoint, MAX_SIGNAL_BYTES},
     IceConfig,
 };
-use crate::network::transport::{MessageClass, TransportError};
+use crate::network::{
+    lifecycle::{Admission, Bucket},
+    transport::{MessageClass, Origin, TransportError},
+};
 use ::gns::{sys::*, GnsGlobal};
 use std::{
     ffi::{c_void, CString},
     ptr,
     sync::OnceLock,
+    time::Instant,
 };
 
 fn failure() -> TransportError {
@@ -30,15 +34,10 @@ pub(in crate::network::gns) fn global() -> Result<&'static GnsGlobal, TransportE
         .get_or_init(|| {
             let peer = PeerId::random();
             let identity = identity(peer);
-            let mut error = [0; 1024];
-            // SAFETY: called once before either backend initializes its sockets.
-            // GNS copies the stack identity. The pinned native Init explicitly
-            // returns true for subsequent calls, allowing GnsGlobal to adopt the
-            // initialized singleton; never Kill or reset a live interface.
-            if !unsafe { GameNetworkingSockets_Init(&identity, &mut error) } {
-                return Err(failure());
-            }
-            GnsGlobal::get().map_err(|e| TransportError::Backend(e.to_string()))?;
+            // The patched pinned wrapper supplies identity to its sole native
+            // initializer, or rejects a conflicting initialized identity.
+            GnsGlobal::get_with_identity(&identity)
+                .map_err(|e| TransportError::Backend(e.to_string()))?;
             let mut actual = SteamNetworkingIdentity::default();
             // Fail closed if another user of gns initialized a different identity.
             if !unsafe { SteamAPI_ISteamNetworkingSockets_GetIdentity(interface(), &mut actual) }
@@ -188,6 +187,24 @@ pub(super) struct Listener {
     options: Options,
     port: u16,
 }
+/// The synchronous receive callback spends credit only for a new, validated
+/// request, never for duplicate/continuation signaling packets.
+pub(super) struct IncomingAdmission<'a> {
+    pub allow: bool,
+    pub origin: Option<Origin>,
+    pub pending: usize,
+    pub gate: &'a mut Admission,
+    pub starts: &'a mut Bucket,
+    pub now: Instant,
+}
+impl IncomingAdmission<'_> {
+    fn accept(&mut self) -> bool {
+        self.allow
+            && self.starts.available(1, self.now)
+            && self.gate.admit(self.origin, self.pending, self.now).is_ok()
+            && self.starts.take(1, self.now)
+    }
+}
 impl Listener {
     pub(super) fn new(port: u16, config: &IceConfig) -> Result<Self, TransportError> {
         global()?;
@@ -244,13 +261,13 @@ impl Listener {
         &self,
         from: PeerId,
         bytes: &[u8],
-        allow_new: bool,
+        admission: IncomingAdmission<'_>,
         mailbox: SignalingEndpoint,
     ) -> Option<Connection> {
         let mut ctx = ReceiveContext {
             from,
             port: self.port,
-            allow_new,
+            admission,
             mailbox,
             incoming: None,
         };
@@ -281,10 +298,10 @@ impl Drop for Listener {
         }
     }
 }
-struct ReceiveContext {
+struct ReceiveContext<'a> {
     from: PeerId,
     port: u16,
-    allow_new: bool,
+    admission: IncomingAdmission<'a>,
     mailbox: SignalingEndpoint,
     incoming: Option<Connection>,
 }
@@ -296,12 +313,12 @@ unsafe extern "C" fn on_request(
 ) -> *mut ISteamNetworkingConnectionSignaling {
     // SAFETY: stack context and native identity are valid only during receive.
     // No panicking user code, mutex unwraps, or gameplay callbacks cross FFI.
-    let ctx = unsafe { &mut *ctx.cast::<ReceiveContext>() };
-    if !ctx.allow_new
-        || ctx.incoming.is_some()
+    let ctx = unsafe { &mut *ctx.cast::<ReceiveContext<'_>>() };
+    if ctx.incoming.is_some()
         || port != i32::from(ctx.port)
         || identity.is_null()
         || peer(unsafe { &*identity }) != Some(ctx.from)
+        || !ctx.admission.accept()
     {
         return ptr::null_mut();
     }

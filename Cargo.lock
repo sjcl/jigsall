@@ -3106,8 +3106,6 @@ dependencies = [
 [[package]]
 name = "game-networking-sockets"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd6be380e7f65eb0a17c4a2ba2d6e4ed9ffc9ebedefe00c1274a109c8fa68c8"
 dependencies = [
  "bitflags 2.13.2",
  "crossbeam-queue",

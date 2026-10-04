@@ -124,6 +124,11 @@ interface, so this foundation allows one active `GnsP2p` per process, with many
 remote connections. Direct IP sockets can coexist with that endpoint.
 
 The high-level 0.3.0 wrapper does not expose custom signaling establishment.
+The root crates.io patch vendors that version with a small `get_with_identity`
+extension: the wrapper's single initializer receives the identity, and later
+calls validate it without invoking Init again. Direct IP and P2P share that
+initializer; no raw pre-initialization or live identity reset is needed. See
+`vendor/game-networking-sockets/PUZZELLA_PATCH.md` for upstream provenance.
 `gns/p2p/native.rs` uses its `gns::sys` re-export, including
 `CreateCustomSignaling`, `ConnectP2PCustomSignaling` and
 `ReceivedP2PCustomSignal2`. There is no second sys dependency, version, or native
@@ -144,8 +149,14 @@ bytes without interpreting them, and call `receive(sender, bytes)` on the remote
 endpoint. No application callback runs inside native signaling callbacks.
 `InMemorySignaling::register/poll` is the current fake rendezvous. Both mailbox
 directions cap signals at 16 KiB each, 128 queued messages and 256 KiB total;
-backpressure is explicit. Backend polling consumes at most 128 signals/frame
-under a 128/s bucket. Failed outbound native callback enqueue returns false to
+backpressure is explicit. Each routing peer (local fixtures) or verified
+account/session route (routed mode) gets a 16-message burst, 32 messages/s,
+16 queued messages and 32 KiB queued bytes. All peer IDs bound to the same route
+share these limits. Queues retain rate history while empty, bound tracked keys
+to 256, cap authorized peer bindings at 8 per route/64 total, and service
+nonempty route queues round-robin. Backend polling consumes
+at most 128 signals/frame under a 128/s bucket; global exhaustion defers queued
+signals rather than dropping another peer's progress. Failed outbound native callback enqueue returns false to
 GNS, which fails the connection; abandoned routes expire normally. Malformed,
 duplicate and stale bytes go to GNS's parser and never to the gameplay protocol.
 Incoming requests must match the envelope identity and listening virtual port.
@@ -154,9 +165,21 @@ P2P caps total connections at 64, Connecting at 16 and not-Ready at 32. A global
 start bucket permits a burst of 8 and one new connection/s, including outgoing
 starts. Connection messages use the shared pre-auth policy, handshake barrier,
 post-auth rate policy, secure record limits, 512-message/frame round robin drain,
-and reliable/Bulk queue ceilings. `origin()` returns None: a self-asserted PeerId
-is not an IP/account abuse key. Production signaling admission needs its own
-trusted route/session limits; this is not a production admission system.
+and reliable/Bulk queue ceilings. `new()` is the unverified local foundation and
+returns no Origin. For a trusted rendezvous adapter, `new_routed()` requires
+`signaling().authorize_peer(peer, RouteOrigin)` before signals or connects are
+accepted. The adapter verifies authority/session/account values with its server;
+keys are never derived from a self-asserted PeerId or read from opaque payloads.
+It must validate each inbound message's sender against that server-side binding
+before calling receive; an attacker-provided sender field is insufficient.
+The connection snapshots this `Origin::Route` for backend and shared sync abuse
+accounting: at most 4 not-Ready connections per origin, shared start history,
+and the existing 30-second cooldown after 3 qualifying failures. Peer ID rotation
+and reconnects retain the same history. `revoke_peer` purges queued signals and
+closes affected connections on the next poll. Only a new native connect request
+spends admission credit; duplicate/continuation signaling does not. Server-side
+authentication, account/session admission and Sybil prevention remain the
+adapter's responsibility. A bound route does not install keys or grant Ready.
 
 Signaling servers are never game authentication authorities. Signaling delivery,
 PeerId matching and native `Connected` cannot install channel keys, assign a

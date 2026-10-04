@@ -7,6 +7,32 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Origin {
     Ip(IpAddr),
+    Route(RouteOrigin),
+}
+
+/// Abuse key supplied by a trusted local adapter after verifying the rendezvous
+/// authority, session and account. Never construct this from a peer's envelope
+/// claims. It does not authenticate a game player or replace password bootstrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouteOrigin {
+    authority: [u8; 16],
+    session: [u8; 16],
+    account: [u8; 16],
+}
+impl RouteOrigin {
+    /// Verify these values against the trusted server session. All peer IDs
+    /// controlled by that account/session must share this key.
+    pub const fn from_authenticated_route(
+        authority: [u8; 16],
+        session: [u8; 16],
+        account: [u8; 16],
+    ) -> Self {
+        Self {
+            authority,
+            session,
+            account,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]

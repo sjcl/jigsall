@@ -7,9 +7,9 @@ use super::{
 };
 use crate::network::{
     lifecycle::{
-        Bucket, CONNECTING_TIMEOUT, CONNECTION_START_BURST, CONNECTION_START_INTERVAL,
-        MAX_BULK_QUEUE_BYTES, MAX_CONNECTING, MAX_CONNECTIONS, MAX_PENDING_CONNECTIONS,
-        MAX_RELIABLE_QUEUE_BYTES,
+        self, Admission, Bucket, CONNECTING_TIMEOUT, CONNECTION_START_BURST,
+        CONNECTION_START_INTERVAL, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING, MAX_CONNECTIONS,
+        MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
     },
     rate_limit::{
         InboundRateLimiter, RateDecision, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY,
@@ -35,6 +35,7 @@ pub struct IceConfig {
 struct Connection {
     native: native::Connection,
     peer: PeerId,
+    origin: Option<Origin>,
     created: Instant,
     connected: bool,
     authenticated: bool,
@@ -69,18 +70,30 @@ pub struct GnsP2p {
     peer: PeerId,
     pending: Vec<TransportEvent>,
     starts: Bucket,
-    signals: Bucket,
+    admission: Admission,
     next_receive: Option<ConnectionId>,
     _lease: Lease,
 }
 impl GnsP2p {
     pub fn new(local_virtual_port: u16, ice: IceConfig) -> Result<Self, TransportError> {
+        Self::with_signaling(local_virtual_port, ice, SignalingEndpoint::default())
+    }
+    /// Requires explicit authorization of every remote routing identity by a
+    /// trusted local rendezvous adapter through signaling().authorize_peer().
+    pub fn new_routed(local_virtual_port: u16, ice: IceConfig) -> Result<Self, TransportError> {
+        Self::with_signaling(local_virtual_port, ice, SignalingEndpoint::routed())
+    }
+    fn with_signaling(
+        local_virtual_port: u16,
+        ice: IceConfig,
+        mailbox: SignalingEndpoint,
+    ) -> Result<Self, TransportError> {
         let lease = Lease::acquire()?;
         let peer = native::local_peer()?;
         Ok(Self {
             connections: BTreeMap::new(),
             listener: native::Listener::new(local_virtual_port, &ice)?,
-            mailbox: SignalingEndpoint::default(),
+            mailbox,
             peer,
             pending: Vec::new(),
             starts: Bucket::new(
@@ -88,7 +101,7 @@ impl GnsP2p {
                 CONNECTION_START_INTERVAL,
                 Instant::now(),
             ),
-            signals: Bucket::per_second(128, 128, Instant::now()),
+            admission: Admission::connections(),
             next_receive: None,
             _lease: lease,
         })
@@ -117,23 +130,43 @@ impl GnsP2p {
         if peer == self.peer {
             return Err(TransportError::ProtocolViolation);
         }
-        if !self.has_capacity() || !self.starts.take(1, Instant::now()) {
+        let now = Instant::now();
+        let origin = self.mailbox.origin(peer)?;
+        let pending = self.origin_pending(origin);
+        if !self.has_capacity()
+            || !self.starts.available(1, now)
+            || self.admission.admit(origin, pending, now).is_err()
+        {
             return Err(TransportError::Capacity);
         }
+        self.starts.take(1, now);
         let id = ConnectionId::new(token()?);
         let native = self
             .listener
             .connect(peer, remote_virtual_port, self.mailbox.clone())?;
-        self.insert(id, native, peer);
+        self.insert(id, native, peer, origin);
         Ok(id)
     }
-    fn insert(&mut self, id: ConnectionId, native: native::Connection, peer: PeerId) {
+    fn origin_pending(&self, origin: Option<Origin>) -> usize {
+        self.connections
+            .values()
+            .filter(|c| !c.ready && origin.is_some() && c.origin == origin)
+            .count()
+    }
+    fn insert(
+        &mut self,
+        id: ConnectionId,
+        native: native::Connection,
+        peer: PeerId,
+        origin: Option<Origin>,
+    ) {
         let now = Instant::now();
         self.connections.insert(
             id,
             Connection {
                 native,
                 peer,
+                origin,
                 created: now,
                 connected: false,
                 authenticated: false,
@@ -149,8 +182,12 @@ impl GnsP2p {
         id: ConnectionId,
         reason: DisconnectReason,
         events: &mut Vec<TransportEvent>,
+        now: Instant,
     ) {
         if let Some(mut c) = self.connections.remove(&id) {
+            if lifecycle::is_abuse(reason) {
+                self.admission.penalize(c.origin, now);
+            }
             let code = match reason {
                 DisconnectReason::Requested => 1000,
                 DisconnectReason::InvalidMessage => 1001,
@@ -175,20 +212,26 @@ impl GnsP2p {
         let ids: Vec<_> = self.connections.keys().copied().collect();
         for id in ids {
             let c = self.connections.get_mut(&id).expect("owned connection");
+            if c.origin.is_some() && self.mailbox.origin(c.peer).ok() != Some(c.origin) {
+                self.terminate(id, DisconnectReason::Requested, events, now);
+                continue;
+            }
             match c.native.state() {
                 native::State::Connected if !c.connected => {
                     c.connected = true;
                     events.push(TransportEvent::Connected { connection: id });
                 }
                 native::State::Connected => {}
-                native::State::Closed => self.terminate(id, DisconnectReason::RemoteClosed, events),
+                native::State::Closed => {
+                    self.terminate(id, DisconnectReason::RemoteClosed, events, now)
+                }
                 native::State::Failed => {
-                    self.terminate(id, DisconnectReason::ConnectionProblem, events)
+                    self.terminate(id, DisconnectReason::ConnectionProblem, events, now)
                 }
                 native::State::Pending
                     if now.saturating_duration_since(c.created) >= CONNECTING_TIMEOUT =>
                 {
-                    self.terminate(id, DisconnectReason::BackendConnectionTimeout, events)
+                    self.terminate(id, DisconnectReason::BackendConnectionTimeout, events, now)
                 }
                 native::State::Pending => {}
             }
@@ -211,7 +254,9 @@ fn class(lane: u16) -> Option<MessageClass> {
     }
 }
 impl Transport for GnsP2p {
-    // A self-asserted routing PeerId is intentionally not an authenticated Origin.
+    fn origin(&self, id: ConnectionId) -> Option<Origin> {
+        self.connections.get(&id).and_then(|c| c.origin)
+    }
     fn reliable_egress(&self, id: ConnectionId) -> Result<ReliableEgress, TransportError> {
         let c = self
             .connections
@@ -259,20 +304,37 @@ impl Transport for GnsP2p {
             let Some(signal) = self.mailbox.pop_inbound() else {
                 break;
             };
-            if signal.peer == self.peer || !self.signals.take(1, now) {
+            if signal.peer == self.peer {
                 continue;
             }
+            let Ok(origin) = self.mailbox.origin(signal.peer) else {
+                continue;
+            };
+            // Do not charge a stale queued envelope to a newly authorized route.
+            if origin != signal.origin {
+                continue;
+            }
+            let origin_pending = self.origin_pending(origin);
             // Admission is sampled before GNS; the callback only accepts within
             // that capacity. GNS discards requests for which it returns null.
             // Only new requests spend start credit; stale/duplicate signals do not.
-            let allow = self.has_capacity() && self.starts.available(1, now);
-            if let Some(native) =
-                self.listener
-                    .receive(signal.peer, &signal.payload, allow, self.mailbox.clone())
-            {
-                self.starts.take(1, now);
+            let allow = self.has_capacity();
+            let admission = native::IncomingAdmission {
+                allow,
+                origin,
+                pending: origin_pending,
+                gate: &mut self.admission,
+                starts: &mut self.starts,
+                now,
+            };
+            if let Some(native) = self.listener.receive(
+                signal.peer,
+                &signal.payload,
+                admission,
+                self.mailbox.clone(),
+            ) {
                 let id = ConnectionId::new(token()?);
-                self.insert(id, native, signal.peer);
+                self.insert(id, native, signal.peer, origin);
             }
         }
         super::global()?.poll_callbacks();
@@ -300,19 +362,19 @@ impl Transport for GnsP2p {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
                 Err(_) => {
-                    self.terminate(id, DisconnectReason::BackendFailure, events);
+                    self.terminate(id, DisconnectReason::BackendFailure, events, now);
                     continue;
                 }
             };
             remaining -= 1;
             let Some(class) = class(message.lane()) else {
-                self.terminate(id, DisconnectReason::InvalidMessage, events);
+                self.terminate(id, DisconnectReason::InvalidMessage, events, now);
                 continue;
             };
             let payload = match message.payload() {
                 Ok(payload) => payload,
                 Err(_) => {
-                    self.terminate(id, DisconnectReason::InvalidMessage, events);
+                    self.terminate(id, DisconnectReason::InvalidMessage, events, now);
                     continue;
                 }
             };
@@ -320,7 +382,7 @@ impl Transport for GnsP2p {
                 || (!c.authenticated
                     && !matches!(wire::is_session_control_for_class(payload, class), Ok(true)))
             {
-                self.terminate(id, DisconnectReason::InvalidMessage, events);
+                self.terminate(id, DisconnectReason::InvalidMessage, events, now);
                 continue;
             }
             let mut barrier = false;
@@ -335,7 +397,7 @@ impl Transport for GnsP2p {
                 }
                 RateDecision::Drop => {}
                 RateDecision::Disconnect => {
-                    self.terminate(id, DisconnectReason::RateLimited, events);
+                    self.terminate(id, DisconnectReason::RateLimited, events, now);
                     continue;
                 }
             }
@@ -388,7 +450,7 @@ impl Transport for GnsP2p {
             return Err(TransportError::UnknownConnection);
         }
         let mut events = Vec::new();
-        self.terminate(id, reason, &mut events);
+        self.terminate(id, reason, &mut events, Instant::now());
         self.pending.extend(events);
         Ok(())
     }

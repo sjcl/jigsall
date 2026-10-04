@@ -162,6 +162,10 @@ jobs:
       - name: Windows GNS localhost integration tests
         if: runner.os == 'Windows'
         run: cargo test --workspace --locked --features gns --lib --bins --tests gns_localhost -- --nocapture --test-threads=1
+      # The patched wrapper is an excluded dependency, so workspace tests do not
+      # run its initializer regression test. Select it with the optional graph.
+      - name: GNS single-shot identity initialization
+        run: cargo test --locked -p puzzella-game -p game-networking-sockets --features puzzella-game/gns --lib identity_initialization -- --nocapture
       - name: Windows application build (GNS enabled)
         if: runner.os == 'Windows'
         run: cargo build --workspace --locked --features gns

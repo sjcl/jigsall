@@ -74,6 +74,9 @@ struct Observed {
     records: SentRecords,
 }
 impl Transport for Observed {
+    fn origin(&self, id: ConnectionId) -> Option<Origin> {
+        self.inner.origin(id)
+    }
     fn reliable_egress(&self, id: ConnectionId) -> Result<ReliableEgress, TransportError> {
         self.inner.reliable_egress(id)
     }
@@ -117,7 +120,7 @@ fn gns_p2p_child() {
         return;
     };
     let host = role == "host";
-    let mut backend = GnsP2p::new(0, IceConfig::default()).unwrap();
+    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     emit(Frame::Peer(backend.peer_id().to_bytes()));
     let (tx, rx) = mpsc::sync_channel(256);
@@ -136,6 +139,13 @@ fn gns_p2p_child() {
     let Frame::Start(remote) = rx.recv_timeout(Duration::from_secs(10)).unwrap() else {
         panic!("expected start");
     };
+    // Test-only trusted rendezvous binding: account IDs come from fixture role,
+    // never from the self-asserted peer bytes. Gameplay still needs SPAKE2.
+    let origin =
+        RouteOrigin::from_authenticated_route([1; 16], [2; 16], [if host { 12 } else { 11 }; 16]);
+    mailbox
+        .authorize_peer(PeerId::from_bytes(remote), origin)
+        .unwrap();
     let mut connection = if host {
         None
     } else {
@@ -188,7 +198,11 @@ fn gns_p2p_child() {
                     assert_eq!((connected, closed), (1, 1));
                     assert!(authenticated && received.into_iter().all(|x| x));
                     assert!(!transport.has_channel(connection.unwrap()));
-                    assert_eq!(mailbox.receive(PeerId::from_bytes([8; 16]), &[1]), Ok(()));
+                    assert_eq!(
+                        mailbox.receive(PeerId::from_bytes([8; 16]), &[1]),
+                        Err(TransportError::ProtocolViolation)
+                    );
+                    assert_eq!(mailbox.receive(PeerId::from_bytes(remote), &[1]), Ok(()));
                     drop(transport);
                     assert_eq!(
                         mailbox.receive(PeerId::from_bytes([8; 16]), &[1]),
@@ -207,6 +221,7 @@ fn gns_p2p_child() {
                     connected += 1;
                     connection = Some(*id);
                     assert!(!transport.has_channel(*id));
+                    assert_eq!(transport.origin(*id), Some(Origin::Route(origin)));
                     assert!(connections.player(*id).is_none());
                 }
                 TransportEvent::ConnectionFailed { .. } => panic!("P2P failed: {event:?}"),
@@ -328,6 +343,8 @@ fn gns_localhost_p2p_native_ice_password_secure_lanes_and_close() {
                     if tx.send((index, frame)).is_err() {
                         break;
                     }
+                } else if !line.is_empty() {
+                    eprintln!("P2P child {index}: {line}");
                 }
             }
         });
@@ -413,6 +430,7 @@ fn gns_localhost_p2p_native_ice_password_secure_lanes_and_close() {
 
 #[test]
 fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
     assert!(matches!(
         GnsP2p::new(
             0,
@@ -466,4 +484,65 @@ fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
         .connect_peer(PeerId::from_bytes([43; 16]), 0)
         .unwrap();
     assert_ne!(id, fresh);
+}
+
+static BACKEND_TEST_LOCK: Mutex<()> = Mutex::new(());
+#[test]
+fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
+    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
+    let mailbox = backend.signaling();
+    let bad = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [3; 16]);
+    let other = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [4; 16]);
+    assert_eq!(
+        backend.connect_peer(PeerId::from_bytes([10; 16]), 0),
+        Err(TransportError::ProtocolViolation)
+    );
+    for n in 10..16 {
+        mailbox
+            .authorize_peer(PeerId::from_bytes([n; 16]), bad)
+            .unwrap();
+    }
+    mailbox
+        .authorize_peer(PeerId::from_bytes([20; 16]), other)
+        .unwrap();
+    let mut ids = Vec::new();
+    for n in 10..14 {
+        let id = backend
+            .connect_peer(PeerId::from_bytes([n; 16]), 0)
+            .unwrap();
+        assert_eq!(backend.origin(id), Some(Origin::Route(bad)));
+        ids.push(id);
+    }
+    assert_eq!(
+        backend.connect_peer(PeerId::from_bytes([14; 16]), 0),
+        Err(TransportError::Capacity)
+    );
+    let healthy = backend
+        .connect_peer(PeerId::from_bytes([20; 16]), 0)
+        .unwrap();
+    backend.close(ids[0], DisconnectReason::Requested).unwrap();
+    backend
+        .connect_peer(PeerId::from_bytes([14; 16]), 0)
+        .unwrap();
+    let mut events = Vec::new();
+    backend.maintain(Instant::now() + CONNECTING_TIMEOUT, &mut events);
+    assert!(backend.connections.is_empty());
+    assert_eq!(backend.origin(healthy), None);
+    // Rotating peer IDs or closing sockets does not replenish account history.
+    assert_eq!(
+        backend.connect_peer(PeerId::from_bytes([15; 16]), 0),
+        Err(TransportError::Capacity)
+    );
+    let healthy = backend
+        .connect_peer(PeerId::from_bytes([20; 16]), 0)
+        .unwrap();
+    mailbox.revoke_peer(PeerId::from_bytes([20; 16]));
+    events.clear();
+    backend.poll(&mut events).unwrap();
+    assert!(events.iter().any(|e| matches!(e, TransportEvent::ConnectionFailed { connection, reason: DisconnectReason::Requested } if *connection == healthy)));
+    assert_eq!(
+        backend.connect_peer(PeerId::from_bytes([20; 16]), 0),
+        Err(TransportError::ProtocolViolation)
+    );
 }
