@@ -23,8 +23,10 @@ Modified upstream files:
 
 Server addresses are fixed for an existing ICE session. Updates match the original
 configured host:port rather than re-resolving DNS, retaining the association with
-all resolved addresses and their live allocations. Direct sessions with no TURN
-server remain intact; future connections inherit the latest full configuration.
+all resolved addresses and their live allocations. An update with no matching
+initialized entry returns false. Direct sessions with no TURN server reject late
+installation; rotation requires the initial address set.
+Future connections on a TURN-enabled control session inherit its latest credentials.
 Changing relay topology or supporting TCP/TLS/WebRTC ICE is separate work.
 
 Tests and protocol documentation: `docs/RENDEZVOUS_V1.md`.

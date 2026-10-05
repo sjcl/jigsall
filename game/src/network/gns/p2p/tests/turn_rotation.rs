@@ -229,6 +229,7 @@ enum ActorFrame {
     Signal([u8; 16], Vec<u8>),
     Connected([u8; 16], bool),
     Rotate,
+    RejectEndpointChange,
     Rotated,
     Exchange,
     Received([u8; 16]),
@@ -260,12 +261,15 @@ fn gns_turn_actor_child() {
             password: format!("password-{version}"),
         }]
     };
-    let mut version = initial;
+    let no_turn = std::env::var_os("JIGSALL_TURN_INITIAL_NONE").is_some();
+    let mut version = if no_turn { "" } else { initial };
     let mut initial_credentials = credentials(initial);
     if std::env::var_os("JIGSALL_TURN_WRONG_PASSWORD").is_some() {
         initial_credentials[0].password = "wrong".into();
     }
-    backend.install_turn(&initial_credentials).unwrap();
+    if !no_turn {
+        backend.install_turn(&initial_credentials).unwrap();
+    }
     actor_emit(ActorFrame::Peer(backend.peer_id().to_bytes()));
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -292,12 +296,42 @@ fn gns_turn_actor_child() {
                     mailbox.receive(PeerId::from_bytes(peer), &bytes).unwrap();
                 }
                 ActorFrame::Rotate => {
-                    backend.install_turn(&credentials("B")).unwrap();
-                    version = "B";
+                    if no_turn {
+                        assert_eq!(
+                            backend.install_turn(&credentials("B")),
+                            Err(TransportError::ProtocolViolation)
+                        );
+                        for connection in backend.connections.values() {
+                            connection.native.assert_turn_update_rejected(&address);
+                        }
+                    } else {
+                        backend.install_turn(&credentials("B")).unwrap();
+                        version = "B";
+                    }
                     for connection in backend.connections.values() {
-                        connection.native.assert_turn_user("user-B");
+                        connection
+                            .native
+                            .assert_turn_user(if no_turn { "" } else { "user-B" });
                     }
                     actor_emit(ActorFrame::Rotated);
+                }
+                ActorFrame::RejectEndpointChange => {
+                    let mut changed = credentials("B");
+                    let mut extra = changed[0].clone();
+                    extra.address = "unknown.invalid:3478".into();
+                    changed.push(extra);
+                    assert_eq!(
+                        backend.install_turn(&changed),
+                        Err(TransportError::ProtocolViolation)
+                    );
+                    for connection in backend.connections.values() {
+                        connection
+                            .native
+                            .assert_turn_user(&format!("user-{version}"));
+                        connection
+                            .native
+                            .assert_turn_update_rejected("unknown.invalid:3478");
+                    }
                 }
                 ActorFrame::Exchange => {
                     for connection in connections.values().copied().collect::<Vec<_>>() {
@@ -322,7 +356,11 @@ fn gns_turn_actor_child() {
                     );
                     backend.connections[&connection]
                         .native
-                        .assert_turn_user(&format!("user-{version}"));
+                        .assert_turn_user(&if no_turn {
+                            String::new()
+                        } else {
+                            format!("user-{version}")
+                        });
                     let relay = backend.connections[&connection].native.is_relay();
                     backend.activate_secure_channel(connection).unwrap();
                     backend.mark_ready(connection).unwrap();
@@ -361,6 +399,7 @@ impl Actor {
         relay_only: bool,
         initial_b: bool,
         wrong: bool,
+        initial_none: bool,
         output: mpsc::Sender<(usize, ActorFrame)>,
     ) -> Self {
         let mut command = Command::new(std::env::current_exe().unwrap());
@@ -375,6 +414,9 @@ impl Actor {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        if initial_none {
+            command.env("JIGSALL_TURN_INITIAL_NONE", "1");
+        }
         if relay_only {
             command.env("JIGSALL_TURN_TEST_ONLY", "1");
         }
@@ -421,9 +463,9 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
     let mut fixture = Fixture::start();
     let (tx, rx) = mpsc::channel();
     let mut actors = vec![
-        Actor::spawn(0, &fixture.address, false, false, false, tx.clone()),
-        Actor::spawn(1, &fixture.address, false, false, false, tx.clone()),
-        Actor::spawn(2, &fixture.address, true, false, false, tx.clone()),
+        Actor::spawn(0, &fixture.address, false, false, false, false, tx.clone()),
+        Actor::spawn(1, &fixture.address, false, false, false, false, tx.clone()),
+        Actor::spawn(2, &fixture.address, true, false, false, false, tx.clone()),
     ];
     let host = actors[0].peer;
     actors[1].send(ActorFrame::Connect(host));
@@ -464,6 +506,7 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
             );
             assert!(connected.iter().find(|&&(i, _, _)| i == 2).unwrap().2);
             for actor in &mut actors {
+                actor.send(ActorFrame::RejectEndpointChange);
                 actor.send(ActorFrame::Rotate);
             }
             stage = 1;
@@ -476,6 +519,7 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
                 &fixture.address,
                 true,
                 true,
+                false,
                 false,
                 tx.clone(),
             ));
@@ -495,6 +539,7 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
                 true,
                 true,
                 true,
+                false,
                 tx.clone(),
             ));
             actors[4].send(ActorFrame::Connect(host));
@@ -530,6 +575,78 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
     assert!(stats["allocate_b"].as_u64().unwrap() > 0);
     assert!(stats["bad_auth"].as_u64().unwrap() > 0);
     assert_eq!(stats["wrong_allocations"].as_u64().unwrap(), 0);
+    for actor in &mut actors {
+        actor.send(ActorFrame::Stop);
+    }
+    for actor in &mut actors {
+        assert!(actor.process.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn gns_localhost_turn_absent_initially_rejects_late_install_and_preserves_direct_ice() {
+    let mut fixture = Fixture::start();
+    let (tx, rx) = mpsc::channel();
+    let mut actors = vec![
+        Actor::spawn(0, &fixture.address, false, false, false, true, tx.clone()),
+        Actor::spawn(1, &fixture.address, false, false, false, true, tx.clone()),
+    ];
+    let host = actors[0].peer;
+    actors[1].send(ActorFrame::Connect(host));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut connected = 0;
+    let mut rotated = 0;
+    let mut received = std::collections::BTreeSet::new();
+    let mut stage = 0;
+    while stage < 3 {
+        assert!(
+            Instant::now() < deadline,
+            "direct-only regression timed out"
+        );
+        if let Ok((index, frame)) = rx.recv_timeout(Duration::from_millis(5)) {
+            match frame {
+                ActorFrame::Signal(to, bytes) => {
+                    let from = actors[index].peer;
+                    actors
+                        .iter_mut()
+                        .find(|a| a.peer == to)
+                        .unwrap()
+                        .send(ActorFrame::Signal(from, bytes));
+                }
+                ActorFrame::Connected(_, relay) => {
+                    assert!(!relay);
+                    connected += 1;
+                    assert!(connected <= 2);
+                }
+                ActorFrame::Rotated => rotated += 1,
+                ActorFrame::Received(peer) => {
+                    received.insert((index, peer));
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        if stage == 0 && connected == 2 {
+            for actor in &mut actors {
+                actor.send(ActorFrame::Rotate);
+            }
+            stage = 1;
+        }
+        if stage == 1 && rotated == 2 {
+            for actor in &mut actors {
+                actor.send(ActorFrame::Exchange);
+            }
+            stage = 2;
+        }
+        if stage == 2 && received.len() == 2 {
+            stage = 3;
+        }
+    }
+    fixture.send("stats");
+    let stats = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(
+        stats["allocate_a"].as_u64().unwrap() + stats["allocate_b"].as_u64().unwrap(),
+        0
+    );
     for actor in &mut actors {
         actor.send(ActorFrame::Stop);
     }

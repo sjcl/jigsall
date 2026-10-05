@@ -88,6 +88,7 @@ pub struct GnsP2p {
     starts: Bucket,
     admission: Admission,
     next_receive: Option<ConnectionId>,
+    turn_addresses: Vec<String>,
     pending_turn: Option<Vec<TurnServer>>,
     turn_retry_after: Instant,
     _lease: Lease,
@@ -127,6 +128,7 @@ impl GnsP2p {
             ),
             admission: Admission::connections(),
             next_receive: None,
+            turn_addresses: Vec::new(),
             pending_turn: None,
             turn_retry_after: Instant::now(),
             _lease: lease,
@@ -193,10 +195,22 @@ impl GnsP2p {
     /// Updates the listener, outgoing options and every owned connection without
     /// issuing new connection IDs or touching SecureTransport/bootstrap state.
     pub fn install_turn(&mut self, servers: &[TurnServer]) -> Result<(), TransportError> {
+        let mut addresses: Vec<_> = servers.iter().map(|s| s.address.clone()).collect();
+        addresses.sort_unstable();
+        if addresses.is_empty()
+            || addresses.len() > 4
+            || addresses.windows(2).any(|a| a[0] == a[1])
+            || (!self.turn_addresses.is_empty() && addresses != self.turn_addresses)
+            || (self.turn_addresses.is_empty() && !self.connections.is_empty())
+        {
+            // Reject topology changes before touching listener or connection config.
+            return Err(TransportError::ProtocolViolation);
+        }
         self.listener.install_turn(servers)?;
         for connection in self.connections.values() {
             connection.native.install_turn(servers)?;
         }
+        self.turn_addresses = addresses;
         Ok(())
     }
     fn apply_turn_update(&mut self) -> Result<(), TransportError> {

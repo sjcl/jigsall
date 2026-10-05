@@ -6,6 +6,7 @@ import hashlib, hmac, json, os, queue, selectors, socket, struct, sys, threading
 COOKIE = 0x2112A442
 REALM = b"puzzella-test"
 KEYS = {b"user-A": b"password-A", b"user-B": b"password-B"}
+relay_pairs_only = "--relay-pairs-only" in sys.argv[1:]
 sel = selectors.DefaultSelector()
 server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 server.bind(("0.0.0.0", 0))
@@ -64,8 +65,16 @@ while True:
             delayed.remove((due, data, client))
     for event, _ in sel.select(0.01):
         sock = event.fileobj
-        data, source = sock.recvfrom(65535)
+        try:
+            data, source = sock.recvfrom(65535)
+        except ConnectionResetError:
+            # Windows reports an ICMP reply to an already closed peer on recv.
+            continue
         if event.data is not None:
+            # Forced-relay integration requires both endpoints to use allocations.
+            # Otherwise native ICE can accept a one-sided peer-reflexive route.
+            if relay_pairs_only and source not in {relay.getsockname() for relay in allocations.values()}:
+                continue
             client = event.data
             server.sendto(packet(0x17, os.urandom(12), [attr(0x12, xor_addr(source)), attr(0x13, data)]), client)
             stats["relayed"] += 1

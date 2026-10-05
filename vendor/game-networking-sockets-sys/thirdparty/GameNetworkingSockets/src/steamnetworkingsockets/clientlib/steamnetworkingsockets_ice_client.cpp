@@ -2017,9 +2017,11 @@ void CSteamNetworkingICESession::Think_DiscoverRelayCandidate()
 bool CSteamNetworkingICESession::UpdateTURN( const char *server, const char *username, const char *password )
 {
     SteamNetworkingGlobalLock::AssertHeldByCurrentThread( "UpdateTURN" );
+    bool matched = false;
     for ( int i = 0; i < len( m_vecTURNCredentials ); ++i ) {
         TURNCredentials &cred = m_vecTURNCredentials[i];
         if ( cred.m_strServer != server ) continue;
+        matched = true;
         cred.m_strUsername = username;
         cred.m_strPassword = password;
         for ( const auto &intf : m_vecInterfaces ) {
@@ -2038,8 +2040,8 @@ bool CSteamNetworkingICESession::UpdateTURN( const char *server, const char *use
             }
         }
     }
-    SetNextThinkTime( SteamNetworkingSockets_GetLocalTimestamp() );
-    return true; // Direct sessions have no relay; their route remains untouched.
+    if ( matched ) SetNextThinkTime( SteamNetworkingSockets_GetLocalTimestamp() );
+    return matched; // No initialized TURN entry means this is not a live update.
 }
 
 bool CSteamNetworkingICESession::UpdateTURNChallenge( const RecvSTUNPktInfo_t &info )

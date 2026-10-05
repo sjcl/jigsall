@@ -101,6 +101,12 @@ impl Transport for Observed {
                 self.inner.connections[connection]
                     .native
                     .assert_send_rate(256 * 1024);
+                if std::env::var_os("JIGSALL_TURN_INITIAL_UNAVAILABLE").is_some() {
+                    self.inner.connections[connection]
+                        .native
+                        .assert_turn_user("");
+                    assert!(!self.inner.connections[connection].native.is_relay());
+                }
                 emit(Frame::Connected(
                     self.inner.connections[connection].native.details(),
                 ));

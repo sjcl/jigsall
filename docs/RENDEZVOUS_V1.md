@@ -494,13 +494,23 @@ candidates retain higher priority than TURN relay. Only UDP TURN is supported;
 TCP/TLS requires a separate native transport change. Provider secrets belong only
 in puzzella-rendezvous, never the client or `internet-defaults.env`.
 
-Rendezvous obtains credentials before Welcome with a bounded HTTP deadline and
-refreshes at half TTL (default 24 hours, first refresh about 12 hours). API failures
-retain the current value and retry with bounded backoff. WSS loss ends rotation;
-a TURN-only route can fail after eventual credential expiry. TURN does not grant
+Rendezvous obtains credentials before Welcome. One three-second deadline covers
+waiting for a shared issuance permit and the HTTP call.
+Welcome fixes TURN availability for that WSS session before peer establishment.
+A missing/expired initial value makes the entire control session direct-only;
+there is no later issuance task or late TURN installation, including future peers
+on that session. A new control session may obtain TURN after provider recovery.
+Sessions with initial credentials refresh at half TTL (default 24 hours, about
+12 hours). Rotation failures retain the current value and retry with bounded
+backoff. WSS loss ends rotation; a TURN-only route can fail after eventual credential expiry. TURN does not grant
 room membership, player identity or game password authentication.
 
 The pinned `game-networking-sockets-sys` source now provides `Puzzella_UpdateTURN`.
+Rotation must retain exactly the initial endpoint address set (order may change).
+The server rejects a changed set as a provider error and retries with the old
+credential retained. The adapter/backend reject topology changes before mutating
+listener or connection configuration. `Puzzella_UpdateTURN` returns false if no
+initialized TURN entry matches; it cannot add relay candidates to direct-only ICE.
 It takes the native global and connection locks, updates copied ICE credentials
 and derives MD5(username:realm:password) again. In-flight requests retain their
 serialized bytes and verification key. The next Refresh/CreatePermission uses
@@ -531,15 +541,23 @@ python game/tests/fixtures/run_turn_smoke.py /path/to/turn_fixture_server /path/
 The harness forces relay, applies pushed credential B, reaches SPAKE2 → image /
 baseline / catch-up → Ready, and verifies gameplay with the same connection. It
 also verifies encrypted lanes after control-worker shutdown and both flows when
-the provider is unavailable and direct ICE is used. Known fixture credential
+the provider is unavailable and direct ICE is used. A recovering mock API becomes
+healthy after two seconds; connections created from Welcome without TURN remain
+direct-only and continue through Ready/gameplay after recovery, without
+allocations. Forced-relay cases restrict fixture forwarding to allocation pairs
+so both endpoints use relay, while the native relay flags and traffic counters
+remain required. The runtime fixture waits for image decode/install before
+checking image dimensions/hash and announcing Ready. Known fixture credential
 values must be absent from captured test output. Loopback `ws://` is allowed only
 by the existing test constructor; this does not test public WSS/TLS or Cloudflare.
 
-Verification on 2026-10-05, Windows x86_64: the 22 non-ignored GNS localhost tests
+Verification on 2026-10-05, Windows x86_64: the 23 non-ignored GNS localhost tests
 passed (including live rotation with an in-flight Refresh, 438, destroyed relay
 allocation / reallocation using B, mixed direct/relay peers, future incoming
-configuration and wrong-password rejection). The four cross-repository smoke
-runs passed. Both Rust protocol copies and JSONL fixtures are byte-identical.
+configuration, wrong-password rejection, late-TURN rejection with direct traffic
+preserved, endpoint-set rejection and native no-match failure). The six
+cross-repository smoke runs passed. The rendezvous workspace suite passed 935
+tests/doctests; fmt, all-target Clippy and the app build passed. Both Rust protocol copies and JSONL fixtures are byte-identical.
 Server mock/provider/HTTP/WebSocket tests and all-target Clippy passed. Production
 Cloudflare, Internet NATs, cross-OS and 24-hour wall-clock sessions require separate
 validation; the local fixtures accelerate allocation/credential lifetimes.

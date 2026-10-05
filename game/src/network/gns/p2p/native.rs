@@ -640,6 +640,19 @@ impl Connection {
         assert!(value == ::gns::GnsConfigValue::String(expected.to_owned()));
     }
     #[cfg(test)]
+    pub(super) fn assert_turn_update_rejected(&self, address: &str) {
+        let address = CString::new(address).unwrap();
+        // A no-match must be reported without altering native credentials/config.
+        assert!(!unsafe {
+            Puzzella_UpdateTURN(
+                self.handle(),
+                address.as_ptr(),
+                c"unused".as_ptr(),
+                c"unused".as_ptr(),
+            )
+        });
+    }
+    #[cfg(test)]
     pub(super) fn is_relay(&self) -> bool {
         let mut info = SteamNetConnectionInfo_t::default();
         assert!(unsafe {

@@ -140,6 +140,7 @@ pub struct RendezvousAdapter {
     deferred_signal: Option<ClientMessage>,
     terminal_reported: bool,
     turn_expiry: u64,
+    turn_addresses: Vec<String>,
 }
 fn peer(id: protocol::PeerId) -> PeerId {
     PeerId::from_bytes(id.0)
@@ -173,6 +174,7 @@ impl RendezvousAdapter {
             deferred_signal: None,
             terminal_reported: false,
             turn_expiry: 0,
+            turn_addresses: Vec::new(),
         })
     }
     fn install_turn(&mut self, turn: protocol::TurnCredentials) -> Result<(), RendezvousError> {
@@ -184,6 +186,16 @@ impl RendezvousAdapter {
             .as_secs();
         if turn.expires_at_unix <= now || turn.expires_at_unix <= self.turn_expiry {
             return Ok(());
+        }
+        let mut addresses: Vec<_> = turn.servers.iter().map(|s| s.address.clone()).collect();
+        addresses.sort_unstable();
+        if matches!(self.phase, Phase::Welcome) {
+            self.turn_addresses = addresses;
+        } else if self.turn_addresses.is_empty() {
+            // Welcome without usable TURN fixes this WSS session to direct ICE.
+            return Ok(());
+        } else if addresses != self.turn_addresses {
+            return Err(RendezvousError::ProtocolViolation);
         }
         self.turn_expiry = turn.expires_at_unix;
         self.signaling.install_turn(

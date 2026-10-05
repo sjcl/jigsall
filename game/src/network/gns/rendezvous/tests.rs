@@ -1008,3 +1008,73 @@ async fn welcome_queues_turn_before_room_commands_and_control_loss_retains_it() 
     );
     task.abort();
 }
+
+#[tokio::test]
+async fn welcome_without_turn_ignores_later_credentials() {
+    let (url, task) = fixture(|_| async {}).await;
+    let mut a = adapter(url);
+    let mut events = Vec::new();
+    a.handle(
+        ServerMessage::Welcome {
+            authority_id: AuthorityId(id(1)),
+            turn: None,
+        },
+        &mut events,
+    )
+    .unwrap();
+    a.handle(
+        ServerMessage::TurnCredentials {
+            turn: protocol::TurnCredentials {
+                expires_at_unix: u64::MAX,
+                servers: vec![protocol::TurnServer {
+                    address: "turn.cloudflare.com:3478".into(),
+                    username: "late".into(),
+                    password: "fixture".into(),
+                }],
+            },
+        },
+        &mut events,
+    )
+    .unwrap();
+    assert!(a.signaling.take_turn_update().is_none());
+    assert_eq!(a.turn_expiry, 0);
+    assert!(matches!(a.phase, Phase::Idle));
+    task.abort();
+}
+#[tokio::test]
+async fn changed_endpoint_set_rejects_rotation_without_replacing_queued_credentials() {
+    let (url, task) = fixture(|_| async {}).await;
+    let mut a = adapter(url);
+    let mut events = Vec::new();
+    let turn = |address: &str, expiry| protocol::TurnCredentials {
+        expires_at_unix: expiry,
+        servers: vec![protocol::TurnServer {
+            address: address.into(),
+            username: "fixture".into(),
+            password: "fixture".into(),
+        }],
+    };
+    a.handle(
+        ServerMessage::Welcome {
+            authority_id: AuthorityId(id(1)),
+            turn: Some(turn("turn.cloudflare.com:3478", u64::MAX - 1)),
+        },
+        &mut events,
+    )
+    .unwrap();
+    assert_eq!(
+        a.handle(
+            ServerMessage::TurnCredentials {
+                turn: turn("changed.example:3478", u64::MAX)
+            },
+            &mut events
+        ),
+        Err(RendezvousError::ProtocolViolation)
+    );
+    assert_eq!(a.turn_expiry, u64::MAX - 1);
+    assert_eq!(
+        a.signaling.take_turn_update().unwrap()[0].address,
+        "turn.cloudflare.com:3478"
+    );
+    task.abort();
+}

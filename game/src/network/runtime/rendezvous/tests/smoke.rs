@@ -105,7 +105,8 @@ fn gns_localhost_real_rendezvous_runtime_ready_command_roundtrip() {
         }
         if ready.into_iter().all(|x| x)
             && !grabbed
-            && (std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_none()
+            && ((std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_none()
+                && std::env::var_os("JIGSALL_TURN_INITIAL_UNAVAILABLE").is_none())
                 || started_at.elapsed() >= std::time::Duration::from_secs(3))
         {
             processes[1].send(Frame::Grab);
@@ -222,6 +223,10 @@ fn gns_localhost_rendezvous_runtime_child() {
                             .peers
                             .iter()
                             .any(|p| p.state == Some(ConnectionState::Ready))))
+                // Network Ready can precede the asynchronous image decode/install.
+                && (role != "client"
+                    || (app.world().contains_resource::<PuzzleImage>()
+                        && app.world().contains_resource::<OriginalPuzzleImage>()))
             {
                 if role == "client" {
                     assert_eq!(

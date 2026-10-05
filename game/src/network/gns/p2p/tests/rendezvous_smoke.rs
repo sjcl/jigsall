@@ -90,7 +90,8 @@ fn gns_localhost_real_rendezvous_native_ice_password_secure_lanes() {
         }
         if !stopping
             && received.into_iter().all(|x| x)
-            && (std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_none()
+            && ((std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_none()
+                && std::env::var_os("JIGSALL_TURN_INITIAL_UNAVAILABLE").is_none())
                 || started_at.elapsed() >= Duration::from_secs(3))
         {
             for peer in &mut peers {
