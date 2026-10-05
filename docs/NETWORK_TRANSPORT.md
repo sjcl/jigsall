@@ -136,11 +136,13 @@ library. Default builds still have no GNS dependency. See
 
 P2P uses **GNS native ICE**, not application UDP hole punching. The bundled
 CMake defaults and this Windows host's built cache have `ENABLE_ICE=ON` and
-`USE_STEAMWEBRTC=OFF`; no native build-script patch was needed. Connection options
+`USE_STEAMWEBRTC=OFF`. The local sys patch preserves those settings. Connection options
 explicitly select native implementation 1. `IceConfig::default()` enables private
 host candidates and clears STUN/TURN server lists. Public candidates and a STUN
-list can be supplied at establishment; production TURN/relay configuration and
-credentials remain future work. Automated tests use no external servers.
+list can be supplied at establishment. Rendezvous installs optional UDP TURN
+credentials before peer connections and rotates them in existing native sessions.
+TCP/TLS relay transport remains future work. Automated tests use no external
+servers. See [TURN credentials and tests](RENDEZVOUS_V1.md#cloudflare-turn-fallback-and-live-credentials).
 
 `SignalingEndpoint` is the bridge for the optional [rendezvous v1 adapter](RENDEZVOUS_V1.md):
 drain `pop_outbound()` (destination PeerId + opaque bytes), deliver those
@@ -191,7 +193,7 @@ remain Direct IP. The separate `rendezvous` feature adds a caller-polled WSS ada
 for the independent `sjcl/puzzella-rendezvous` room/signaling server. Its Host ACK
 handshake gates route activation; active routes survive control-plane loss until
 the connection owner explicitly releases them. Runtime room-code integration,
-TURN, gameplay relay and Steamworks remain future work. See [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
+UDP TURN fallback and live credentials are supplied by Rendezvous; TCP/TLS TURN and Steamworks remain future work. See [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
 
 ## Mandatory session password authentication
 

@@ -19,6 +19,8 @@ fn host() -> (
             deferred: None,
             deferred_signal: None,
             terminal_reported: false,
+            turn_expiry: 0,
+            turn_addresses: Vec::new(),
         },
         commands,
         events,

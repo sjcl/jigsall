@@ -370,7 +370,8 @@ result, not an Internet throughput or native-window frame-rate guarantee.
 
 Real Internet NAT trials still require production WSS configuration, caller STUN
 configuration, public candidates, and separate machines behind different NATs.
-Some NAT/firewall pairs may require TURN; TURN/relay is not implemented.
+Some NAT/firewall pairs may require TURN; the current UDP fallback and its
+credential lifetime are documented below.
 
 ## Runtime/UI verification record (2026-10-05)
 
@@ -477,3 +478,126 @@ rerun with external network access. Both client processes ran on this Windows
 host with private ICE candidates and no external STUN. This verifies deployed
 TLS/WebSocket signaling and the native/game runtime flow, but not connectivity
 between different NATs, cross-OS behavior or visible-window UI interaction.
+
+## Cloudflare TURN fallback and connection credentials
+
+Rendezvous v1 Welcome can include `turn: { expires_at_unix, servers }`, with 1–4
+UDP addresses and short-lived username/password pairs. The adapter queues this
+before its Welcome event. GNS installs it before outgoing connects or incoming
+signal processing. Later `turn_credentials` events update only outgoing defaults
+and listener inheritance for future connections. Existing Connecting/Ready ICE
+sessions retain their original server, username and password; ConnectionId,
+SecureTransport, SPAKE2, Sync/Ready and gameplay state are preserved.
+`turn_unavailable`, expired/older updates and WSS loss do not replace existing
+connection credentials. On `turn_unavailable`, the adapter checks the latest
+default expiry before queuing Disable. The backend clears TURN server/user/password
+strings and the Relay bit in listener/future outgoing defaults only. It retains
+the initial endpoint set and expiry watermark: a fresh credential with that set
+re-enables future TURN. Early/stale unavailable events cannot discard a newer,
+still-valid default. Set/Disable share one latest-update mailbox slot, so expiry
+supersedes a queued Set and recovery supersedes a queued Disable. Disable carries
+the initial endpoint set so it remains fixed even if the initial Set expires
+before the backend first polls. A failed native defaults update blocks new handles
+until it succeeds, while existing handles continue to poll.
+There is no rendezvous reconnect/resume implementation.
+
+STUN configuration remains in `IceConfig`. Host/private and reflexive ICE
+candidates retain higher priority than TURN relay. Only UDP TURN is supported;
+TCP/TLS requires a separate native transport change. Provider secrets belong only
+in puzzella-rendezvous, never the client or `internet-defaults.env`.
+
+Rendezvous obtains credentials before Welcome. One three-second deadline covers
+waiting for a shared issuance permit and the HTTP call. Welcome fixes TURN
+availability for that WSS session before peer establishment. A missing/expired
+initial value makes the entire control session direct-only; no later issuance
+task or late TURN installation starts, including for future peers on that session.
+A new control session may obtain TURN after provider recovery.
+Sessions with initial credentials obtain new defaults at half TTL (default TTL
+24 hours, update about every 12 hours). Failures retain still-valid defaults and
+retry with bounded backoff. After expiry, `turn_unavailable` disables future TURN
+until provider recovery yields a fresh credential. WSS loss ends this refresh task.
+TURN does not grant room membership, player identity or game password authentication.
+
+For example, peer1/peer2 start with A. After the host receives B, peer1/peer2 still
+use A, while newly accepted peer3 and outgoing peer4 use B. This does not extend
+peer1/peer2's credential lifetime. Configure the credential TTL for the expected
+connection duration; the server permits up to 172800 seconds (48 hours). Validity
+starts at credential issuance, so cached defaults have only their remaining TTL. A route
+requiring TURN can fail when its original credential expires, even if the WSS
+session continues to receive newer defaults. ICE restart / allocation migration
+is not implemented. Cloudflare documents its
+[credential lifetime and ICE restart guidance](https://developers.cloudflare.com/realtime/turn/faq/).
+
+[RFC 8656 sections 5/6](https://www.rfc-editor.org/rfc/rfc8656.html#section-5) bind an
+allocation to its original authentication information. An authenticated
+non-Allocate request with a different username must receive 441 Wrong Credentials.
+The native patch snapshots and locks the connection's TURN configuration at ICE
+initialization, including values inherited from a listener. No active allocation
+credential-update API exists: `Puzzella_UpdateTURN` and its Rust calls were removed.
+Allocation Refresh, CreatePermission and automatic reallocation use that
+connection's original credentials. 438 changes the nonce, with bounded challenge
+retries; it does not change the username/password. Refresh errors/timeouts retain
+the native reallocation path, and permissions are renewed before their lifetime.
+Native and WebSocket credential Debug/trace output is suppressed/redacted. See
+[native patch provenance](../vendor/game-networking-sockets-sys/PUZZELLA_PATCH.md).
+
+Updates still require exactly the initial endpoint address set (order may change).
+The server treats a changed set as a provider error, retaining the old defaults
+while retrying. The adapter/backend reject it before mutating listener defaults.
+
+Local tests use `game/tests/fixtures/turn_server.py` (Python standard library only)
+and a private IPv4 interface. They never contact Cloudflare. The fixture verifies
+TURN long-term authentication, retains the allocation's original username/key,
+and returns 441 for a different valid credential on Refresh/CreatePermission.
+A UDP protocol test checks Allocate(A), Refresh(A), Refresh/Permission(B) -> 441,
+and continued Refresh/Permission(A). Native tests retain A through default
+updates to B, an in-flight Refresh and 438 without destroying the allocation;
+mixed peers verify A on existing connections and B on future incoming connections.
+An adapter/native integration test drives Welcome(A), defaults(B), B expiry,
+TurnUnavailable and recovery(C). Peer1 continues with A, peer2 connects directly
+with empty TURN strings/Relay disabled and zero Allocate requests (including
+unauthenticated attempts), and peer3 uses C through the relay. After C, peer1 and
+peer2 keep their original configuration and all three exchange data. A server
+WebSocket test separately verifies provider outage, expiry notification and
+recovery without closing the room. These tests use accelerated metadata expiry;
+the fixture's static keys remain usable for the existing A allocation.
+
+```sh
+cargo test --locked -p jigsall-game --features rendezvous gns_localhost_turn -- --nocapture --test-threads=1
+cargo test --locked -p jigsall-game --features rendezvous -- --skip gns_localhost
+```
+
+The cross-repository runtime smoke harness starts only local fixtures. Build
+`cargo build --locked --example turn_fixture_server` in puzzella-rendezvous and
+`cargo test --locked -p jigsall-game --features rendezvous --lib --no-run` here.
+Cargo prints the game test executable; pass that path and the server example to:
+
+```sh
+python game/tests/fixtures/run_turn_smoke.py /path/to/turn_fixture_server /path/to/jigsall_game-test-executable
+```
+
+The harness pushes B while existing allocations continue to Refresh with A,
+reaches SPAKE2 -> image / baseline / catch-up -> Ready, and verifies gameplay on
+the same connection. It also verifies encrypted lanes after control-worker
+shutdown and both flows when the provider is unavailable. A recovering mock API
+becomes healthy after two seconds; Welcome without TURN remains direct-only and
+continues through Ready/gameplay after recovery, without allocations.
+Forced-relay cases restrict fixture forwarding to allocation pairs and require
+native relay flags plus actual relay traffic. The runtime fixture waits for image
+decode/install before checking dimensions/hash and announcing Ready. Known fixture
+credentials must be absent from captured output. Loopback WS is test-only; this
+harness does not test public WSS/TLS or production Cloudflare. Fixture keys are
+static; the mock provider's metadata TTL is accelerated to exercise default
+updates. Credential expiry, 24/48-hour wall-clock behavior and ICE restart recovery
+are not validated by these fixtures.
+
+Verification on 2026-10-05, Windows x86_64: all 26 non-ignored GNS localhost tests
+and six cross-repository smoke runs passed. This includes 441 rejection of changed
+allocation credentials, unchanged A authentication after a B default update,
+438 recovery with A, future incoming connections using B, and expiry/Disable/recovery
+with A on peer1, no Allocate for direct peer2, and C on future relay peer3. Server
+tests passed 42 unit and 14 WebSocket cases; server fmt, all-target Clippy and builds
+passed.
+The rendezvous workspace suite passed 936 tests/doctests; game fmt, all-target
+Clippy and the app build passed. Both Rust protocol copies and JSONL fixtures
+remain byte-identical.

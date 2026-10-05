@@ -139,6 +139,8 @@ pub struct RendezvousAdapter {
     deferred: Option<ClientMessage>,
     deferred_signal: Option<ClientMessage>,
     terminal_reported: bool,
+    turn_expiry: u64,
+    turn_addresses: Vec<String>,
 }
 fn peer(id: protocol::PeerId) -> PeerId {
     PeerId::from_bytes(id.0)
@@ -171,7 +173,42 @@ impl RendezvousAdapter {
             deferred: None,
             deferred_signal: None,
             terminal_reported: false,
+            turn_expiry: 0,
+            turn_addresses: Vec::new(),
         })
+    }
+    fn install_turn(&mut self, turn: protocol::TurnCredentials) -> Result<(), RendezvousError> {
+        turn.validate()
+            .map_err(|_| RendezvousError::ProtocolViolation)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if turn.expires_at_unix <= now || turn.expires_at_unix <= self.turn_expiry {
+            return Ok(());
+        }
+        let mut addresses: Vec<_> = turn.servers.iter().map(|s| s.address.clone()).collect();
+        addresses.sort_unstable();
+        if matches!(self.phase, Phase::Welcome) {
+            self.turn_addresses = addresses;
+        } else if self.turn_addresses.is_empty() {
+            // Welcome without usable TURN fixes this WSS session to direct ICE.
+            return Ok(());
+        } else if addresses != self.turn_addresses {
+            return Err(RendezvousError::ProtocolViolation);
+        }
+        self.turn_expiry = turn.expires_at_unix;
+        self.signaling.install_turn(
+            turn.servers
+                .into_iter()
+                .map(|s| super::p2p::TurnServer {
+                    address: s.address,
+                    username: s.username,
+                    password: s.password,
+                })
+                .collect(),
+        );
+        Ok(())
     }
     pub fn create_room(&mut self) -> Result<(), RendezvousError> {
         if !matches!(self.phase, Phase::Idle) {
@@ -339,6 +376,11 @@ impl RendezvousAdapter {
         self.rejected.clear();
         self.phase = Phase::Closed;
     }
+    fn disable_expired_turn(&self, now: u64) {
+        if !self.turn_addresses.is_empty() && now >= self.turn_expiry {
+            self.signaling.disable_turn(self.turn_addresses.clone());
+        }
+    }
     #[cfg(test)]
     fn handle(
         &mut self,
@@ -354,10 +396,29 @@ impl RendezvousAdapter {
         native_capacity: bool,
     ) -> Result<(), RendezvousError> {
         match message {
-            ServerMessage::Welcome { authority_id } if matches!(self.phase, Phase::Welcome) => {
+            ServerMessage::Welcome { authority_id, turn }
+                if matches!(self.phase, Phase::Welcome) =>
+            {
+                if let Some(turn) = turn {
+                    self.install_turn(turn)?;
+                }
                 self.authority = Some(authority_id);
                 self.phase = Phase::Idle;
                 events.push(RendezvousEvent::Welcome { authority_id });
+            }
+            ServerMessage::TurnCredentials { turn }
+                if !matches!(self.phase, Phase::Welcome | Phase::Closed) =>
+            {
+                self.install_turn(turn)?;
+            }
+            ServerMessage::TurnUnavailable {}
+                if !matches!(self.phase, Phase::Welcome | Phase::Closed) =>
+            {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| RendezvousError::ProtocolViolation)?
+                    .as_secs();
+                self.disable_expired_turn(now);
             }
             ServerMessage::RoomCreated {
                 room_id,

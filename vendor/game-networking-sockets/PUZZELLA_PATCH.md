@@ -16,3 +16,5 @@ The root crates.io patch replaces only this high-level wrapper; sys 0.3.0 and
 its bundled native GNS remain registry dependencies under the root lockfile.
 Default builds still do not compile GNS. When upgrading gns-rs, remove this patch
 once an equivalent identity-aware initializer is provided upstream.
+
+The companion `../game-networking-sockets-sys` Cargo patch adds native ICE live TURN credential updates. See its `PUZZELLA_PATCH.md` for provenance and scope.

@@ -1,0 +1,22 @@
+# cmake script to build the vjson *TESTS* with google test.
+# There is not makefile to build vjson itself.  Simply add
+# vjson.cpp to your project.
+
+cmake_minimum_required(VERSION 3.15)
+project(test_jvson C CXX)
+
+# Add in googletest.  We're including this as a submodule, so turn off some
+# options
+option(BUILD_GMOCK "Builds the googlemock subproject" OFF)
+option(INSTALL_GTEST "Enable installation of googletest. (Projects embedding googletest may want to turn this OFF.)" OFF)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+add_subdirectory( googletest )
+
+add_executable(
+	test_vjson
+	test_vjson.cpp
+	../vjson.cpp)
+target_link_libraries(test_vjson gtest_main)
+
+enable_testing()
+add_test(NAME test_vjson COMMAND test_vjson)

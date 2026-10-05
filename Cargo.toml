@@ -2,11 +2,13 @@
 members = [".", "core", "game", "puzzle", "ui"]
 default-members = [".", "core", "game", "puzzle", "ui"]
 resolver = "2"
-exclude = ["vendor/game-networking-sockets"]
+exclude = ["vendor/game-networking-sockets", "vendor/game-networking-sockets-sys"]
 
 [patch.crates-io]
-# Pinned 0.3.0 wrapper with identity-aware, single-shot initialization only.
+# Pinned 0.3.0 wrapper initialization and native ICE live TURN credentials.
 game-networking-sockets = { path = "vendor/game-networking-sockets" }
+
+game-networking-sockets-sys = { path = "vendor/game-networking-sockets-sys" }
 
 [workspace.package]
 version = "0.1.0"

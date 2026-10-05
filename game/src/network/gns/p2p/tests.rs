@@ -32,6 +32,8 @@ enum Frame {
     Connected(String),
     Authenticated,
     Exchange,
+    Rotate,
+    Rotated,
     Received,
     Close,
     Closed,
@@ -99,6 +101,12 @@ impl Transport for Observed {
                 self.inner.connections[connection]
                     .native
                     .assert_send_rate(256 * 1024);
+                if std::env::var_os("JIGSALL_TURN_INITIAL_UNAVAILABLE").is_some() {
+                    self.inner.connections[connection]
+                        .native
+                        .assert_turn_user("");
+                    assert!(!self.inner.connections[connection].native.is_relay());
+                }
                 emit(Frame::Connected(
                     self.inner.connections[connection].native.details(),
                 ));
@@ -146,6 +154,15 @@ fn gns_p2p_child() {
     };
     #[cfg(not(feature = "rendezvous"))]
     let mut backend = GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
+    if let Ok(address) = std::env::var("JIGSALL_TURN_TEST_ADDRESS") {
+        backend
+            .install_turn(&[TurnServer {
+                address,
+                username: "user-A".into(),
+                password: "password-A".into(),
+            }])
+            .unwrap();
+    }
     let mailbox = backend.signaling();
     emit(Frame::Peer(backend.peer_id().to_bytes()));
     let (tx, rx) = mpsc::sync_channel(256);
@@ -277,6 +294,28 @@ fn gns_p2p_child() {
                 Frame::Signal(peer, bytes) => {
                     mailbox.receive(PeerId::from_bytes(peer), &bytes).unwrap();
                 }
+                Frame::Rotate => {
+                    let address = std::env::var("JIGSALL_TURN_TEST_ADDRESS").unwrap();
+                    transport
+                        .backend_mut()
+                        .inner
+                        .install_turn(&[TurnServer {
+                            address,
+                            username: "user-B".into(),
+                            password: "password-B".into(),
+                        }])
+                        .unwrap();
+                    // Only future connection defaults changed; this connection stays A.
+                    for connection in transport.backend_mut().inner.connections.values() {
+                        connection.native.assert_turn_user("user-A");
+                    }
+                    emit(Frame::Rotated);
+                    exchange = false;
+                    sent = false;
+                    received = [false; 3];
+                    reported_receive = false;
+                    records.lock().unwrap().clear();
+                }
                 Frame::Exchange => {
                     assert!(authenticated);
                     exchange = true;
@@ -382,7 +421,7 @@ fn gns_p2p_child() {
             if !authenticated && state == Some(ConnectionState::Authenticated) {
                 assert!(transport.has_channel(id));
                 assert!(connections.player(id).is_none()); // PAKE success != Ready
-                transport.backend().inner.connections[&id]
+                transport.backend_mut().inner.connections[&id]
                     .native
                     .assert_send_rate(crate::network::lifecycle::BULK_BYTES_PER_SECOND as i32);
                 authenticated = true;
@@ -439,6 +478,7 @@ fn gns_p2p_child() {
 
 #[cfg(feature = "rendezvous")]
 mod rendezvous_smoke;
+pub(in crate::network::gns) mod turn_rotation;
 
 struct Process {
     child: Child,

@@ -3123,8 +3123,6 @@ dependencies = [
 [[package]]
 name = "game-networking-sockets-sys"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b9d11200371f3b60115e9b4a9078cb649b4c9fbc46fa8fa356f725974b28172"
 dependencies = [
  "bindgen",
  "cmake",
@@ -3866,6 +3864,108 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jigsall"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "jigsall-game",
+ "jigsall-ui",
+ "winresource",
+]
+
+[[package]]
+name = "jigsall-core"
+version = "0.1.0"
+dependencies = [
+ "bevy_ecs",
+ "bevy_math",
+ "serde",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "jigsall-game"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "ash",
+ "base64",
+ "bevy",
+ "bevy_egui",
+ "bytemuck",
+ "chacha20poly1305",
+ "crossbeam",
+ "directories",
+ "fast_image_resize",
+ "futures-util",
+ "game-networking-sockets",
+ "getrandom 0.4.3",
+ "hkdf",
+ "image",
+ "instant",
+ "jigsall-core",
+ "jigsall-puzzle",
+ "objc2-metal 0.3.2",
+ "pakery-core",
+ "pakery-crypto",
+ "pakery-spake2",
+ "postcard",
+ "rand 0.10.3",
+ "rand_core 0.10.1",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+ "uuid",
+ "webpki-roots 1.0.9",
+ "wgpu-hal",
+ "wgpu-types",
+ "winit",
+ "zeroize",
+]
+
+[[package]]
+name = "jigsall-puzzle"
+version = "0.1.0"
+dependencies = [
+ "bevy_log",
+ "bevy_math",
+ "jigsall-core",
+ "rand 0.10.3",
+ "rand_chacha 0.10.0",
+]
+
+[[package]]
+name = "jigsall-ui"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "bevy",
+ "bevy_egui",
+ "chrono",
+ "crossbeam",
+ "fluent-bundle",
+ "fluent-syntax",
+ "image",
+ "jigsall-core",
+ "jigsall-game",
+ "jigsall-puzzle",
+ "rand 0.10.3",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sys-locale",
+ "tempfile",
+ "unic-langid",
+ "zeroize",
+]
 
 [[package]]
 name = "jni"
@@ -5073,108 +5173,6 @@ checksum = "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb"
 dependencies = [
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "jigsall"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "jigsall-game",
- "jigsall-ui",
- "winresource",
-]
-
-[[package]]
-name = "jigsall-core"
-version = "0.1.0"
-dependencies = [
- "bevy_ecs",
- "bevy_math",
- "serde",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "jigsall-game"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "ash",
- "base64",
- "bevy",
- "bevy_egui",
- "bytemuck",
- "chacha20poly1305",
- "crossbeam",
- "directories",
- "fast_image_resize",
- "futures-util",
- "game-networking-sockets",
- "getrandom 0.4.3",
- "hkdf",
- "image",
- "instant",
- "objc2-metal 0.3.2",
- "pakery-core",
- "pakery-crypto",
- "pakery-spake2",
- "postcard",
- "jigsall-core",
- "jigsall-puzzle",
- "rand 0.10.3",
- "rand_core 0.10.1",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sha2 0.11.0",
- "tempfile",
- "tokio",
- "tokio-tungstenite",
- "url",
- "uuid",
- "webpki-roots 1.0.9",
- "wgpu-hal",
- "wgpu-types",
- "winit",
- "zeroize",
-]
-
-[[package]]
-name = "jigsall-puzzle"
-version = "0.1.0"
-dependencies = [
- "bevy_log",
- "bevy_math",
- "jigsall-core",
- "rand 0.10.3",
- "rand_chacha 0.10.0",
-]
-
-[[package]]
-name = "jigsall-ui"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "bevy",
- "bevy_egui",
- "chrono",
- "crossbeam",
- "fluent-bundle",
- "fluent-syntax",
- "image",
- "jigsall-core",
- "jigsall-game",
- "jigsall-puzzle",
- "rand 0.10.3",
- "rfd",
- "serde",
- "serde_json",
- "sys-locale",
- "tempfile",
- "unic-langid",
- "zeroize",
 ]
 
 [[package]]
