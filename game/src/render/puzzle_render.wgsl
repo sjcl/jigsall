@@ -1,4 +1,4 @@
-#import jigsall::presentation::presentation_position
+#import jigsall::presentation::{presentation_pose, presentation_rotate, presentation_splat_size, RotationAnimation}
 #import jigsall::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
@@ -9,6 +9,7 @@ struct PuzzleUniform {
     piece_size_px:vec2<f32>,pixel_world_size:vec2<f32>,
     render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
+    rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 // Same counterclockwise quarter turns and bits 9..10 as jigsall_core::rotation.
@@ -31,6 +32,8 @@ fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
 @group(0) @binding(7) var<storage,read> remote_slots:array<u32>;
 struct RemoteDeltas { entries:array<vec4<f32>,32> };
 @group(0) @binding(8) var<uniform> remote_deltas:RemoteDeltas;
+@group(0) @binding(9) var<storage,read> rotation_slots:array<u32>;
+@group(0) @binding(10) var<storage,read> rotation_animations:array<RotationAnimation>;
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -48,17 +51,22 @@ struct VertexOutput {
     let slot=remote_slots[id];
     let packed=remote_deltas.entries[(max(slot,1u)-1u)/2u];
     let remote_delta=select(packed.xy,packed.zw,slot!=0u && ((slot-1u)&1u)!=0u);
-    let position=presentation_position(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta);
+    var animation:RotationAnimation;
+    if config.rotation_active!=0u {
+        let rotation_slot=rotation_slots[component_roots[id]];
+        if rotation_slot!=0u {animation=rotation_animations[rotation_slot-1u];}
+    }
+    let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
+    let position=pose.position;
     var out:VertexOutput;
-    let rotation=decode_rotation(state.flags);
+    let rotation=pose.rotation;
     if config.far_zoom!=0u {
         let center=config.clip_from_world*vec4(position,0.0,1.0);
         let center_px=config.viewport_origin+(center.xy/center.w*vec2(0.5,-0.5)+0.5)*config.viewport_size;
         let snapped_px=floor(center_px)+0.5;
-        var piece_size_px=config.piece_size_px;
-        if (rotation&1u)!=0u {piece_size_px=config.size.yx/config.pixel_world_size;}
-        let splat_size=max(piece_size_px,vec2(config.splat_min_px));
-        let pixel=snapped_px+corners[vi]*vec2(1.0,-1.0)*splat_size*0.5;
+        let splat_size=presentation_splat_size(config.size,rotation,config.pixel_world_size,config.splat_min_px);
+        let offset=presentation_rotate(corners[vi]*splat_size*0.5,rotation)/config.pixel_world_size;
+        let pixel=snapped_px+offset*vec2(1.0,-1.0);
         let ndc=(pixel-config.viewport_origin)/config.viewport_size*vec2(2.0,-2.0)+vec2(-1.0,1.0);
         out.position=vec4(ndc*center.w,center.z,center.w);
         // Snap first, crop second: a 1x1 point target keeps the main footprint.
@@ -68,7 +76,7 @@ struct VertexOutput {
     } else {
         let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
         let local=corners[vi]*half;let edges=piece_profiles(config.seed,config.grid,cell);
-        out.position=config.clip_from_world*vec4(position+rotate_quarter(local,rotation),0.0,1.0);
+        out.position=config.clip_from_world*vec4(position+presentation_rotate(local,rotation),0.0,1.0);
         out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);
         out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];
     }

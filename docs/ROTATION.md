@@ -53,14 +53,16 @@ translation(C) = position(minimum_member(C))
 ```
 
 `rotate_quarter(v, 1) = (-v.y, v.x)`はworld座標の反時計回りです。
-CPU/GPUとも符号反転とxy交換だけを使い、sin / cosはありません。
+canonical quarter-turn はCPU/GPUとも符号反転とxy交換だけを使います。
+continuous presentation の残差だけは sin / cos を使います。
 `matches_transform`は従来と同じf32の加減算丸め許容を使い、edge driftを
 snap epsilonとして許可しません。`matches_translation`はrotation 0の薄いwrapperです。
 
 回転操作だけmemberを走査してworld AABB中心と新しいcanonical boundsを求めます。
 中心とtranslationはf64で計算し、各positionをcanonical座標から再構築します。
 すでに丸めたpositionを繰り返し回さず、singletonの中心はbitsまで保持します。
-一時planは操作終了時に破棄し、componentやpieceの永続transform storageは追加しません。
+一時planは操作終了時に破棄します。continuous presentation の短命な component 残差は
+canonical storage と独立して保持します。
 
 ## Drag rotation and rebase
 
@@ -96,7 +98,7 @@ CPU/GPU dense stateとsnapshot recordはともに16 bytesのままです。
 共通helperがflags bit 9–10をencode / decodeします。
 CONNECTED_TOP / RIGHT / BOTTOM / LEFTはcanonical edgeのcacheで、回転時に変更しません。
 rendererはworld quadだけ回転し、SDF / UV / profile / outlineはcanonical localを使います。
-visibilityとpick visibilityは奇数rotationでAABB extentを交換します。
+visibilityとpick visibilityは共通の表示 orientation からAABB extentを求めます。
 far splatも長辺を回転し、pixel-center snapping、alpha、depth、pick ROIを維持します。
 
 snapshot schema 1はdefinitionにrotation_enabledを含み、16-byte recordでrotationを保存します。
@@ -137,7 +139,8 @@ GNSのMSVC検索先は[Windowsビルド手順](WINDOWS_BUILD.md)に従い、そ�
 Windowsのrelease実GPUテスト`gpu_quarter_turn_images_shapes_and_picking_agree`も通過し、
 四方向の画像・形状・point / rectangle pickingの一致を確認しました。
 
-通常frameに追加する処理はGPUのrotation bit decodeと必要なxy交換だけです。
+canonical quarter-turn の通常frame処理はGPUのrotation bit decodeと必要なxy交換です。
+continuous presentation 中の追加処理は以下の節を参照してください。
 `DragTransform { members, delta }`、O(1) pointer更新、dirty range upload、
 component root buffer、idle CPU処理は既存の構造を維持します。
 pointer dragはCPU O(1)、state upload 0、membership upload 0のままです。
@@ -150,6 +153,66 @@ protocol basis / anchorを先行更新せず、predictionが消費したdeltaを
 scalar drag.deltaと合成します。Release待ちも同じsuffixを維持します。詳細・atomicな
 schedule順・GPU restore・4層の責務は[ARCHITECTURE.md](ARCHITECTURE.md#local-uncommitted-rotation-presentation)
 と[Direct-IP runtime](DIRECT_IP_RUNTIME.md#local-release-presentation-while-awaiting-authority)を参照してください。
+
+## Continuous visual rotation
+
+```text
+canonical quarter-turn → prediction final pose → continuous visual presentation → render + picking
+```
+
+Q/E のゲーム上の90°回転はこれまでどおり即時確定します。画面上だけ、最終 pose に対する
+残差角（通常 -90° / +90°）を約120msで0へ補間します。定数は
+`resources/rotation_visual.rs::ROTATION_SECONDS_PER_QUARTER` に集約し、`Time<Real>` と
+smoothstep の ease-in-out を使います。連打時は現在の表示角から新 target へ retarget し、
+残差の角距離に応じた時間を使います。Q / E の signed な方向を保つため、
+270°→0°で逆方向へ270°回転しません。個別 piece の position lerp は使いません。
+authority と prediction が共有する `rotation_plan_with` の pivot に対する剛体回転です。
+
+`store.local_rotation` は未 ACK 回転の最終 pose override のままです。
+`store.rotation_visual` が別の animation lifetime を持ち、30ms の ACK で override が
+消えても animation は終了しません。ACK による basis 変更は同じ time curve を維持して
+残差を rebase します。拒否・partial acceptance は現在の表示から新しい final pose へ戻し、
+終了時は追加 transform が identity になります。通常の Rotate と RotateDrag は同じ record
+と shader を使い、pointer の translation は残差の後に加算します。
+release / cancel の logical pose 変更も操作境界で rebase し、snap による topology 変更や
+placement は残差を破棄します。session teardown / scope 変更、Puzzle 変更、snapshot /
+baseline install では全 animation を破棄します。
+
+GPU root buffer を使う root→slot lookup は4 bytes / piece、record は32 bytes / component
+です。slot 数は可変で、RotateDrag の独立 component は別々の pivot を持ちます。
+CPU は操作境界でだけ member planner / table 準備を行い、animation frame は clock / uniform
+を更新するだけです。CPU position の全 member 再計算と `GpuPieceState` 再 upload はありません。
+main / pick visibility、normal / far draw、point / rectangle は `presentation_pose` を共有します。
+UV / shape / alpha は canonical local の共通判定を保ちます。
+
+continuous angle / progress は save、snapshot、protocol、authority、snap、connectivity、
+gameplay validation に含めません。remote player の新規回転 animation は未対応です。
+height、shadow、side、bevel、graphics quality、screen-space LOD はこの段階では追加していません。
+CPU / GPU の progress を後続 effect の入口に使えます。GPU layout と lifetime の詳細は
+[アーキテクチャ](ARCHITECTURE.md#continuous-rotation-presentation)を参照してください。
+
+追加 CPU 回帰は開始 / 途中 / 終了、剛体性、identity、Q/Q・E/E・Q/E、wraparound、
+30ms ACK と prediction retirement、拒否、drag pointer / ACK basis、release final delta、
+reset、DSU root history、256独立対象、100万 pieces の frame 中 piece access なしを扱います。
+network runtime 回帰は実際の ACK route / suffix replay を通して通常回転と RotateDrag を検証します。
+実 GPU fixture は normal / far の45°途中に main draw / point / rectangle が一致し、
+animation frame の state / root / animation table upload が0であることを検査します。
+
+```powershell
+cargo test --workspace --locked
+cargo test --locked -p jigsall-game --release gpu_continuous_rotation -- --ignored --nocapture --test-threads=1
+```
+
+2026-10-06、Windows / NVIDIA GeForce RTX 5090 / Vulkan（NVIDIA 610.88）で確認しました。
+workspace 通常テストは doctest 込み869件が通過し、全 target / 全 feature の Clippy
+（`-D warnings`）と `cargo fmt --all --check` も通過しました。
+release の GPU 回帰21件と、追加の細長い far splat fixture 1件、合計22件が通過しました。
+新規2 fixture は release で個別にも実行しました。45°途中の剛体 position / orientation、
+normal / far の main draw と point / rectangle の一致、DSU root history、細長い splat の
+実際の回転 footprint、animation frame の state / root / animation table upload 0 bytes、
+終了時の identity を検証しました。既存の100万 pieces coverage / picking 回帰も通過しました。
+上記2026-10-04の記録で baseline でも失敗した4 fixture は今回の GPU 回帰から除外しました。
+速度 benchmark、FPS、他 OS の実機検証は行っていません。
 
 ```powershell
 cargo test --workspace --lib

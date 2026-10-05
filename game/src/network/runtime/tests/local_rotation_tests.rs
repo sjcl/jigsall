@@ -150,6 +150,103 @@ fn local_rotate_multiple_inputs_retire_only_the_acknowledged_prefix() {
     }
 }
 
+fn visual_pose(app: &App, id: PieceId) -> (Vec2, f32) {
+    let store = app.world().resource::<PieceDataStore>();
+    let (position, _) = pose(app, id);
+    let base = store.presentation_state(id).position;
+    let root = store.connectivity.minimum_member(id);
+    let animation = store
+        .rotation_visual
+        .animation(root)
+        .expect("visual rotation");
+    (
+        animation.position(base, store.rotation_visual.clock) + position - base,
+        animation.target_angle + animation.angle(store.rotation_visual.clock),
+    )
+}
+
+#[test]
+fn visual_rotation_early_ack_is_independent_of_prediction_retirement() {
+    let mut pair = connected_pair();
+    pair.client
+        .world_mut()
+        .resource_mut::<PieceDataStore>()
+        .selected_pieces = members();
+    pair.bus.lock().unwrap().hold_authority_control = true;
+    rotate(&mut pair, 1);
+    pair.client
+        .world_mut()
+        .resource_mut::<PieceDataStore>()
+        .rotation_visual
+        .clock = 0.030;
+    let before = visual_pose(&pair.client, PieceId(0));
+    let animation = pair
+        .client
+        .world()
+        .resource::<PieceDataStore>()
+        .rotation_visual
+        .animation(PieceId(0))
+        .unwrap();
+    pair.host.update();
+    deliver_one(&mut pair);
+    pair.client.update();
+    let after = visual_pose(&pair.client, PieceId(0));
+    assert!(before.0.distance(after.0) < 0.0001);
+    assert!((before.1 - after.1).abs() < 0.0001);
+    let store = pair.client.world().resource::<PieceDataStore>();
+    assert!(store.local_rotation.poses.is_empty());
+    let ack = store.rotation_visual.animation(PieceId(0)).unwrap();
+    assert_eq!(
+        (ack.start, ack.duration),
+        (animation.start, animation.duration)
+    );
+    assert!(ack.angle(0.030).abs() > 1.0);
+    assert_eq!(ack.angle(0.120), 0.0);
+}
+
+#[test]
+fn visual_drag_rotation_early_ack_preserves_current_pointer_and_protocol_basis() {
+    let mut pair = connected_pair();
+    begin_gesture(&mut pair.client);
+    pair.converge();
+    pair.bus.lock().unwrap().hold_authority_control = true;
+    let a = Vec2::new(13.0, 17.0);
+    let b = Vec2::new(31.0, 29.0);
+    pointer(&mut pair.client, a, true, false);
+    rotate(&mut pair, 1);
+    pair.client
+        .world_mut()
+        .resource_mut::<PieceDataStore>()
+        .rotation_visual
+        .clock = 0.030;
+    pointer(&mut pair.client, b, true, false);
+    pair.client.update();
+    let before = visual_pose(&pair.client, PieceId(0));
+    pair.host.update();
+    deliver_one(&mut pair);
+    pair.client.update();
+    let after = visual_pose(&pair.client, PieceId(0));
+    assert!(
+        before.0.distance(after.0) < 0.0001,
+        "{before:?} -> {after:?}"
+    );
+    assert!((before.1 - after.1).abs() < 0.0001);
+    assert_eq!(
+        pair.client.world().resource::<PieceDataStore>().drag.delta,
+        b - a
+    );
+    let store = pair.client.world().resource::<PieceDataStore>();
+    assert!(store.local_rotation.poses.is_empty());
+    assert_eq!(
+        store
+            .rotation_visual
+            .animation(PieceId(0))
+            .unwrap()
+            .angle(0.120),
+        0.0
+    );
+}
+
 #[test]
 fn local_rotate_drag_partial_ack_chain_preserves_rotation_pointer_and_pending_release() {
     for move_between in [false, true] {
@@ -337,6 +434,13 @@ fn local_rotation_disconnect_stop_and_menu_restore_canonical_upload() {
             .selected_pieces = members();
         pair.bus.lock().unwrap().hold_authority_control = true;
         rotate(&mut pair, 1);
+        assert!(pair
+            .client
+            .world()
+            .resource::<PieceDataStore>()
+            .rotation_visual
+            .animation(PieceId(0))
+            .is_some());
         assert!(!pair
             .client
             .world()
@@ -368,6 +472,13 @@ fn local_rotation_disconnect_stop_and_menu_restore_canonical_upload() {
             .local_rotation
             .poses
             .is_empty());
+        assert!(pair
+            .client
+            .world()
+            .resource::<PieceDataStore>()
+            .rotation_visual
+            .animation(PieceId(0))
+            .is_none());
     }
 }
 

@@ -3,6 +3,9 @@ use crate::{
     components::MainCamera,
     resources::{
         remote_drag::{prepare_remote_drag_upload, RemoteDragPresentation, RemoteDragUpload},
+        rotation_visual::{
+            prepare_rotation_visual_upload, update_rotation_clock, RotationVisualUpload,
+        },
         PieceUpload, PuzzleImage,
     },
     selection::{api::*, coordinates::*, RawResult},
@@ -88,7 +91,12 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
     app.insert_resource(ready.clone());
     app.init_resource::<RemoteDragPresentation>()
         .init_resource::<RemoteDragUpload>()
-        .add_systems(Last, prepare_remote_drag_upload);
+        .init_resource::<RotationVisualUpload>()
+        .add_systems(First, update_rotation_clock.after(bevy::time::TimeSystems))
+        .add_systems(
+            Last,
+            (prepare_remote_drag_upload, prepare_rotation_visual_upload),
+        );
     if !enabled {
         return;
     }
@@ -182,6 +190,9 @@ pub struct PuzzleUniform {
     pub far_zoom: u32,
     pub splat_min_px: f32,
     pub splat_padding: UVec2,
+    pub rotation_time: f32,
+    pub rotation_active: u32,
+    pub rotation_padding: UVec2,
 }
 impl PuzzleUniform {
     fn configure_screen_space(&mut self, viewport: URect) {
@@ -208,6 +219,7 @@ struct PresentationShader(#[allow(dead_code)] Handle<Shader>);
 struct ExtractedPuzzle {
     upload: PieceUpload,
     remote: RemoteDragUpload,
+    rotation: RotationVisualUpload,
     image: Option<AssetId<Image>>,
     config: PuzzleUniform,
     camera: Option<Entity>,
@@ -220,13 +232,14 @@ struct ExtractedPuzzle {
 fn extract_puzzle(
     mut out: ResMut<ExtractedPuzzle>,
     upload: Extract<Option<Res<PieceUpload>>>,
-    remote: Extract<Res<RemoteDragUpload>>,
+    presentations: Extract<(Res<RemoteDragUpload>, Res<RotationVisualUpload>)>,
     image: Extract<Option<Res<PuzzleImage>>>,
     overlay: Extract<Option<Res<SelectionOverlay>>>,
     selection: Extract<Res<PuzzleSelection>>,
     cameras: Extract<Query<(&Camera, &GlobalTransform, &RenderEntity), With<MainCamera>>>,
 ) {
-    out.remote = remote.clone();
+    out.remote = (*presentations.0).clone();
+    out.rotation = (*presentations.1).clone();
     out.camera = None;
     out.image = None;
     out.request = selection.latest;
@@ -284,6 +297,8 @@ fn extract_puzzle(
         drag_delta: out.upload.drag.delta,
         drag_active: u32::from(!out.upload.drag.members.is_empty()),
         preview_active: u32::from(selection.preview_active),
+        rotation_time: out.rotation.time,
+        rotation_active: u32::from(out.rotation.active && out.rotation.epoch == out.upload.epoch),
         ..default()
     };
     out.config.configure_screen_space(viewport);
@@ -318,6 +333,10 @@ struct StateBuffers {
     remote_deltas: Buffer,
     remote_revision: u64,
     remote_delta_revision: u64,
+    rotation_slots: Buffer,
+    rotation_animations: Buffer,
+    rotation_capacity: usize,
+    rotation_revision: u64,
     selected: Buffer,
     current_selected: Arc<[u32]>,
     preview: Buffer,
@@ -429,6 +448,7 @@ struct GpuRenderer {
     remote_mapping_upload_bytes: u64,
     remote_mapping_upload_calls: usize,
     remote_delta_upload_bytes: u64,
+    rotation_upload_bytes: u64,
     selection_upload_bytes: u64,
     root_upload_bytes: u64,
     root_upload_calls: usize,
@@ -477,6 +497,10 @@ impl GpuRenderer {
                         storage_buffer_read_only_sized(false, None)
                             .visibility(ShaderStages::VERTEX),
                         uniform_buffer_sized(false, None).visibility(ShaderStages::VERTEX),
+                        storage_buffer_read_only_sized(false, None)
+                            .visibility(ShaderStages::VERTEX),
+                        storage_buffer_read_only_sized(false, None)
+                            .visibility(ShaderStages::VERTEX),
                     ),
                 ),
             ),
@@ -494,6 +518,9 @@ impl GpuRenderer {
                         storage_buffer_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         uniform_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -553,6 +580,9 @@ impl GpuRenderer {
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         uniform_buffer_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
+                        storage_buffer_read_only_sized(false, None),
                     ),
                 ),
             ),
@@ -586,6 +616,7 @@ impl GpuRenderer {
             remote_mapping_upload_bytes: 0,
             remote_mapping_upload_calls: 0,
             remote_delta_upload_bytes: 0,
+            rotation_upload_bytes: 0,
             selection_upload_bytes: 0,
             root_upload_bytes: 0,
             root_upload_calls: 0,
@@ -765,6 +796,7 @@ fn prepare_buffers(
     gpu.remote_mapping_upload_bytes = 0;
     gpu.remote_mapping_upload_calls = 0;
     gpu.remote_delta_upload_bytes = 0;
+    gpu.rotation_upload_bytes = 0;
     gpu.selection_upload_bytes = 0;
     gpu.root_upload_bytes = 0;
     gpu.root_upload_calls = 0;
@@ -885,6 +917,20 @@ fn prepare_buffers(
             ),
             remote_revision: u64::MAX,
             remote_delta_revision: u64::MAX,
+            rotation_slots: buffer(
+                &device,
+                "rotation slots by component root",
+                u64::from(count) * 4,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            ),
+            rotation_animations: buffer(
+                &device,
+                "rotation presentation records",
+                32,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            ),
+            rotation_capacity: 1,
+            rotation_revision: u64::MAX,
             selected: buffer(
                 &device,
                 "committed selection bitset",
@@ -993,6 +1039,38 @@ fn prepare_buffers(
             delta_bytes = 512;
         }
     }
+    let mut rotation_bytes = 0;
+    if frame.rotation.epoch == buffers.epoch && buffers.rotation_revision != frame.rotation.revision
+    {
+        let count = frame.rotation.records.len();
+        if count > buffers.rotation_capacity {
+            buffers.rotation_capacity = count.next_power_of_two();
+            buffers.rotation_animations = buffer(
+                &device,
+                "rotation presentation records",
+                buffers.rotation_capacity as u64 * 32,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            );
+        }
+        if count != 0 {
+            queue.write_buffer(
+                &buffers.rotation_animations,
+                0,
+                bytemuck::cast_slice(&frame.rotation.records),
+            );
+            rotation_bytes += count as u64 * 32;
+        }
+        for range in frame.rotation.ranges.iter() {
+            queue.write_buffer(
+                &buffers.rotation_slots,
+                u64::from(range.start) * 4,
+                bytemuck::cast_slice(&range.slots),
+            );
+            rotation_bytes += range.slots.len() as u64 * 4;
+        }
+        buffers.rotation_revision = frame.rotation.revision;
+    }
+    gpu.rotation_upload_bytes = rotation_bytes;
     gpu.remote_mapping_upload_bytes = remote_bytes;
     gpu.remote_mapping_upload_calls = remote_calls;
     gpu.remote_delta_upload_bytes = delta_bytes;
@@ -1163,6 +1241,8 @@ fn puzzle_node(
     let preview = buffers.preview.clone();
     let selected = buffers.selected.clone();
     let component_roots = buffers.component_roots.clone();
+    let rotation_slots = buffers.rotation_slots.clone();
+    let rotation_animations = buffers.rotation_animations.clone();
     if gpu.depth.as_ref().is_none_or(|d| d.size != frame.target) {
         gpu.depth = Some(screen_target(
             &device,
@@ -1185,6 +1265,9 @@ fn puzzle_node(
             sort_counts.as_entire_buffer_binding(),
             remote_slots.as_entire_buffer_binding(),
             remote_deltas.as_entire_buffer_binding(),
+            component_roots.as_entire_buffer_binding(),
+            rotation_slots.as_entire_buffer_binding(),
+            rotation_animations.as_entire_buffer_binding(),
         )),
     );
     let draw_group = device.create_bind_group(
@@ -1200,6 +1283,8 @@ fn puzzle_node(
             component_roots.as_entire_buffer_binding(),
             remote_slots.as_entire_buffer_binding(),
             remote_deltas.as_entire_buffer_binding(),
+            rotation_slots.as_entire_buffer_binding(),
+            rotation_animations.as_entire_buffer_binding(),
         )),
     );
     let image_group = device.create_bind_group(
@@ -1502,6 +1587,9 @@ fn draw_selection(
             buffers.drag_members.as_entire_buffer_binding(),
             buffers.remote_slots.as_entire_buffer_binding(),
             buffers.remote_deltas.as_entire_buffer_binding(),
+            buffers.component_roots.as_entire_buffer_binding(),
+            buffers.rotation_slots.as_entire_buffer_binding(),
+            buffers.rotation_animations.as_entire_buffer_binding(),
         )),
     );
     let cull_span = diagnostics.time_span(encoder, "puzzle_pick_visibility");
@@ -1525,6 +1613,8 @@ fn draw_selection(
             buffers.component_roots.as_entire_buffer_binding(),
             buffers.remote_slots.as_entire_buffer_binding(),
             buffers.remote_deltas.as_entire_buffer_binding(),
+            buffers.rotation_slots.as_entire_buffer_binding(),
+            buffers.rotation_animations.as_entire_buffer_binding(),
         )),
     );
     let bitset = if point {

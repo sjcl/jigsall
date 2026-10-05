@@ -47,12 +47,14 @@ pub fn apply_piece_commands(
 ) {
     let start = perf.start_system_timing("apply_piece_commands");
     for request in commands.read() {
+        let visual = store.capture_rotation_command(&request.command, definition.as_deref());
         let applied = store.apply_command(
             request.player,
             &request.command,
             definition.as_deref(),
             local_player.0,
         );
+        store.finish_rotation_boundary(visual);
         if applied.drag_rebased {
             if let (Some(interaction), Some(pointer)) = (
                 interaction.as_deref_mut(),

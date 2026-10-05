@@ -122,11 +122,12 @@ Direct-IP clientのRelease待ちでは、gesture終了後も`CommandBridge`がac
 
 ### Local uncommitted rotation presentation
 
-描画poseには4層があります。CPU `PieceDataStore.states` はauthorityがcommitした
+logical / predicted pose と drag translation は従来の4層です。CPU `PieceDataStore.states` はauthorityがcommitした
 canonical poseです。`store.drag` はlocal active / pending Releaseのmembershipとscalar
 translationです。`store.local_rotation` はlocal未ACK Rotate / RotateDragだけの疎な
 pose overrideです。`RemoteDragPresentation` はremote Transientの平滑化されたtranslation
-です。local回転をremote PlayerId slotへ登録しません。
+です。local回転をremote PlayerId slotへ登録しません。これらと独立した
+`store.rotation_visual` の連続残差を GPU presentation で合成します。
 
 network clientのQ/Eでは`CommandBridge`の送信待ちcontrolとin-flight controlを順に再生します。
 in-flightはReliable envelopeのControl sequence、送信待ちはqueueの順序、各controlは
@@ -205,6 +206,56 @@ RGBA8の元画像・出力・縮小の中間画素bufferはそれぞれ最大256
 
 ## GPU presentation
 
+### Continuous rotation presentation
+
+回転の責務は次の順です。
+
+```text
+canonical quarter-turn (PieceDataStore.states; authority が即時 commit)
+  → prediction final pose (store.local_rotation; 未 ACK suffix)
+  → continuous visual presentation (store.rotation_visual; 時刻付き残差)
+  → render + GPU picking (presentation.wgsl::presentation_pose)
+```
+
+`resources/rotation_visual.rs` は連続角度・pivot・補正 translation・開始時刻・duration を
+component 単位で保持します。canonical rotation は 0 / 1 / 2 / 3 のままです。
+90°あたりの初期値は `ROTATION_SECONDS_PER_QUARTER = 0.120` 秒で、`Time<Real>` を
+First の time 更新後に取得します。virtual pause / simulation tick と独立した時刻です。
+GPU と CPU 参照は同じ smoothstep easing を使い、final pose に対する残差を identity へ
+戻します。個別 position の lerp は行わず、component 全体へ同じ剛体変換を適用します。
+pivot は authority / prediction の `rotation_plan_with` が計算した AABB 中心を使います。
+
+Q/E は現在の表示角度から signed / unwrapped な新 target へ retarget します。
+animation queue は持ちません。prediction override の寿命と animation の寿命は独立です。
+ACK で final world pose が変わらなければ残差の時間曲線を維持し、drag basis が変われば
+pivot の base 座標を変換します。拒否・partial acceptance などで final pose が変わる場合は
+現在の表示 pose から canonical / replay 後の pose へ剛体の残差を rebase します。
+local pointer delta は残差を適用した後に加算し、continuous angle を protocol basis や
+drag delta に戻しません。release の final delta を反映してから残差を handoff します。
+snap による component 結合・placement では対象の残差を破棄します。
+
+GPU は既存の DSU root buffer → `rotation_slots[root]` → 可変長 32-byte animation record
+を参照します。stable minimum と DSU root が異なる union history にも対応します。
+固定 slot 上限はなく、独立 component はそれぞれ自身の pivot を持ちます。
+追加 GPU memory は root→slot の 4N bytes と、同時 animation record の capacity × 32 bytes
+（最低 1 record、増設時は 2 の冪）です。100万 pieces の lookup は 4,000,000 bytes です。
+CPU は sparse な component record / slot map と upload 用 Arc を保持し、piece-sized な
+恒久 animation / root mirror は作りません。操作境界で table と変更した root slot を upload
+し、通常 frame は scalar clock と uniform だけ更新します。member scan、position 更新、
+piece state / slot / record の再 upload はありません。終了 frame も追加 piece upload は不要です。
+最後の animation が終わると uniform の active flag を落とし、shader の root lookup を省きます。
+期限切れ record は次の変更境界で回収し、table 作成の時刻を原点にして GPU f32 時刻の精度を保ちます。
+
+通常 / far draw、main / pick visibility、point / rectangle は同じ `presentation_pose` を
+使用し、continuous orientation に対応する AABB extent も共有します。
+far splat は従来の pixel snapping と共通の footprint / alpha 判定を保ちます。
+wire、save、snapshot、16-byte `GpuPieceState`、authority validation、snap / connectivity、
+catch-up / migration は continuous presentation を参照しません。session scope 変更・終了、
+Puzzle 初期化、snapshot / baseline install、Menu cleanup は animation を破棄します。
+remote player の新規回転 animation はこの段階では開始せず、共通 transform と network から
+独立した record を今後の入口として残します。height / shadow / side / bevel と新たな quality /
+LOD は今回は追加していません。record の progress は後続の presentation effect に使えます。
+
 ### Remote drag presentation
 
 Direct-IP hostとclientは、game-layerの`network/runtime/presentation.rs`で検証済みcontextを`RemoteDragPresentation`へ変換します。hostは`ProtocolDragContexts` / `HostCommandOutcome`、clientは`PeerReplicationState`と成功したauthority / Transient routeを使用します。rendererはnetwork runtime型に依存せず、offlineでも同じ空のresourceを使います。
@@ -223,7 +274,7 @@ target / displayed / smoothing ageと64-bit active maskはmappingから独立し
 
 client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipを構築し、displayed == target == reconciled deltaへ即時初期化します。初回Transientを待たず、過去のdragをzeroからanimationさせず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、join baseline / new session、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・両delta・smoothing stateをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
 
-`presentation.wgsl::presentation_position`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v1、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
+`presentation.wgsl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v1、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 

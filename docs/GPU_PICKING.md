@@ -61,7 +61,18 @@ far / main visibility / pick visibility / point / rectangleが読むため、予
 CPU正本・selection ownership・snapshotはpredictionを参照しません。通常pointer / camera /
 pending ACK frameにはstate overrideの再計算/追加uploadがありません。
 
-Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_position`をmain / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
+Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_pose`の内部で`presentation_position`がtranslationを合成します。main / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
+
+local Rotate / RotateDrag の continuous presentation も同じ `presentation_pose` に載せます。
+既存 root buffer から可変長 animation record を参照し、final pose に pivot 周りの残差を適用します。
+point / rectangle の vertex、main visibility、pick ROI visibility、normal / far draw が同じ時刻と
+record を使います。orientation による AABB extent も共通 helper から求めるため、途中45°でも
+canonical90°のextentでcullingしません。previewを無効にしたpickでも、rotationがactiveな間は
+rootを読む必要があります。previewとrotationが両方inactiveならroot lookupを省きます。
+形状・UV・texture alpha、canonical HELD による除外、非同期 readback の stale 判定は維持します。
+continuous angle は正本・save・snapshot・wire に入りません。
+GPU layout / frame cost は[continuous rotation presentation](ARCHITECTURE.md#continuous-rotation-presentation)、
+操作と検証 fixture は[回転](ROTATION.md#continuous-visual-rotation)を参照してください。
 
 remote Transientのaccepted deltaはCPU presentationのtargetで、GPUの共有512-byte tableには`Time<Real>`で指数平滑化したdisplayed deltaを渡します。normal / far描画、main / point / rectangleのvisibilityとvertexはすべてこの同じ表示位置を使い、targetを直接参照するshader経路はありません。Reliable Grab / Ready / drag rotationは両deltaを即時一致させ、Release / Cancelは直ちにslotを破棄します。prediction / extrapolationは行いません。smoothing frameは最大64 slotだけを更新し、canonical / remote mapping uploadは0 bytes、delta uploadは最大512 bytes、exact settle後の次frameは0 bytesです。
 

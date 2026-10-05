@@ -227,6 +227,7 @@ impl CommandBridge {
         let scope = (session.session_id(), session.cursor().epoch, store.epoch);
         if !session.is_active() {
             store.clear_local_rotation();
+            store.clear_rotation_visual();
             self.clear_release(interaction, store);
             self.active = None;
             self.pending = None;
@@ -236,6 +237,7 @@ impl CommandBridge {
         }
         if let Some(old) = self.scope.filter(|old| *old != scope) {
             store.clear_local_rotation();
+            store.clear_rotation_visual();
             // A store reinstall in the same authority scope must preserve the
             // sender's consumed Control history, while discarding presentation.
             let same_authority = (old.0, old.1) == (scope.0, scope.1);

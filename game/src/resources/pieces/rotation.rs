@@ -16,6 +16,7 @@ pub(crate) struct RotationResult {
 
 struct RotationPlan {
     minimum: PieceId,
+    pivot: Vec2,
     rotation: u32,
     translation: DVec2,
     singleton_center: Option<Vec2>,
@@ -36,6 +37,87 @@ impl RotationPlan {
 }
 
 impl PieceDataStore {
+    /// Presentation obtains its pivot from exactly the same rigid planner.
+    pub(crate) fn plan_rotation_visual(
+        &self,
+        boundary: &mut crate::resources::rotation_visual::RotationBoundary,
+        roots: impl IntoIterator<Item = PieceId>,
+        quarter_turns: i8,
+        definition: &PuzzleDefinition,
+        delta: Vec2,
+    ) {
+        for root in roots {
+            if let Some(plan) = self.rotation_plan_with(
+                root,
+                quarter_turns,
+                definition,
+                delta,
+                |id| self.presentation_state(id),
+                |_, _| true,
+            ) {
+                self.add_rotation_intent(boundary, root, quarter_turns, plan.pivot);
+            }
+        }
+    }
+    pub(crate) fn capture_rotation_command(
+        &self,
+        command: &PieceCommand,
+        definition: Option<&PuzzleDefinition>,
+    ) -> crate::resources::rotation_visual::RotationBoundary {
+        let mut boundary = self.capture_rotation_boundary();
+        let Some(definition) =
+            definition.filter(|d| d.piece_count() == self.len() && d.validate().is_ok())
+        else {
+            return boundary;
+        };
+        match command {
+            PieceCommand::Rotate {
+                target,
+                quarter_turns,
+            } => {
+                if let Ok(resolved) = target.resolve(&self.connectivity) {
+                    match resolved.target {
+                        ResolvedPieceTarget::Sparse(refs) => self.plan_rotation_visual(
+                            &mut boundary,
+                            refs.iter().map(|r| r.member),
+                            *quarter_turns,
+                            definition,
+                            Vec2::ZERO,
+                        ),
+                        ResolvedPieceTarget::Dense(members) => self.plan_rotation_visual(
+                            &mut boundary,
+                            members
+                                .iter()
+                                .filter(|&id| self.connectivity.minimum_member(id) == id),
+                            *quarter_turns,
+                            definition,
+                            Vec2::ZERO,
+                        ),
+                    }
+                }
+            }
+            PieceCommand::RotateDrag {
+                members,
+                quarter_turns,
+                delta,
+            } if members.bit_len() == self.len() => {
+                self.plan_rotation_visual(
+                    &mut boundary,
+                    members
+                        .iter()
+                        .filter(|&id| self.connectivity.minimum_member(id) == id),
+                    *quarter_turns,
+                    definition,
+                    *delta,
+                );
+            }
+            PieceCommand::ReleaseGroup { members, delta } if delta.is_finite() => {
+                self.preserve_release_delta(&mut boundary, members, *delta);
+            }
+            _ => {}
+        }
+        boundary
+    }
     /// Same rigid planner/reconstruction as authority, with a sparse pose view.
     /// Planning never writes DensePieceStates, owners, topology or drag basis.
     pub(crate) fn predict_rotation(
@@ -288,6 +370,7 @@ impl PieceDataStore {
             .is_some_and(|center| area.contains(center))
             .then_some(RotationPlan {
                 minimum,
+                pivot: pivot.as_vec2(),
                 rotation,
                 translation,
                 singleton_center: (self.connectivity.component_size(minimum) == 1).then(|| {

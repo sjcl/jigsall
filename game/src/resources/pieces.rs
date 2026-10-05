@@ -270,6 +270,8 @@ pub struct PieceDataStore {
     pub drag: DragTransform,
     /// Local uncommitted rotation only; excluded from canonical state/capture.
     pub local_rotation: local_rotation::LocalRotationPresentation,
+    /// Continuous visual residuals; lifetime is independent of prediction ACKs.
+    pub rotation_visual: super::rotation_visual::RotationVisual,
     pub states: DensePieceStates,
     pub held_by: PieceOwners,
     pub selected_pieces: PieceBitSet,
@@ -297,7 +299,9 @@ impl PieceDataStore {
     }
     /// Adopt the worker result without visiting or copying any piece states.
     pub fn initialize_dense(&mut self, states: DensePieceStates) {
+        let presentation_clock = self.rotation_visual.clock;
         *self = Self::default();
+        self.rotation_visual.clock = presentation_clock;
         self.epoch = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         self.states = states;
         self.connectivity = PieceConnectivity::new(self.len());
@@ -313,7 +317,9 @@ impl PieceDataStore {
         next_z_order: u32,
         connectivity: PieceConnectivity,
     ) {
+        let presentation_clock = self.rotation_visual.clock;
         *self = Self::default();
+        self.rotation_visual.clock = presentation_clock;
         self.epoch = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
         self.placed_count = states
             .iter()

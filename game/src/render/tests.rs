@@ -6,6 +6,7 @@ mod outline_tests;
 mod remote_cursor_tests;
 mod remote_drag_tests;
 mod rotation_tests;
+mod rotation_visual_tests;
 mod selection_bench;
 use crate::{
     resources::{

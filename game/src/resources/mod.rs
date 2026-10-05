@@ -8,6 +8,7 @@ pub mod performance;
 pub mod pieces;
 pub mod remote_cursor;
 pub mod remote_drag;
+pub(crate) mod rotation_visual;
 
 pub use crate::players::{PlayerInfo, PlayerRoster};
 pub use app::{

@@ -45,6 +45,7 @@ impl PieceDataStore {
     /// Explicit control boundary only. Dirty both old and new membership so
     /// retired/rejected overrides restore canonical GPU state in the same upload.
     pub(crate) fn set_local_rotation(&mut self, poses: HashMap<PieceId, PresentationPose>) {
+        let visual = self.capture_rotation_boundary();
         for &id in self.local_rotation.poses.keys().chain(poses.keys()) {
             self.dirty_pieces.insert(id);
         }
@@ -52,6 +53,7 @@ impl PieceDataStore {
             self.exact_dirty_ranges = true;
         }
         self.local_rotation.poses = poses;
+        self.finish_rotation_boundary(visual);
     }
 
     pub(crate) fn clear_local_rotation(&mut self) {

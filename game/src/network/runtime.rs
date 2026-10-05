@@ -610,6 +610,14 @@ impl<T: Transport> Runtime<T> {
             if !self.active {
                 break;
             }
+            let visual = matches!(
+                event,
+                TransportEvent::Message {
+                    class: MessageClass::Control,
+                    ..
+                }
+            )
+            .then(|| store.capture_rotation_boundary());
             let connection = match event {
                 TransportEvent::Connected { connection }
                 | TransportEvent::Disconnected { connection, .. }
@@ -844,6 +852,7 @@ impl<T: Transport> Runtime<T> {
                                 *interaction = default();
                                 store.drag = default();
                                 store.clear_local_rotation();
+                                store.clear_rotation_visual();
                             }
                             ClientSyncOutcome::Ready => {
                                 self.cursors.reset();
@@ -851,6 +860,7 @@ impl<T: Transport> Runtime<T> {
                                 *interaction = default();
                                 store.drag = default();
                                 store.clear_local_rotation();
+                                store.clear_rotation_visual();
                                 self.status.local_player = client.bootstrap.assigned_player();
                                 self.status.host = Some(self.session.as_ref().unwrap().host());
                                 self.status.phase = RuntimePhase::Ready;
@@ -942,6 +952,9 @@ impl<T: Transport> Runtime<T> {
                         self.status.phase = RuntimePhase::Authenticating;
                     }
                 }
+            }
+            if let Some(visual) = visual {
+                store.finish_rotation_boundary(visual);
             }
         }
         if !self.active {
@@ -1098,16 +1111,17 @@ impl<T: Transport> Runtime<T> {
             return Ok(());
         }
         self.bridge.prediction_enabled = matches!(self.role, Role::Client(_));
-        let rotation_input = commands.iter().any(|r| {
-            matches!(
-                r.command,
-                PieceCommand::Rotate { .. } | PieceCommand::RotateDrag { .. }
-            )
-        });
         for request in commands {
             if request.player != player {
                 return Err("local command identity mismatch".into());
             }
+            let rotating = matches!(
+                request.command,
+                PieceCommand::Rotate { .. } | PieceCommand::RotateDrag { .. }
+            );
+            let visual = (self.bridge.prediction_enabled && rotating).then(|| {
+                store.capture_rotation_command(&request.command, self.definition.as_ref())
+            });
             self.bridge
                 .enqueue(
                     request.command,
@@ -1115,6 +1129,15 @@ impl<T: Transport> Runtime<T> {
                     interaction.network_gesture_token(),
                 )
                 .map_err(RuntimeFailure::protocol)?;
+            if let Some(visual) = visual {
+                self.bridge.refresh_prediction(
+                    player,
+                    self.definition.as_ref(),
+                    interaction,
+                    store,
+                );
+                store.finish_rotation_boundary(visual);
+            }
         }
         while let Some(command) = self
             .bridge
@@ -1125,10 +1148,6 @@ impl<T: Transport> Runtime<T> {
             self.send_local(command, store, interaction)?;
         }
         self.bridge.present_release(interaction, store);
-        if rotation_input {
-            self.bridge
-                .refresh_prediction(player, self.definition.as_ref(), interaction, store);
-        }
         if let Some(command) = self
             .bridge
             .drag_update(self.session.as_ref().unwrap(), player, store)
@@ -1148,6 +1167,55 @@ impl<T: Transport> Runtime<T> {
         match &mut self.role {
             Role::Host(host) => {
                 let session = self.session.as_mut().unwrap();
+                let mut visual =
+                    if matches!(command.command, ProtocolPieceCommand::DragUpdate { .. }) {
+                        store.empty_rotation_boundary()
+                    } else {
+                        store.capture_rotation_boundary()
+                    };
+                if let Some(definition) = self.definition.as_ref() {
+                    match &command.command {
+                        ProtocolPieceCommand::Rotate {
+                            target,
+                            quarter_turns,
+                        } => {
+                            visual = store.capture_rotation_command(
+                                &PieceCommand::Rotate {
+                                    target: target.clone(),
+                                    quarter_turns: *quarter_turns,
+                                },
+                                Some(definition),
+                            );
+                        }
+                        ProtocolPieceCommand::RotateDrag {
+                            quarter_turns,
+                            final_delta,
+                            ..
+                        } => {
+                            if let Some(drag) = host.contexts.active_drag(session, store, player) {
+                                match &drag.target {
+                                    ActiveDragTarget::Sparse(refs) => store.plan_rotation_visual(
+                                        &mut visual,
+                                        refs.iter().map(|r| r.member),
+                                        *quarter_turns,
+                                        definition,
+                                        *final_delta,
+                                    ),
+                                    ActiveDragTarget::Dense(dense) => store.plan_rotation_visual(
+                                        &mut visual,
+                                        dense.members.iter().filter(|&id| {
+                                            store.connectivity.minimum_member(id) == id
+                                        }),
+                                        *quarter_turns,
+                                        definition,
+                                        *final_delta,
+                                    ),
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 match host.contexts.apply_replicated(
                     session,
                     store,
@@ -1182,6 +1250,7 @@ impl<T: Transport> Runtime<T> {
                         }
                     }
                 }
+                store.finish_rotation_boundary(visual);
             }
             Role::Client(client) => ClientRouter {
                 roster: &mut self.roster,
@@ -1220,6 +1289,7 @@ impl<T: Transport> Runtime<T> {
         }
         store.drag = default();
         store.clear_local_rotation();
+        store.clear_rotation_visual();
         self.connections = default();
         self.bridge = default();
         self.decode = None;

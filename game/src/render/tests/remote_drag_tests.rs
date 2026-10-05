@@ -9,11 +9,9 @@ fn remote_presentation_shader_paths_share_the_position_function() {
         include_str!("../visibility.wgsl"),
         include_str!("../pick_visibility.wgsl"),
     ] {
-        assert!(source.contains("#import jigsall::presentation::presentation_position"));
+        assert!(source.contains("#import jigsall::presentation::{presentation_pose"));
         assert_eq!(
-            source
-                .matches("presentation_position(state.position,")
-                .count(),
+            source.matches("presentation_pose(state.position,").count(),
             1
         );
         assert!(!source.contains("position+=config.drag_delta"));

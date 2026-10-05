@@ -24,7 +24,7 @@ fn rotate_body(app: &mut App, def: &PuzzleDefinition, id: PieceId) {
     );
 }
 
-fn screen_point(world: Vec2, resolution: f32) -> Rect {
+pub(super) fn screen_point(world: Vec2, resolution: f32) -> Rect {
     let pixel = Vec2::new(world.x + resolution * 0.5, resolution * 0.5 - world.y).floor();
     Rect::from_corners(pixel, pixel + Vec2::ONE)
 }
