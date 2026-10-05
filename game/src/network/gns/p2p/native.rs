@@ -419,55 +419,6 @@ pub(super) enum State {
 /// Unique native connection owner. Handles never leave this module.
 pub(super) struct Connection(Option<HSteamNetConnection>);
 impl Connection {
-    pub(super) fn install_turn(&self, servers: &[TurnServer]) -> Result<(), TransportError> {
-        let (addresses, users, passwords) = turn_strings(servers)?;
-        for (option, text) in [
-            (
-                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_ServerList,
-                &addresses,
-            ),
-            (
-                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_UserList,
-                &users,
-            ),
-            (
-                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_PassList,
-                &passwords,
-            ),
-        ] {
-            if !unsafe {
-                SteamAPI_ISteamNetworkingUtils_SetConfigValue(
-                    SteamAPI_SteamNetworkingUtils_v003(),
-                    option,
-                    ESteamNetworkingConfigScope::k_ESteamNetworkingConfig_Connection,
-                    self.handle() as isize,
-                    ESteamNetworkingConfigDataType::k_ESteamNetworkingConfig_String,
-                    text.as_ptr().cast(),
-                )
-            } {
-                return Err(failure());
-            }
-        }
-        for server in servers {
-            let address = CString::new(server.address.as_str())
-                .map_err(|_| TransportError::ProtocolViolation)?;
-            let user = CString::new(server.username.as_str())
-                .map_err(|_| TransportError::ProtocolViolation)?;
-            let password = CString::new(server.password.as_str())
-                .map_err(|_| TransportError::ProtocolViolation)?;
-            if !unsafe {
-                Puzzella_UpdateTURN(
-                    self.handle(),
-                    address.as_ptr(),
-                    user.as_ptr(),
-                    password.as_ptr(),
-                )
-            } {
-                return Err(failure());
-            }
-        }
-        Ok(())
-    }
     fn handle(&self) -> HSteamNetConnection {
         self.0.unwrap_or(0)
     }
@@ -638,19 +589,6 @@ impl Connection {
             )
             .unwrap();
         assert!(value == ::gns::GnsConfigValue::String(expected.to_owned()));
-    }
-    #[cfg(test)]
-    pub(super) fn assert_turn_update_rejected(&self, address: &str) {
-        let address = CString::new(address).unwrap();
-        // A no-match must be reported without altering native credentials/config.
-        assert!(!unsafe {
-            Puzzella_UpdateTURN(
-                self.handle(),
-                address.as_ptr(),
-                c"unused".as_ptr(),
-                c"unused".as_ptr(),
-            )
-        });
     }
     #[cfg(test)]
     pub(super) fn is_relay(&self) -> bool {

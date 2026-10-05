@@ -17,8 +17,6 @@
 #include "isteamnetworkingutils.h"
 #include "isteamnetworkingmessages.h"
 class ISteamNetworkingConnectionSignaling;
-// Puzzella native ICE extension. Copies credentials under global + connection locks.
-STEAMNETWORKINGSOCKETS_INTERFACE bool Puzzella_UpdateTURN( HSteamNetConnection connection, const char *server, const char *username, const char *password );
 
 typedef uint64 uint64_steamid; // Used when passing or returning CSteamID
 

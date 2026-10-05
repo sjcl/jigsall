@@ -7,12 +7,19 @@ struct Fixture {
 }
 impl Fixture {
     fn start() -> Self {
+        Self::start_with_relay_pairs(false)
+    }
+    fn start_with_relay_pairs(relay_pairs_only: bool) -> Self {
         let python = if cfg!(windows) { "python" } else { "python3" };
-        let mut child = Command::new(python)
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/turn_server.py"
-            ))
+        let mut command = Command::new(python);
+        command.arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/turn_server.py"
+        ));
+        if relay_pairs_only {
+            command.arg("--relay-pairs-only");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -53,8 +60,8 @@ impl Drop for Fixture {
     }
 }
 #[test]
-fn gns_localhost_turn_live_rotation_stale_nonce_and_reallocation() {
-    let mut fixture = Fixture::start();
+fn gns_localhost_turn_fixed_credentials_stale_nonce() {
+    let mut fixture = Fixture::start_with_relay_pairs(true);
     let (tx, rx) = mpsc::sync_channel(256);
     let mut peers = Vec::new();
     for (index, role) in ["client", "host"].into_iter().enumerate() {
@@ -102,8 +109,8 @@ fn gns_localhost_turn_live_rotation_stale_nonce_and_reallocation() {
     let mut received = [false; 2];
     let mut closing = false;
     let mut rotation_started = false;
+    let mut rotation_sent = false;
     let mut rotated = [false; 2];
-    let mut recovery_started = false;
     let mut second_exchange = false;
     let mut stage_time = Instant::now();
     let mut closed = [false; 2];
@@ -167,28 +174,20 @@ fn gns_localhost_turn_live_rotation_stale_nonce_and_reallocation() {
             stage_time = Instant::now();
             rotation_started = true;
         }
-        if rotation_started
-            && !rotated.iter().any(|x| *x)
-            && stage_time.elapsed() > Duration::from_millis(2200)
+        if rotation_started && !rotation_sent && stage_time.elapsed() > Duration::from_millis(2200)
         {
             fixture.send("stale");
             for peer in &mut peers {
                 peer.send(Frame::Rotate);
             }
-            rotated = [true; 2]; // commands sent; retain the connection IDs in children
+            rotation_sent = true; // Wait for both acknowledgments before continuing.
             received = [false; 2];
             stage_time = Instant::now();
         }
         if rotated.into_iter().all(|x| x)
-            && !recovery_started
-            && stage_time.elapsed() > Duration::from_secs(2)
+            && !second_exchange
+            && stage_time.elapsed() > Duration::from_secs(3)
         {
-            fixture.send("expire_a");
-            fixture.send("fail");
-            recovery_started = true;
-            stage_time = Instant::now();
-        }
-        if recovery_started && !second_exchange && stage_time.elapsed() > Duration::from_secs(4) {
             for peer in &mut peers {
                 peer.send(Frame::Exchange);
             }
@@ -202,18 +201,19 @@ fn gns_localhost_turn_live_rotation_stale_nonce_and_reallocation() {
     assert_eq!(connected, [1, 1]);
     fixture.send("stats");
     let stats = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap();
-    for metric in [
-        "allocate_a",
-        "allocate_b",
-        "refresh_b",
-        "stale",
-        "refresh_fail",
-        "relayed",
-        "held",
-    ] {
+    for metric in ["allocate_a", "refresh_a", "stale", "relayed", "held"] {
         assert!(stats[metric].as_u64().unwrap() > 0, "{metric}: {stats}");
     }
-    assert!(second_exchange);
+    for metric in [
+        "allocate_b",
+        "refresh_b",
+        "permission_b",
+        "wrong_credentials",
+        "refresh_fail",
+    ] {
+        assert_eq!(stats[metric].as_u64().unwrap(), 0, "{metric}: {stats}");
+    }
+    assert!(second_exchange && closing && received.into_iter().all(|x| x));
     for peer in &mut peers {
         peer.send(Frame::Finish);
     }
@@ -283,6 +283,7 @@ fn gns_turn_actor_child() {
         }
     });
     let mut connections = BTreeMap::new();
+    let mut connection_versions: BTreeMap<ConnectionId, String> = BTreeMap::new();
     let deadline = Instant::now() + Duration::from_secs(40);
     while Instant::now() < deadline {
         while let Ok(frame) = rx.try_recv() {
@@ -301,17 +302,12 @@ fn gns_turn_actor_child() {
                             backend.install_turn(&credentials("B")),
                             Err(TransportError::ProtocolViolation)
                         );
-                        for connection in backend.connections.values() {
-                            connection.native.assert_turn_update_rejected(&address);
-                        }
                     } else {
                         backend.install_turn(&credentials("B")).unwrap();
                         version = "B";
                     }
-                    for connection in backend.connections.values() {
-                        connection
-                            .native
-                            .assert_turn_user(if no_turn { "" } else { "user-B" });
+                    for (id, connection) in &backend.connections {
+                        connection.native.assert_turn_user(&connection_versions[id]);
                     }
                     actor_emit(ActorFrame::Rotated);
                 }
@@ -324,13 +320,8 @@ fn gns_turn_actor_child() {
                         backend.install_turn(&changed),
                         Err(TransportError::ProtocolViolation)
                     );
-                    for connection in backend.connections.values() {
-                        connection
-                            .native
-                            .assert_turn_user(&format!("user-{version}"));
-                        connection
-                            .native
-                            .assert_turn_update_rejected("unknown.invalid:3478");
+                    for (id, connection) in &backend.connections {
+                        connection.native.assert_turn_user(&connection_versions[id]);
                     }
                 }
                 ActorFrame::Exchange => {
@@ -354,13 +345,15 @@ fn gns_turn_actor_child() {
                         connections.insert(peer, connection).is_none(),
                         "connection must stay stable across rotation"
                     );
+                    let username = if no_turn {
+                        String::new()
+                    } else {
+                        format!("user-{version}")
+                    };
                     backend.connections[&connection]
                         .native
-                        .assert_turn_user(&if no_turn {
-                            String::new()
-                        } else {
-                            format!("user-{version}")
-                        });
+                        .assert_turn_user(&username);
+                    connection_versions.insert(connection, username);
                     let relay = backend.connections[&connection].native.is_relay();
                     backend.activate_secure_channel(connection).unwrap();
                     backend.mark_ready(connection).unwrap();
@@ -513,7 +506,6 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
             stage_time = Instant::now();
         }
         if stage == 1 && stage_time.elapsed() > Duration::from_secs(1) {
-            fixture.send("expire_a");
             actors.push(Actor::spawn(
                 3,
                 &fixture.address,
@@ -575,6 +567,8 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
     assert!(stats["allocate_b"].as_u64().unwrap() > 0);
     assert!(stats["bad_auth"].as_u64().unwrap() > 0);
     assert_eq!(stats["wrong_allocations"].as_u64().unwrap(), 0);
+    assert!(stats["refresh_a"].as_u64().unwrap() > 0);
+    assert_eq!(stats["wrong_credentials"].as_u64().unwrap(), 0);
     for actor in &mut actors {
         actor.send(ActorFrame::Stop);
     }
@@ -653,4 +647,28 @@ fn gns_localhost_turn_absent_initially_rejects_late_install_and_preserves_direct
     for actor in &mut actors {
         assert!(actor.process.child.wait().unwrap().success());
     }
+}
+
+#[test]
+fn gns_localhost_turn_fixture_rejects_allocation_credential_changes() {
+    let mut fixture = Fixture::start();
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let status = Command::new(python)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/check_turn_credentials.py"
+        ))
+        .arg(&fixture.address)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "TURN allocation credential binding failed"
+    );
+    fixture.send("stats");
+    let stats = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert_eq!(stats["wrong_credentials"].as_u64().unwrap(), 2);
+    assert_eq!(stats["allocate_b"].as_u64().unwrap(), 0);
+    assert_eq!(stats["refresh_a"].as_u64().unwrap(), 2);
+    assert_eq!(stats["permission_a"].as_u64().unwrap(), 1);
 }

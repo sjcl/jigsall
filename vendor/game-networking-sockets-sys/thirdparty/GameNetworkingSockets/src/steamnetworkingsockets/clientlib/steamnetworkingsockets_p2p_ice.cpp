@@ -84,6 +84,13 @@ void CSteamNetworkConnectionP2P::CheckInitICE()
 		m_connectionConfig.P2P_Transport_ICE_Enable.Lock();
 	}
 
+	// RFC 8656: allocation authentication belongs to this ICE session. Snapshot
+	// inherited listener values so later defaults never change this connection,
+	// including any reinitialization of its ICE transport.
+	m_connectionConfig.P2P_TURN_ServerList.Lock();
+	m_connectionConfig.P2P_TURN_UserList.Lock();
+	m_connectionConfig.P2P_TURN_PassList.Lock();
+
 	// Disabled?
 	if ( P2P_Transport_ICE_Enable <= 0 )
 	{

@@ -305,6 +305,10 @@ fn gns_p2p_child() {
                             password: "password-B".into(),
                         }])
                         .unwrap();
+                    // Only future connection defaults changed; this connection stays A.
+                    for connection in transport.backend().inner.connections.values() {
+                        connection.native.assert_turn_user("user-A");
+                    }
                     emit(Frame::Rotated);
                     exchange = false;
                     sent = false;

@@ -1,6 +1,6 @@
 """Local UDP TURN test double. No external service, secrets or Python dependencies.
 Verifies RFC 5389 long-term MESSAGE-INTEGRITY and relays real UDP packets.
-Intentionally accepts changing usernames on an allocation (Cloudflare semantics).
+Binds each allocation to its initial authentication key (RFC 8656 sections 5/6).
 """
 import hashlib, hmac, json, os, queue, selectors, socket, struct, sys, threading, time
 COOKIE = 0x2112A442
@@ -16,6 +16,7 @@ LAN = probe.getsockname()[0]
 probe.close()
 sel.register(server, selectors.EVENT_READ, None)
 allocations = {}
+allocation_auth = {}
 invalid_clients = set()
 commands = queue.Queue()
 nonce = b"nonce-1"
@@ -24,7 +25,8 @@ stale = False
 hold = False
 fail = False
 delayed = []
-stats = {"allocate_a": 0, "allocate_b": 0, "refresh_b": 0, "permission_b": 0,
+stats = {"allocate_a": 0, "allocate_b": 0, "refresh_a": 0, "refresh_b": 0,
+         "permission_a": 0, "permission_b": 0, "wrong_credentials": 0,
          "stale": 0, "refresh_fail": 0, "bad_auth": 0, "relayed": 0, "held": 0, "wrong_allocations": 0}
 def stdin():
     for line in sys.stdin:
@@ -106,6 +108,10 @@ while True:
             if user and 8 in attrs and not authenticated: invalid_clients.add(source)
             server.sendto(response_error(kind, tx, source, 401, key), source)
             continue
+        if kind != 3 and source in allocation_auth and allocation_auth[source] != (user, key):
+            stats["wrong_credentials"] += 1
+            server.sendto(response_error(kind, tx, source, 441, key), source)
+            continue
         if kind == 4 and stale:
             nonce = b"nonce-2"
             stale = False
@@ -120,6 +126,7 @@ while True:
             fail = False
             stats["refresh_fail"] += 1
             relay = allocations.pop(source, None)
+            allocation_auth.pop(source, None)
             if relay is not None:
                 sel.unregister(relay)
                 relay.close()
@@ -135,14 +142,15 @@ while True:
                 relay = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 relay.bind((LAN, 0))
                 allocations[source] = relay
+                allocation_auth[source] = (user, key)
                 sel.register(relay, selectors.EVENT_READ, source)
             stats["allocate_b" if user == b"user-B" else "allocate_a"] += 1
             response_attrs = [attr(0x16, xor_addr(allocations[source].getsockname())), attr(0x20, xor_addr(source)), attr(0x0d, struct.pack("!I", 4))]
         elif kind == 4:
-            stats["refresh_b"] += user == b"user-B"
+            stats["refresh_a" if user == b"user-A" else "refresh_b"] += 1
             response_attrs = [attr(0x0d, struct.pack("!I", 4))]
         elif kind == 8:
-            stats["permission_b"] += user == b"user-B"
+            stats["permission_a" if user == b"user-A" else "permission_b"] += 1
         else: continue
         response = packet(kind | 0x100, tx, response_attrs, key)
         if kind == 4 and hold:

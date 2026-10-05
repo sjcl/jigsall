@@ -33,11 +33,13 @@ try:
             assert result.returncode == 0, "local integration test failed"
             after = stats()
             if mode == "available":
-                assert after["relayed"] > before["relayed"] and after["refresh_b"] > before["refresh_b"], after
+                assert after["relayed"] > before["relayed"] and after["refresh_a"] > before["refresh_a"], after
+                assert after["allocate_b"] == before["allocate_b"] and after["refresh_b"] == before["refresh_b"], "existing connection replaced allocation credentials"
+                assert after["wrong_credentials"] == before["wrong_credentials"], after
             else:
                 assert after["allocate_a"] == before["allocate_a"] and after["allocate_b"] == before["allocate_b"], "direct-only session gathered late TURN"
             server.terminate(); server.wait(timeout=5); server = None
-    print("Local TURN rotation + SPAKE2 + Sync/Ready; control loss survival; initial unavailable sessions remain direct-only after provider recovery: passed")
+    print("Local TURN fixed allocation credentials + SPAKE2 + Sync/Ready; control loss survival; initial unavailable sessions remain direct-only after provider recovery: passed")
 finally:
     if server is not None: server.terminate(); server.wait(timeout=5)
     fixture.terminate(); fixture.wait(timeout=5)

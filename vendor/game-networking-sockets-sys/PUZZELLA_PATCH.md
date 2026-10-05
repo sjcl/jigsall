@@ -8,25 +8,28 @@ No registry cache or system GNS installation is modified.
 
 Modified upstream files:
 
-- `include/steam/steamnetworkingsockets_flat.h`: `Puzzella_UpdateTURN` C entrypoint.
-- `src/steamnetworkingsockets/clientlib/steamnetworkingsockets_p2p_ice.h`: a
-  virtual update hook, default unsupported for non-native ICE.
+- `src/steamnetworkingsockets/clientlib/steamnetworkingsockets_p2p_ice.cpp`:
+  snapshot and lock TURN server/user/password configuration when ICE initializes,
+  so later listener defaults cannot change an existing connection.
 - `src/steamnetworkingsockets/clientlib/steamnetworkingsockets_ice_client.h/.cpp`:
-  copy live credentials under native locks; regenerate realm authentication key;
-  preserve in-flight packet/key; force next Refresh with the installed value;
-  handle bounded 401/438 challenges; require success before advancing refresh or
-  permission state; retain existing refresh-error/timeout reallocation; renew
-  permissions during long sessions; remove username logging from auth challenges.
+  handle bounded 401/438 challenges using the original allocation credentials;
+  require success before advancing refresh or permission state; retain existing
+  refresh-error/timeout reallocation; renew permissions during long sessions;
+  remove username logging from auth challenges.
 - `build.rs`: search CMake's installed `lib` directory. Optimized Rust dev profiles
   use MSVC `RelWithDebInfo`, whereas upstream assumes `Debug` for all dev builds.
 - `Cargo.toml`: standalone workspace declaration for the local Cargo patch.
 
-Server addresses are fixed for an existing ICE session. Updates match the original
-configured host:port rather than re-resolving DNS, retaining the association with
-all resolved addresses and their live allocations. An update with no matching
-initialized entry returns false. Direct sessions with no TURN server reject late
-installation; rotation requires the initial address set.
-Future connections on a TURN-enabled control session inherit its latest credentials.
-Changing relay topology or supporting TCP/TLS/WebRTC ICE is separate work.
+[RFC 8656 sections 5/6](https://www.rfc-editor.org/rfc/rfc8656.html#section-5) bind
+allocation authentication to its initial credentials. Existing connections keep
+those credentials for Refresh, CreatePermission and automatic reallocation.
+Nonce refresh is separate from credential replacement. There is no active
+allocation credential-update API; `Puzzella_UpdateTURN` was removed.
+
+New defaults apply only to listener inheritance and future outgoing connections.
+The initial endpoint set must remain unchanged, and an initially direct-only
+control session never gains TURN later. New defaults do not extend existing
+connection credential expiry. ICE restart/migration, changed relay topology,
+TCP/TLS and WebRTC ICE support are separate work.
 
 Tests and protocol documentation: `docs/RENDEZVOUS_V1.md`.

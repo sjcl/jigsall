@@ -192,8 +192,8 @@ impl GnsP2p {
         self.insert(id, native, peer, origin);
         Ok(id)
     }
-    /// Updates the listener, outgoing options and every owned connection without
-    /// issuing new connection IDs or touching SecureTransport/bootstrap state.
+    /// Updates listener inheritance and future outgoing connection options.
+    /// Existing ICE sessions retain the credentials used to create allocations.
     pub fn install_turn(&mut self, servers: &[TurnServer]) -> Result<(), TransportError> {
         let mut addresses: Vec<_> = servers.iter().map(|s| s.address.clone()).collect();
         addresses.sort_unstable();
@@ -207,9 +207,6 @@ impl GnsP2p {
             return Err(TransportError::ProtocolViolation);
         }
         self.listener.install_turn(servers)?;
-        for connection in self.connections.values() {
-            connection.native.install_turn(servers)?;
-        }
         self.turn_addresses = addresses;
         Ok(())
     }

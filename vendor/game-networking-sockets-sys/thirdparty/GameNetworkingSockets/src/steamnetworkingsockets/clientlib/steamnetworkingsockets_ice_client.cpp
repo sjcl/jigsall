@@ -10,21 +10,6 @@
 #include "csteamnetworkingsockets.h"
 #include <tier0/platform_sockets.h>
 #include "crypto.h"
-#include <steam/steamnetworkingsockets_flat.h>
-#include "steamnetworkingsockets_mock.h"
-
-STEAMNETWORKINGSOCKETS_INTERFACE bool Puzzella_UpdateTURN( HSteamNetConnection connection, const char *server, const char *username, const char *password )
-{
-    using namespace SteamNetworkingSocketsLib;
-    if ( !server || !username || !password || !*server || !*username || !*password
-        || strlen(server)>256 || strlen(username)>256 || strlen(password)>256 ) return false;
-    SteamNetworkingGlobalLock global( "Puzzella_UpdateTURN" );
-    ConnectionScopeLock scope;
-    auto *base = GetConnectionByHandle( connection, scope );
-    auto *p2p = base ? base->AsSteamNetworkConnectionP2P() : nullptr;
-    if ( !p2p ) return false;
-    return !p2p->m_pTransportICE || p2p->m_pTransportICE->UpdateTURN( server, username, password );
-}
 
 // Put everything in a namespace, so we don't violate the one definition rule
 namespace SteamNetworkingSocketsLib {
@@ -2011,39 +1996,6 @@ void CSteamNetworkingICESession::Think_DiscoverRelayCandidate()
     }
 }
 
-// Updating credentials never alters a serialized in-flight request or its key.
-// The reply is verified with that request's original key; the next request uses
-// the new interface key, even when a refresh reply arrives after installation.
-bool CSteamNetworkingICESession::UpdateTURN( const char *server, const char *username, const char *password )
-{
-    SteamNetworkingGlobalLock::AssertHeldByCurrentThread( "UpdateTURN" );
-    bool matched = false;
-    for ( int i = 0; i < len( m_vecTURNCredentials ); ++i ) {
-        TURNCredentials &cred = m_vecTURNCredentials[i];
-        if ( cred.m_strServer != server ) continue;
-        matched = true;
-        cred.m_strUsername = username;
-        cred.m_strPassword = password;
-        for ( const auto &intf : m_vecInterfaces ) {
-            const netadr_t &address = intf->m_addrTURNServer.IsValid() ? intf->m_addrTURNServer
-                : (intf->m_pPendingSTUNRequest ? intf->m_pPendingSTUNRequest->m_remoteAddr : intf->m_addrTURNServer);
-            if ( address != m_vecTURNServers[i] ) continue;
-            if ( !intf->m_strTURNRealm.empty() ) {
-                std::string input = cred.m_strUsername + ":" + intf->m_strTURNRealm + ":" + cred.m_strPassword;
-                CCrypto::GenerateMD5Digest( input.c_str(), input.size(), &intf->m_arrTURNKey );
-            }
-            intf->m_bRefreshCredentials = true;
-            intf->m_nAuthChallenges = 0;
-            if ( intf->m_bRelayFailed && !intf->m_pPendingSTUNRequest ) {
-                intf->m_addrTURNServer.Clear();
-                intf->m_bRelayFailed = false;
-            }
-        }
-    }
-    if ( matched ) SetNextThinkTime( SteamNetworkingSockets_GetLocalTimestamp() );
-    return matched; // No initialized TURN entry means this is not a live update.
-}
-
 bool CSteamNetworkingICESession::UpdateTURNChallenge( const RecvSTUNPktInfo_t &info )
 {
     if ( !info.m_pHeader ) return false;
@@ -2052,8 +2004,7 @@ bool CSteamNetworkingICESession::UpdateTURNChallenge( const RecvSTUNPktInfo_t &i
     const uint8 *bytes = reinterpret_cast<const uint8*>( error->m_pData );
     int code = bytes[2]*100 + bytes[3];
     ICESessionInterface *intf = info.m_pRequest->m_pInterface;
-    if ( code != 438 && !( code == 401 && (intf->m_strTURNRealm.empty()
-        || info.m_pRequest->m_strPassword != std::string((const char*)intf->m_arrTURNKey, 16)) ) ) return false;
+    if ( code != 438 && !( code == 401 && intf->m_strTURNRealm.empty() ) ) return false;
     if ( intf->m_nAuthChallenges >= 2 ) return false;
     const auto *nonce = FindAttributeOfType( info.m_pAttributes, info.m_nAttributes, k_nSTUN_Attr_Nonce );
     const auto *realm = FindAttributeOfType( info.m_pAttributes, info.m_nAttributes, k_nSTUN_Attr_Realm );
@@ -2198,9 +2149,8 @@ void CSteamNetworkingICESession::Think_TURNMaintenance( SteamNetworkingMicroseco
             continue;
 
         // Refresh takes priority over CreatePermission.
-        if ( pIntf->m_bRefreshCredentials || (pIntf->m_usecRefreshAfter != 0 && usecNow >= pIntf->m_usecRefreshAfter) )
+        if ( pIntf->m_usecRefreshAfter != 0 && usecNow >= pIntf->m_usecRefreshAfter )
         {
-            pIntf->m_bRefreshCredentials = false;
             pIntf->m_usecRefreshAfter = 0; // cleared; callback resets on success or failure
             pIntf->QueueRefreshRequest( &CSteamNetworkingICESession::STUNRequestCallback_RefreshAllocation, m_nEncoding );
             continue;

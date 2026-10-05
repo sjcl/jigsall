@@ -118,7 +118,6 @@ namespace SteamNetworkingSocketsLib {
         int m_nTURNPermissionRevision = 0;
         SteamNetworkingMicroseconds m_usecPermissionAfter = 0;
         SteamNetworkingMicroseconds m_usecPermissionRetryAfter = 0;
-        bool m_bRefreshCredentials = false;
         int m_nAuthChallenges = 0;
 
         /// Send a packet through this interface to the destination remote address.
@@ -288,7 +287,6 @@ namespace SteamNetworkingSocketsLib {
 		CSteamNetworkingICESession( const ICESessionConfig& cfg, CSteamNetworkingICESessionCallbacks *pCallbacks );
 		~CSteamNetworkingICESession();
 
-        bool UpdateTURN( const char *server, const char *username, const char *password );
         void StartSession();
         void InvalidateInterfaceList();
 
@@ -534,9 +532,6 @@ namespace SteamNetworkingSocketsLib {
     public:
         CConnectionTransportP2PICE_Valve( CSteamNetworkConnectionP2P &connection );
     	void Init( const ICESessionConfig& cfg );
-        bool UpdateTURN( const char *server, const char *username, const char *password ) override {
-            return !m_pICESession || m_pICESession->UpdateTURN( server, username, password );
-        }
 
     private:
         CSteamNetworkingICESession *m_pICESession;

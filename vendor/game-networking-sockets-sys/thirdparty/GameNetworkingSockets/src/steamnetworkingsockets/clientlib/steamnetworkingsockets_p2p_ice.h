@@ -26,7 +26,6 @@ class CConnectionTransportP2PICE
 {
 public:
 	virtual ~CConnectionTransportP2PICE();
-	virtual bool UpdateTURN( const char *, const char *, const char * ) { return false; }
 
 	inline CSteamNetworkConnectionP2P &Connection() const { return *assert_cast< CSteamNetworkConnectionP2P *>( &m_connection ); }
 	inline ISteamNetworkingConnectionSignaling *Signaling() const { return Connection().m_pSignaling; }
