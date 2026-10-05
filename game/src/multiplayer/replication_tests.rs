@@ -1369,10 +1369,12 @@ fn result_fingerprint_has_fixed_bytes_root_history_independence_and_local_scope(
         ..Default::default()
     };
     let fingerprint = result_fingerprint(&store, &[PieceId(0)], None, &applied);
-    // Independently encoded with Python struct.pack and hashlib SHA-256.
+    // Independently encoded with Python struct.pack and hashlib SHA-256:
+    // domain b"jigsall/release-result/v1\0", payload format <IIIffBIffIIBQIIII,
+    // values (1, 0, 1, 10., 20., 0, 0, 10., 20., 7, 16, 0, 0, 1, 0, 0, 4).
     assert_eq!(
         fingerprint,
-        ReleaseResultFingerprint(0xcf436034aec7d6a808950565e1824159)
+        ReleaseResultFingerprint(0x5ad722fc9e4e9065b162cb1130dd7571)
     );
     store.states[1].position += Vec2::splat(500.0);
     assert_eq!(
