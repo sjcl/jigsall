@@ -62,7 +62,10 @@ fn missing_fields_are_explicit_and_internet_never_requires_an_address() {
     for locale in [Locale::EN_US, Locale::JA] {
         i18n.set_preference(LanguagePreference::Locale(locale));
         for host in [true, false] {
-            for method in [RuntimeConnectionMethod::DirectIp, RuntimeConnectionMethod::Internet] {
+            for method in [
+                RuntimeConnectionMethod::DirectIp,
+                RuntimeConnectionMethod::Internet,
+            ] {
                 let mut draft = ConnectionDraft::new("");
                 draft.method = method;
                 let ctx = egui::Context::default();
@@ -96,7 +99,10 @@ fn room_errors_do_not_ask_for_an_ip_address_in_either_language() {
             let text = i18n.text(room_key);
             assert!(!text.to_lowercase().contains("address"));
             assert!(!text.contains("アドレス"));
-            assert_eq!(error.key_for_method(RuntimeConnectionMethod::DirectIp), error.key());
+            assert_eq!(
+                error.key_for_method(RuntimeConnectionMethod::DirectIp),
+                error.key()
+            );
         }
     }
 }
@@ -113,10 +119,16 @@ fn host_status_never_claims_room_accepts_players_without_a_working_room_service(
     };
     assert_eq!(host_status_key(&status), Some("multiplayer-hosting"));
     status.rendezvous_control = Some(RendezvousControlStatus::Unavailable);
-    assert_eq!(host_status_key(&status), Some("multiplayer-host-not-accepting"));
+    assert_eq!(
+        host_status_key(&status),
+        Some("multiplayer-host-not-accepting")
+    );
     status.rendezvous_control = Some(RendezvousControlStatus::Available);
     status.room_code = None;
-    assert_eq!(host_status_key(&status), Some("multiplayer-host-not-accepting"));
+    assert_eq!(
+        host_status_key(&status),
+        Some("multiplayer-host-not-accepting")
+    );
     status.connection_method = Some(RuntimeConnectionMethod::DirectIp);
     assert_eq!(host_status_key(&status), Some("multiplayer-hosting"));
     status.phase = RuntimePhase::Failed;
@@ -137,17 +149,22 @@ fn connection_messages_distinguish_real_image_and_sync_phases_without_fake_perce
         (SyncPhase::CatchingUp, "multiplayer-catching-up"),
         (SyncPhase::Finalizing, "multiplayer-finalizing"),
     ] {
-        assert_eq!(connection_text(&NetworkStatus {
-            phase: RuntimePhase::Syncing(phase),
-            ..default()
-        }), key);
+        assert_eq!(
+            connection_text(&NetworkStatus {
+                phase: RuntimePhase::Syncing(phase),
+                ..default()
+            }),
+            key
+        );
     }
 }
 
 #[test]
 fn invitation_is_dismissible_keeps_playing_and_does_not_reappear_each_frame() {
     let (mut app, ctx) = scheduled_screens();
-    app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .reset_all();
     app.world_mut().resource_mut::<MultiplayerUi>().owns_session = true;
     app.world_mut().insert_resource(NetworkStatus {
         role: Some(RuntimeRole::Host),
@@ -163,9 +180,14 @@ fn invitation_is_dismissible_keeps_playing_and_does_not_reappear_each_frame() {
     assert!(text.contains(&"Invite Players"));
     assert!(text.contains(&"ABCDEFGHJK"));
     assert!(text.iter().any(|text| text.contains("room password")));
-    assert!(text.iter().any(|text| text.contains("others can join later")));
+    assert!(text
+        .iter()
+        .any(|text| text.contains("others can join later")));
     assert!(!app.world().resource::<LocalGameplayBlocked>().0);
-    assert!(matches!(app.world().resource::<NextState<GameSubState>>(), NextState::Unchanged));
+    assert!(matches!(
+        app.world().resource::<NextState<GameSubState>>(),
+        NextState::Unchanged
+    ));
     output.drop_without_applying_deltas();
     click_label(&mut app, &ctx, "Close");
     assert!(!app.world().resource::<MultiplayerUi>().invite_open);
@@ -181,25 +203,47 @@ fn invitation_is_dismissible_keeps_playing_and_does_not_reappear_each_frame() {
 
 #[test]
 fn room_code_copy_reports_success_without_taking_keyboard_focus() {
-    let status = NetworkStatus { room_code: Some("ABCDEFGHJK".into()), ..default() };
+    let status = NetworkStatus {
+        room_code: Some("ABCDEFGHJK".into()),
+        ..default()
+    };
     let i18n = crate::localization::tests::english();
     let ctx = egui::Context::default();
-    let render = |events| ctx.run_ui(egui::RawInput { events, ..default() }, |ui| {
-        paint_room_code(ui, &status, &i18n);
-    });
+    let render = |events| {
+        ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..default()
+            },
+            |ui| {
+                paint_room_code(ui, &status, &i18n);
+            },
+        )
+    };
     render(vec![]).drop_without_applying_deltas();
     let output = render(vec![]);
-    let point = output.shapes.iter().find_map(|shape| match &shape.shape {
-        egui::Shape::Text(text) if text.galley.job.text == "Copy" => Some(text.pos + text.galley.size() * 0.5),
-        _ => None,
-    }).unwrap();
+    let point = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "Copy" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .unwrap();
     output.drop_without_applying_deltas();
     let mut copied = false;
     let mut confirmed = false;
     for pressed in [true, false] {
         let output = render(vec![
             egui::Event::PointerMoved(point),
-            egui::Event::PointerButton { pos: point, button: egui::PointerButton::Primary, pressed, modifiers: default() },
+            egui::Event::PointerButton {
+                pos: point,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: default(),
+            },
         ]);
         copied |= output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "ABCDEFGHJK"));
         confirmed |= labels(&output).contains(&"Copied");
@@ -213,7 +257,9 @@ fn room_code_copy_reports_success_without_taking_keyboard_focus() {
 fn explicitly_selecting_the_direct_ip_fallback_survives_later_configuration() {
     let (mut app, ctx) = scheduled_screens();
     app.world_mut().insert_resource(State::new(AppState::Menu));
-    app.world_mut().resource_mut::<MultiplayerUi>().navigate(MenuScreen::Join);
+    app.world_mut()
+        .resource_mut::<MultiplayerUi>()
+        .navigate(MenuScreen::Join);
     click_label(&mut app, &ctx, "Direct IP / LAN");
     let mut state = app.world_mut().resource_mut::<MultiplayerUi>();
     assert!(state.method_selected);

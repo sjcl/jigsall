@@ -198,8 +198,8 @@ pub fn draw_menu_ui(
                                             &profile,
                                             &i18n,
                                         );
-                                        let valid = multiplayer.host_available()
-                                            && !multiplayer.submitted;
+                                        let valid =
+                                            multiplayer.host_available() && !multiplayer.submitted;
                                         ui.add_enabled_ui(valid, |ui| {
                                             if theme::button(
                                                 ui,

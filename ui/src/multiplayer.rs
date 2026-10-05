@@ -883,7 +883,11 @@ pub(crate) fn paint_connection_fields(
             }));
             ui.add(
                 egui::TextEdit::singleline(&mut draft.address)
-                    .hint_text(if host { "0.0.0.0:27015" } else { "example.com:27015" })
+                    .hint_text(if host {
+                        "0.0.0.0:27015"
+                    } else {
+                        "example.com:27015"
+                    })
                     .desired_width(f32::INFINITY),
             );
             theme::hint(
@@ -1005,7 +1009,10 @@ pub(crate) fn paint_join(
     paint_connection_fields(ui, &mut state.join, false, profile, i18n);
     theme::hint(ui, i18n.text("multiplayer-join-hint"));
     if let Some(error) = state.error {
-        ui.colored_label(theme::DANGER, i18n.text(error.key_for_method(state.join.method)));
+        ui.colored_label(
+            theme::DANGER,
+            i18n.text(error.key_for_method(state.join.method)),
+        );
     }
     let valid = state.join.valid(false)
         && !state.submitted
@@ -1065,7 +1072,10 @@ fn paint_host_retry(
         state.paint_password_notice(ui, i18n);
         paint_connection_fields(ui, &mut state.host, true, profile, i18n);
         if let Some(error) = state.error {
-            ui.colored_label(theme::DANGER, i18n.text(error.key_for_method(state.host.method)));
+            ui.colored_label(
+                theme::DANGER,
+                i18n.text(error.key_for_method(state.host.method)),
+            );
         }
         let valid = state.host.valid(true)
             && !state.submitted
@@ -1214,12 +1224,17 @@ pub(crate) fn draw_connection_ui(
                             return;
                         }
                         if let Some(error) = error {
-                            let method = status.connection_method.unwrap_or(if state.screen == MenuScreen::Join {
-                                state.join.method
-                            } else {
-                                state.host.method
-                            });
-                            ui.colored_label(theme::DANGER, i18n.text(error.key_for_method(method)));
+                            let method = status.connection_method.unwrap_or(
+                                if state.screen == MenuScreen::Join {
+                                    state.join.method
+                                } else {
+                                    state.host.method
+                                },
+                            );
+                            ui.colored_label(
+                                theme::DANGER,
+                                i18n.text(error.key_for_method(method)),
+                            );
                         } else {
                             ui.horizontal(|ui| {
                                 ui.spinner();
@@ -1273,7 +1288,10 @@ pub(crate) fn draw_connection_ui(
                                     ui,
                                     i18n.text(if status.has_disconnected_game() {
                                         if state.disconnected_save_opened
-                                            && matches!(persistence.message, Some(PersistenceNotice::Saved))
+                                            && matches!(
+                                                persistence.message,
+                                                Some(PersistenceNotice::Saved)
+                                            )
                                         {
                                             "multiplayer-return-after-save"
                                         } else {
@@ -1319,13 +1337,20 @@ pub(crate) fn paint_room_code(ui: &mut egui::Ui, status: &NetworkStatus, i18n: &
             ui.label(egui::RichText::new(code).monospace().size(24.0).strong());
             let copied_id = ui.make_persistent_id(("room-code-copied", code));
             let now = ui.input(|input| input.time);
-            if ui.add(egui::Button::new(i18n.text("multiplayer-copy")).sense(egui::Sense::CLICK)).clicked() {
+            if ui
+                .add(egui::Button::new(i18n.text("multiplayer-copy")).sense(egui::Sense::CLICK))
+                .clicked()
+            {
                 ui.ctx().copy_text(code.clone());
                 ui.data_mut(|data| data.insert_temp(copied_id, now));
             }
-            if ui.data(|data| data.get_temp::<f64>(copied_id)).is_some_and(|time| now - time < 3.0) {
+            if ui
+                .data(|data| data.get_temp::<f64>(copied_id))
+                .is_some_and(|time| now - time < 3.0)
+            {
                 ui.label(i18n.text("multiplayer-copied"));
-                ui.ctx().request_repaint_after(std::time::Duration::from_secs(3));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(3));
             }
         });
     }
@@ -1351,17 +1376,21 @@ pub(crate) fn paint_method(
     let mut selected = false;
     ui.horizontal_wrapped(|ui| {
         ui.add_enabled_ui(state.internet_available, |ui| {
-            selected |= ui.selectable_value(
-                &mut method,
-                RuntimeConnectionMethod::Internet,
-                i18n.text("multiplayer-internet"),
-            ).clicked();
+            selected |= ui
+                .selectable_value(
+                    &mut method,
+                    RuntimeConnectionMethod::Internet,
+                    i18n.text("multiplayer-internet"),
+                )
+                .clicked();
         });
-        selected |= ui.selectable_value(
-            &mut method,
-            RuntimeConnectionMethod::DirectIp,
-            i18n.text("multiplayer-direct-ip"),
-        ).clicked();
+        selected |= ui
+            .selectable_value(
+                &mut method,
+                RuntimeConnectionMethod::DirectIp,
+                i18n.text("multiplayer-direct-ip"),
+            )
+            .clicked();
     });
     if !state.internet_available {
         theme::hint(ui, i18n.text("multiplayer-internet-unavailable"));
@@ -1370,11 +1399,14 @@ pub(crate) fn paint_method(
         state.method_selected = true;
         state.set_connection_method(method);
     }
-    theme::hint(ui, i18n.text(if method == RuntimeConnectionMethod::Internet {
-        "multiplayer-internet-hint"
-    } else {
-        "multiplayer-direct-ip-hint"
-    }));
+    theme::hint(
+        ui,
+        i18n.text(if method == RuntimeConnectionMethod::Internet {
+            "multiplayer-internet-hint"
+        } else {
+            "multiplayer-direct-ip-hint"
+        }),
+    );
 }
 
 fn paint_invite_panel(

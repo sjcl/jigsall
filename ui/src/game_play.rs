@@ -258,8 +258,8 @@ fn paint_player_count(
     if ui
         .add(
             egui::Button::new(i18n.format("game-player-count", &[("count", roster.len().into())]))
-            .selected(state.opened_by_click)
-            .sense(egui::Sense::CLICK),
+                .selected(state.opened_by_click)
+                .sense(egui::Sense::CLICK),
         )
         .on_hover_text(i18n.text("game-player-list-toggle"))
         .clicked()
@@ -436,7 +436,11 @@ mod tests {
         assert_roster_visible(&mut app, &ctx, false);
         for _ in 0..3 {
             click_hud_label(&mut app, &ctx, "Players: 1");
-            assert!(app.world().resource::<PlayersOverlayState>().opened_by_click);
+            assert!(
+                app.world()
+                    .resource::<PlayersOverlayState>()
+                    .opened_by_click
+            );
             assert_roster_visible(&mut app, &ctx, true);
             assert!(app.world().resource::<GameUiPointerCapture>().over_hud);
             assert!(ctx.memory(|memory| memory.focused().is_none()));
@@ -472,7 +476,11 @@ mod tests {
         assert!(ctx.memory(|memory| memory.focused().is_none()));
         assert!(!ctx.egui_wants_keyboard_input());
         assert_roster_visible(&mut app, &ctx, true);
-        assert!(!app.world().resource::<PlayersOverlayState>().opened_by_click);
+        assert!(
+            !app.world()
+                .resource::<PlayersOverlayState>()
+                .opened_by_click
+        );
         click_hud_label(&mut app, &ctx, "Players: 1");
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -482,7 +490,11 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::Tab);
         click_hud_label(&mut app, &ctx, "Close");
-        assert!(!app.world().resource::<PlayersOverlayState>().opened_by_click);
+        assert!(
+            !app.world()
+                .resource::<PlayersOverlayState>()
+                .opened_by_click
+        );
         assert_roster_visible(&mut app, &ctx, true);
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -499,7 +511,11 @@ mod tests {
                 .resource_mut::<PlayersOverlayState>()
                 .opened_by_click = true;
             app.world_mut().run_schedule(OnEnter(state));
-            assert!(!app.world().resource::<PlayersOverlayState>().opened_by_click);
+            assert!(
+                !app.world()
+                    .resource::<PlayersOverlayState>()
+                    .opened_by_click
+            );
         }
     }
 
@@ -635,7 +651,10 @@ mod tests {
         assert_eq!(texts.iter().filter(|t| **t == "Alice").count(), 2);
         assert!(texts.contains(&i18n.text("game-default-player").as_str()));
         for key in ["game-player-you", "game-player-host"] {
-            assert_eq!(texts.iter().filter(|text| **text == i18n.text(key)).count(), 1);
+            assert_eq!(
+                texts.iter().filter(|text| **text == i18n.text(key)).count(),
+                1
+            );
         }
         for player in roster.players() {
             let [r, g, b] = jigsall_game::render::remote_cursor::player_color_srgb(player.id);

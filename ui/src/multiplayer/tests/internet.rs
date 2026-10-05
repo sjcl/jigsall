@@ -396,7 +396,7 @@ fn internet_scheduled_host_setup_has_no_bind_fields_and_direct_keeps_them() {
     assert!(text.contains("room code will be created"));
     assert!(!text.contains("0.0.0.0:27015"));
     output.drop_without_applying_deltas();
-    click_label(&mut app, &ctx, "Direct IP");
+    click_label(&mut app, &ctx, "Direct IP / LAN");
     let output = render_schedule(&mut app, &ctx, vec![]);
     assert!(labels(&output).contains(&"0.0.0.0:27015"));
     output.drop_without_applying_deltas();

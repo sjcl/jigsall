@@ -95,9 +95,13 @@ pub fn draw_game_setup_ui(
                     });
                 }
                 ui.separator();
-                // Leave room for the required-field feedback and Start/Back
-                // controls instead of letting a tall puzzle panel push them off screen.
-                let reserved_height = if multiplayer.host_setup { 440.0 } else { 312.0 };
+                // Preserve the Start/Back footer on short windows while giving
+                // normal windows enough initial scroll space for puzzle setup.
+                let reserved_height = if multiplayer.host_setup && screen.height() < 640.0 {
+                    440.0
+                } else {
+                    312.0
+                };
                 egui::ScrollArea::vertical()
                     .max_height((screen.height() - reserved_height).max(80.0))
                     .show(ui, |ui| {
@@ -191,7 +195,12 @@ pub fn draw_game_setup_ui(
                         theme::hint(ui, i18n.text("multiplayer-unavailable"));
                     }
                     if !multiplayer.host_settings_tab && !multiplayer.host.valid(true) {
-                        crate::multiplayer::paint_required_fields(ui, &multiplayer.host, true, &i18n);
+                        crate::multiplayer::paint_required_fields(
+                            ui,
+                            &multiplayer.host,
+                            true,
+                            &i18n,
+                        );
                         theme::hint(ui, i18n.text("multiplayer-setup-required"));
                     }
                 }

@@ -623,6 +623,40 @@ fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switc
     }
 }
 
+#[test]
+fn compact_host_setup_keeps_the_title_and_start_actions_visible_in_both_languages() {
+    let (mut world, _, ctx) = screen_world();
+    world.resource_mut::<MultiplayerUi>().host_setup = true;
+    for locale in [Locale::EN_US, Locale::JA] {
+        world
+            .resource_mut::<Localization>()
+            .set_preference(LanguagePreference::Locale(locale));
+        let mut render = || {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(640.0, 480.0),
+                    )),
+                    ..default()
+                },
+                |_| {
+                    world
+                        .run_system_once(crate::game_setup::draw_game_setup_ui)
+                        .unwrap();
+                },
+            )
+        };
+        render().drop_without_applying_deltas();
+        let output = render();
+        let text = labels(&output);
+        let i18n = world.resource::<Localization>();
+        assert!(text.contains(&i18n.text("common-back-title").as_str()));
+        assert!(text.contains(&i18n.text("multiplayer-start-host").as_str()));
+        output.drop_without_applying_deltas();
+    }
+}
+
 #[cfg(feature = "gns")]
 #[test]
 fn starting_a_new_host_opens_puzzle_settings_even_after_a_previous_network_tab() {
