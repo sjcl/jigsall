@@ -59,7 +59,7 @@ winit = { version = "0.30.13", default-features = false }
 # Keep the compatible patch until upstream aligns these dependencies.
 wgpu-hal = "=29.0.3"
 ash = { version = "0.38", default-features = false, features = ["std"] }
-wgpu-types = "29.0.3"
+wgpu-types = "30.0.0"
 objc2-metal = { version = "0.3.2", default-features = false, features = ["MTLDevice"] }
 
 [package]
