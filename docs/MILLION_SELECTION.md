@@ -6,7 +6,7 @@
 
 2026-10-02追記: 本書の測定・schema 2・piece単位のrelease記述はbulk-selection導入時の記録です。永続連結後の現在のauthority、schema 3、追加8 MB、性能比較と維持／変更したinvariantは[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)を参照してください。idle / pointer O(1)、GPU point 4-byte / rectangle bitset、各transition 1 command、dense dirty uploadは維持し、final selection / Grab / Releaseへcomponent expansionと隣接snap探索を追加しました。
 
-2026-10-02。branch `perf/million-piece-selection`、性能比較の基準 `014cab45fa61be5535cf857d62cabbe48204aeb8`。専用worktreeは `C:\Users\bebe\.codex\worktrees\million-selection\puzzella`。refreshしたorigin/masterから開始し、元workspaceの未コミット変更には触れていません。selection整合性・dirty mask再利用の追加修正は、文書をdocs/へ整理したmasterの`ca56bf8`に追従しています。載せ直し前後で検証済みコードとbenchmark CSVに差分がないことを確認しました。
+2026-10-02。branch `perf/million-piece-selection`、性能比較の基準 `014cab45fa61be5535cf857d62cabbe48204aeb8`。専用worktreeで検証しました。refreshしたorigin/masterから開始し、元workspaceの未コミット変更には触れていません。selection整合性・dirty mask再利用の追加修正は、文書をdocs/へ整理したmasterの`ca56bf8`に追従しています。載せ直し前後で検証済みコードとbenchmark CSVに差分がないことを確認しました。
 
 ## 変更前の調査
 
@@ -205,7 +205,7 @@ remaining costはexplicit final selectionのauthority再検証、Z sort、dense 
 
 ## Small-component Grabのauthority最適化（2026-10-02）
 
-作業開始時に`origin/master`をfetchし、最新の`9a7ac9f5ab0c0b97435b46ceb58f16ddd5fc2605`をbaselineにしました。指定された`0f07acc`以降の実装を含みます。専用branchは`codex/small-component-grab`、worktreeは`C:\Users\bebe\.codex\worktrees\small-component-grab\puzzella`です。元checkoutと他worktreeの未コミット変更は取り込んでいません。
+作業開始時に`origin/master`をfetchし、最新の`9a7ac9f5ab0c0b97435b46ceb58f16ddd5fc2605`をbaselineにしました。指定された`0f07acc`以降の実装を含みます。専用branchは`codex/small-component-grab`で、専用worktreeを使用しました。元checkoutと他worktreeの未コミット変更は取り込んでいません。
 
 ### Authority flow / component atomicity
 

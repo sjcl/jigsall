@@ -80,7 +80,7 @@ GNS 0.3.0が使うbindgen 0.70.1では、LLVM 23.1.2でcallback構造体のフ�
 ```toml
 [env]
 LIBCLANG_PATH = 'C:/Program Files/LLVM/bin'
-GNS_VCPKG_BUILDTREES_ROOT = 'C:/work/puzzella/target/vcpkg-trees'
+GNS_VCPKG_BUILDTREES_ROOT = 'C:/work/jigsall/target/vcpkg-trees'
 ```
 
 vcpkgの作業パスは100文字以内にし、長さチェックは無効化しません。初回のnative buildにはvcpkgと依存ライブラリを取得するためのネットワーク接続が必要です。

@@ -1,4 +1,4 @@
-# Puzzella native ICE patch
+# Jigsall native ICE patch
 
 Base: crates.io `game-networking-sockets-sys` 0.3.0, archive SHA256
 `8b9d11200371f3b60115e9b4a9078cb649b4c9fbc46fa8fa356f725974b28172`.
@@ -24,7 +24,7 @@ Modified upstream files:
 allocation authentication to its initial credentials. Existing connections keep
 those credentials for Refresh, CreatePermission and automatic reallocation.
 Nonce refresh is separate from credential replacement. There is no active
-allocation credential-update API; `Puzzella_UpdateTURN` was removed.
+allocation credential-update API; the former native API was removed.
 
 New defaults apply only to listener inheritance and future outgoing connections.
 The initial endpoint set must remain unchanged, and an initially direct-only

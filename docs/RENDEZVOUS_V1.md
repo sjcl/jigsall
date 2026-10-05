@@ -1,7 +1,7 @@
 # Rendezvous client v1
 
 `game/src/network/gns/rendezvous/` implements the optional production routing
-adapter for `sjcl/puzzella-rendezvous`. The adapter remains independent of Bevy runtime/UI, gameplay authority, core,
+adapter for `sjcl/jigsall-rendezvous`. The adapter remains independent of Bevy runtime/UI, gameplay authority, core,
 WireMessage, replication and Sync. The Internet runtime driver now owns it and
 hands established P2P connections to the existing game runtime. The server protocol
 and golden examples are canonical in that repository's `docs/PROTOCOL_V1.md`;
@@ -267,7 +267,7 @@ unchanged.
 
 ### Game-authenticated membership
 
-The unreleased v1 schema is updated together with `puzzella-rendezvous`.
+The unreleased v1 schema is updated together with `jigsall-rendezvous`.
 AuthorizeAck opens routing, with a fixed 30-second deadline for game authentication.
 The host runtime sends ConfirmPeer(peer_id, member_id) as soon as its existing
 SPAKE2 bootstrap reaches Authenticated (or Syncing in that same poll), before
@@ -504,7 +504,7 @@ There is no rendezvous reconnect/resume implementation.
 STUN configuration remains in `IceConfig`. Host/private and reflexive ICE
 candidates retain higher priority than TURN relay. Only UDP TURN is supported;
 TCP/TLS requires a separate native transport change. Provider secrets belong only
-in puzzella-rendezvous, never the client or `internet-defaults.env`.
+in jigsall-rendezvous, never the client or `internet-defaults.env`.
 
 Rendezvous obtains credentials before Welcome. One three-second deadline covers
 waiting for a shared issuance permit and the HTTP call. Welcome fixes TURN
@@ -533,13 +533,13 @@ allocation to its original authentication information. An authenticated
 non-Allocate request with a different username must receive 441 Wrong Credentials.
 The native patch snapshots and locks the connection's TURN configuration at ICE
 initialization, including values inherited from a listener. No active allocation
-credential-update API exists: `Puzzella_UpdateTURN` and its Rust calls were removed.
+credential-update API exists: the former native API and its Rust calls were removed.
 Allocation Refresh, CreatePermission and automatic reallocation use that
 connection's original credentials. 438 changes the nonce, with bounded challenge
 retries; it does not change the username/password. Refresh errors/timeouts retain
 the native reallocation path, and permissions are renewed before their lifetime.
 Native and WebSocket credential Debug/trace output is suppressed/redacted. See
-[native patch provenance](../vendor/game-networking-sockets-sys/PUZZELLA_PATCH.md).
+[native patch provenance](../vendor/game-networking-sockets-sys/JIGSALL_PATCH.md).
 
 Updates still require exactly the initial endpoint address set (order may change).
 The server treats a changed set as a provider error, retaining the old defaults
@@ -568,7 +568,7 @@ cargo test --locked -p jigsall-game --features rendezvous -- --skip gns_localhos
 ```
 
 The cross-repository runtime smoke harness starts only local fixtures. Build
-`cargo build --locked --example turn_fixture_server` in puzzella-rendezvous and
+`cargo build --locked --example turn_fixture_server` in jigsall-rendezvous and
 `cargo test --locked -p jigsall-game --features rendezvous --lib --no-run` here.
 Cargo prints the game test executable; pass that path and the server example to:
 

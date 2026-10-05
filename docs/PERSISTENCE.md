@@ -102,7 +102,7 @@ Load Game の各カードには元画像のサムネイルを表示します。�
 
 Windows は `%LOCALAPPDATA%/jigsall`、macOS はユーザー Application Support 以下、Linux は XDG data directory 以下です。production は working directory に依存しません。`FilesystemStorage::new(root)` で test の temporary directory を注入できます。
 
-旧 `puzzella` 保存先からのセーブ・画像の自動移行は行いません。
+ブランド移行前の保存先からのセーブ・画像の自動移行は行いません。
 
 storage API は `StorageKey::Save(SaveId)` / `StorageKey::Image(ImageHash)` と namespace を使います。`read_range` は指定範囲だけを読み、EOF では短い buffer を返します。backend は全 blob を取得して slice する実装を避け、`len` は blob size の metadata を取得します。任意 path、`PathBuf`、rename は上位 API にありません。固定 hex key だけから filename を作るため、タイトルによる path traversal はできません。storage-specific failure は表示可能な `StorageError` に変換します。`write(key, Vec<u8>)` は encoded allocation の所有権を渡します。repository → StorageProxy → StorageOperation::Write → owner backend の間で blob の clone は行いません。FilesystemStorage の atomic write 手順は同じです。非同期 write の executor は API が必要とする期間、受け取った buffer を保持してください。
 

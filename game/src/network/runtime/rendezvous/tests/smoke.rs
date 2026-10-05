@@ -45,7 +45,7 @@ impl Drop for Process {
     }
 }
 #[test]
-#[ignore = "requires the real puzzella-rendezvous binary on loopback"]
+#[ignore = "requires the real jigsall-rendezvous binary on loopback"]
 fn gns_localhost_real_rendezvous_runtime_ready_command_roundtrip() {
     let url = std::env::var("JIGSALL_RENDEZVOUS_SMOKE_URL").expect("set loopback rendezvous URL");
     EndpointUrl::loopback_for_test(&url).unwrap();

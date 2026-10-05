@@ -190,7 +190,7 @@ player or grant Ready. Establish first, retain the signaling mailbox, and wrap
 the backend in `SecureTransport<GnsP2p>` for the unchanged SPAKE2 password
 bootstrap and subsequent image/baseline/catch-up/Ready flow. Runtime and UI
 remain Direct IP. The separate `rendezvous` feature adds a caller-polled WSS adapter
-for the independent `sjcl/puzzella-rendezvous` room/signaling server. Its Host ACK
+for the independent `sjcl/jigsall-rendezvous` room/signaling server. Its Host ACK
 handshake gates route activation; active routes survive control-plane loss until
 the connection owner explicitly releases them. Runtime room-code integration,
 UDP TURN fallback and live credentials are supplied by Rendezvous; TCP/TLS TURN and Steamworks remain future work. See [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md).
@@ -257,7 +257,7 @@ The additional-data byte sequence is `jigsall-session-auth-v1`, u16 LE wire vers
 u128 LE SessionId, 32 ImageHash bytes, u64 LE host PlayerId, u64 LE cursor epoch,
 u64 LE cursor sequence, 32 OS-CSPRNG nonce bytes and u64 LE reserved PlayerId.
 SPAKE2 also binds both ephemeral shares and the fixed host/client role identities.
-These `jigsall-*` labels and role identities replace the pre-release `puzzella-*`
+These `jigsall-*` labels and role identities replace the previous pre-release
 values; mixed-version peers cannot authenticate.
 ConnectionId is not included because tokens differ between endpoints. IDs are
 reserved before ServerHello so the assigned identity is covered by confirmation;

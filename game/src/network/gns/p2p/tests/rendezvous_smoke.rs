@@ -2,7 +2,7 @@ use super::*;
 /// Cross-repository test. Start the actual server binary separately, then set
 /// JIGSALL_RENDEZVOUS_SMOKE_URL=ws://127.0.0.1:8080/v1/ws. CI stays standalone.
 #[test]
-#[ignore = "requires the real puzzella-rendezvous binary on loopback"]
+#[ignore = "requires the real jigsall-rendezvous binary on loopback"]
 fn gns_localhost_real_rendezvous_native_ice_password_secure_lanes() {
     let url = std::env::var("JIGSALL_RENDEZVOUS_SMOKE_URL").expect("set loopback rendezvous URL");
     super::super::super::rendezvous::EndpointUrl::loopback_for_test(&url).unwrap();

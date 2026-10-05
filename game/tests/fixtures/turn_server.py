@@ -4,7 +4,7 @@ Binds each allocation to its initial authentication key (RFC 8656 sections 5/6).
 """
 import hashlib, hmac, json, os, queue, selectors, socket, struct, sys, threading, time
 COOKIE = 0x2112A442
-REALM = b"puzzella-test"
+REALM = b"jigsall-test"
 KEYS = {b"user-" + v: b"password-" + v for v in (b"A", b"B", b"C")}
 relay_pairs_only = "--relay-pairs-only" in sys.argv[1:]
 sel = selectors.DefaultSelector()
