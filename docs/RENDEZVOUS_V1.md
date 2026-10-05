@@ -312,15 +312,26 @@ All added labels/errors are in the English and Japanese Fluent catalogs.
 Under `rendezvous`, explicitly inject `RendezvousRuntimeConfig { endpoint, ice }`
 into the application World. It contains only validated EndpointUrl and IceConfig;
 no password/code is stored there. Without it the Internet option is disabled and
-Direct IP remains usable. No third-party STUN or production URL is supplied.
-The ordinary binary can populate the resource from operator environment:
+Direct IP remains usable. The ordinary binary embeds optional local deployment
+defaults at build time and applies operator environment overrides at startup.
+Copy root `internet-defaults.env.example` to `internet-defaults.env`, set the
+three values below using plain `KEY=value` lines (no quotes, expansion or inline
+comments), then build with `rendezvous`. The local file is Git ignored; its values
+are embedded in the executable, so distributing it alongside the binary is
+unnecessary. They are public connection settings, not secrets. Editing or removing
+the file triggers a rebuild. Without the file, built-in defaults are an empty
+WSS URL, an empty STUN list and `false` for public candidates.
+
+Each runtime environment variable overrides only its corresponding embedded value:
 
 - `JIGSALL_RENDEZVOUS_WSS_URL`: production `wss://…/v1/ws`, validated by EndpointUrl.
 - `JIGSALL_ICE_STUN_SERVERS`: comma-separated caller-configured STUN addresses.
-- `JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES`: `true` or `false` (default false).
+- `JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES`: `true` or `false`.
 
 
-Missing/invalid WSS configuration disables Internet. Remote plaintext WS and
+An empty WSS override disables Internet; an empty STUN override clears the list.
+Missing/invalid WSS configuration disables Internet. Invalid/non-Unicode overrides
+disable Internet rather than silently falling back. Remote plaintext WS and
 certificate bypass are unavailable. Local tests explicitly inject
 `EndpointUrl::loopback_for_test`, private candidates and no STUN. To test the
 actual runtime against the real loopback server, start it as above and run:
@@ -419,3 +430,30 @@ regression. Real loopback tests preserve SPAKE2, encrypted Control/Transient/Bul
 after WS shutdown, and Room Code → Ready → Grab/Release. Both v1 schema copies and
 golden fixtures match. Production NAT/WSS/Caddy, cross-OS, GPU and performance
 trials were not rerun; existing opt-in GPU/benchmark/Caddy tests remain skipped.
+
+## Deployed WSS verification (2026-10-05)
+
+Windows x86_64, Rust test profile, client commit `021f957`, using
+`wss://rendezvous.jigsall.sjcl.me/v1/ws` with normal certificate validation.
+The deployed server's `/healthz` returned HTTP 200 through Caddy.
+
+```powershell
+$env:JIGSALL_RENDEZVOUS_SMOKE_URL = 'wss://rendezvous.jigsall.sjcl.me/v1/ws'
+cargo test --locked -p jigsall-game --features rendezvous gns_localhost_real_rendezvous -- --ignored --nocapture --test-threads=1
+Remove-Item Env:JIGSALL_RENDEZVOUS_SMOKE_URL
+```
+
+Both opt-in tests passed (2 passed, 0 failed):
+
+- Native ICE and SPAKE2 authentication, encrypted Control/Transient/Bulk payloads,
+  and another successful exchange after both WebSocket workers stopped.
+- Room creation/join through deployed WSS, native GNS, SPAKE2,
+  image/baseline/catch-up sync, Ready, replicated Grab/Release and teardown.
+
+The command used the existing GNS `out/lib` directories in its MSVC `LIB` search
+path without changing Cargo or vcpkg cache configuration. The restricted execution
+environment initially blocked outbound connections; the same tests passed when
+rerun with external network access. Both client processes ran on this Windows
+host with private ICE candidates and no external STUN. This verifies deployed
+TLS/WebSocket signaling and the native/game runtime flow, but not connectivity
+between different NATs, cross-OS behavior or visible-window UI interaction.

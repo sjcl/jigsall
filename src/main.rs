@@ -29,8 +29,18 @@ fn configure_internet(app: &mut App) {
         gns::{rendezvous::EndpointUrl, IceConfig},
         runtime::RendezvousRuntimeConfig,
     };
-    let Ok(endpoint) = std::env::var("JIGSALL_RENDEZVOUS_WSS_URL") else {
-        return;
+    let endpoint = match internet_setting(
+        std::env::var("JIGSALL_RENDEZVOUS_WSS_URL"),
+        option_env!("BUILTIN_JIGSALL_RENDEZVOUS_WSS_URL").unwrap_or(""),
+    ) {
+        Ok(endpoint) if endpoint.is_empty() => return,
+        Ok(endpoint) => endpoint,
+        Err(error) => {
+            eprintln!(
+                "Invalid JIGSALL_RENDEZVOUS_WSS_URL: {error}; Internet multiplayer is disabled."
+            );
+            return;
+        }
     };
     let endpoint = match EndpointUrl::production(&endpoint) {
         Ok(endpoint) => endpoint,
@@ -39,23 +49,36 @@ fn configure_internet(app: &mut App) {
             return;
         }
     };
-    let allow_public_candidates = match std::env::var("JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES")
-        .as_deref()
+    let allow_public_candidates = match internet_setting(
+        std::env::var("JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES"),
+        option_env!("BUILTIN_JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES").unwrap_or("false"),
+    )
+    .as_deref()
     {
         Ok("true") => true,
-        Ok("false") | Err(std::env::VarError::NotPresent) => false,
+        Ok("false") => false,
         _ => {
             eprintln!("Invalid JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES; expected true or false. Internet multiplayer is disabled.");
             return;
         }
     };
-    let stun_servers = std::env::var("JIGSALL_ICE_STUN_SERVERS")
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_owned)
-        .collect();
+    let stun_servers = match internet_setting(
+        std::env::var("JIGSALL_ICE_STUN_SERVERS"),
+        option_env!("BUILTIN_JIGSALL_ICE_STUN_SERVERS").unwrap_or(""),
+    ) {
+        Ok(servers) => servers,
+        Err(error) => {
+            eprintln!(
+                "Invalid JIGSALL_ICE_STUN_SERVERS: {error}; Internet multiplayer is disabled."
+            );
+            return;
+        }
+    }
+    .split(',')
+    .map(str::trim)
+    .filter(|entry| !entry.is_empty())
+    .map(str::to_owned)
+    .collect();
     app.insert_resource(RendezvousRuntimeConfig {
         endpoint,
         ice: IceConfig {
@@ -63,4 +86,35 @@ fn configure_internet(app: &mut App) {
             stun_servers,
         },
     });
+}
+
+#[cfg(feature = "rendezvous")]
+fn internet_setting(
+    override_value: Result<String, std::env::VarError>,
+    builtin: &str,
+) -> Result<String, std::env::VarError> {
+    match override_value {
+        Err(std::env::VarError::NotPresent) => Ok(builtin.to_owned()),
+        value => value,
+    }
+}
+
+#[cfg(all(test, feature = "rendezvous"))]
+mod tests {
+    use super::internet_setting;
+    use std::env::VarError;
+
+    #[test]
+    fn internet_environment_overrides_embedded_defaults() {
+        assert_eq!(
+            internet_setting(Err(VarError::NotPresent), "default").unwrap(),
+            "default"
+        );
+        assert_eq!(
+            internet_setting(Ok("override".into()), "default").unwrap(),
+            "override"
+        );
+        assert_eq!(internet_setting(Ok(String::new()), "default").unwrap(), "");
+        assert!(internet_setting(Err(VarError::NotUnicode("invalid".into())), "default").is_err());
+    }
 }

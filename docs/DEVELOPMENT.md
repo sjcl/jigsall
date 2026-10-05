@@ -13,11 +13,16 @@ cargo run --locked
 cargo run --locked --release
 # Direct-IP マルチプレイを有効にする
 cargo run --locked --release --features gns
-# Room Code の UI/runtime（WSS endpoint と ICE の運用設定が必要）
+# Room Code の UI/runtime（ローカル標準値または環境変数で WSS / ICE を設定）
 cargo run --locked --release --features rendezvous
 # 外部サーバー不要の rendezvous runtime/UI fixture
 cargo test --workspace --locked --features rendezvous -- --skip gns_localhost
 ```
+
+Internet 接続の標準値はルートの `internet-defaults.env.example` を
+`internet-defaults.env` にコピーして設定し、`rendezvous` ビルド時に実行ファイルへ
+埋め込みます。ローカル設定ファイルは Git の対象外です。起動時の環境変数で項目ごとに
+上書きできます。設定項目と優先順位は [rendezvous の運用設定](RENDEZVOUS_V1.md#deployment-configuration)を参照してください。
 
 Windows の MSVC toolchain・Visual Studio Build Tools・SDK と GNS のセットアップは [Windows ビルド手順](WINDOWS_BUILD.md)を参照してください。Linux CI で使うネイティブ依存の一覧は [CI の Install Linux native dependencies](../.github/workflows/ci.yml)にあります。GNS の依存と通信テストは [ネットワーク transport](NETWORK_TRANSPORT.md)にまとめています。
 

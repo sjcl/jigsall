@@ -1,4 +1,5 @@
 /target
+/internet-defaults.env
 /assets/*
 !/assets/icon.svg
 !/assets/icon.ico
