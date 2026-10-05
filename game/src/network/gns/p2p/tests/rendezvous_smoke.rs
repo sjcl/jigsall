@@ -44,7 +44,8 @@ fn gns_localhost_real_rendezvous_native_ice_password_secure_lanes() {
         });
         peers.push(Process { child, input });
     }
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let started_at = Instant::now();
+    let deadline = started_at + Duration::from_secs(40);
     let mut connected = [0; 2];
     let mut authenticated = [false; 2];
     let mut received = [false; 2];
@@ -87,7 +88,11 @@ fn gns_localhost_real_rendezvous_native_ice_password_secure_lanes() {
             }
             exchanging = true;
         }
-        if !stopping && received.into_iter().all(|x| x) {
+        if !stopping
+            && received.into_iter().all(|x| x)
+            && (std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_none()
+                || started_at.elapsed() >= Duration::from_secs(3))
+        {
             for peer in &mut peers {
                 peer.send(Frame::ControlStop);
             }

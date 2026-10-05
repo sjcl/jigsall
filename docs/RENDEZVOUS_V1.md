@@ -477,3 +477,69 @@ rerun with external network access. Both client processes ran on this Windows
 host with private ICE candidates and no external STUN. This verifies deployed
 TLS/WebSocket signaling and the native/game runtime flow, but not connectivity
 between different NATs, cross-OS behavior or visible-window UI interaction.
+
+## Cloudflare TURN fallback and live credentials
+
+Rendezvous v1 Welcome can include `turn: { expires_at_unix, servers }`, with 1–4
+UDP addresses and short-lived username/password pairs. The adapter queues this
+before its Welcome event. GNS installs the update before outgoing connects or
+incoming signal processing. Later `turn_credentials` events update outgoing
+options, listener inheritance and every existing native ICE session without
+replacing ConnectionId, SecureTransport, SPAKE2, Sync/Ready or gameplay state.
+`turn_unavailable`, expired/older updates and WSS loss preserve installed values
+and established gameplay. There is no reconnect/resume implementation.
+
+STUN configuration remains in `IceConfig`. Host/private and reflexive ICE
+candidates retain higher priority than TURN relay. Only UDP TURN is supported;
+TCP/TLS requires a separate native transport change. Provider secrets belong only
+in puzzella-rendezvous, never the client or `internet-defaults.env`.
+
+Rendezvous obtains credentials before Welcome with a bounded HTTP deadline and
+refreshes at half TTL (default 24 hours, first refresh about 12 hours). API failures
+retain the current value and retry with bounded backoff. WSS loss ends rotation;
+a TURN-only route can fail after eventual credential expiry. TURN does not grant
+room membership, player identity or game password authentication.
+
+The pinned `game-networking-sockets-sys` source now provides `Puzzella_UpdateTURN`.
+It takes the native global and connection locks, updates copied ICE credentials
+and derives MD5(username:realm:password) again. In-flight requests retain their
+serialized bytes and verification key. The next Refresh/CreatePermission uses
+the new key; 401 after a credential race and 438 stale nonce reauthenticate with
+current credentials, bounded to two challenge retries. Refresh errors/timeouts
+reuse the existing reallocation path. Permissions are renewed before their
+300-second lifetime. Native and WebSocket credential Debug/trace output is
+suppressed/redacted. See [native patch provenance](../vendor/game-networking-sockets-sys/PUZZELLA_PATCH.md).
+
+Local tests use `game/tests/fixtures/turn_server.py` (Python standard library only)
+and a private IPv4 interface. They never contact Cloudflare. The fixture verifies
+TURN long-term authentication and relays UDP between independent GNS processes.
+
+```sh
+cargo test --locked -p jigsall-game --features rendezvous gns_localhost_turn -- --nocapture --test-threads=1
+cargo test --locked -p jigsall-game --features rendezvous -- --skip gns_localhost
+```
+
+The cross-repository runtime smoke harness starts only local fixtures. Build
+`cargo build --locked --example turn_fixture_server` in puzzella-rendezvous and
+`cargo test --locked -p jigsall-game --features rendezvous --lib --no-run` here.
+Cargo prints the game test executable; pass that path and the server example to:
+
+```sh
+python game/tests/fixtures/run_turn_smoke.py /path/to/turn_fixture_server /path/to/jigsall_game-test-executable
+```
+
+The harness forces relay, applies pushed credential B, reaches SPAKE2 → image /
+baseline / catch-up → Ready, and verifies gameplay with the same connection. It
+also verifies encrypted lanes after control-worker shutdown and both flows when
+the provider is unavailable and direct ICE is used. Known fixture credential
+values must be absent from captured test output. Loopback `ws://` is allowed only
+by the existing test constructor; this does not test public WSS/TLS or Cloudflare.
+
+Verification on 2026-10-05, Windows x86_64: the 22 non-ignored GNS localhost tests
+passed (including live rotation with an in-flight Refresh, 438, destroyed relay
+allocation / reallocation using B, mixed direct/relay peers, future incoming
+configuration and wrong-password rejection). The four cross-repository smoke
+runs passed. Both Rust protocol copies and JSONL fixtures are byte-identical.
+Server mock/provider/HTTP/WebSocket tests and all-target Clippy passed. Production
+Cloudflare, Internet NATs, cross-OS and 24-hour wall-clock sessions require separate
+validation; the local fixtures accelerate allocation/credential lifetimes.

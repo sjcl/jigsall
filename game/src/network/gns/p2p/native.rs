@@ -3,7 +3,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 use super::{
     signaling::{PeerId, SignalingEndpoint, MAX_SIGNAL_BYTES},
-    IceConfig,
+    IceConfig, TurnServer,
 };
 use crate::network::{
     lifecycle::{Admission, Bucket},
@@ -145,26 +145,71 @@ fn string_option(
         },
     }
 }
+fn turn_strings(servers: &[TurnServer]) -> Result<(CString, CString, CString), TransportError> {
+    if servers.len() > 4
+        || servers.iter().any(|s| {
+            [s.address.as_str(), s.username.as_str(), s.password.as_str()]
+                .iter()
+                .any(|v| {
+                    v.is_empty()
+                        || v.len() > 256
+                        || v.bytes().any(|b| !b.is_ascii_graphic() || b == b',')
+                })
+        })
+    {
+        return Err(TransportError::ProtocolViolation);
+    }
+    let join = |f: fn(&TurnServer) -> &str| {
+        CString::new(servers.iter().map(f).collect::<Vec<_>>().join(","))
+            .map_err(|_| TransportError::ProtocolViolation)
+    };
+    Ok((
+        join(|s| &s.address)?,
+        join(|s| &s.username)?,
+        join(|s| &s.password)?,
+    ))
+}
 struct Options {
     stun: CString,
-    empty: CString,
+    turn: CString,
+    users: CString,
+    passwords: CString,
     public: bool,
+    #[cfg(test)]
+    relay_only: bool,
 }
 impl Options {
     fn new(config: &IceConfig) -> Result<Self, TransportError> {
         Ok(Self {
             stun: CString::new(config.stun_servers.join(","))
                 .map_err(|_| TransportError::ProtocolViolation)?,
-            empty: CString::default(),
+            turn: CString::default(),
+            users: CString::default(),
+            passwords: CString::default(),
             public: config.allow_public_candidates,
+            #[cfg(test)]
+            relay_only: std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_some(),
         })
     }
-    fn values(&self) -> [SteamNetworkingConfigValue_t; 5] {
+    fn values(&self) -> [SteamNetworkingConfigValue_t; 7] {
         use ESteamNetworkingConfigValue::*;
+        #[cfg(test)]
+        let private = if self.relay_only {
+            0
+        } else {
+            k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Private
+        };
+        #[cfg(not(test))]
+        let private = k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Private;
         [
             int_option(
                 k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
-                k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Private
+                private
+                    | if !self.turn.as_bytes().is_empty() {
+                        k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Relay
+                    } else {
+                        0
+                    }
                     | if self.public {
                         k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Public
                     } else {
@@ -173,7 +218,9 @@ impl Options {
             ),
             int_option(k_ESteamNetworkingConfig_P2P_Transport_ICE_Implementation, 1),
             string_option(k_ESteamNetworkingConfig_P2P_STUN_ServerList, &self.stun),
-            string_option(k_ESteamNetworkingConfig_P2P_TURN_ServerList, &self.empty),
+            string_option(k_ESteamNetworkingConfig_P2P_TURN_ServerList, &self.turn),
+            string_option(k_ESteamNetworkingConfig_P2P_TURN_UserList, &self.users),
+            string_option(k_ESteamNetworkingConfig_P2P_TURN_PassList, &self.passwords),
             int_option(
                 k_ESteamNetworkingConfig_TimeoutInitial,
                 crate::network::lifecycle::CONNECTING_TIMEOUT.as_millis() as i32,
@@ -228,6 +275,35 @@ impl Listener {
             options,
             port,
         })
+    }
+    pub(super) fn install_turn(&mut self, servers: &[TurnServer]) -> Result<(), TransportError> {
+        let strings = turn_strings(servers)?;
+        self.options.turn = strings.0;
+        self.options.users = strings.1;
+        self.options.passwords = strings.2;
+        // GNS copies these into the listener; future incoming connections inherit them.
+        for value in self.options.values() {
+            let data = if value.m_eDataType
+                == ESteamNetworkingConfigDataType::k_ESteamNetworkingConfig_String
+            {
+                unsafe { value.m_val.m_string.cast::<c_void>() }
+            } else {
+                std::ptr::addr_of!(value.m_val).cast::<c_void>()
+            };
+            if !unsafe {
+                SteamAPI_ISteamNetworkingUtils_SetConfigValue(
+                    SteamAPI_SteamNetworkingUtils_v003(),
+                    value.m_eValue,
+                    ESteamNetworkingConfigScope::k_ESteamNetworkingConfig_ListenSocket,
+                    self.handle as isize,
+                    value.m_eDataType,
+                    data,
+                )
+            } {
+                return Err(failure());
+            }
+        }
+        Ok(())
     }
     pub(super) fn connect(
         &self,
@@ -343,6 +419,55 @@ pub(super) enum State {
 /// Unique native connection owner. Handles never leave this module.
 pub(super) struct Connection(Option<HSteamNetConnection>);
 impl Connection {
+    pub(super) fn install_turn(&self, servers: &[TurnServer]) -> Result<(), TransportError> {
+        let (addresses, users, passwords) = turn_strings(servers)?;
+        for (option, text) in [
+            (
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_ServerList,
+                &addresses,
+            ),
+            (
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_UserList,
+                &users,
+            ),
+            (
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_PassList,
+                &passwords,
+            ),
+        ] {
+            if !unsafe {
+                SteamAPI_ISteamNetworkingUtils_SetConfigValue(
+                    SteamAPI_SteamNetworkingUtils_v003(),
+                    option,
+                    ESteamNetworkingConfigScope::k_ESteamNetworkingConfig_Connection,
+                    self.handle() as isize,
+                    ESteamNetworkingConfigDataType::k_ESteamNetworkingConfig_String,
+                    text.as_ptr().cast(),
+                )
+            } {
+                return Err(failure());
+            }
+        }
+        for server in servers {
+            let address = CString::new(server.address.as_str())
+                .map_err(|_| TransportError::ProtocolViolation)?;
+            let user = CString::new(server.username.as_str())
+                .map_err(|_| TransportError::ProtocolViolation)?;
+            let password = CString::new(server.password.as_str())
+                .map_err(|_| TransportError::ProtocolViolation)?;
+            if !unsafe {
+                Puzzella_UpdateTURN(
+                    self.handle(),
+                    address.as_ptr(),
+                    user.as_ptr(),
+                    password.as_ptr(),
+                )
+            } {
+                return Err(failure());
+            }
+        }
+        Ok(())
+    }
     fn handle(&self) -> HSteamNetConnection {
         self.0.unwrap_or(0)
     }
@@ -503,6 +628,30 @@ impl Connection {
         }
     }
     #[cfg(test)]
+    pub(super) fn assert_turn_user(&self, expected: &str) {
+        let value = global()
+            .unwrap()
+            .utils()
+            .get_connection_config_value(
+                ::gns::GnsConnection::from_raw(self.handle()),
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_UserList,
+            )
+            .unwrap();
+        assert!(value == ::gns::GnsConfigValue::String(expected.to_owned()));
+    }
+    #[cfg(test)]
+    pub(super) fn is_relay(&self) -> bool {
+        let mut info = SteamNetConnectionInfo_t::default();
+        assert!(unsafe {
+            SteamAPI_ISteamNetworkingSockets_GetConnectionInfo(
+                interface(),
+                self.handle(),
+                &mut info,
+            )
+        });
+        info.m_nFlags & k_nSteamNetworkConnectionInfoFlags_Relayed != 0
+    }
+    #[cfg(test)]
     pub(super) fn details(&self) -> String {
         let mut info = SteamNetConnectionInfo_t::default();
         // SAFETY: correctly sized initialized output, owned live connection.
@@ -514,13 +663,25 @@ impl Connection {
             )
         });
         assert_eq!(
-            info.m_nFlags
-                & (k_nSteamNetworkConnectionInfoFlags_LoopbackBuffers
-                    | k_nSteamNetworkConnectionInfoFlags_Relayed),
+            info.m_nFlags & k_nSteamNetworkConnectionInfoFlags_LoopbackBuffers,
             0
         );
+        if std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_some() {
+            assert_ne!(
+                info.m_nFlags & k_nSteamNetworkConnectionInfoFlags_Relayed,
+                0,
+                "TURN route required"
+            );
+        } else {
+            assert_eq!(
+                info.m_nFlags & k_nSteamNetworkConnectionInfoFlags_Relayed,
+                0
+            );
+        }
         let remote_port = info.m_addrRemote.m_port;
-        assert_ne!(remote_port, 0, "ICE must select an actual UDP route");
+        if info.m_nFlags & k_nSteamNetworkConnectionInfoFlags_Relayed == 0 {
+            assert_ne!(remote_port, 0, "ICE must select an actual UDP route");
+        }
         let bytes: Vec<_> = info
             .m_szConnectionDescription
             .iter()

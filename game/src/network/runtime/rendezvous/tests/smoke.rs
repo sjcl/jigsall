@@ -73,7 +73,8 @@ fn gns_localhost_real_rendezvous_runtime_ready_command_roundtrip() {
         });
         processes.push(Process { child, input });
     }
-    let deadline = Instant::now() + std::time::Duration::from_secs(45);
+    let started_at = Instant::now();
+    let deadline = started_at + std::time::Duration::from_secs(45);
     let mut ready = [false; 2];
     let mut held = [false; 2];
     let mut released = [false; 2];
@@ -102,7 +103,11 @@ fn gns_localhost_real_rendezvous_runtime_ready_command_roundtrip() {
                 other => panic!("unexpected runtime frame {other:?}"),
             }
         }
-        if ready.into_iter().all(|x| x) && !grabbed {
+        if ready.into_iter().all(|x| x)
+            && !grabbed
+            && (std::env::var_os("JIGSALL_TURN_TEST_ONLY").is_none()
+                || started_at.elapsed() >= std::time::Duration::from_secs(3))
+        {
             processes[1].send(Frame::Grab);
             grabbed = true;
         }

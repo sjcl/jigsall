@@ -32,6 +32,8 @@ enum Frame {
     Connected(String),
     Authenticated,
     Exchange,
+    Rotate,
+    Rotated,
     Received,
     Close,
     Closed,
@@ -146,6 +148,15 @@ fn gns_p2p_child() {
     };
     #[cfg(not(feature = "rendezvous"))]
     let mut backend = GnsP2p::new_routed(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
+    if let Ok(address) = std::env::var("JIGSALL_TURN_TEST_ADDRESS") {
+        backend
+            .install_turn(&[TurnServer {
+                address,
+                username: "user-A".into(),
+                password: "password-A".into(),
+            }])
+            .unwrap();
+    }
     let mailbox = backend.signaling();
     emit(Frame::Peer(backend.peer_id().to_bytes()));
     let (tx, rx) = mpsc::sync_channel(256);
@@ -276,6 +287,24 @@ fn gns_p2p_child() {
             match frame {
                 Frame::Signal(peer, bytes) => {
                     mailbox.receive(PeerId::from_bytes(peer), &bytes).unwrap();
+                }
+                Frame::Rotate => {
+                    let address = std::env::var("JIGSALL_TURN_TEST_ADDRESS").unwrap();
+                    transport
+                        .backend_mut()
+                        .inner
+                        .install_turn(&[TurnServer {
+                            address,
+                            username: "user-B".into(),
+                            password: "password-B".into(),
+                        }])
+                        .unwrap();
+                    emit(Frame::Rotated);
+                    exchange = false;
+                    sent = false;
+                    received = [false; 3];
+                    reported_receive = false;
+                    records.lock().unwrap().clear();
                 }
                 Frame::Exchange => {
                     assert!(authenticated);
@@ -439,6 +468,7 @@ fn gns_p2p_child() {
 
 #[cfg(feature = "rendezvous")]
 mod rendezvous_smoke;
+mod turn_rotation;
 
 struct Process {
     child: Child,

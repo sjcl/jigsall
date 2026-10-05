@@ -17,6 +17,7 @@ fn id(n: u8) -> [u8; 16] {
 fn welcome() -> ServerMessage {
     ServerMessage::Welcome {
         authority_id: AuthorityId(id(1)),
+        turn: None,
     }
 }
 fn created() -> ServerMessage {
@@ -944,4 +945,66 @@ async fn host_ready_route_survives_control_loss_in_its_delivery_batch() {
     assert!(a.signaling.origin(host).is_err());
     finish(&mut a).await;
     task.await.unwrap();
+}
+
+#[tokio::test]
+async fn welcome_queues_turn_before_room_commands_and_control_loss_retains_it() {
+    let (url, task) = fixture(|_| async {}).await;
+    let mut adapter = adapter(url);
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 86400;
+    let config = |username: &str, expires_at_unix| protocol::TurnCredentials {
+        expires_at_unix,
+        servers: vec![protocol::TurnServer {
+            address: "turn.cloudflare.com:3478".into(),
+            username: username.into(),
+            password: "fixture-password".into(),
+        }],
+    };
+    let mut events = Vec::new();
+    adapter
+        .handle(
+            ServerMessage::Welcome {
+                authority_id: AuthorityId(id(1)),
+                turn: Some(config("A", expiry)),
+            },
+            &mut events,
+        )
+        .unwrap();
+    assert!(matches!(
+        events.as_slice(),
+        [RendezvousEvent::Welcome { .. }]
+    ));
+    assert_eq!(
+        adapter.signaling.take_turn_update().unwrap()[0].username,
+        "A"
+    );
+    adapter
+        .handle(
+            ServerMessage::TurnCredentials {
+                turn: config("B", expiry + 3600),
+            },
+            &mut events,
+        )
+        .unwrap();
+    adapter
+        .handle(
+            ServerMessage::TurnCredentials {
+                turn: config("stale", expiry),
+            },
+            &mut events,
+        )
+        .unwrap();
+    adapter
+        .handle(ServerMessage::TurnUnavailable {}, &mut events)
+        .unwrap();
+    adapter.control_lost();
+    assert_eq!(
+        adapter.signaling.take_turn_update().unwrap()[0].username,
+        "B"
+    );
+    task.abort();
 }

@@ -59,6 +59,11 @@ impl Worker {
         std::thread::Builder::new()
             .name("rendezvous-ws".into())
             .spawn(move || {
+                // Tungstenite trace output can contain complete credential frames.
+                // Silence dependency tracing on this dedicated control-plane thread.
+                let _trace_guard = bevy::log::tracing::subscriber::set_default(
+                    bevy::log::tracing::subscriber::NoSubscriber::default(),
+                );
                 let result = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

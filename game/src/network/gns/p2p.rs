@@ -32,6 +32,20 @@ pub struct IceConfig {
     pub allow_public_candidates: bool,
     pub stun_servers: Vec<String>,
 }
+/// Short-lived UDP TURN credentials. Debug never includes authentication values.
+#[derive(Clone)]
+pub struct TurnServer {
+    pub address: String,
+    pub username: String,
+    pub password: String,
+}
+impl std::fmt::Debug for TurnServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnServer")
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
+}
 struct Connection {
     native: native::Connection,
     peer: PeerId,
@@ -74,6 +88,8 @@ pub struct GnsP2p {
     starts: Bucket,
     admission: Admission,
     next_receive: Option<ConnectionId>,
+    pending_turn: Option<Vec<TurnServer>>,
+    turn_retry_after: Instant,
     _lease: Lease,
 }
 impl GnsP2p {
@@ -111,6 +127,8 @@ impl GnsP2p {
             ),
             admission: Admission::connections(),
             next_receive: None,
+            pending_turn: None,
+            turn_retry_after: Instant::now(),
             _lease: lease,
         })
     }
@@ -151,6 +169,7 @@ impl GnsP2p {
         peer: PeerId,
         remote_virtual_port: u16,
     ) -> Result<ConnectionId, TransportError> {
+        self.apply_turn_update()?;
         if peer == self.peer {
             return Err(TransportError::ProtocolViolation);
         }
@@ -170,6 +189,30 @@ impl GnsP2p {
             .connect(peer, remote_virtual_port, self.mailbox.clone())?;
         self.insert(id, native, peer, origin);
         Ok(id)
+    }
+    /// Updates the listener, outgoing options and every owned connection without
+    /// issuing new connection IDs or touching SecureTransport/bootstrap state.
+    pub fn install_turn(&mut self, servers: &[TurnServer]) -> Result<(), TransportError> {
+        self.listener.install_turn(servers)?;
+        for connection in self.connections.values() {
+            connection.native.install_turn(servers)?;
+        }
+        Ok(())
+    }
+    fn apply_turn_update(&mut self) -> Result<(), TransportError> {
+        if let Some(servers) = self.mailbox.take_turn_update() {
+            self.pending_turn = Some(servers);
+            self.turn_retry_after = Instant::now();
+        }
+        if Instant::now() >= self.turn_retry_after {
+            if let Some(servers) = self.pending_turn.take() {
+                if self.install_turn(&servers).is_err() {
+                    self.pending_turn = Some(servers);
+                    self.turn_retry_after = Instant::now() + std::time::Duration::from_secs(1);
+                }
+            }
+        }
+        Ok(())
     }
     fn origin_pending(&self, origin: Option<Origin>) -> usize {
         self.connections
@@ -326,6 +369,7 @@ impl Transport for GnsP2p {
         Ok(())
     }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
+        self.apply_turn_update()?;
         events.append(&mut self.pending);
         let now = Instant::now();
         self.maintain(now, events);

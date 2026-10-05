@@ -150,6 +150,7 @@ impl Queue {
 #[derive(Default)]
 struct Queues {
     closed: bool,
+    turn_update: Option<Vec<super::p2p::TurnServer>>,
     require_routes: bool,
     bindings: BTreeMap<PeerId, RouteOrigin>,
     inbound: Queue,
@@ -170,6 +171,12 @@ impl Queues {
 #[derive(Clone, Default)]
 pub struct SignalingEndpoint(Arc<Mutex<Queues>>);
 impl SignalingEndpoint {
+    pub(super) fn install_turn(&self, servers: Vec<super::p2p::TurnServer>) {
+        self.0.lock().unwrap().turn_update = Some(servers);
+    }
+    pub(super) fn take_turn_update(&self) -> Option<Vec<super::p2p::TurnServer>> {
+        self.0.lock().unwrap().turn_update.take()
+    }
     pub(super) fn routed() -> Self {
         Self(Arc::new(Mutex::new(Queues {
             require_routes: true,
