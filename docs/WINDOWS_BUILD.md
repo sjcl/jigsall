@@ -50,11 +50,20 @@ cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
 cargo test --workspace --locked
 ```
 
-CIのLinux jobはdefault / all-features両構成のClippy、example、doctest、build、testを検証します。
-Windows jobは`gns`を有効にした一構成でworkspaceのunit / integration test、
-直列のGNS localhost通信テスト、通常アプリのリンクを検証します。
+CIのLinux jobはdefault / all-features両構成のClippyと、all-featuresの一括ビルド・example・test・doctestを検証します。
+Windows jobは`rendezvous`（`gns`を含む）を有効にした一構成で、
+アプリとworkspace・GNS wrapperのテスト実行ファイルを1回の`cargo build`で生成します。
+[共通 CI runner](../.github/scripts/ci.py)がCargoのJSON出力から実行ファイルを取得し、
+workspaceのunit / integration test・rendezvous / UI回帰、直列のGNS localhost通信テスト、
+wrapperの初期化回帰テストを直接実行します。通常アプリのリンクも同じビルドで検証します。
 ファイルの共有・削除や並列ログ出力など、OSによって差が出る実行時の確認を残し、
 Clippy、example、doctestと追加のfeature構成はLinux jobに集約しています。
+
+CIと同じ一括ビルド・実行は、GNSのビルド環境とPythonを用意して次のコマンドで再現できます。
+
+```powershell
+python .github/scripts/ci.py
+```
 
 ## 依存関係の注意点
 

@@ -129,49 +129,29 @@ jobs:
           env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
           cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
 
-      # Linux covers linting, examples, doctests and both feature configurations.
-      # Windows uses one GNS configuration for platform/runtime and linker checks.
+      # Keep default-feature type/lint coverage without a second runtime build.
+      # Both platforms build their application and tests in one feature graph.
       - name: Clippy (default features)
         if: runner.os == 'Linux'
         run: cargo clippy --workspace --locked --all-targets -- -D warnings
-      - name: Tests and doctests (default features)
-        if: runner.os == 'Linux'
-        run: cargo test --workspace --locked
-      - name: Build (default features)
-        if: runner.os == 'Linux'
-        run: cargo build --workspace --locked
-
       - name: Clippy (all features)
         if: runner.os == 'Linux'
         run: cargo clippy --workspace --locked --all-targets --all-features -- -D warnings
-      - name: Tests and doctests (all features)
+      # The runner also compiles examples and the excluded wrapper's initializer.
+      # It runs ordinary tests and serial localhost tests from the same artifacts.
+      - name: Linux build and runtime tests (all features)
         if: runner.os == 'Linux'
-        run: cargo test --workspace --locked --all-features -- --skip gns_localhost
-      # Native GNS uses a process-wide singleton; run its localhost tests serially.
-      # Use the workspace to retain the same unified features and compiled artifacts.
-      - name: GNS localhost integration tests
+        run: python3 .github/scripts/ci.py --all-features
+      # Rustdoc compiles code examples separately; retain doctest coverage while
+      # reusing the all-feature library artifacts instead of rerunning unit tests.
+      - name: Doctests (all features)
         if: runner.os == 'Linux'
-        run: cargo test --workspace --locked --all-features gns_localhost -- --nocapture --test-threads=1
-      - name: Build (all features)
-        if: runner.os == 'Linux'
-        run: cargo build --workspace --locked --all-features
+        run: cargo test --workspace --locked --all-features --doc
 
-      # Keep runtime tests on Windows: filesystem semantics and parallel logging
-      # can differ from Linux. Examples and doctests are already covered there.
-      - name: Windows runtime tests (GNS enabled)
+      # Keep filesystem, logging, rendezvous/UI and native GNS runtime coverage.
+      # Build the application and test executables in one Cargo invocation, then
+      # run those executables directly without changing the package/feature graph.
+      # Examples and doctests remain covered by Linux.
+      - name: Windows build and runtime tests (rendezvous / GNS)
         if: runner.os == 'Windows'
-        run: cargo test --workspace --locked --features gns --lib --bins --tests -- --skip gns_localhost
-      - name: Windows GNS localhost integration tests
-        if: runner.os == 'Windows'
-        run: cargo test --workspace --locked --features gns --lib --bins --tests gns_localhost -- --nocapture --test-threads=1
-      # The patched wrapper is an excluded dependency, so workspace tests do not
-      # run its initializer regression test. Select it with the optional graph.
-      - name: GNS single-shot identity initialization
-        run: cargo test --locked -p jigsall-game -p game-networking-sockets --features jigsall-game/gns --lib identity_initialization -- --nocapture
-      - name: Windows application build (GNS enabled)
-        if: runner.os == 'Windows'
-        run: cargo build --workspace --locked --features gns
-
-      - name: Windows rendezvous runtime and UI regressions
-        if: runner.os == 'Windows'
-        run: cargo test --workspace --locked --features rendezvous -- --skip gns_localhost
+        run: python .github/scripts/ci.py

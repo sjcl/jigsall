@@ -83,9 +83,23 @@ Input → ClientCommand → CPU gameplay state → dirty ranges → GPU state
 | CI の対象 | 確認内容 |
 | --- | --- |
 | 整形 | `cargo fmt --all --check` |
-| Linux | default / all-features の Clippy（全 target）、テスト・doctest、ビルド |
-| Windows | `gns` 有効の unit / integration test、アプリのビルド・リンク |
+| Linux | default / all-features の Clippy（全 target）、all-features の一括ビルド・テスト・doctest |
+| Windows | `rendezvous`（`gns` を含む）でアプリとテストを一括コンパイルし、unit / integration test・UI の回帰・GNS 初期化を実行 |
 | GNS localhost | Linux / Windows で通信テストを直列実行 |
+
+実行用のビルドは Linux では `all-features`、Windows では `rendezvous` に統一します。
+[共通 CI runner](../.github/scripts/ci.py) がアプリとテスト実行ファイルを1回の `cargo build` で生成し、
+通常テスト、直列の GNS localhost テスト、wrapper の初期化回帰テストを直接実行します。
+Linux では example も同じビルドで生成します。default 構成は Clippy による型検証・lint を残し、
+unit / integration test と doctest は `all-features` で実行します。
+doctest のコード例は Rustdoc が個別にコンパイルするため、別ステップで検証します。
+
+Linux のネイティブ依存を用意すると、CI と同じ一括ビルド・実行を再現できます。
+
+```sh
+python3 .github/scripts/ci.py --all-features
+cargo test --workspace --locked --all-features --doc
+```
 
 代表的なローカルコマンドです。Clippy には `cargo check` 相当の型検証も含まれます。
 
