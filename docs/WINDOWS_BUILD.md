@@ -103,6 +103,11 @@ MSVCのmulti-config generatorでは、依存の最適化設定によりGNSが
 `RelWithDebInfo`へ生成されても、GNS 0.3.0のbuild scriptが`Debug`を検索し、
 `GameNetworkingSockets_s.lib`のLNK1181が起こる場合があります。
 CIはsingle-configのNinjaを使い、libraryを`build/src`直下へ生成します。
+CI / release workflowのvcpkg buildtreesは`RUNNER_TEMP/vcpkg-trees`を使います。
+`rust-cache`がCargo以外の`target`配下のファイルを削除すると、vcpkgのport manifestが
+欠落した空directoryがcacheに残り、次回のinstallが失敗するためです。
+vcpkgのbinary packageは同じ一時領域の`vcpkg-binary-cache`を個別にcacheします。
+ローカル検証では上記の元リポジトリとworktreeで共通の作業パスを使います。
 既に生成済みのMSVC buildを使う場合、linker出力にあるGNSの`out` directory内の
 `lib`をそのコマンドだけ`LIB`検索先へ追加できます。これはRustのtarget/build
 directoryやvcpkg作業パスの切り替えではありません。
