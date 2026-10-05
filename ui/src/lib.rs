@@ -65,6 +65,9 @@ impl Plugin for GameUiPlugin {
 }
 
 fn register_screens(app: &mut App) {
+    app.init_resource::<game_play::PlayersOverlayState>()
+        .add_systems(OnEnter(AppState::Menu), game_play::reset_players_overlay)
+        .add_systems(OnEnter(AppState::InGame), game_play::reset_players_overlay);
     app.configure_sets(
         EguiPrimaryContextPass,
         GameplayUi.after(multiplayer::draw_connection_ui).run_if(
@@ -119,7 +122,9 @@ fn register_screens(app: &mut App) {
                 .run_if(in_state(AppState::InGame)),
             game_play::draw_players_overlay
                 .in_set(GameplayUi)
-                .run_if(in_state(AppState::InGame).and_then(players_key_pressed)),
+                .after(game_play::draw_game_ui)
+                .run_if(in_state(AppState::InGame))
+                .run_if(game_play::players_overlay_pinned.or_else(players_key_pressed)),
             overlays::draw_in_game_menu_ui.in_set(GameplayUi).run_if(
                 in_state(GameSubState::Paused).or_else(in_state(GameCompleteSubState::Paused)),
             ),

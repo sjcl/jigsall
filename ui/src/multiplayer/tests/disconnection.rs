@@ -78,7 +78,7 @@ fn disconnected_save_waits_allows_retry_and_shows_success_before_back() {
     click_label(&mut app, &ctx, "Save Last State");
     click_label(&mut app, &ctx, "Save Game");
     assert!(app.world().resource::<PersistenceState>().busy);
-    click_label(&mut app, &ctx, "Back");
+    click_label(&mut app, &ctx, "Discard Unsaved State and Return");
     click_label(&mut app, &ctx, "Cancel");
     assert!(matches!(
         app.world().resource::<NextState<AppState>>(),
@@ -109,7 +109,7 @@ fn disconnected_save_waits_allows_retry_and_shows_success_before_back() {
         .persistence_notice(&PersistenceNotice::Saved);
     assert!(labels(&output).contains(&saved.as_str()));
     output.drop_without_applying_deltas();
-    click_label(&mut app, &ctx, "Back");
+    click_label(&mut app, &ctx, "Return to Join a Game");
     assert_eq!(app.world().resource::<NetworkStatus>().role, None);
     assert!(matches!(
         app.world().resource::<NextState<AppState>>(),
@@ -134,5 +134,16 @@ fn initial_join_failure_has_no_save_action_and_missing_image_disables_recovery_s
         .insert_resource(State::new(AppState::GameSetup));
     let output = render_schedule(&mut app, &ctx, vec![]);
     assert!(!labels(&output).contains(&"Save Last State"));
+    output.drop_without_applying_deltas();
+}
+
+#[test]
+fn an_older_save_notice_does_not_hide_the_discard_warning_after_disconnect() {
+    let (mut app, ctx) = disconnected_game(false);
+    app.world_mut().resource_mut::<PersistenceState>().message = Some(PersistenceNotice::Saved);
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    assert!(labels(&output).contains(&"Discard Unsaved State and Return"));
+    assert!(!labels(&output).contains(&"Return to Join a Game"));
     output.drop_without_applying_deltas();
 }

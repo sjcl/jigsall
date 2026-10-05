@@ -62,6 +62,7 @@ pub fn draw_save_dialogs(
     image: Option<Res<PuzzleImage>>,
     store: Res<PieceDataStore>,
     app_state: Res<State<AppState>>,
+    network_status: Res<jigsall_game::network::runtime::NetworkStatus>,
     mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
 ) {
     let texture = if state.title_dialog_open {
@@ -97,7 +98,14 @@ pub fn draw_save_dialogs(
         && matches!(app_state.get(), AppState::InGame | AppState::GameComplete)
     {
         if let Some(DepartureFlow::Confirm(action)) = dialogs.departure {
-            departure::paint_confirmation(ctx, &mut dialogs, &mut state, action, &i18n);
+            departure::paint_confirmation(
+                ctx,
+                &mut dialogs,
+                &mut state,
+                action,
+                network_status.role,
+                &i18n,
+            );
             return;
         }
         let departure = dialogs.departure.map(DepartureFlow::action);
@@ -124,6 +132,7 @@ pub fn draw_save_dialogs(
                         theme::heading(ui, i18n.text("common-save-game"));
                         if let Some(action) = departure {
                             theme::hint(ui, i18n.text(action.prompt_key()));
+                            departure::paint_host_warning(ui, network_status.role, &i18n);
                             status(ui, &state, &i18n);
                         }
                         theme::card().show(ui, |ui| {

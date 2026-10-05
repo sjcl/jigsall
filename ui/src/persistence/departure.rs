@@ -8,6 +8,17 @@ pub(crate) enum DepartureAction {
 }
 
 impl DepartureAction {
+    pub(crate) fn menu_key(self, role: Option<RuntimeRole>) -> &'static str {
+        match (self, role) {
+            (Self::Title, Some(RuntimeRole::Host)) => "pause-host-title",
+            (Self::Exit, Some(RuntimeRole::Host)) => "pause-host-exit",
+            (Self::Title, Some(RuntimeRole::Client)) => "pause-client-title",
+            (Self::Exit, Some(RuntimeRole::Client)) => "pause-client-exit",
+            (Self::Title, None) => "common-return-title",
+            (Self::Exit, None) => "pause-exit",
+        }
+    }
+
     pub(super) fn prompt_key(self) -> &'static str {
         match self {
             Self::Title => "save-before-title",
@@ -174,6 +185,7 @@ pub(super) fn paint_confirmation(
     dialogs: &mut SaveDialogs,
     state: &mut PersistenceState,
     action: DepartureAction,
+    role: Option<RuntimeRole>,
     i18n: &Localization,
 ) {
     let screen = ctx.content_rect();
@@ -183,8 +195,15 @@ pub(super) fn paint_confirmation(
         .show(ctx, |ui| {
             ui.set_width((screen.width() - 96.0).clamp(160.0, 460.0));
             theme::heading(ui, i18n.text("save-discard-confirm-title"));
-            ui.label(i18n.text(action.confirmation_key()));
-            theme::hint(ui, i18n.text("save-discard-warning"));
+            // Keep both decisions accessible on short screens even when the
+            // host warning wraps onto several lines.
+            egui::ScrollArea::vertical()
+                .max_height((screen.height() - 300.0).max(64.0))
+                .show(ui, |ui| {
+                    ui.label(i18n.text(action.confirmation_key()));
+                    paint_host_warning(ui, role, i18n);
+                    theme::hint(ui, i18n.text("save-discard-warning"));
+                });
             ui.add_space(8.0);
             let width = ui.available_width();
             if theme::button(ui, i18n.text("common-cancel"), width, true).clicked() {
@@ -197,5 +216,15 @@ pub(super) fn paint_confirmation(
         });
     if state.title_dialog_open && response.should_close() {
         dialogs.departure = Some(DepartureFlow::Prompt(action));
+    }
+}
+
+pub(super) fn paint_host_warning(
+    ui: &mut egui::Ui,
+    role: Option<RuntimeRole>,
+    i18n: &Localization,
+) {
+    if role == Some(RuntimeRole::Host) {
+        ui.colored_label(theme::DANGER, i18n.text("save-host-departure-warning"));
     }
 }

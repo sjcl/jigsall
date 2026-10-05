@@ -6,6 +6,7 @@ mod disconnection;
 #[cfg(feature = "rendezvous")]
 mod internet;
 mod native;
+mod ux;
 
 fn screen_world() -> (World, Entity, egui::Context) {
     let mut world = World::new();
@@ -154,6 +155,7 @@ fn scheduled_screens() -> (App, egui::Context) {
     world.init_resource::<LocalGameplayBlocked>();
     world.init_resource::<GameData>();
     world.init_resource::<GameUiPointerCapture>();
+    world.init_resource::<crate::game_play::PlayersOverlayState>();
     world.init_resource::<PlayerRoster>();
     world.init_resource::<jigsall_game::resources::LocalPlayerId>();
     world.init_resource::<jigsall_game::resources::remote_cursor::RemoteCursorPresentation>();
@@ -683,6 +685,7 @@ fn join_moves_password_once_and_uses_the_committed_profile() {
     let mut profile = PlayerSettingsState::load(None);
     profile.commit("Alice");
     let mut state = MultiplayerUi::default();
+    state.join.address = "127.0.0.1:27015".into();
     *state.join.password = "test password".into();
     state.submit_join(&profile);
     assert!(state.submitted);
