@@ -376,6 +376,11 @@ impl RendezvousAdapter {
         self.rejected.clear();
         self.phase = Phase::Closed;
     }
+    fn disable_expired_turn(&self, now: u64) {
+        if !self.turn_addresses.is_empty() && now >= self.turn_expiry {
+            self.signaling.disable_turn(self.turn_addresses.clone());
+        }
+    }
     #[cfg(test)]
     fn handle(
         &mut self,
@@ -407,7 +412,14 @@ impl RendezvousAdapter {
                 self.install_turn(turn)?;
             }
             ServerMessage::TurnUnavailable {}
-                if !matches!(self.phase, Phase::Welcome | Phase::Closed) => {}
+                if !matches!(self.phase, Phase::Welcome | Phase::Closed) =>
+            {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| RendezvousError::ProtocolViolation)?
+                    .as_secs();
+                self.disable_expired_turn(now);
+            }
             ServerMessage::RoomCreated {
                 room_id,
                 room_code,

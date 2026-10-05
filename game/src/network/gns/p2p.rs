@@ -2,7 +2,7 @@
 //! admission occupancy, pre-auth barriers and secured messages use Transport.
 pub(super) mod native;
 use super::{
-    signaling::{self, PeerId, SignalingEndpoint},
+    signaling::{self, PeerId, SignalingEndpoint, TurnUpdate},
     token,
 };
 use crate::network::{
@@ -89,7 +89,7 @@ pub struct GnsP2p {
     admission: Admission,
     next_receive: Option<ConnectionId>,
     turn_addresses: Vec<String>,
-    pending_turn: Option<Vec<TurnServer>>,
+    pending_turn: Option<TurnUpdate>,
     turn_retry_after: Instant,
     _lease: Lease,
 }
@@ -172,6 +172,9 @@ impl GnsP2p {
         remote_virtual_port: u16,
     ) -> Result<ConnectionId, TransportError> {
         self.apply_turn_update()?;
+        if self.pending_turn.is_some() {
+            return Err(TransportError::Backpressure);
+        }
         if peer == self.peer {
             return Err(TransportError::ProtocolViolation);
         }
@@ -197,28 +200,43 @@ impl GnsP2p {
     pub fn install_turn(&mut self, servers: &[TurnServer]) -> Result<(), TransportError> {
         let mut addresses: Vec<_> = servers.iter().map(|s| s.address.clone()).collect();
         addresses.sort_unstable();
+        self.validate_turn_addresses(&addresses)?;
+        self.listener.install_turn(servers)?;
+        self.turn_addresses = addresses;
+        Ok(())
+    }
+    fn validate_turn_addresses(&self, addresses: &[String]) -> Result<(), TransportError> {
         if addresses.is_empty()
             || addresses.len() > 4
-            || addresses.windows(2).any(|a| a[0] == a[1])
+            || addresses.windows(2).any(|a| a[0] >= a[1])
             || (!self.turn_addresses.is_empty() && addresses != self.turn_addresses)
             || (self.turn_addresses.is_empty() && !self.connections.is_empty())
         {
             // Reject topology changes before touching listener or connection config.
             return Err(TransportError::ProtocolViolation);
         }
-        self.listener.install_turn(servers)?;
-        self.turn_addresses = addresses;
+        Ok(())
+    }
+    fn disable_turn(&mut self, addresses: &[String]) -> Result<(), TransportError> {
+        self.validate_turn_addresses(addresses)?;
+        self.listener.disable_turn()?;
+        self.turn_addresses = addresses.to_vec();
         Ok(())
     }
     fn apply_turn_update(&mut self) -> Result<(), TransportError> {
-        if let Some(servers) = self.mailbox.take_turn_update() {
-            self.pending_turn = Some(servers);
+        if let Some(update) = self.mailbox.take_turn_update() {
+            self.pending_turn = Some(update);
             self.turn_retry_after = Instant::now();
         }
         if Instant::now() >= self.turn_retry_after {
-            if let Some(servers) = self.pending_turn.take() {
-                if self.install_turn(&servers).is_err() {
-                    self.pending_turn = Some(servers);
+            if let Some(update) = self.pending_turn.take() {
+                let result = match &update {
+                    TurnUpdate::Set(servers) => self.install_turn(servers),
+                    // Keep the fixed endpoint set for recovery; active handles are untouched.
+                    TurnUpdate::Disable { addresses } => self.disable_turn(addresses),
+                };
+                if result.is_err() {
+                    self.pending_turn = Some(update);
                     self.turn_retry_after = Instant::now() + std::time::Duration::from_secs(1);
                 }
             }
@@ -402,7 +420,7 @@ impl Transport for GnsP2p {
             // Admission is sampled before GNS; the callback only accepts within
             // that capacity. GNS discards requests for which it returns null.
             // Only new requests spend start credit; stale/duplicate signals do not.
-            let allow = self.has_connection_capacity();
+            let allow = self.pending_turn.is_none() && self.has_connection_capacity();
             let admission = native::IncomingAdmission {
                 allow,
                 origin,
@@ -548,4 +566,4 @@ impl Drop for GnsP2p {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

@@ -249,21 +249,17 @@ fn gns_turn_actor_child() {
         GnsP2p::new_unverified_for_test(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
     let mailbox = backend.signaling();
     let address = std::env::var("JIGSALL_TURN_TEST_ADDRESS").unwrap();
-    let initial = if std::env::var_os("JIGSALL_TURN_INITIAL_B").is_some() {
-        "B"
-    } else {
-        "A"
-    };
-    let credentials = |version| {
+    let initial = std::env::var("JIGSALL_TURN_INITIAL").unwrap();
+    let credentials = |version: &str| {
         vec![TurnServer {
             address: address.clone(),
             username: format!("user-{version}"),
             password: format!("password-{version}"),
         }]
     };
-    let no_turn = std::env::var_os("JIGSALL_TURN_INITIAL_NONE").is_some();
-    let mut version = if no_turn { "" } else { initial };
-    let mut initial_credentials = credentials(initial);
+    let no_turn = initial.is_empty();
+    let mut version = initial.as_str();
+    let mut initial_credentials = credentials(&initial);
     if std::env::var_os("JIGSALL_TURN_WRONG_PASSWORD").is_some() {
         initial_credentials[0].password = "wrong".into();
     }
@@ -390,9 +386,8 @@ impl Actor {
         index: usize,
         address: &str,
         relay_only: bool,
-        initial_b: bool,
+        initial: &str,
         wrong: bool,
-        initial_none: bool,
         output: mpsc::Sender<(usize, ActorFrame)>,
     ) -> Self {
         let mut command = Command::new(std::env::current_exe().unwrap());
@@ -404,17 +399,12 @@ impl Actor {
             ])
             .env("JIGSALL_TURN_ACTOR", "1")
             .env("JIGSALL_TURN_TEST_ADDRESS", address)
+            .env("JIGSALL_TURN_INITIAL", initial)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
-        if initial_none {
-            command.env("JIGSALL_TURN_INITIAL_NONE", "1");
-        }
         if relay_only {
             command.env("JIGSALL_TURN_TEST_ONLY", "1");
-        }
-        if initial_b {
-            command.env("JIGSALL_TURN_INITIAL_B", "1");
         }
         if wrong {
             command.env("JIGSALL_TURN_WRONG_PASSWORD", "1");
@@ -456,9 +446,9 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
     let mut fixture = Fixture::start();
     let (tx, rx) = mpsc::channel();
     let mut actors = vec![
-        Actor::spawn(0, &fixture.address, false, false, false, false, tx.clone()),
-        Actor::spawn(1, &fixture.address, false, false, false, false, tx.clone()),
-        Actor::spawn(2, &fixture.address, true, false, false, false, tx.clone()),
+        Actor::spawn(0, &fixture.address, false, "A", false, tx.clone()),
+        Actor::spawn(1, &fixture.address, false, "A", false, tx.clone()),
+        Actor::spawn(2, &fixture.address, true, "A", false, tx.clone()),
     ];
     let host = actors[0].peer;
     actors[1].send(ActorFrame::Connect(host));
@@ -510,8 +500,7 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
                 3,
                 &fixture.address,
                 true,
-                true,
-                false,
+                "B",
                 false,
                 tx.clone(),
             ));
@@ -529,9 +518,8 @@ fn gns_localhost_turn_host_mixed_peers_future_incoming_and_wrong_credentials() {
                 4,
                 &fixture.address,
                 true,
+                "B",
                 true,
-                true,
-                false,
                 tx.clone(),
             ));
             actors[4].send(ActorFrame::Connect(host));
@@ -582,8 +570,8 @@ fn gns_localhost_turn_absent_initially_rejects_late_install_and_preserves_direct
     let mut fixture = Fixture::start();
     let (tx, rx) = mpsc::channel();
     let mut actors = vec![
-        Actor::spawn(0, &fixture.address, false, false, false, true, tx.clone()),
-        Actor::spawn(1, &fixture.address, false, false, false, true, tx.clone()),
+        Actor::spawn(0, &fixture.address, false, "", false, tx.clone()),
+        Actor::spawn(1, &fixture.address, false, "", false, tx.clone()),
     ];
     let host = actors[0].peer;
     actors[1].send(ActorFrame::Connect(host));
@@ -671,4 +659,263 @@ fn gns_localhost_turn_fixture_rejects_allocation_credential_changes() {
     assert_eq!(stats["allocate_b"].as_u64().unwrap(), 0);
     assert_eq!(stats["refresh_a"].as_u64().unwrap(), 2);
     assert_eq!(stats["permission_a"].as_u64().unwrap(), 1);
+}
+
+/// Drives real native ICE with TURN control messages supplied by the adapter test.
+#[cfg(feature = "rendezvous")]
+pub(in crate::network::gns) fn exercise_turn_default_expiry(
+    mailbox: SignalingEndpoint,
+    mut control: impl FnMut(&str, &str) -> u64,
+) {
+    let mut fixture = Fixture::start();
+    let mut host =
+        GnsP2p::with_signaling(P2P_VIRTUAL_PORT, IceConfig::default(), mailbox.clone()).unwrap();
+    let host_peer = host.peer_id().to_bytes();
+    control(&fixture.address, "A");
+    host.apply_turn_update().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut actors = vec![Actor::spawn(
+        0,
+        &fixture.address,
+        true,
+        "A",
+        false,
+        tx.clone(),
+    )];
+    let authorize = |actor: &Actor| {
+        mailbox
+            .authorize_peer(
+                PeerId::from_bytes(actor.peer),
+                RouteOrigin::from_authenticated_route([1; 16], [2; 16], actor.peer),
+            )
+            .unwrap();
+    };
+    authorize(&actors[0]);
+    actors[0].send(ActorFrame::Connect(host_peer));
+    let mut connected = std::collections::BTreeSet::new();
+    let mut host_received = std::collections::BTreeSet::new();
+    let mut actor_received = std::collections::BTreeSet::new();
+    let mut stage = 0;
+    let mut expiry = 0;
+    let mut allocation_requests = 0;
+    let mut exchanged = false;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while stage < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "TURN default expiry/recovery timed out at {stage}"
+        );
+        if let Ok((index, frame)) = rx.recv_timeout(Duration::from_millis(5)) {
+            match frame {
+                ActorFrame::Signal(to, bytes) => {
+                    assert_eq!(to, host_peer);
+                    mailbox
+                        .receive(PeerId::from_bytes(actors[index].peer), &bytes)
+                        .unwrap();
+                }
+                ActorFrame::Connected(peer, relay) => {
+                    assert_eq!(peer, host_peer);
+                    assert!(connected.insert(index), "existing ICE handle was replaced");
+                    assert_eq!(relay, index != 1);
+                }
+                ActorFrame::Received(peer) => {
+                    assert_eq!(peer, host_peer);
+                    actor_received.insert(index);
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        let mut events = Vec::new();
+        host.poll(&mut events).unwrap();
+        for event in events {
+            match event {
+                TransportEvent::Connected { connection } => {
+                    let peer = host.remote_peer(connection).unwrap().to_bytes();
+                    let index = actors.iter().position(|a| a.peer == peer).unwrap();
+                    host.connections[&connection]
+                        .native
+                        .assert_turn_user(["user-A", "", "user-C"][index]);
+                    host.activate_secure_channel(connection).unwrap();
+                    host.mark_ready(connection).unwrap();
+                }
+                TransportEvent::Message {
+                    connection,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(payload, test_messages()[0].1);
+                    host_received.insert(host.remote_peer(connection).unwrap().to_bytes());
+                }
+                other => panic!("host connection failed: {other:?}"),
+            }
+        }
+        while let Some(signal) = mailbox.pop_outbound() {
+            actors
+                .iter_mut()
+                .find(|a| a.peer == signal.peer.to_bytes())
+                .unwrap()
+                .send(ActorFrame::Signal(host_peer, signal.payload));
+        }
+        // Incoming A and direct-only handles must retain their snapshots at every stage.
+        for connection in host.connections.values().filter(|c| c.connected) {
+            let index = actors
+                .iter()
+                .position(|a| a.peer == connection.peer.to_bytes())
+                .unwrap();
+            connection
+                .native
+                .assert_turn_user(["user-A", "", "user-C"][index]);
+        }
+        if stage == 0
+            && connected.len() == 1
+            && host.connections.len() == 1
+            && host.connections.values().all(|c| c.ready)
+        {
+            expiry = control(&fixture.address, "B");
+            host.apply_turn_update().unwrap();
+            actors[0].send(ActorFrame::Exchange);
+            stage = 1;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        if stage == 1 && now >= expiry && host_received.len() == 1 {
+            control(&fixture.address, "Disable");
+            host.apply_turn_update().unwrap();
+            assert_eq!(host.turn_addresses, [fixture.address.clone()]);
+            fixture.send("stats");
+            allocation_requests = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap()
+                ["allocate_requests"]
+                .as_u64()
+                .unwrap();
+            actors.push(Actor::spawn(
+                1,
+                &fixture.address,
+                false,
+                "",
+                false,
+                tx.clone(),
+            ));
+            authorize(&actors[1]);
+            actors[1].send(ActorFrame::Connect(host_peer));
+            stage = 2;
+        }
+        if stage == 2
+            && connected.len() == 2
+            && host.connections.len() == 2
+            && host.connections.values().all(|c| c.ready)
+        {
+            fixture.send("stats");
+            let stats = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(
+                stats["allocate_requests"].as_u64().unwrap(),
+                allocation_requests,
+                "direct-only peer2 must not send even an unauthenticated TURN Allocate"
+            );
+            assert_eq!(stats["allocate_b"].as_u64().unwrap(), 0);
+            control(&fixture.address, "C");
+            host.apply_turn_update().unwrap();
+            assert_eq!(host.turn_addresses, [fixture.address.clone()]);
+            actors.push(Actor::spawn(
+                2,
+                &fixture.address,
+                true,
+                "C",
+                false,
+                tx.clone(),
+            ));
+            authorize(&actors[2]);
+            actors[2].send(ActorFrame::Connect(host_peer));
+            stage = 3;
+        }
+        if stage == 3
+            && connected.len() == 3
+            && host.connections.len() == 3
+            && host.connections.values().all(|c| c.ready)
+        {
+            // Exchange on every stable handle after recovery, including peer1(A)/peer2(direct).
+            if !exchanged {
+                host_received.clear();
+                for actor in &mut actors {
+                    actor.send(ActorFrame::Exchange);
+                }
+                for connection in host.connections.keys().copied().collect::<Vec<_>>() {
+                    host.send(connection, MessageClass::Control, &test_messages()[0].1)
+                        .unwrap();
+                }
+                exchanged = true;
+            }
+            if actor_received.len() == 3 && host_received.len() == 3 {
+                stage = 4;
+            }
+        }
+    }
+    assert_eq!(host.connections.len(), 3);
+    fixture.send("stats");
+    let stats = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap();
+    for metric in [
+        "allocate_a",
+        "refresh_a",
+        "allocate_c",
+        "permission_c",
+        "relayed",
+    ] {
+        assert!(stats[metric].as_u64().unwrap() > 0, "{metric}: {stats}");
+    }
+    for metric in [
+        "allocate_b",
+        "refresh_b",
+        "permission_b",
+        "wrong_credentials",
+    ] {
+        assert_eq!(stats[metric].as_u64().unwrap(), 0, "{metric}: {stats}");
+    }
+    for actor in &mut actors {
+        actor.send(ActorFrame::Stop);
+    }
+    for actor in &mut actors {
+        assert!(actor.process.child.wait().unwrap().success());
+    }
+}
+
+#[test]
+fn gns_localhost_turn_queued_initial_expiry_retains_topology_for_recovery() {
+    let mut backend =
+        GnsP2p::new_unverified_for_test(P2P_VIRTUAL_PORT, IceConfig::default()).unwrap();
+    let mailbox = backend.signaling();
+    let servers = |version| {
+        vec![TurnServer {
+            address: "127.0.0.1:9".into(),
+            username: format!("user-{version}"),
+            password: format!("password-{version}"),
+        }]
+    };
+    mailbox.install_turn(servers("A"));
+    mailbox.disable_turn(vec!["127.0.0.1:9".into()]);
+    backend.poll(&mut Vec::new()).unwrap();
+    assert_eq!(backend.turn_addresses, ["127.0.0.1:9"]);
+    let connection = backend
+        .connect_peer(PeerId::from_bytes([7; 16]), P2P_VIRTUAL_PORT)
+        .unwrap();
+    backend.connections[&connection].native.assert_turn_user("");
+    // The direct-only handle must not prevent re-enabling future defaults.
+    mailbox.install_turn(servers("C"));
+    backend.poll(&mut Vec::new()).unwrap();
+    assert!(backend.pending_turn.is_none());
+    backend.connections[&connection].native.assert_turn_user("");
+    // An invalid Set remains pending, deferring new handles without changing this one.
+    let mut changed = servers("D");
+    changed[0].address = "127.0.0.1:10".into();
+    mailbox.install_turn(changed);
+    backend.poll(&mut Vec::new()).unwrap();
+    assert_eq!(
+        backend.connect_peer(PeerId::from_bytes([8; 16]), P2P_VIRTUAL_PORT),
+        Err(TransportError::Backpressure)
+    );
+    assert_eq!(backend.connections.len(), 1);
+    mailbox.disable_turn(vec!["127.0.0.1:9".into()]);
+    backend.poll(&mut Vec::new()).unwrap();
+    assert!(backend.pending_turn.is_none());
+    backend.connections[&connection].native.assert_turn_user("");
 }

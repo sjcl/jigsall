@@ -1,4 +1,5 @@
 use super::*;
+use crate::network::gns::signaling::TurnUpdate;
 mod admission;
 use crate::network::transport::Origin;
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -978,10 +979,7 @@ async fn welcome_queues_turn_before_room_commands_and_control_loss_retains_it() 
         events.as_slice(),
         [RendezvousEvent::Welcome { .. }]
     ));
-    assert_eq!(
-        adapter.signaling.take_turn_update().unwrap()[0].username,
-        "A"
-    );
+    assert_eq!(take_turn_servers(&adapter.signaling)[0].username, "A");
     adapter
         .handle(
             ServerMessage::TurnCredentials {
@@ -1002,10 +1000,7 @@ async fn welcome_queues_turn_before_room_commands_and_control_loss_retains_it() 
         .handle(ServerMessage::TurnUnavailable {}, &mut events)
         .unwrap();
     adapter.control_lost();
-    assert_eq!(
-        adapter.signaling.take_turn_update().unwrap()[0].username,
-        "B"
-    );
+    assert_eq!(take_turn_servers(&adapter.signaling)[0].username, "B");
     task.abort();
 }
 
@@ -1036,6 +1031,8 @@ async fn welcome_without_turn_ignores_later_credentials() {
         &mut events,
     )
     .unwrap();
+    a.handle(ServerMessage::TurnUnavailable {}, &mut events)
+        .unwrap();
     assert!(a.signaling.take_turn_update().is_none());
     assert_eq!(a.turn_expiry, 0);
     assert!(matches!(a.phase, Phase::Idle));
@@ -1073,8 +1070,133 @@ async fn changed_endpoint_set_rejects_rotation_without_replacing_queued_credenti
     );
     assert_eq!(a.turn_expiry, u64::MAX - 1);
     assert_eq!(
-        a.signaling.take_turn_update().unwrap()[0].address,
+        take_turn_servers(&a.signaling)[0].address,
         "turn.cloudflare.com:3478"
+    );
+    task.abort();
+}
+
+fn take_turn_servers(signaling: &SignalingEndpoint) -> Vec<super::super::p2p::TurnServer> {
+    match signaling.take_turn_update().unwrap() {
+        TurnUpdate::Set(servers) => servers,
+        TurnUpdate::Disable { .. } => panic!("expected TURN defaults"),
+    }
+}
+
+#[tokio::test]
+async fn expired_turn_unavailable_supersedes_queued_defaults_and_preserves_endpoint_set() {
+    let (url, task) = fixture(|_| async {}).await;
+    let mut a = adapter(url);
+    let mut events = Vec::new();
+    let turn = |address: &str, expiry| protocol::TurnCredentials {
+        expires_at_unix: expiry,
+        servers: vec![protocol::TurnServer {
+            address: address.into(),
+            username: "fixture".into(),
+            password: "fixture".into(),
+        }],
+    };
+    a.handle(
+        ServerMessage::Welcome {
+            authority_id: AuthorityId(id(1)),
+            turn: Some(turn("turn.cloudflare.com:3478", u64::MAX - 1)),
+        },
+        &mut events,
+    )
+    .unwrap();
+    // Check the exact expiry boundary while Set is still queued.
+    a.disable_expired_turn(u64::MAX - 2);
+    a.disable_expired_turn(u64::MAX - 1);
+    assert!(matches!(
+        a.signaling.take_turn_update(),
+        Some(TurnUpdate::Disable { .. })
+    ));
+    assert_eq!(a.turn_expiry, u64::MAX - 1);
+    assert_eq!(a.turn_addresses, ["turn.cloudflare.com:3478"]);
+    assert_eq!(
+        a.handle(
+            ServerMessage::TurnCredentials {
+                turn: turn("changed.example:3478", u64::MAX),
+            },
+            &mut events
+        ),
+        Err(RendezvousError::ProtocolViolation)
+    );
+    assert!(a.signaling.take_turn_update().is_none());
+    // Recovery supersedes a queued Disable, retaining freshness/topology checks.
+    a.disable_expired_turn(u64::MAX - 1);
+    a.handle(
+        ServerMessage::TurnCredentials {
+            turn: turn("turn.cloudflare.com:3478", u64::MAX - 1),
+        },
+        &mut events,
+    )
+    .unwrap();
+    assert_eq!(a.turn_expiry, u64::MAX - 1);
+    assert!(matches!(
+        a.signaling.take_turn_update(),
+        Some(TurnUpdate::Disable { .. })
+    ));
+    a.disable_expired_turn(u64::MAX - 1);
+    a.handle(
+        ServerMessage::TurnCredentials {
+            turn: turn("turn.cloudflare.com:3478", u64::MAX),
+        },
+        &mut events,
+    )
+    .unwrap();
+    a.handle(ServerMessage::TurnUnavailable {}, &mut events)
+        .unwrap();
+    assert_eq!(
+        take_turn_servers(&a.signaling)[0].address,
+        "turn.cloudflare.com:3478"
+    );
+    assert_eq!(a.turn_expiry, u64::MAX);
+    task.abort();
+}
+
+#[tokio::test]
+async fn gns_localhost_turn_unavailable_disables_future_defaults_and_recovers() {
+    let (url, task) = fixture(|_| async {}).await;
+    let mut a = adapter(url);
+    super::super::p2p::tests::turn_rotation::exercise_turn_default_expiry(
+        a.signaling.clone(),
+        |address, version| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let mut events = Vec::new();
+            if version == "Disable" {
+                assert!(now >= a.turn_expiry);
+                a.handle(ServerMessage::TurnUnavailable {}, &mut events)
+                    .unwrap();
+                return a.turn_expiry;
+            }
+            let expiry = if version == "C" {
+                now + 3600
+            } else {
+                (now + 5).max(a.turn_expiry + 1)
+            };
+            let turn = protocol::TurnCredentials {
+                expires_at_unix: expiry,
+                servers: vec![protocol::TurnServer {
+                    address: address.into(),
+                    username: format!("user-{version}"),
+                    password: format!("password-{version}"),
+                }],
+            };
+            let message = if version == "A" {
+                ServerMessage::Welcome {
+                    authority_id: AuthorityId(id(1)),
+                    turn: Some(turn),
+                }
+            } else {
+                ServerMessage::TurnCredentials { turn }
+            };
+            a.handle(message, &mut events).unwrap();
+            expiry
+        },
     );
     task.abort();
 }

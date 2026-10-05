@@ -5,7 +5,7 @@ Binds each allocation to its initial authentication key (RFC 8656 sections 5/6).
 import hashlib, hmac, json, os, queue, selectors, socket, struct, sys, threading, time
 COOKIE = 0x2112A442
 REALM = b"puzzella-test"
-KEYS = {b"user-A": b"password-A", b"user-B": b"password-B"}
+KEYS = {b"user-" + v: b"password-" + v for v in (b"A", b"B", b"C")}
 relay_pairs_only = "--relay-pairs-only" in sys.argv[1:]
 sel = selectors.DefaultSelector()
 server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -26,7 +26,8 @@ hold = False
 fail = False
 delayed = []
 stats = {"allocate_a": 0, "allocate_b": 0, "refresh_a": 0, "refresh_b": 0,
-         "permission_a": 0, "permission_b": 0, "wrong_credentials": 0,
+         "permission_a": 0, "permission_b": 0, "allocate_c": 0, "refresh_c": 0,
+         "permission_c": 0, "allocate_requests": 0, "wrong_credentials": 0,
          "stale": 0, "refresh_fail": 0, "bad_auth": 0, "relayed": 0, "held": 0, "wrong_allocations": 0}
 def stdin():
     for line in sys.stdin:
@@ -96,6 +97,7 @@ while True:
             if source in allocations and 0x12 in attrs and 0x13 in attrs:
                 allocations[source].sendto(attrs[0x13], read_addr(attrs[0x12]))
             continue
+        if kind == 3: stats["allocate_requests"] += 1
         user = attrs.get(6)
         key = hashlib.md5(user + b":" + REALM + b":" + KEYS[user]).digest() if user in KEYS else None
         authenticated = False
@@ -144,13 +146,13 @@ while True:
                 allocations[source] = relay
                 allocation_auth[source] = (user, key)
                 sel.register(relay, selectors.EVENT_READ, source)
-            stats["allocate_b" if user == b"user-B" else "allocate_a"] += 1
+            stats["allocate_" + user[-1:].decode().lower()] += 1
             response_attrs = [attr(0x16, xor_addr(allocations[source].getsockname())), attr(0x20, xor_addr(source)), attr(0x0d, struct.pack("!I", 4))]
         elif kind == 4:
-            stats["refresh_a" if user == b"user-A" else "refresh_b"] += 1
+            stats["refresh_" + user[-1:].decode().lower()] += 1
             response_attrs = [attr(0x0d, struct.pack("!I", 4))]
         elif kind == 8:
-            stats["permission_a" if user == b"user-A" else "permission_b"] += 1
+            stats["permission_" + user[-1:].decode().lower()] += 1
         else: continue
         response = packet(kind | 0x100, tx, response_attrs, key)
         if kind == 4 and hold:

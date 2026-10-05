@@ -281,6 +281,16 @@ impl Listener {
         self.options.turn = strings.0;
         self.options.users = strings.1;
         self.options.passwords = strings.2;
+        self.apply_options()
+    }
+    pub(super) fn disable_turn(&mut self) -> Result<(), TransportError> {
+        self.options.turn = CString::default();
+        self.options.users = CString::default();
+        self.options.passwords = CString::default();
+        // values() removes only the Relay bit, preserving private/public/STUN settings.
+        self.apply_options()
+    }
+    fn apply_options(&self) -> Result<(), TransportError> {
         // GNS copies these into the listener; future incoming connections inherit them.
         for value in self.options.values() {
             let data = if value.m_eDataType
@@ -589,6 +599,37 @@ impl Connection {
             )
             .unwrap();
         assert!(value == ::gns::GnsConfigValue::String(expected.to_owned()));
+        if expected.is_empty() {
+            for option in [
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_ServerList,
+                ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_TURN_PassList,
+            ] {
+                let value = global()
+                    .unwrap()
+                    .utils()
+                    .get_connection_config_value(
+                        ::gns::GnsConnection::from_raw(self.handle()),
+                        option,
+                    )
+                    .unwrap();
+                assert!(value == ::gns::GnsConfigValue::String(String::new()));
+            }
+            let ::gns::GnsConfigValue::Int32(enabled) = global()
+                .unwrap()
+                .utils()
+                .get_connection_config_value(
+                    ::gns::GnsConnection::from_raw(self.handle()),
+                    ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
+                )
+                .unwrap()
+            else {
+                panic!("expected ICE flags")
+            };
+            assert_eq!(
+                enabled & k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Relay,
+                0
+            );
+        }
     }
     #[cfg(test)]
     pub(super) fn is_relay(&self) -> bool {

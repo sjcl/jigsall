@@ -306,7 +306,7 @@ fn gns_p2p_child() {
                         }])
                         .unwrap();
                     // Only future connection defaults changed; this connection stays A.
-                    for connection in transport.backend().inner.connections.values() {
+                    for connection in transport.backend_mut().inner.connections.values() {
                         connection.native.assert_turn_user("user-A");
                     }
                     emit(Frame::Rotated);
@@ -421,7 +421,7 @@ fn gns_p2p_child() {
             if !authenticated && state == Some(ConnectionState::Authenticated) {
                 assert!(transport.has_channel(id));
                 assert!(connections.player(id).is_none()); // PAKE success != Ready
-                transport.backend().inner.connections[&id]
+                transport.backend_mut().inner.connections[&id]
                     .native
                     .assert_send_rate(crate::network::lifecycle::BULK_BYTES_PER_SECOND as i32);
                 authenticated = true;
@@ -478,7 +478,7 @@ fn gns_p2p_child() {
 
 #[cfg(feature = "rendezvous")]
 mod rendezvous_smoke;
-mod turn_rotation;
+pub(in crate::network::gns) mod turn_rotation;
 
 struct Process {
     child: Child,

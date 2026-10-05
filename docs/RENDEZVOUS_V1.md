@@ -489,7 +489,17 @@ and listener inheritance for future connections. Existing Connecting/Ready ICE
 sessions retain their original server, username and password; ConnectionId,
 SecureTransport, SPAKE2, Sync/Ready and gameplay state are preserved.
 `turn_unavailable`, expired/older updates and WSS loss do not replace existing
-connection credentials. There is no rendezvous reconnect/resume implementation.
+connection credentials. On `turn_unavailable`, the adapter checks the latest
+default expiry before queuing Disable. The backend clears TURN server/user/password
+strings and the Relay bit in listener/future outgoing defaults only. It retains
+the initial endpoint set and expiry watermark: a fresh credential with that set
+re-enables future TURN. Early/stale unavailable events cannot discard a newer,
+still-valid default. Set/Disable share one latest-update mailbox slot, so expiry
+supersedes a queued Set and recovery supersedes a queued Disable. Disable carries
+the initial endpoint set so it remains fixed even if the initial Set expires
+before the backend first polls. A failed native defaults update blocks new handles
+until it succeeds, while existing handles continue to poll.
+There is no rendezvous reconnect/resume implementation.
 
 STUN configuration remains in `IceConfig`. Host/private and reflexive ICE
 candidates retain higher priority than TURN relay. Only UDP TURN is supported;
@@ -503,9 +513,10 @@ initial value makes the entire control session direct-only; no later issuance
 task or late TURN installation starts, including for future peers on that session.
 A new control session may obtain TURN after provider recovery.
 Sessions with initial credentials obtain new defaults at half TTL (default TTL
-24 hours, update about every 12 hours). Failures retain the current defaults and
-retry with bounded backoff. WSS loss ends this refresh task. TURN does not grant
-room membership, player identity or game password authentication.
+24 hours, update about every 12 hours). Failures retain still-valid defaults and
+retry with bounded backoff. After expiry, `turn_unavailable` disables future TURN
+until provider recovery yields a fresh credential. WSS loss ends this refresh task.
+TURN does not grant room membership, player identity or game password authentication.
 
 For example, peer1/peer2 start with A. After the host receives B, peer1/peer2 still
 use A, while newly accepted peer3 and outgoing peer4 use B. This does not extend
@@ -542,6 +553,14 @@ A UDP protocol test checks Allocate(A), Refresh(A), Refresh/Permission(B) -> 441
 and continued Refresh/Permission(A). Native tests retain A through default
 updates to B, an in-flight Refresh and 438 without destroying the allocation;
 mixed peers verify A on existing connections and B on future incoming connections.
+An adapter/native integration test drives Welcome(A), defaults(B), B expiry,
+TurnUnavailable and recovery(C). Peer1 continues with A, peer2 connects directly
+with empty TURN strings/Relay disabled and zero Allocate requests (including
+unauthenticated attempts), and peer3 uses C through the relay. After C, peer1 and
+peer2 keep their original configuration and all three exchange data. A server
+WebSocket test separately verifies provider outage, expiry notification and
+recovery without closing the room. These tests use accelerated metadata expiry;
+the fixture's static keys remain usable for the existing A allocation.
 
 ```sh
 cargo test --locked -p jigsall-game --features rendezvous gns_localhost_turn -- --nocapture --test-threads=1
@@ -572,11 +591,13 @@ static; the mock provider's metadata TTL is accelerated to exercise default
 updates. Credential expiry, 24/48-hour wall-clock behavior and ICE restart recovery
 are not validated by these fixtures.
 
-Verification on 2026-10-05, Windows x86_64: all 24 non-ignored GNS localhost tests
+Verification on 2026-10-05, Windows x86_64: all 26 non-ignored GNS localhost tests
 and six cross-repository smoke runs passed. This includes 441 rejection of changed
 allocation credentials, unchanged A authentication after a B default update,
-438 recovery with A, and future incoming connections using B. Server tests passed
-42 unit and 13 WebSocket cases; server fmt, all-target Clippy and builds passed.
-The rendezvous workspace suite passed 935 tests/doctests; game fmt, all-target
+438 recovery with A, future incoming connections using B, and expiry/Disable/recovery
+with A on peer1, no Allocate for direct peer2, and C on future relay peer3. Server
+tests passed 42 unit and 14 WebSocket cases; server fmt, all-target Clippy and builds
+passed.
+The rendezvous workspace suite passed 936 tests/doctests; game fmt, all-target
 Clippy and the app build passed. Both Rust protocol copies and JSONL fixtures
 remain byte-identical.

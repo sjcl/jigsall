@@ -147,10 +147,17 @@ impl Queue {
         self.bytes = self.routes.values().map(|q| q.bytes).sum();
     }
 }
+/// Latest desired TURN defaults; one slot also coalesces expiry and recovery.
+#[cfg_attr(not(any(feature = "rendezvous", test)), allow(dead_code))]
+pub(super) enum TurnUpdate {
+    Set(Vec<super::p2p::TurnServer>),
+    // Preserve topology even when expiry supersedes Set before the backend polls.
+    Disable { addresses: Vec<String> },
+}
 #[derive(Default)]
 struct Queues {
     closed: bool,
-    turn_update: Option<Vec<super::p2p::TurnServer>>,
+    turn_update: Option<TurnUpdate>,
     require_routes: bool,
     bindings: BTreeMap<PeerId, RouteOrigin>,
     inbound: Queue,
@@ -171,10 +178,15 @@ impl Queues {
 #[derive(Clone, Default)]
 pub struct SignalingEndpoint(Arc<Mutex<Queues>>);
 impl SignalingEndpoint {
+    #[cfg(any(feature = "rendezvous", test))]
     pub(super) fn install_turn(&self, servers: Vec<super::p2p::TurnServer>) {
-        self.0.lock().unwrap().turn_update = Some(servers);
+        self.0.lock().unwrap().turn_update = Some(TurnUpdate::Set(servers));
     }
-    pub(super) fn take_turn_update(&self) -> Option<Vec<super::p2p::TurnServer>> {
+    #[cfg(any(feature = "rendezvous", test))]
+    pub(super) fn disable_turn(&self, addresses: Vec<String>) {
+        self.0.lock().unwrap().turn_update = Some(TurnUpdate::Disable { addresses });
+    }
+    pub(super) fn take_turn_update(&self) -> Option<TurnUpdate> {
         self.0.lock().unwrap().turn_update.take()
     }
     pub(super) fn routed() -> Self {
