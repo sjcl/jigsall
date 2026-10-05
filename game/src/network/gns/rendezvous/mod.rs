@@ -572,10 +572,10 @@ impl RendezvousAdapter {
     fn flush_lifecycle(&mut self) -> Result<bool, RendezvousError> {
         for revoke in [true, false] {
             for route in self.routes.values_mut() {
-                if !route
+                if route
                     .lifecycle
                     .as_ref()
-                    .is_some_and(|m| matches!(m, ClientMessage::RevokePeer { .. }) == revoke)
+                    .is_none_or(|m| matches!(m, ClientMessage::RevokePeer { .. }) != revoke)
                 {
                     continue;
                 }
