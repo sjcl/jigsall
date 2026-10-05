@@ -1062,10 +1062,11 @@ without recording peer progress. The next CatchUpAck deadline starts only when
 the corresponding CatchUpEvent is sent; stale ACKs cannot renew it.
 Host generation additionally reserves at most 128 KiB/frame and 4 MiB/s; round-robin
 runtime pumping avoids starving later peers. No transfer pre-generates its chunks.
-The Direct-IP backend sets both native GNS send-rate limits to 4 MiB/s after
+Both Direct-IP and Room Code P2P backends set native GNS send-rate limits to 4 MiB/s after
 authentication; the pinned native defaults otherwise cap every connection at
 256 KiB/s, even over localhost. Setting only the maximum does not raise its
-existing bandwidth estimate. Runtime makes up to four rotating passes over active
+existing bandwidth estimate. Both backends use the same connection configuration
+before image/baseline sync starts. Runtime makes up to four rotating passes over active
 transfers per frame, with the same shared byte/rate and reliable-queue preflight
 limits. Actual throughput still depends on the network and frame rate.
 

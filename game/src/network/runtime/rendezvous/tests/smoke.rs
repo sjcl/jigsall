@@ -1,5 +1,6 @@
 //! Opt-in cross-repository, two-process native runtime entrypoint test.
 use super::*;
+use crate::resources::PuzzleImage;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, Write},
@@ -28,6 +29,7 @@ struct Process {
     child: Child,
     input: ChildStdin,
 }
+const IMAGE_SIZE: u32 = 1600;
 impl Process {
     fn send(&mut self, frame: Frame) {
         writeln!(self.input, "{}", serde_json::to_string(&frame).unwrap()).unwrap();
@@ -150,7 +152,21 @@ fn gns_localhost_rendezvous_runtime_child() {
     });
     if role == "host" {
         fixtures::host_world(&mut app);
-        start_rendezvous_host(app.world_mut(), host_options()).unwrap();
+        // About 10 MB: exceed the reliable queue and exercise sustained native
+        // ICE delivery, rather than completing inside a tiny image burst.
+        let bytes = fixtures::encoded_bmp(IMAGE_SIZE);
+        assert!(bytes.len() > crate::network::lifecycle::MAX_BULK_QUEUE_BYTES as usize);
+        let mut options = host_options();
+        options.session.image_hash = crate::persistence::image_hash(&bytes);
+        app.world_mut()
+            .resource_mut::<PuzzleDefinition>()
+            .image_size = UVec2::splat(IMAGE_SIZE);
+        app.world_mut().insert_resource(OriginalPuzzleImage {
+            hash: options.session.image_hash,
+            encoded: Some(bytes),
+            image_lease: None,
+        });
+        start_rendezvous_host(app.world_mut(), options).unwrap();
     }
     let deadline = Instant::now() + std::time::Duration::from_secs(50);
     let mut code = false;
@@ -202,6 +218,16 @@ fn gns_localhost_rendezvous_runtime_child() {
                             .iter()
                             .any(|p| p.state == Some(ConnectionState::Ready))))
             {
+                if role == "client" {
+                    assert_eq!(
+                        app.world().resource::<PuzzleImage>().logical_size,
+                        UVec2::splat(IMAGE_SIZE)
+                    );
+                    assert_eq!(
+                        app.world().resource::<OriginalPuzzleImage>().hash,
+                        crate::persistence::image_hash(&fixtures::encoded_bmp(IMAGE_SIZE))
+                    );
+                }
                 emit(Frame::Ready);
                 ready = true;
             }

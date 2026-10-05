@@ -1,8 +1,8 @@
 use super::token;
 use crate::network::{
     lifecycle::{
-        self, Admission, BULK_BYTES_PER_SECOND, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES,
-        MAX_CONNECTING, MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
+        self, Admission, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING,
+        MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
     },
     rate_limit::{
         InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY,
@@ -16,9 +16,9 @@ use crate::network::{
     wire,
 };
 use ::gns::{
-    sys::{ESteamNetworkingConfigValue, ESteamNetworkingConnectionState as State},
-    GnsConfig, GnsConnection, GnsConnectionEvent, GnsGlobal, GnsLane, GnsNetworkMessage, GnsSocket,
-    IsClient, IsCreated, IsServer, MessageSlot, ReceivedMessagesInto, SendFlags, ToSend,
+    sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
+    GnsLane, GnsNetworkMessage, GnsSocket, IsClient, IsCreated, IsServer, MessageSlot,
+    ReceivedMessagesInto, SendFlags, ToSend,
 };
 use std::{
     cell::Cell,
@@ -426,22 +426,7 @@ impl Transport for GnsDirectIp {
         if connection.authenticated {
             return Err(TransportError::ProtocolViolation);
         }
-        // GNS defaults both limits to 256 KiB/s. Its pinned bandwidth estimate
-        // does not grow when only SendRateMax is raised. Match the application's
-        // bounded Bulk budget once the connection has been authenticated.
-        for option in [
-            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMin,
-            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMax,
-        ] {
-            self.global
-                .utils()
-                .set_connection_config_value(
-                    connection.native,
-                    option,
-                    GnsConfig::Int32(BULK_BYTES_PER_SECOND as i32),
-                )
-                .map_err(backend)?;
-        }
+        super::configure_authenticated_send_rate(connection.native)?;
         connection.authenticated = true;
         connection.rate_limit = InboundRateLimiter::with_policy(self.rate_policy, Instant::now());
         Ok(())
@@ -996,6 +981,8 @@ mod tests {
 
     #[test]
     fn gns_localhost_authenticated_send_rate_matches_bulk_budget() {
+        use crate::network::lifecycle::BULK_BYTES_PER_SECOND;
+        use ::gns::sys::ESteamNetworkingConfigValue;
         let mut host = GnsDirectIp::new().unwrap();
         let mut client = GnsDirectIp::new().unwrap();
         let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);

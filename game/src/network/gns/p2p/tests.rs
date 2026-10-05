@@ -96,6 +96,9 @@ impl Transport for Observed {
         self.inner.poll(events)?;
         for event in &events[start..] {
             if let TransportEvent::Connected { connection } = event {
+                self.inner.connections[connection]
+                    .native
+                    .assert_send_rate(256 * 1024);
                 emit(Frame::Connected(
                     self.inner.connections[connection].native.details(),
                 ));
@@ -379,6 +382,9 @@ fn gns_p2p_child() {
             if !authenticated && state == Some(ConnectionState::Authenticated) {
                 assert!(transport.has_channel(id));
                 assert!(connections.player(id).is_none()); // PAKE success != Ready
+                transport.backend().inner.connections[&id]
+                    .native
+                    .assert_send_rate(crate::network::lifecycle::BULK_BYTES_PER_SECOND as i32);
                 authenticated = true;
                 #[cfg(feature = "rendezvous")]
                 if host {

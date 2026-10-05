@@ -264,7 +264,7 @@ pub(super) fn encoded() -> Arc<[u8]> {
     .unwrap();
     bytes.into_inner().into()
 }
-fn encoded_bmp(size: u32) -> Arc<[u8]> {
+pub(super) fn encoded_bmp(size: u32) -> Arc<[u8]> {
     let mut bytes = std::io::Cursor::new(Vec::new());
     image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         size,

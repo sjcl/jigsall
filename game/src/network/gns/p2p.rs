@@ -313,6 +313,7 @@ impl Transport for GnsP2p {
         if c.authenticated {
             return Err(TransportError::ProtocolViolation);
         }
+        c.native.configure_authenticated_send_rate()?;
         c.authenticated = true;
         c.limiter = InboundRateLimiter::with_policy(&DEFAULT_INBOUND_POLICY, Instant::now());
         Ok(())

@@ -348,6 +348,26 @@ baseline/catch-up, Ready, Grab/Release roundtrip and session teardown. Regular C
 uses local transport/control seams for the same driver state machine and scheduled
 egui tests; it needs no external repository or Internet access.
 
+The real-server runtime test transfers a 1600x1600 BMP (about 10 MB), exceeding the
+reliable queue, and verifies the received image hash and decoded dimensions.
+Room Code P2P uses the same post-authentication native send-rate configuration as
+Direct IP: both `SendRateMin` and `SendRateMax` are set to 4 MiB/s before sync.
+Previously only Direct IP raised them, leaving Room Code at GNS's 256 KiB/s
+defaults. Raising only `SendRateMax` does not grow the pinned bandwidth estimate.
+Image chunks remain at most `32 KiB - 64` bytes, with multiple chunks per frame;
+the shared 128 KiB/frame, 4 MiB/s generation budget and 240 KiB Bulk queue bound
+still apply. The rendezvous server carries signaling, not image data. Throughput
+depends on the network, frame rate and queue drainage.
+
+On 2026-10-05, Windows x86_64 / Rust 1.97.0 release verification passed 310
+network tests, 20 native localhost tests and both real-server smoke tests.
+Workspace Clippy with `rendezvous` (all targets, warnings denied), formatting and
+diff checks passed. The isolated large-image runtime smoke completed in 2.93 s;
+this includes connection/authentication, image transfer/decode, baseline/catch-up,
+Ready, Grab/Release and teardown, with two headless processes polling at 1 ms.
+The server used loopback WS and private ICE candidates. This is a local test
+result, not an Internet throughput or native-window frame-rate guarantee.
+
 Real Internet NAT trials still require production WSS configuration, caller STUN
 configuration, public candidates, and separate machines behind different NATs.
 Some NAT/firewall pairs may require TURN; TURN/relay is not implemented.

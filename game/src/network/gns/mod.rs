@@ -19,6 +19,29 @@ fn global() -> Result<&'static ::gns::GnsGlobal, TransportError> {
     p2p::native::global()
 }
 
+fn configure_authenticated_send_rate(
+    connection: ::gns::GnsConnection,
+) -> Result<(), TransportError> {
+    use ::gns::{sys::ESteamNetworkingConfigValue::*, GnsConfig};
+    // GNS defaults both limits to 256 KiB/s. Raising only the maximum does not
+    // grow its pinned bandwidth estimate. Both establishment paths must match
+    // the application's bounded Bulk budget after authentication, before sync.
+    for option in [
+        k_ESteamNetworkingConfig_SendRateMin,
+        k_ESteamNetworkingConfig_SendRateMax,
+    ] {
+        global()?
+            .utils()
+            .set_connection_config_value(
+                connection,
+                option,
+                GnsConfig::Int32(crate::network::lifecycle::BULK_BYTES_PER_SECOND as i32),
+            )
+            .map_err(|error| TransportError::Backend(error.to_string()))?;
+    }
+    Ok(())
+}
+
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 fn token() -> Result<u64, TransportError> {
     NEXT_TOKEN

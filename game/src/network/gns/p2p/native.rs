@@ -346,6 +346,11 @@ impl Connection {
     fn handle(&self) -> HSteamNetConnection {
         self.0.unwrap_or(0)
     }
+    pub(super) fn configure_authenticated_send_rate(&self) -> Result<(), TransportError> {
+        super::super::configure_authenticated_send_rate(::gns::GnsConnection::from_raw(
+            self.handle(),
+        ))
+    }
     fn configure(&self) -> Result<(), TransportError> {
         // SAFETY: live handle and fixed initialized lane arrays, copied by GNS.
         check(unsafe {
@@ -476,6 +481,25 @@ impl Connection {
                     false,
                 );
             }
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn assert_send_rate(&self, expected: i32) {
+        for option in [
+            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMin,
+            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMax,
+        ] {
+            assert_eq!(
+                global()
+                    .unwrap()
+                    .utils()
+                    .get_connection_config_value(
+                        ::gns::GnsConnection::from_raw(self.handle()),
+                        option
+                    )
+                    .unwrap(),
+                ::gns::GnsConfigValue::Int32(expected),
+            );
         }
     }
     #[cfg(test)]
