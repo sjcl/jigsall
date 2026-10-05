@@ -52,7 +52,8 @@ pub struct GpuRemoteCursor {
     pub label_uv: [f32; 4],
 }
 
-fn player_color(player: PlayerId) -> [f32; 4] {
+/// Shared sRGB identity color for cursor rendering and player-list UI.
+pub fn player_color_srgb(player: PlayerId) -> [u8; 3] {
     const PALETTE: [[u8; 3]; 8] = [
         [255, 116, 113],
         [101, 190, 255],
@@ -63,7 +64,11 @@ fn player_color(player: PlayerId) -> [f32; 4] {
         [100, 220, 224],
         [255, 173, 110],
     ];
-    let rgb = PALETTE[(player.0 % 8) as usize];
+    PALETTE[(player.0 % 8) as usize]
+}
+
+fn player_color(player: PlayerId) -> [f32; 4] {
+    let rgb = player_color_srgb(player);
     // Palette colors are sRGB; the main view target receives linear values.
     let c = Color::srgb_u8(rgb[0], rgb[1], rgb[2]).to_linear();
     [c.red, c.green, c.blue, 1.0]

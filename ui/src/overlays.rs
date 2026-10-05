@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use jigsall_game::resources::*;
 
-/// Pause actions use the same visual language as the title and save dialog.
+/// Local menu actions use the same visual language as the title and save dialog.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_in_game_menu_ui(
     i18n: Res<Localization>,
@@ -24,6 +24,7 @@ pub fn draw_in_game_menu_ui(
     };
     theme::prepare(ctx);
     let completed = completion_state.is_some();
+    let multiplayer = network_status.role.is_some();
     egui::Modal::new("pause_menu".into())
         .backdrop_color(egui::Color32::from_black_alpha(165))
         .frame(theme::frame())
@@ -37,15 +38,21 @@ pub fn draw_in_game_menu_ui(
                         ui,
                         if completed {
                             i18n.text("pause-puzzle-menu")
+                        } else if multiplayer {
+                            i18n.text("pause-multiplayer-menu")
                         } else {
                             i18n.text("pause-title")
                         },
                     );
+                    if multiplayer && !completed {
+                        theme::hint(ui, i18n.text("pause-multiplayer-hint"));
+                        ui.add_space(8.0);
+                    }
                     ui.add_enabled_ui(!persistence.busy, |ui| {
                         let width = ui.available_width();
                         if theme::button(
                             ui,
-                            if completed {
+                            if completed || multiplayer {
                                 i18n.text("pause-back-puzzle")
                             } else {
                                 i18n.text("pause-resume")
@@ -65,8 +72,16 @@ pub fn draw_in_game_menu_ui(
                         {
                             dialogs.open_title(&mut persistence, &i18n);
                         }
-                        if theme::button(ui, i18n.text("common-return-title"), width, false)
-                            .clicked()
+                        if theme::button(
+                            ui,
+                            i18n.text(
+                                crate::persistence::DepartureAction::Title
+                                    .menu_key(network_status.role),
+                            ),
+                            width,
+                            false,
+                        )
+                        .clicked()
                         {
                             dialogs.request_departure(
                                 crate::persistence::DepartureAction::Title,
@@ -75,7 +90,16 @@ pub fn draw_in_game_menu_ui(
                                 &i18n,
                             );
                         }
-                        if theme::danger_button(ui, i18n.text("pause-exit"), width).clicked() {
+                        if theme::danger_button(
+                            ui,
+                            i18n.text(
+                                crate::persistence::DepartureAction::Exit
+                                    .menu_key(network_status.role),
+                            ),
+                            width,
+                        )
+                        .clicked()
+                        {
                             dialogs.request_departure(
                                 crate::persistence::DepartureAction::Exit,
                                 network_status.role,
@@ -89,7 +113,7 @@ pub fn draw_in_game_menu_ui(
                     ui.add_space(8.0);
                     theme::hint(
                         ui,
-                        if completed {
+                        if completed || multiplayer {
                             i18n.text("pause-puzzle-hint")
                         } else {
                             i18n.text("pause-resume-hint")

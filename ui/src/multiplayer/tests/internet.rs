@@ -146,19 +146,19 @@ fn internet_scheduled_menu_switches_methods_and_falls_back_without_configuration
     app.world_mut().insert_resource(State::new(AppState::Menu));
     app.world_mut()
         .resource_mut::<MultiplayerUi>()
-        .navigate(MenuScreen::Multiplayer);
-    click_label(&mut app, &ctx, "Internet");
+        .navigate(MenuScreen::Join);
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
     assert_eq!(
         app.world().resource::<MultiplayerUi>().host.method,
         RuntimeConnectionMethod::DirectIp
     );
     configure(app.world_mut());
-    click_label(&mut app, &ctx, "Internet");
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
     assert_eq!(
         app.world().resource::<MultiplayerUi>().host.method,
         RuntimeConnectionMethod::Internet
     );
-    click_label(&mut app, &ctx, "Direct IP");
+    click_label(&mut app, &ctx, "Direct IP / LAN");
     assert_eq!(
         app.world().resource::<MultiplayerUi>().join.method,
         RuntimeConnectionMethod::DirectIp
@@ -171,6 +171,7 @@ fn internet_scheduled_menu_switches_methods_and_falls_back_without_configuration
         RuntimeConnectionMethod::DirectIp
     );
 }
+
 #[test]
 fn internet_forms_show_room_fields_and_hide_direct_address_and_network_details() {
     let ctx = egui::Context::default();
@@ -395,7 +396,7 @@ fn internet_scheduled_host_setup_has_no_bind_fields_and_direct_keeps_them() {
     assert!(text.contains("room code will be created"));
     assert!(!text.contains("0.0.0.0:27015"));
     output.drop_without_applying_deltas();
-    click_label(&mut app, &ctx, "Direct IP");
+    click_label(&mut app, &ctx, "Direct IP / LAN");
     let output = render_schedule(&mut app, &ctx, vec![]);
     assert!(labels(&output).contains(&"0.0.0.0:27015"));
     output.drop_without_applying_deltas();

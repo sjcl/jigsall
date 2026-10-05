@@ -69,6 +69,15 @@ impl UiError {
             Self::AlreadyActive => "multiplayer-error-active",
         }
     }
+    fn key_for_method(self, method: RuntimeConnectionMethod) -> &'static str {
+        match (self, method) {
+            (Self::Timeout, RuntimeConnectionMethod::Internet) => "multiplayer-error-room-timeout",
+            (Self::ConnectionFailed, RuntimeConnectionMethod::Internet) => {
+                "multiplayer-error-room-connection"
+            }
+            _ => self.key(),
+        }
+    }
     fn failure(kind: NetworkFailureKind) -> Self {
         match kind {
             NetworkFailureKind::Authentication => Self::WrongPassword,
@@ -198,6 +207,11 @@ pub(crate) struct MultiplayerUi {
     pub submitted: bool,
     pub error: Option<UiError>,
     pub internet_available: bool,
+    method_selected: bool,
+    password_cleared: bool,
+    invite_shown: bool,
+    invite_open: bool,
+    disconnected_save_opened: bool,
     connecting: bool,
     owns_session: bool,
     pending_host: Option<PendingHost>,
@@ -215,11 +229,16 @@ impl Default for MultiplayerUi {
             host_setup: false,
             host_settings_tab: false,
             host: ConnectionDraft::new("0.0.0.0:27015"),
-            join: ConnectionDraft::new("127.0.0.1:27015"),
+            join: ConnectionDraft::new(""),
             selected_save: None,
             submitted: false,
             error: None,
             internet_available: false,
+            method_selected: false,
+            password_cleared: false,
+            invite_shown: false,
+            invite_open: false,
+            disconnected_save_opened: false,
             connecting: false,
             owns_session: false,
             pending_host: None,
@@ -233,10 +252,45 @@ impl Default for MultiplayerUi {
     }
 }
 impl MultiplayerUi {
+    pub fn configure_connection_methods(&mut self, available: bool) {
+        self.internet_available = available && cfg!(feature = "rendezvous");
+        let method = if !self.internet_available {
+            RuntimeConnectionMethod::DirectIp
+        } else if !self.method_selected {
+            RuntimeConnectionMethod::Internet
+        } else {
+            self.host.method
+        };
+        self.set_connection_method(method);
+    }
+    fn set_connection_method(&mut self, method: RuntimeConnectionMethod) {
+        if self.host.method != method || self.join.method != method {
+            self.clear_passwords_for_settings();
+            self.error = None;
+            self.host.method = method;
+            self.join.method = method;
+        }
+    }
+    pub fn clear_passwords_for_settings(&mut self) {
+        self.password_cleared |= !self.host.password.is_empty() || !self.join.password.is_empty();
+        self.host.clear_password();
+        self.join.clear_password();
+    }
+    pub fn paint_password_notice(&self, ui: &mut egui::Ui, i18n: &Localization) {
+        if self.password_cleared && self.host.password.is_empty() && self.join.password.is_empty() {
+            theme::hint(ui, i18n.text("multiplayer-password-cleared"));
+        }
+    }
+    pub fn host_available(&self) -> bool {
+        self.host.valid(true)
+            && cfg!(feature = "gns")
+            && (self.host.method == RuntimeConnectionMethod::DirectIp || self.internet_available)
+    }
     pub fn navigate(&mut self, screen: MenuScreen) {
         self.host.clear_password();
         self.join.clear_password();
         self.error = None;
+        self.password_cleared = false;
         self.selected_save = None;
         self.pending_join = None;
         self.action = None;
@@ -434,6 +488,7 @@ pub(crate) fn process_actions(world: &mut World) {
             let host_method = ui.host.method;
             let join_method = ui.join.method;
             let internet_available = ui.internet_available;
+            let method_selected = ui.method_selected;
             *world.resource_mut::<MultiplayerUi>() = MultiplayerUi {
                 screen,
                 ..default()
@@ -445,6 +500,7 @@ pub(crate) fn process_actions(world: &mut World) {
             ui.host.method = host_method;
             ui.join.method = join_method;
             ui.internet_available = internet_available;
+            ui.method_selected = method_selected;
             jigsall_game::network::runtime::stop_session(world);
         }
         #[cfg(feature = "rendezvous")]
@@ -703,6 +759,8 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
     ui.host.clear_password();
     ui.join.clear_password();
     ui.host_setup = false;
+    ui.invite_open = false;
+    ui.invite_shown = false;
     ui.pending_host = None;
     ui.retry_host = None;
     ui.prepared_host = false;
@@ -730,13 +788,38 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
     }
 }
 
+pub(crate) fn host_status_key(status: &NetworkStatus) -> Option<&'static str> {
+    if status.role != Some(RuntimeRole::Host) {
+        return None;
+    }
+    Some(if status.phase != RuntimePhase::Hosting {
+        "multiplayer-host-not-open"
+    } else if status.connection_method == Some(RuntimeConnectionMethod::Internet)
+        && (status.rendezvous_control != Some(RendezvousControlStatus::Available)
+            || status.room_code.is_none())
+    {
+        "multiplayer-host-not-accepting"
+    } else {
+        "multiplayer-hosting"
+    })
+}
+
 pub(crate) fn paint_host_status(ui: &mut egui::Ui, status: &NetworkStatus, i18n: &Localization) {
     if status.role != Some(RuntimeRole::Host) {
         return;
     }
+    if let Some(key) = host_status_key(status) {
+        ui.label(i18n.text(key));
+    }
     if status.connection_method == Some(RuntimeConnectionMethod::Internet) {
         paint_room_code(ui, status, i18n);
         paint_control_warning(ui, status, i18n);
+        if status.room_code.is_some()
+            && status.rendezvous_control == Some(RendezvousControlStatus::Available)
+        {
+            theme::hint(ui, i18n.text("multiplayer-invite-room-steps"));
+            theme::hint(ui, i18n.text("multiplayer-invite-password"));
+        }
         return;
     }
     let Some(address) = status.address else {
@@ -761,6 +844,8 @@ pub(crate) fn paint_host_status(ui: &mut egui::Ui, status: &NetworkStatus, i18n:
             ),
         );
     }
+    theme::hint(ui, i18n.text("multiplayer-invite-direct-steps"));
+    theme::hint(ui, i18n.text("multiplayer-invite-password"));
     paint_connection_help(ui, true, Some(address), i18n);
 }
 
@@ -796,7 +881,15 @@ pub(crate) fn paint_connection_fields(
             } else {
                 "multiplayer-server-address"
             }));
-            ui.add(egui::TextEdit::singleline(&mut draft.address).desired_width(f32::INFINITY));
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.address)
+                    .hint_text(if host {
+                        "0.0.0.0:27015"
+                    } else {
+                        "example.com:27015"
+                    })
+                    .desired_width(f32::INFINITY),
+            );
             theme::hint(
                 ui,
                 i18n.text(if host {
@@ -805,9 +898,6 @@ pub(crate) fn paint_connection_fields(
                     "multiplayer-address-hint"
                 }),
             );
-            if !valid_address(&draft.address, host) {
-                ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-address"));
-            }
         }
         RuntimeConnectionMethod::Internet if host => {
             theme::hint(ui, i18n.text("multiplayer-room-code-hint"))
@@ -820,9 +910,6 @@ pub(crate) fn paint_connection_fields(
                     .desired_width(f32::INFINITY),
             );
             draft.room_code.make_ascii_uppercase();
-            if !draft.room_code.is_empty() && !valid_room_code(&draft.room_code) {
-                ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-room-code"));
-            }
         }
     }
     ui.label(i18n.text("multiplayer-password"));
@@ -848,13 +935,42 @@ pub(crate) fn paint_connection_fields(
             "multiplayer-join-password-hint"
         }),
     );
-    if !draft.password.is_empty()
-        && !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&draft.password.len())
-    {
-        ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-password"));
-    }
+    theme::hint(ui, i18n.text("multiplayer-password-clear-hint"));
+    paint_required_fields(ui, draft, host, i18n);
     if draft.method == RuntimeConnectionMethod::DirectIp {
         paint_connection_help(ui, host, None, i18n);
+    }
+}
+
+/// Explain every disabled form requirement without waiting for a submit attempt.
+pub(crate) fn paint_required_fields(
+    ui: &mut egui::Ui,
+    draft: &ConnectionDraft,
+    host: bool,
+    i18n: &Localization,
+) {
+    let target_error = match draft.method {
+        RuntimeConnectionMethod::DirectIp if draft.address.trim().is_empty() => {
+            Some("multiplayer-address-required")
+        }
+        RuntimeConnectionMethod::DirectIp if !valid_address(&draft.address, host) => {
+            Some("multiplayer-error-address")
+        }
+        RuntimeConnectionMethod::Internet if !host && draft.room_code.trim().is_empty() => {
+            Some("multiplayer-room-code-required")
+        }
+        RuntimeConnectionMethod::Internet if !host && !valid_room_code(&draft.room_code) => {
+            Some("multiplayer-error-room-code")
+        }
+        _ => None,
+    };
+    if let Some(key) = target_error {
+        ui.colored_label(theme::DANGER, i18n.text(key));
+    }
+    if draft.password.is_empty() {
+        ui.colored_label(theme::DANGER, i18n.text("multiplayer-password-required"));
+    } else if !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&draft.password.len()) {
+        ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-password"));
     }
 }
 
@@ -893,7 +1009,10 @@ pub(crate) fn paint_join(
     paint_connection_fields(ui, &mut state.join, false, profile, i18n);
     theme::hint(ui, i18n.text("multiplayer-join-hint"));
     if let Some(error) = state.error {
-        ui.colored_label(theme::DANGER, i18n.text(error.key()));
+        ui.colored_label(
+            theme::DANGER,
+            i18n.text(error.key_for_method(state.join.method)),
+        );
     }
     let valid = state.join.valid(false)
         && !state.submitted
@@ -927,12 +1046,13 @@ fn connection_text(status: &NetworkStatus) -> &'static str {
         }
         RuntimePhase::Connecting => "multiplayer-connecting",
         RuntimePhase::Authenticating => "multiplayer-authenticating",
-        RuntimePhase::Syncing(
-            SyncPhase::ImageNegotiation
-            | SyncPhase::AwaitingImageSlot
-            | SyncPhase::ImageTransfer
-            | SyncPhase::AwaitingImageReady,
-        ) => "multiplayer-receiving-image",
+        RuntimePhase::Syncing(SyncPhase::ImageNegotiation) => "multiplayer-checking-image",
+        RuntimePhase::Syncing(SyncPhase::AwaitingImageSlot) => "multiplayer-image-queued",
+        RuntimePhase::Syncing(SyncPhase::ImageTransfer) => "multiplayer-receiving-image",
+        RuntimePhase::Syncing(SyncPhase::AwaitingImageReady) => "multiplayer-preparing-image",
+        RuntimePhase::Syncing(SyncPhase::AwaitingBaselineSlot) => "multiplayer-sync-queued",
+        RuntimePhase::Syncing(SyncPhase::CatchingUp) => "multiplayer-catching-up",
+        RuntimePhase::Syncing(SyncPhase::Finalizing) => "multiplayer-finalizing",
         RuntimePhase::Syncing(_) => "multiplayer-syncing",
         RuntimePhase::Ready => "multiplayer-ready",
         _ => "multiplayer-connecting",
@@ -949,9 +1069,13 @@ fn paint_host_retry(
         let available = state.internet_available;
         paint_method(ui, state, available, i18n);
         theme::hint(ui, i18n.text("multiplayer-retry-prepared"));
+        state.paint_password_notice(ui, i18n);
         paint_connection_fields(ui, &mut state.host, true, profile, i18n);
         if let Some(error) = state.error {
-            ui.colored_label(theme::DANGER, i18n.text(error.key()));
+            ui.colored_label(
+                theme::DANGER,
+                i18n.text(error.key_for_method(state.host.method)),
+            );
         }
         let valid = state.host.valid(true)
             && !state.submitted
@@ -1038,6 +1162,15 @@ pub(crate) fn draw_connection_ui(
         state.connecting = false;
         state.submitted = false;
         state.prepared_host = false;
+        if status.role == Some(RuntimeRole::Host) && state.owns_session {
+            if !state.invite_shown {
+                state.invite_open = true;
+                state.invite_shown = true;
+            }
+            if let Ok(ctx) = contexts.ctx_mut() {
+                paint_invite_panel(ctx, &mut state.invite_open, &status, &i18n);
+            }
+        }
         return;
     }
     if status.host_start_failed
@@ -1091,7 +1224,17 @@ pub(crate) fn draw_connection_ui(
                             return;
                         }
                         if let Some(error) = error {
-                            ui.colored_label(theme::DANGER, i18n.text(error.key()));
+                            let method = status.connection_method.unwrap_or(
+                                if state.screen == MenuScreen::Join {
+                                    state.join.method
+                                } else {
+                                    state.host.method
+                                },
+                            );
+                            ui.colored_label(
+                                theme::DANGER,
+                                i18n.text(error.key_for_method(method)),
+                            );
                         } else {
                             ui.horizontal(|ui| {
                                 ui.spinner();
@@ -1132,6 +1275,7 @@ pub(crate) fn draw_connection_ui(
                                     .clicked()
                                     {
                                         saves.open_title(&mut persistence, &i18n);
+                                        state.disconnected_save_opened = true;
                                     }
                                 },
                             );
@@ -1142,7 +1286,18 @@ pub(crate) fn draw_connection_ui(
                             |ui| {
                                 if theme::button(
                                     ui,
-                                    i18n.text(if error.is_some() {
+                                    i18n.text(if status.has_disconnected_game() {
+                                        if state.disconnected_save_opened
+                                            && matches!(
+                                                persistence.message,
+                                                Some(PersistenceNotice::Saved)
+                                            )
+                                        {
+                                            "multiplayer-return-after-save"
+                                        } else {
+                                            "multiplayer-discard-return"
+                                        }
+                                    } else if error.is_some() {
                                         "common-back"
                                     } else {
                                         "common-cancel"
@@ -1180,8 +1335,22 @@ pub(crate) fn paint_room_code(ui: &mut egui::Ui, status: &NetworkStatus, i18n: &
         ui.label(i18n.text("multiplayer-room-code"));
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(code).monospace().size(24.0).strong());
-            if ui.button(i18n.text("multiplayer-copy")).clicked() {
+            let copied_id = ui.make_persistent_id(("room-code-copied", code));
+            let now = ui.input(|input| input.time);
+            if ui
+                .add(egui::Button::new(i18n.text("multiplayer-copy")).sense(egui::Sense::CLICK))
+                .clicked()
+            {
                 ui.ctx().copy_text(code.clone());
+                ui.data_mut(|data| data.insert_temp(copied_id, now));
+            }
+            if ui
+                .data(|data| data.get_temp::<f64>(copied_id))
+                .is_some_and(|time| now - time < 3.0)
+            {
+                ui.label(i18n.text("multiplayer-copied"));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(3));
             }
         });
     }
@@ -1202,33 +1371,64 @@ pub(crate) fn paint_method(
     available: bool,
     i18n: &Localization,
 ) {
-    state.internet_available = available;
+    state.configure_connection_methods(available);
     let mut method = state.host.method;
-    if !available {
-        method = RuntimeConnectionMethod::DirectIp;
-    }
-    ui.horizontal(|ui| {
-        ui.add_enabled_ui(available, |ui| {
-            ui.selectable_value(
-                &mut method,
-                RuntimeConnectionMethod::Internet,
-                i18n.text("multiplayer-internet"),
-            );
+    let mut selected = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.add_enabled_ui(state.internet_available, |ui| {
+            selected |= ui
+                .selectable_value(
+                    &mut method,
+                    RuntimeConnectionMethod::Internet,
+                    i18n.text("multiplayer-internet"),
+                )
+                .clicked();
         });
-        ui.selectable_value(
-            &mut method,
-            RuntimeConnectionMethod::DirectIp,
-            i18n.text("multiplayer-direct-ip"),
-        );
+        selected |= ui
+            .selectable_value(
+                &mut method,
+                RuntimeConnectionMethod::DirectIp,
+                i18n.text("multiplayer-direct-ip"),
+            )
+            .clicked();
     });
-    if !available {
+    if !state.internet_available {
         theme::hint(ui, i18n.text("multiplayer-internet-unavailable"));
     }
-    if state.host.method != method || state.join.method != method {
-        state.host.clear_password();
-        state.join.clear_password();
-        state.error = None;
-        state.host.method = method;
-        state.join.method = method;
+    if selected {
+        state.method_selected = true;
+        state.set_connection_method(method);
+    }
+    theme::hint(
+        ui,
+        i18n.text(if method == RuntimeConnectionMethod::Internet {
+            "multiplayer-internet-hint"
+        } else {
+            "multiplayer-direct-ip-hint"
+        }),
+    );
+}
+
+fn paint_invite_panel(
+    ctx: &egui::Context,
+    open: &mut bool,
+    status: &NetworkStatus,
+    i18n: &Localization,
+) {
+    let mut dismissed = false;
+    egui::Window::new(i18n.text("multiplayer-invite-title"))
+        .id("multiplayer_invite".into())
+        .open(open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(360.0_f32.min((ctx.content_rect().width() - 48.0).max(120.0)))
+        .default_pos(ctx.content_rect().left_top() + egui::vec2(24.0, 80.0))
+        .show(ctx, |ui| {
+            paint_host_status(ui, status, i18n);
+            theme::hint(ui, i18n.text("multiplayer-invite-playing"));
+            dismissed = ui.button(i18n.text("common-close")).clicked();
+        });
+    if dismissed {
+        *open = false;
     }
 }

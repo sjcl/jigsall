@@ -124,6 +124,12 @@ fn window_close_pauses_before_showing_save_and_keeps_the_window_until_confirmed(
             app.world_mut().resource_mut::<SaveDialogs>().title = "Window puzzle".into();
             close(&mut app, primary);
             assert_eq!(app.world().resource::<SaveDialogs>().title, "Window puzzle");
+            for _ in 0..3 {
+                render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+            }
+            let output = render_schedule(&mut app, &ctx, vec![]);
+            assert_host_warning(&app, &output, role);
+            output.drop_without_applying_deltas();
             click_label(&mut app, &ctx, "Exit Without Saving");
             close(&mut app, primary);
             assert_window_open(&app, primary, role);
@@ -133,6 +139,7 @@ fn window_close_pauses_before_showing_save_and_keeps_the_window_until_confirmed(
             let mut output = render_schedule(&mut app, &ctx, vec![]);
             output.textures_delta.clear();
             assert!(labels(&output).contains(&"Leave Without Saving?"));
+            assert_host_warning(&app, &output, role);
             output.drop_without_applying_deltas();
             click_label(&mut app, &ctx, "Cancel");
             click_label(&mut app, &ctx, "Cancel");
@@ -149,7 +156,11 @@ fn window_close_pauses_before_showing_save_and_keeps_the_window_until_confirmed(
 
 #[test]
 fn window_close_keeps_pending_manual_save_and_exits_only_after_success() {
-    for original_action in ["Save Game", "Return to Title", "Exit Game"] {
+    for (original_action, save_button) in [
+        ("Save Game", "Save Game"),
+        ("Close Room and Return to Title", "Save and Return to Title"),
+        ("Close Room and Exit", "Save and Exit"),
+    ] {
         let (mut app, ctx, primary) = window_game(Some(RuntimeRole::Host), false);
         app.world_mut()
             .resource_mut::<NextState<GameSubState>>()
@@ -157,11 +168,6 @@ fn window_close_keeps_pending_manual_save_and_exits_only_after_success() {
         app.world_mut().run_schedule(StateTransition);
         click_label(&mut app, &ctx, original_action);
         app.world_mut().resource_mut::<SaveDialogs>().title = "Pending title".into();
-        let save_button = match original_action {
-            "Save Game" => "Save Game",
-            "Return to Title" => "Save and Return to Title",
-            _ => "Save and Exit",
-        };
         click_save_button(&mut app, &ctx, save_button);
         assert!(app.world().resource::<PersistenceState>().busy);
         close(&mut app, primary);

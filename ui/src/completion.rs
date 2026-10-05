@@ -118,9 +118,14 @@ pub fn draw_completion_ui(
                                 .add_sized(
                                     [ui.available_width(), 42.0],
                                     egui::Button::new(
-                                        egui::RichText::new(i18n.text("common-return-title"))
-                                            .size(14.0)
-                                            .color(TEXT),
+                                        egui::RichText::new(
+                                            i18n.text(
+                                                crate::persistence::DepartureAction::Title
+                                                    .menu_key(network_status.role),
+                                            ),
+                                        )
+                                        .size(14.0)
+                                        .color(TEXT),
                                     )
                                     .fill(PANEL)
                                     .stroke(egui::Stroke::new(1.0, BORDER))

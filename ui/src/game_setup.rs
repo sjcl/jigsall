@@ -35,6 +35,7 @@ pub fn draw_game_setup_ui(
     let internet_available = rendezvous_config.is_some();
     #[cfg(not(feature = "rendezvous"))]
     let internet_available = false;
+    multiplayer.configure_connection_methods(internet_available);
     if multiplayer.connection_screen(&status) {
         return;
     }
@@ -94,8 +95,15 @@ pub fn draw_game_setup_ui(
                     });
                 }
                 ui.separator();
+                // Preserve the Start/Back footer on short windows while giving
+                // normal windows enough initial scroll space for puzzle setup.
+                let reserved_height = if multiplayer.host_setup && screen.height() < 640.0 {
+                    440.0
+                } else {
+                    312.0
+                };
                 egui::ScrollArea::vertical()
-                    .max_height((screen.height() - 312.0).max(80.0))
+                    .max_height((screen.height() - reserved_height).max(80.0))
                     .show(ui, |ui| {
                         if multiplayer.host_setup && multiplayer.host_settings_tab {
                             crate::multiplayer::paint_method(
@@ -104,6 +112,14 @@ pub fn draw_game_setup_ui(
                                 internet_available,
                                 &i18n,
                             );
+                            if ui
+                                .small_button(i18n.text("multiplayer-name-settings"))
+                                .clicked()
+                            {
+                                multiplayer.clear_passwords_for_settings();
+                                settings.open(&display);
+                            }
+                            multiplayer.paint_password_notice(ui, &i18n);
                             crate::multiplayer::paint_connection_fields(
                                 ui,
                                 &mut multiplayer.host,
@@ -111,13 +127,6 @@ pub fn draw_game_setup_ui(
                                 &profile,
                                 &i18n,
                             );
-                            if ui
-                                .small_button(i18n.text("multiplayer-name-settings"))
-                                .clicked()
-                            {
-                                multiplayer.host.clear_password();
-                                settings.open(&display);
-                            }
                             if image_loaded
                                 && original
                                     .as_ref()
@@ -178,11 +187,22 @@ pub fn draw_game_setup_ui(
                 {
                     theme::hint(ui, i18n.text("multiplayer-puzzle-tab-hint"));
                 }
-                if multiplayer.host_setup
-                    && !multiplayer.host_settings_tab
-                    && !multiplayer.host.valid(true)
-                {
-                    theme::hint(ui, i18n.text("multiplayer-setup-required"));
+                if multiplayer.host_setup {
+                    if !image_loaded || config.image_path.is_empty() {
+                        theme::hint(ui, i18n.text("multiplayer-image-required"));
+                    }
+                    if !cfg!(feature = "gns") {
+                        theme::hint(ui, i18n.text("multiplayer-unavailable"));
+                    }
+                    if !multiplayer.host_settings_tab && !multiplayer.host.valid(true) {
+                        crate::multiplayer::paint_required_fields(
+                            ui,
+                            &multiplayer.host,
+                            true,
+                            &i18n,
+                        );
+                        theme::hint(ui, i18n.text("multiplayer-setup-required"));
+                    }
                 }
                 ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 10.0) * 0.5).min(240.0);
@@ -198,11 +218,10 @@ pub fn draw_game_setup_ui(
                             && !select_image
                             && !multiplayer.submitted
                             && (!multiplayer.host_setup
-                                || (multiplayer.host.valid(true)
+                                || (multiplayer.host_available()
                                     && original
                                         .as_ref()
-                                        .is_some_and(|image| image.encoded.is_some())
-                                    && cfg!(feature = "gns"))),
+                                        .is_some_and(|image| image.encoded.is_some()))),
                         |ui| {
                             if theme::button(
                                 ui,

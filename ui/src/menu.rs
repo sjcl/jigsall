@@ -27,6 +27,7 @@ pub fn draw_menu_ui(
     let internet_available = rendezvous_config.is_some();
     #[cfg(not(feature = "rendezvous"))]
     let internet_available = false;
+    multiplayer.configure_connection_methods(internet_available);
     if multiplayer.connection_screen(&status) {
         return;
     }
@@ -104,12 +105,6 @@ pub fn draw_menu_ui(
                                             }),
                                         );
                                         if host {
-                                            multiplayer::paint_method(
-                                                ui,
-                                                &mut multiplayer,
-                                                internet_available,
-                                                &i18n,
-                                            );
                                             theme::hint(ui, i18n.text("multiplayer-host-hint"));
                                             if !cfg!(feature = "gns") {
                                                 theme::hint(
@@ -147,32 +142,10 @@ pub fn draw_menu_ui(
                                         });
                                     }
                                     MenuScreen::Multiplayer => {
-                                        theme::heading(ui, i18n.text("menu-multiplayer"));
-                                        multiplayer::paint_method(
-                                            ui,
-                                            &mut multiplayer,
-                                            internet_available,
-                                            &i18n,
-                                        );
-                                        if theme::button(
-                                            ui,
-                                            i18n.text("multiplayer-host"),
-                                            width,
-                                            true,
-                                        )
-                                        .clicked()
+                                        if let Some(screen) =
+                                            paint_multiplayer_choices(ui, width, &i18n)
                                         {
-                                            multiplayer.navigate(MenuScreen::Host);
-                                        }
-                                        if theme::button(
-                                            ui,
-                                            i18n.text("multiplayer-join"),
-                                            width,
-                                            false,
-                                        )
-                                        .clicked()
-                                        {
-                                            multiplayer.navigate(MenuScreen::Join);
+                                            multiplayer.navigate(screen);
                                         }
                                     }
                                     MenuScreen::Join => {
@@ -185,6 +158,14 @@ pub fn draw_menu_ui(
                                         if !cfg!(feature = "gns") {
                                             theme::hint(ui, i18n.text("multiplayer-unavailable"));
                                         }
+                                        if ui
+                                            .small_button(i18n.text("multiplayer-name-settings"))
+                                            .clicked()
+                                        {
+                                            multiplayer.clear_passwords_for_settings();
+                                            settings_dialog.open(&display_settings);
+                                        }
+                                        multiplayer.paint_password_notice(ui, &i18n);
                                         multiplayer::paint_join(
                                             ui,
                                             &mut multiplayer,
@@ -202,6 +183,14 @@ pub fn draw_menu_ui(
                                         if let Some((_, title)) = &multiplayer.selected_save {
                                             ui.label(title);
                                         }
+                                        if ui
+                                            .small_button(i18n.text("multiplayer-name-settings"))
+                                            .clicked()
+                                        {
+                                            multiplayer.clear_passwords_for_settings();
+                                            settings_dialog.open(&display_settings);
+                                        }
+                                        multiplayer.paint_password_notice(ui, &i18n);
                                         multiplayer::paint_connection_fields(
                                             ui,
                                             &mut multiplayer.host,
@@ -209,9 +198,8 @@ pub fn draw_menu_ui(
                                             &profile,
                                             &i18n,
                                         );
-                                        let valid = multiplayer.host.valid(true)
-                                            && !multiplayer.submitted
-                                            && cfg!(feature = "gns");
+                                        let valid =
+                                            multiplayer.host_available() && !multiplayer.submitted;
                                         ui.add_enabled_ui(valid, |ui| {
                                             if theme::button(
                                                 ui,
@@ -229,8 +217,7 @@ pub fn draw_menu_ui(
                                 if theme::button(ui, i18n.text("menu-settings"), width, false)
                                     .clicked()
                                 {
-                                    multiplayer.host.clear_password();
-                                    multiplayer.join.clear_password();
+                                    multiplayer.clear_passwords_for_settings();
                                     settings_dialog.open(&display_settings);
                                 }
                                 if multiplayer.screen != MenuScreen::Title
@@ -277,4 +264,109 @@ pub fn draw_menu_ui(
         egui::FontId::proportional(10.0),
         theme::MUTED,
     );
+}
+
+fn paint_multiplayer_choices(
+    ui: &mut egui::Ui,
+    width: f32,
+    i18n: &Localization,
+) -> Option<MenuScreen> {
+    theme::heading(ui, i18n.text("menu-multiplayer"));
+    let mut selected = None;
+    if theme::button(ui, i18n.text("multiplayer-host"), width, true).clicked() {
+        selected = Some(MenuScreen::Host);
+    }
+    if theme::button(ui, i18n.text("multiplayer-join"), width, false).clicked() {
+        selected = Some(MenuScreen::Join);
+    }
+    selected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::localization::{LanguagePreference, Locale};
+
+    #[test]
+    fn multiplayer_entry_shows_purpose_choices_without_connection_methods() {
+        let mut i18n = crate::localization::tests::english();
+        for locale in [Locale::EN_US, Locale::JA] {
+            i18n.set_preference(LanguagePreference::Locale(locale));
+            let ctx = egui::Context::default();
+            let render = |events| {
+                let mut selected = None;
+                let output = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(400.0, 600.0),
+                        )),
+                        events,
+                        ..default()
+                    },
+                    |ui| {
+                        theme::prepare(ui.ctx());
+                        ui.set_width(320.0);
+                        selected = paint_multiplayer_choices(ui, 320.0, &i18n);
+                    },
+                );
+                (output, selected)
+            };
+            render(vec![]).0.drop_without_applying_deltas();
+            let (output, selected) = render(vec![]);
+            assert!(selected.is_none());
+            let labels: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            for key in ["menu-multiplayer", "multiplayer-host", "multiplayer-join"] {
+                assert!(labels.contains(&i18n.text(key).as_str()));
+            }
+            for key in ["multiplayer-internet", "multiplayer-direct-ip"] {
+                assert!(!labels.contains(&i18n.text(key).as_str()));
+            }
+            let choices: Vec<_> = [
+                ("multiplayer-host", MenuScreen::Host),
+                ("multiplayer-join", MenuScreen::Join),
+            ]
+            .into_iter()
+            .map(|(key, screen)| {
+                let label = i18n.text(key);
+                let position = output
+                    .shapes
+                    .iter()
+                    .find_map(|shape| match &shape.shape {
+                        egui::Shape::Text(text) if text.galley.job.text == label => {
+                            Some(text.pos + text.galley.size() * 0.5)
+                        }
+                        _ => None,
+                    })
+                    .expect("localized multiplayer choice");
+                (position, screen)
+            })
+            .collect();
+            output.drop_without_applying_deltas();
+            for (position, screen) in choices {
+                for pressed in [true, false] {
+                    let (output, selected) = render(vec![
+                        egui::Event::PointerMoved(position),
+                        egui::Event::PointerButton {
+                            pos: position,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: default(),
+                        },
+                    ]);
+                    if !pressed {
+                        assert!(selected == Some(screen));
+                    }
+                    output.drop_without_applying_deltas();
+                }
+            }
+        }
+    }
 }
