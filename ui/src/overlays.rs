@@ -110,17 +110,6 @@ pub fn draw_in_game_menu_ui(
                             );
                         }
                     });
-                    crate::persistence::status(ui, &persistence, &i18n);
-                    crate::multiplayer::paint_host_status(ui, &network_status, &i18n);
-                    ui.add_space(8.0);
-                    theme::hint(
-                        ui,
-                        if completed || multiplayer {
-                            i18n.text("pause-puzzle-hint")
-                        } else {
-                            i18n.text("pause-resume-hint")
-                        },
-                    );
                 });
         });
 }
