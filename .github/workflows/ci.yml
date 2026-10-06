@@ -47,6 +47,8 @@ jobs:
           toolchain: ${{ steps.rust-version.outputs.toolchain }}
           components: rustfmt
       - run: cargo fmt --all --check
+      - name: Release configuration and packaging regressions
+        run: python3 .github/scripts/test_release.py
 
   test:
     name: Build, lint and test (${{ matrix.os }})

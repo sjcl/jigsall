@@ -7,6 +7,39 @@ use crate::{
 use serde_json::json;
 
 #[test]
+fn unsupported_settings_versions_are_neither_loaded_nor_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    for version in [json!(0), json!(2), json!("1"), Value::Null] {
+        let original = serde_json::to_vec(&json!({
+            "format_version": version,
+            "preferences": {"language": "ja"}
+        }))
+        .unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let mut file = SettingsFile::new(Some(path.clone()));
+        let (value, error) = file.load::<Value>(SettingsSection::Preferences);
+        assert_eq!(value, Value::Null);
+        assert!(error.is_some());
+        file.save(SettingsSection::Preferences, &json!({"language": "en"}))
+            .unwrap();
+        let mut result = None;
+        wait_for_save(|| {
+            result = file.poll_save();
+            file.is_save_pending()
+        });
+        assert!(result.unwrap().is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    // Existing development settings use the unchanged v1 section layout.
+    std::fs::write(&path, b"{\"preferences\":{\"language\":\"ja\"}}").unwrap();
+    write_section(&path, SettingsSection::Player, json!({"name": "Tester"})).unwrap();
+    let saved: Value = read_json(&path).unwrap().unwrap();
+    assert_eq!(saved["format_version"], SETTINGS_FORMAT_VERSION);
+    assert_eq!(saved["preferences"]["language"], "ja");
+}
+
+#[test]
 fn old_files_and_flat_display_settings_are_not_loaded_or_migrated() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
@@ -164,6 +197,7 @@ fn section_resources_share_a_writer_and_keep_fifo_order_and_unknown_fields() {
     assert_eq!(
         read_json::<Value>(&path).unwrap().unwrap(),
         json!({
+            "format_version": SETTINGS_FORMAT_VERSION,
             "display": {"max_fps": 240},
             "preferences": {"language": "ja"},
             "autosave": {"interval_minutes": 240},
@@ -232,6 +266,7 @@ fn dropping_the_last_owner_drains_all_accepted_saves() {
     assert_eq!(
         read_json::<Value>(&path).unwrap().unwrap(),
         json!({
+            "format_version": SETTINGS_FORMAT_VERSION,
             "preferences": {"language": "en-US"},
             "autosave": {"interval_minutes": 12}
         })

@@ -14,18 +14,26 @@ fn main() {
     let mut app = App::new();
     #[cfg(feature = "rendezvous")]
     configure_internet(&mut app);
-    app.add_plugins(DefaultPlugins.set(WindowPlugin {
-        close_when_requested: false,
-        primary_window: Some(Window {
-            title: "Jigsall".into(),
-            ..default()
-        }),
-        ..default()
-    }))
+    app.add_plugins(
+        DefaultPlugins
+            .set(bevy::log::LogPlugin {
+                custom_layer: jigsall_game::diagnostics::file_layer,
+                ..default()
+            })
+            .set(WindowPlugin {
+                close_when_requested: false,
+                primary_window: Some(Window {
+                    title: "Jigsall".into(),
+                    ..default()
+                }),
+                ..default()
+            }),
+    )
     .add_plugins(WindowIconPlugin)
     .add_plugins(GameUiPlugin)
     .add_plugins(DirectFileAssetPlugin)
     .add_plugins(GamePlugin)
+    .add_systems(Startup, jigsall_game::diagnostics::log_adapter)
     .run();
 }
 

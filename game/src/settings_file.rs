@@ -9,6 +9,10 @@ use std::{
     thread::JoinHandle,
 };
 
+/// Unversioned development settings are the v1 layout. Future layouts must bump
+/// this number; an older application must refuse both reads and section writes.
+pub const SETTINGS_FORMAT_VERSION: u64 = 1;
+
 #[derive(Clone, Copy)]
 pub enum SettingsSection {
     Display,
@@ -239,6 +243,7 @@ fn write_section(path: &Path, section: SettingsSection, value: Value) -> Result<
     // Reread here, after earlier queued sections have been persisted. Keep unknown
     // sections and refuse to overwrite a corrupt document.
     let mut document: Map<String, Value> = read_json(path)?.unwrap_or_default();
+    document.insert("format_version".into(), SETTINGS_FORMAT_VERSION.into());
     document.insert(section.key().into(), value);
     let write = || -> Result<(), Box<dyn std::error::Error>> {
         let parent = path.parent().ok_or("missing settings directory")?;
@@ -254,9 +259,18 @@ fn write_section(path: &Path, section: SettingsSection, value: Value) -> Result<
 
 fn read_json<T: DeserializeOwned>(path: &std::path::Path) -> Result<Option<T>, String> {
     match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| error.to_string()),
+        Ok(bytes) => {
+            let document: Map<String, Value> =
+                serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            if let Some(version) = document.get("format_version") {
+                if version.as_u64() != Some(SETTINGS_FORMAT_VERSION) {
+                    return Err("unsupported settings format version".into());
+                }
+            }
+            serde_json::from_value(Value::Object(document))
+                .map(Some)
+                .map_err(|error| error.to_string())
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }

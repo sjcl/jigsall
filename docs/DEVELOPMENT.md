@@ -31,18 +31,24 @@ Windows の MSVC toolchain・Visual Studio Build Tools・SDK と GNS のセッ�
 ## リリース
 
 master の履歴に含まれるコミットへタグを付けて push すると、[Draft release workflow](../.github/workflows/release.yml) が動きます。
-Windows / Linux の x86_64 向けに `--locked --release --features gns` でビルドし、
+Windows / Linux の x86_64 向けに `--locked --release --features rendezvous`（GNS を含む）でビルドし、
 両方が成功すると ZIP / tar.gz と `SHA256SUMS` を添付した GitHub Release の Draft を作成します。
-アーカイブには実行ファイル、README、日本語フォントのライセンスを含めます。
+アーカイブには実行ファイル、README、操作ガイド、build identity、Rust / native / font
+の第三者ライセンス・通知、内部 `SHA256SUMS` を含めます。公開 Room Code 設定を
+GitHub Variables に準備してください。未設定の endpoint で配布物を作りません。
+互換性番号の監査、ライセンス再生成、実機 smoke test と公開前の手順は
+[pre-release checklist](PRE_RELEASE_CHECKLIST.md)を参照してください。
 
 ```sh
 git switch master
 git pull --ff-only origin master
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.0-alpha.1
+git push origin v0.1.0-alpha.1
 ```
 
 master に含まれないコミットのタグとタグの削除はスキップします。過去の master のコミットも対象です。
+タグはその commit の workspace version と一致する `v<version>` を要求します。
+Alpha など prerelease suffix のある version は GitHub pre-release の Draft になります。
 失敗した場合は Actions から再実行できます。同じタグの Draft があれば添付ファイルを更新し、
 公開済みの Release は変更せず失敗します。公開は GitHub の Releases 画面で Draft を確認してから行ってください。
 

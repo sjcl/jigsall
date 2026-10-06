@@ -114,3 +114,23 @@ Direct IP では、参加する全員が `gns` を有効にしたビルドを使
 Esc は固定で、入力待ちではキャンセル、それ以外では戻る・一時停止に使います。同じ割り当ての重複は保存できません。1 キーとそのキーを含む 2 キーを押した場合は、2 キーの操作が優先されます。
 
 設定ファイルの場所と反映タイミングは [設定ファイル](SETTINGS.md)を参照してください。
+
+## Alpha build の不具合を報告する
+
+タイトル画面の右下に `Jigsall 0.1.0-alpha.1 (commit SHA)` を表示します。
+配布物の `BUILD_INFO.txt` には完全な commit SHA と主要 feature が入ります。
+Git 情報のない source archive からの build は commit を `unknown` と表示します。
+
+起動ごとの診断ログは Windows なら `%LOCALAPPDATA%\jigsall\logs`、Linux なら
+`${XDG_DATA_HOME:-~/.local/share}/jigsall/logs` にあります。最新の
+`diagnostics-*.log` に version、commit、OS / architecture、gns / rendezvous feature、
+GPU adapter / driver、wgpu backend を記録します。GPU 初期化前に起動が止まると
+GPU 情報がない場合があります。directory に書き込めなくても起動を続けます。
+ログはローカルにだけ保存し、自動送信しません。不要な古いログは削除できます。
+
+[bug report form](https://github.com/sjcl/jigsall/issues/new?template=bug_report.yml) に
+再現手順と期待 / 実際の挙動、OS version、GPU、接続方式（Direct IP / Room Code）を
+記載し、診断ログを添付してください。通常の実行ログが必要な場合は terminal から
+起動して stderr を保存できます（PowerShell: `./jigsall.exe 2> runtime.log`）。
+password、Room Code、TURN credential、token、private signaling data や私的な画像を
+公開しないでください。投稿前にログとスクリーンショットを確認してください。

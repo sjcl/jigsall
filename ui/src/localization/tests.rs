@@ -274,7 +274,11 @@ fn all_settings_round_trip_in_one_file_without_overwriting_other_sections() {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(json["preferences"]["language"], id);
         assert_eq!(json["display"], display);
-        assert_eq!(json.as_object().unwrap().len(), 4);
+        assert_eq!(
+            json["format_version"],
+            jigsall_game::settings_file::SETTINGS_FORMAT_VERSION
+        );
+        assert_eq!(json.as_object().unwrap().len(), 5);
     }
     std::fs::write(&path, br#"{"preferences":{"language":"unsupported"}}"#).unwrap();
     let preferences = UiPreferences::load(Some(path.clone()));

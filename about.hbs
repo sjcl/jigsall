@@ -1,0 +1,20 @@
+Jigsall third-party Rust licenses
+Generated from Cargo.lock with cargo-about 0.8.4, features=rendezvous.
+Build dependencies may be included conservatively. Native libraries and the
+embedded M PLUS 1p font have additional notices in THIRD_PARTY_NOTICES.txt.
+This file does not assign a license to Jigsall itself.
+
+{{#each licenses}}
+===============================================================================
+{{name}} ({{id}})
+Used by:
+{{#each used_by}}
+  {{{crate.name}}} {{{crate.version}}} {{{crate.repository}}}
+{{#each crate.authors}}
+    {{{this}}}
+{{/each}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

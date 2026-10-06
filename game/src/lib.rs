@@ -1,7 +1,9 @@
 //! Bevy game lifecycle, input, presentation and GPU selection.
 pub mod asset_reader;
+pub mod build_info;
 pub mod checkpoint;
 mod components;
+pub mod diagnostics;
 mod game;
 mod gpu_memory;
 pub mod image_settings;
