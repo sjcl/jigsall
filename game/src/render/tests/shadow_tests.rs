@@ -26,17 +26,17 @@ fn shadow_quality_and_lod_resolve_once_per_frame() {
                 quality != PieceVisualQuality::Low && size >= visuals.shadow_min_piece_px
             );
             assert_eq!(
-                config.shadow_cull_extent == Vec2::ZERO,
+                config.visual_cull_extent == Vec2::ZERO,
                 config.shadow_enabled == 0
             );
         }
         assert_eq!(
             visuals.shadow_offset_px(0.0),
-            SHADOW_DIRECTION * visuals.shadow_base_offset_px
+            PSEUDO_3D_DIRECTION * visuals.shadow_base_offset_px
         );
         assert_eq!(
             visuals.shadow_offset_px(1.0),
-            SHADOW_DIRECTION * (visuals.shadow_base_offset_px + visuals.shadow_lift_offset_px)
+            PSEUDO_3D_DIRECTION * (visuals.shadow_base_offset_px + visuals.shadow_lift_offset_px)
         );
     }
     assert_eq!(PuzzleUniform::min_size().get() % 16, 0);
@@ -45,8 +45,8 @@ fn shadow_quality_and_lod_resolve_once_per_frame() {
 #[test]
 fn shadow_shares_silhouette_without_changing_top_or_pick_entrypoints() {
     let shader = include_str!("../puzzle_render.wgsl");
-    assert!(shader.contains("return piece_vertex(vi,instance,false);"));
-    assert!(shader.contains("return piece_vertex(vi,instance,true);"));
+    assert!(shader.contains("return piece_vertex(vi,instance,false,false);"));
+    assert!(shader.contains("return piece_vertex(vi,instance,true,false);"));
     assert!(shader.contains("if shadow {elevation=pose.elevation;}"));
     let output = shader
         .split("struct VertexOutput {")
@@ -66,7 +66,7 @@ fn shadow_shares_silhouette_without_changing_top_or_pick_entrypoints() {
     assert!(!pick.contains("shadow"));
 }
 
-fn config(app: &App) -> PuzzleUniform {
+pub(super) fn config(app: &App) -> PuzzleUniform {
     app.sub_app(RenderApp)
         .world()
         .resource::<ExtractedPuzzle>()
@@ -74,20 +74,24 @@ fn config(app: &App) -> PuzzleUniform {
         .clone()
 }
 
-fn shadow_draws(app: &App) -> usize {
+pub(super) fn shadow_draws(app: &App) -> usize {
     app.sub_app(RenderApp)
         .world()
         .resource::<GpuRenderer>()
         .shadow_draws
 }
 
-fn render_frame(app: &mut App, target: Handle<Image>) -> Vec<u8> {
+pub(super) fn render_frame(app: &mut App, target: Handle<Image>) -> Vec<u8> {
     // Quality switches can lazily queue a new pipeline after RenderReady was
-    // already signalled for this epoch. Wait for the actual shadow draw.
+    // already signalled for this epoch. Wait for all requested optional draws.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         update_gpu(app);
-        if config(app).shadow_enabled == 0 || shadow_draws(app) == 2 {
+        let config = config(app);
+        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+        if (config.shadow_enabled == 0 || gpu.shadow_draws == 2)
+            && (config.side_enabled == 0 || gpu.side_draws == 1)
+        {
             break;
         }
         assert!(
@@ -98,7 +102,23 @@ fn render_frame(app: &mut App, target: Handle<Image>) -> Vec<u8> {
     rendered_pixels(app, target)
 }
 
-fn red_source(app: &mut App, alpha: u8) {
+// With asynchronous compilation, RenderReady can precede Bevy's final output
+// pipeline. Warm the red fixture before measuring a lazy-feature transition.
+pub(super) fn wait_red_frame(app: &mut App, target: Handle<Image>) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let pixels = render_frame(app, target.clone());
+        if pixels[(64 * 128 + 64) * 4..][..4] == [255, 0, 0, 255] {
+            return pixels;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "red fixture output did not become ready"
+        );
+    }
+}
+
+pub(super) fn red_source(app: &mut App, alpha: u8) {
     let handle = app.world().resource::<PuzzleImage>().handle.clone();
     app.world_mut()
         .resource_mut::<Assets<Image>>()
@@ -110,6 +130,7 @@ fn red_source(app: &mut App, alpha: u8) {
 
 fn fixture(size: u32) -> (App, Entity, Handle<Image>) {
     let (mut app, camera, target) = gpu_app(128);
+    shadow_only(&mut app);
     app.insert_resource(ClearColor(Color::WHITE));
     red_source(&mut app, 255);
     app.insert_resource(definition(UVec2::ONE, size, 42));
@@ -124,7 +145,7 @@ fn gray_shadow(pixel: &[u8]) -> bool {
     pixel[0] > 0 && pixel[0] < 250 && pixel[0] == pixel[1] && pixel[1] == pixel[2]
 }
 
-fn shadow_pixels(pixels: &[u8]) -> Vec<UVec2> {
+pub(super) fn shadow_pixels(pixels: &[u8]) -> Vec<UVec2> {
     pixels
         .chunks_exact(4)
         .enumerate()
@@ -133,7 +154,7 @@ fn shadow_pixels(pixels: &[u8]) -> Vec<UVec2> {
         .collect()
 }
 
-fn assert_no_uploads(app: &App) {
+pub(super) fn assert_no_uploads(app: &App) {
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
     assert_eq!(
         gpu.upload_bytes
@@ -144,6 +165,14 @@ fn assert_no_uploads(app: &App) {
             + gpu.selection_upload_bytes
             + gpu.drag_upload_bytes,
         0
+    );
+}
+
+// Preserve these fixtures as shadow-only references; side has separate fixtures.
+fn shadow_only(app: &mut App) {
+    app.sub_app_mut(RenderApp).add_systems(
+        ExtractSchedule,
+        (|mut frame: ResMut<ExtractedPuzzle>| frame.config.side_enabled = 0).after(extract_puzzle),
     );
 }
 
@@ -172,6 +201,7 @@ fn gpu_shadow_lazy_compilation_keeps_ready_epoch_visible() {
         ),
     ] {
         let (mut app, camera, target) = gpu_app_with_pipeline_compilation(128, false);
+        shadow_only(&mut app);
         app.insert_resource(ClearColor(Color::WHITE));
         red_source(&mut app, 255);
         app.insert_resource(definition(UVec2::ONE, 40, 42));
@@ -181,7 +211,7 @@ fn gpu_shadow_lazy_compilation_keeps_ready_epoch_visible() {
         app.world_mut().get_mut::<Transform>(camera).unwrap().scale = Vec3::new(scale, scale, 1.0);
         wait_ready(&mut app);
         // Capture the flat reference at the zoom used by the transition.
-        let flat = render_frame(&mut app, target.clone());
+        let flat = wait_red_frame(&mut app, target.clone());
         assert_eq!(&flat[(64 * 128 + 64) * 4..][..4], &[255, 0, 0, 255]);
         app.insert_resource(initial_quality);
         app.world_mut().get_mut::<Transform>(camera).unwrap().scale =
@@ -241,6 +271,7 @@ fn gpu_shadow_lazy_compilation_keeps_ready_epoch_visible() {
 fn gpu_shadow_unready_epoch_waits_for_requested_pipelines() {
     for previous_epoch_ready in [false, true] {
         let (mut app, _, target) = gpu_app_with_pipeline_compilation(128, false);
+        shadow_only(&mut app);
         app.insert_resource(ClearColor(Color::WHITE));
         red_source(&mut app, 255);
         app.insert_resource(definition(UVec2::ONE, 40, 42));
@@ -331,11 +362,11 @@ fn gpu_shadow_static_low_flat_pixels_lod_and_top_only_picking() {
 }
 
 #[derive(Resource, Default)]
-struct ShadowTime(f64);
-fn freeze_shadow_clock(time: Res<ShadowTime>, mut store: ResMut<PieceDataStore>) {
+pub(super) struct ShadowTime(pub(super) f64);
+pub(super) fn freeze_shadow_clock(time: Res<ShadowTime>, mut store: ResMut<PieceDataStore>) {
     store.rotation_visual.clock = time.0;
 }
-fn turn(app: &mut App, quarter_turns: i8) {
+pub(super) fn turn(app: &mut App, quarter_turns: i8) {
     let def = app.world().resource::<PuzzleDefinition>().clone();
     let time = app.world().get_resource::<ShadowTime>().map(|time| time.0);
     let mut store = app.world_mut().resource_mut::<PieceDataStore>();
@@ -349,11 +380,12 @@ fn turn(app: &mut App, quarter_turns: i8) {
         quarter_turns,
     };
     let boundary = store.capture_rotation_command(&cmd, Some(&def));
+    let members = store.connectivity.component_size(PieceId(0));
     assert_eq!(
         store
             .apply_command(LOCAL_PLAYER, &cmd, Some(&def), LOCAL_PLAYER)
             .rotated,
-        1
+        members
     );
     store.finish_rotation_boundary(boundary);
 }
@@ -385,7 +417,7 @@ fn gpu_shadow_rotation_separation_and_screen_direction_survive_zoom_and_rotation
             let pixels = render_frame(&mut app, target.clone());
             let shadows = shadow_pixels(&pixels);
             assert!(!shadows.is_empty());
-            let expected = if time == 0.060 { 4 } else { 1 };
+            let expected = if time == 0.060 { 5 } else { 2 };
             for axis in 0..2 {
                 let top_max = top.iter().map(|p| p[axis]).max().unwrap();
                 let shadow_max = shadows.iter().map(|p| p[axis]).max().unwrap();
@@ -428,10 +460,10 @@ fn gpu_shadow_far_splat_and_alpha_share_point_rectangle_semantics() {
             assert!(shadows.is_empty());
             assert!(pixels.chunks_exact(4).all(|p| p[..3] == [255; 3]));
         } else {
-            assert_eq!(shadows, vec![UVec2::new(65, 65)]);
+            assert_eq!(shadows, vec![UVec2::new(66, 66)]);
         }
         for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
-            assert!(pick(&mut app, Rect::new(65.0, 65.0, 66.0, 66.0), mode).is_empty());
+            assert!(pick(&mut app, Rect::new(66.0, 66.0, 67.0, 67.0), mode).is_empty());
             assert_eq!(
                 pick(&mut app, Rect::new(64.0, 64.0, 65.0, 65.0), mode),
                 if alpha == 0 { vec![] } else { vec![PieceId(0)] }
@@ -457,7 +489,7 @@ fn gpu_shadow_far_splat_and_alpha_share_point_rectangle_semantics() {
     app.world_mut().resource_mut::<ShadowTime>().0 = 0.120;
     assert_eq!(
         shadow_pixels(&render_frame(&mut app, target)),
-        vec![UVec2::new(65, 65)]
+        vec![UVec2::new(66, 66)]
     );
 }
 
@@ -589,23 +621,33 @@ fn gpu_shadow_million_overview_low_high_skip_draw_benchmark() {
         assert_eq!(render_frame(&mut app, target.clone()), reference);
         assert_eq!(config(&app).far_zoom, 1);
         assert_eq!(config(&app).shadow_enabled, 0);
+        assert_eq!(config(&app).side_enabled, 0);
         let mut cull = 0.0;
         let mut draw = 0.0;
         for _ in 0..12 {
             update_gpu(&mut app);
             assert_eq!(shadow_draws(&app), 0);
+            assert_eq!(
+                app.sub_app(RenderApp)
+                    .world()
+                    .resource::<GpuRenderer>()
+                    .side_draws,
+                0
+            );
             assert_no_uploads(&app);
             cull += gpu_ms(&app, "puzzle_visibility");
             draw += gpu_ms(&app, "puzzle_draw");
         }
         let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
         assert!(gpu.shadow_pipelines.is_empty());
+        assert!(gpu.side_pipelines.is_empty());
         assert_eq!(visible_ids(&app).len(), 1_000_000);
         bevy::log::info!(
             ?quality,
             visibility_ms = cull / 12.0,
             draw_ms = draw / 12.0,
             shadow_draws = shadow_draws(&app),
+            side_draws = gpu.side_draws,
             "million shadow LOD benchmark"
         );
     }

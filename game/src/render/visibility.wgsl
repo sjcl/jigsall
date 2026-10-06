@@ -9,9 +9,10 @@ struct PuzzleUniform {
     render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
     rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
-    shadow_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
+    pseudo_3d_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
     shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
-    shadow_cull_extent:vec2<f32>,shadow_cull_padding:vec2<f32>,
+    visual_cull_extent:vec2<f32>,visual_cull_padding:vec2<f32>,
+    side_color:vec4<f32>,side_thickness_px:f32,side_enabled:u32,side_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,first_instance:u32};
@@ -69,8 +70,8 @@ fn is_visible(id:u32)->bool {
         }
     }
 
-    // Frame-resolved maximum base + lift margin; pick ROI stays top-only.
-    half+=config.shadow_cull_extent;
+    // Frame-resolved maximum shadow / side margin; pick ROI stays top-only.
+    half+=config.visual_cull_extent;
     return (state.flags&16u)!=0u && all(position+half>=config.view_min) && all(position-half<=config.view_max);
 }
 @compute @workgroup_size(256) fn cull(@builtin(global_invocation_id) invocation:vec3<u32>) {

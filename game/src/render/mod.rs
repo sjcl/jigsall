@@ -47,7 +47,7 @@ use std::{
         Arc, Mutex,
     },
 };
-use visuals::{PieceVisualQuality, ResolvedPieceVisuals, SHADOW_DIRECTION};
+use visuals::{PieceVisualQuality, ResolvedPieceVisuals, PSEUDO_3D_DIRECTION};
 
 #[derive(Resource, Default)]
 pub struct SelectionOverlay(pub Option<Rect>);
@@ -200,26 +200,45 @@ pub struct PuzzleUniform {
     pub rotation_time: f32,
     pub rotation_active: u32,
     pub rotation_padding: UVec2,
-    pub shadow_direction: Vec2,
+    pub pseudo_3d_direction: Vec2,
     pub shadow_base_offset_px: f32,
     pub shadow_lift_offset_px: f32,
     pub shadow_opacity: f32,
     pub shadow_enabled: u32,
     pub shadow_padding: UVec2,
-    pub shadow_cull_extent: Vec2,
-    pub shadow_cull_padding: Vec2,
+    pub visual_cull_extent: Vec2,
+    pub visual_cull_padding: Vec2,
+    pub side_color: Vec4,
+    pub side_thickness_px: f32,
+    pub side_enabled: u32,
+    pub side_padding: UVec2,
 }
 impl PuzzleUniform {
     fn configure_visuals(&mut self, visuals: ResolvedPieceVisuals) {
         self.shadow_enabled = u32::from(visuals.shadow_for_frame(self.piece_size_px));
-        self.shadow_direction = SHADOW_DIRECTION;
+        self.pseudo_3d_direction = PSEUDO_3D_DIRECTION;
         self.shadow_base_offset_px = visuals.shadow_base_offset_px;
         self.shadow_lift_offset_px = visuals.shadow_lift_offset_px;
         self.shadow_opacity = visuals.shadow_opacity;
-        self.shadow_cull_extent = Vec2::ZERO;
-        if self.shadow_enabled != 0 {
-            let ndc = visuals.shadow_offset_px(1.0) / self.viewport_size * Vec2::new(2.0, -2.0);
-            self.shadow_cull_extent = self
+        self.side_enabled = u32::from(visuals.side_for_frame(self.piece_size_px));
+        self.side_color = visuals.side_color.extend(visuals.side_opacity);
+        self.side_thickness_px = visuals.side_thickness_px;
+        self.visual_cull_extent = Vec2::ZERO;
+        let shadow_offset = if self.shadow_enabled != 0 {
+            visuals.shadow_base_offset_px + visuals.shadow_lift_offset_px
+        } else {
+            0.0
+        };
+        let side_offset = if self.side_enabled != 0 {
+            visuals.side_thickness_px
+        } else {
+            0.0
+        };
+        let maximum_offset = shadow_offset.max(side_offset);
+        if maximum_offset > 0.0 {
+            let ndc =
+                PSEUDO_3D_DIRECTION * maximum_offset / self.viewport_size * Vec2::new(2.0, -2.0);
+            self.visual_cull_extent = self
                 .clip_from_world
                 .inverse()
                 .transform_vector3(ndc.extend(0.0))
@@ -496,6 +515,7 @@ struct GpuRenderer {
     pick_cull: Option<CachedComputePipelineId>,
     main_pipelines: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
     shadow_pipelines: HashMap<TextureFormat, [CachedRenderPipelineId; 2]>,
+    side_pipelines: HashMap<(TextureFormat, bool), CachedRenderPipelineId>,
     box_pipelines: HashMap<TextureFormat, CachedRenderPipelineId>,
     point_pipeline: Option<CachedRenderPipelineId>,
     rectangle_pipeline: Option<CachedRenderPipelineId>,
@@ -519,6 +539,7 @@ struct GpuRenderer {
     preview_dispatches: usize,
     // Per-frame indirect draws (depth + color), not per-piece counters.
     shadow_draws: usize,
+    side_draws: usize,
 }
 impl GpuRenderer {
     fn new(
@@ -660,6 +681,7 @@ impl GpuRenderer {
             preview_collapse: None,
             main_pipelines: default(),
             shadow_pipelines: default(),
+            side_pipelines: default(),
             box_pipelines: default(),
             point_pipeline: None,
             rectangle_pipeline: None,
@@ -682,6 +704,7 @@ impl GpuRenderer {
             root_upload_calls: 0,
             preview_dispatches: 0,
             shadow_draws: 0,
+            side_draws: 0,
         }
     }
     fn sort_ready(&self, cache: &PipelineCache) -> bool {
@@ -888,6 +911,74 @@ impl GpuRenderer {
             })
         });
     }
+
+    fn queue_side_pipeline(&mut self, cache: &PipelineCache, format: TextureFormat, opaque: bool) {
+        self.side_pipelines
+            .entry((format, opaque))
+            .or_insert_with(|| {
+                cache.queue_render_pipeline(RenderPipelineDescriptor {
+                    label: Some("procedural side".into()),
+                    layout: vec![
+                        self.draw_layout.clone(),
+                        self.texture_layout.clone(),
+                        self.selection_layout.clone(),
+                    ],
+                    vertex: VertexState {
+                        shader: self.draw_shader.clone(),
+                        entry_point: Some("side_vertex".into()),
+                        buffers: vec![],
+                        ..default()
+                    },
+                    fragment: Some(FragmentState {
+                        shader: self.draw_shader.clone(),
+                        entry_point: Some("side_fragment".into()),
+                        targets: vec![Some(ColorTargetState {
+                            format,
+                            blend: (!opaque).then_some(BlendState::ALPHA_BLENDING),
+                            write_mask: ColorWrites::ALL,
+                        })],
+                        ..default()
+                    }),
+                    primitive: PrimitiveState {
+                        topology: PrimitiveTopology::TriangleStrip,
+                        cull_mode: None,
+                        ..default()
+                    },
+                    depth_stencil: Some(DepthStencilState {
+                        format: TextureFormat::Depth32Float,
+                        depth_write_enabled: Some(opaque),
+                        depth_compare: Some(CompareFunction::GreaterEqual),
+                        stencil: default(),
+                        bias: default(),
+                    }),
+                    ..default()
+                })
+            });
+    }
+}
+
+// Optional visuals wait before initial display, but compile independently once
+// this epoch is visible. A compilation failure retains the renderer error policy.
+fn optional_render_pipelines<'a, const N: usize>(
+    cache: &'a PipelineCache,
+    ids: [CachedRenderPipelineId; N],
+    ready: &RenderReady,
+    epoch: u64,
+) -> Result<Option<[&'a RenderPipeline; N]>, ()> {
+    for id in ids {
+        if let CachedPipelineState::Err(error) = cache.get_render_pipeline_state(id) {
+            ready.fail(epoch, error.to_string());
+            return Err(());
+        }
+    }
+    let pipelines = ids.map(|id| cache.get_render_pipeline(id));
+    if pipelines.iter().all(Option::is_some) {
+        Ok(Some(pipelines.map(Option::unwrap)))
+    } else if ready.is_ready(epoch) {
+        Ok(None)
+    } else {
+        Err(())
+    }
 }
 fn buffer(device: &RenderDevice, label: &str, size: u64, usage: BufferUsages) -> Buffer {
     device.create_buffer(&BufferDescriptor {
@@ -916,6 +1007,7 @@ fn prepare_buffers(
     gpu.root_upload_calls = 0;
     gpu.preview_dispatches = 0;
     gpu.shadow_draws = 0;
+    gpu.side_draws = 0;
     if frame.upload.epoch == 0 {
         gpu.buffers = None;
         return;
@@ -1319,21 +1411,25 @@ fn puzzle_node(
     let target = view.into_inner();
     let opaque = frame.config.opaque != 0;
     gpu.queue_pipelines(&cache, target.main_texture_format(), opaque);
+    // Queue all requested features before waiting on any one of them.
+    if frame.config.side_enabled != 0 {
+        gpu.queue_side_pipeline(&cache, target.main_texture_format(), opaque);
+    }
     let shadow = if frame.config.shadow_enabled != 0 {
         gpu.queue_shadow_pipelines(&cache, target.main_texture_format());
         let ids = gpu.shadow_pipelines[&target.main_texture_format()];
-        for id in ids {
-            if let CachedPipelineState::Err(error) = cache.get_render_pipeline_state(id) {
-                ready.fail(frame.upload.epoch, error.to_string());
-                return;
-            }
+        match optional_render_pipelines(&cache, ids, &ready, frame.upload.epoch) {
+            Ok(pipelines) => pipelines,
+            Err(()) => return,
         }
-        match ids.map(|id| cache.get_render_pipeline(id)) {
-            [Some(depth), Some(color)] => Some([depth, color]),
-            // Initial display waits for all requested visuals. Once this epoch
-            // is visible, lazy feature compilation must not interrupt top draw.
-            _ if !ready.is_ready(frame.upload.epoch) => return,
-            _ => None,
+    } else {
+        None
+    };
+    let side = if frame.config.side_enabled != 0 {
+        let id = gpu.side_pipelines[&(target.main_texture_format(), opaque)];
+        match optional_render_pipelines(&cache, [id], &ready, frame.upload.epoch) {
+            Ok(pipeline) => pipeline,
+            Err(()) => return,
         }
     } else {
         None
@@ -1598,6 +1694,41 @@ fn puzzle_node(
             pass.draw_indirect(&args, 0);
         }
         gpu.shadow_draws = 2;
+        span.end(encoder);
+    }
+    if let Some([pipeline]) = side {
+        let span = diagnostic_ref.time_span(encoder, "puzzle_side");
+        let dummy = device.create_bind_group(
+            "unused side selection",
+            &cache.get_bind_group_layout(&gpu.selection_layout),
+            &BindGroupEntries::sequential((
+                dummy_selection.as_entire_buffer_binding(),
+                selectable.as_entire_buffer_binding(),
+            )),
+        );
+        let colors = [Some(target.get_color_attachment())];
+        {
+            let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("puzzle side"),
+                color_attachments: &colors,
+                depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                    view: &gpu.depth.as_ref().unwrap().view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(0.0),
+                        store: StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &draw_group, &[]);
+            pass.set_bind_group(1, &image_group, &[]);
+            pass.set_bind_group(2, &dummy, &[]);
+            set_viewport!(pass, frame.viewport);
+            pass.draw_indirect(&args, 0);
+        }
+        gpu.side_draws = 1;
         span.end(encoder);
     }
     let draw_span = diagnostic_ref.time_span(encoder, "puzzle_draw");

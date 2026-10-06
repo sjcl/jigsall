@@ -10,6 +10,7 @@ mod rotation_tests;
 mod rotation_visual_tests;
 mod selection_bench;
 mod shadow_tests;
+mod side_tests;
 use crate::{
     resources::{
         pieces::{prepare_piece_upload, ENABLED},

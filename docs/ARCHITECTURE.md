@@ -343,7 +343,8 @@ elevation は canonical / network / save / snapshot に存在せず、命令・a
 snap・physical / logical play area・Z-order にも含めません。本体の world / clip position、AABB、
 picking geometry、SDF、UV、depth は elevation を使用しません。fragment varying も増やしません。
 shadow 専用 vertex だけが elevation を screen-space separation に変換します。
-side / thickness / bevel / lighting、drag / selection による通常 lift は後続実装です。
+side / thickness は elevation 非依存の静的な screen-space offset です。
+bevel / lighting、drag / selection による通常 lift は後続実装です。
 
 ### Pseudo-3D presentation
 
@@ -352,39 +353,45 @@ quality + screen-space LOD
         ↓
 resolved visual config
         ↓
-static base shadow
-        +
-rotation elevation * extra separation
+shadow separation = base + rotation elevation * extra lift
+        ↓
+static side / thickness = quality / LOD で決定、elevation 非依存
+        ↓
+top piece
 ```
 
 `render/visuals.rs` のローカル `PieceVisualQuality` resource は Low / Medium / High を
 `ResolvedPieceVisuals` に変換します。暫定 default は同じ箇所の High です。
-extract は projected piece の短辺と threshold から、その frame の shadow 有効・無効を O(1) で決めます。
-Low または LOD 未満では shadow pipeline を新規準備せず、shadow raster / draw を一切発行しません。
-shadow が初めて必要になった frame で pipeline を lazy queue します。現在の epoch がまだ
-`RenderReady` でない初回表示は shadow も準備できるまで待ちます。表示済みの epoch では、
-準備中の shadow だけを skip し、top / selection の描画を続けます。LOD / quality の切替で本体を
-消さず、両 shadow pipeline が完成した frame から shadow を追加します。後続の side / thickness の
-lazy pipeline も同じ初回表示・表示済み epoch の区別を維持します。
-100万 piece の far overview も High で shadow draw 0です。
+extract は projected piece の短辺から shadow / side の独立した threshold を O(1) で解決します。
+Low / LOD off の optional pass は pipeline を新規 queue せず、raster / draw を完全 skip します。
+初めて必要になった frame で要求された optional pipeline をまとめて lazy queue し、共通 helper
+`optional_render_pipelines` が準備状況を扱います。現在の epoch がまだ `RenderReady` でない初回表示は
+要求された shadow / side が完成するまで待ちます。表示済み epoch では準備中の feature だけを skip し、
+準備済み feature / top / picking を継続します。compile failure は従来どおり epoch の renderer error です。
+100万 piece の far overview は全 quality で shadow / side draw 0です。
 UI、Auto、設定保存、frame-time による動的調整は未実装です。
 
 静止 piece は base shadow を持ち、animation slot が非ゼロの場合だけ既存の continuous pose の
 elevation を使って追加 separation を加えます。`elevation != thickness` です。
-elevation が0に戻っても base shadow は残ります。後続の side / thickness は、静止中にも存在する
-別パラメータです。screen direction と preset は一箇所で定義し、既存 `PuzzleUniform` だけを
-拡張します。buffer / storage binding / per-piece state の追加はありません。
+elevation が0に戻っても base shadow と side は残ります。side の厚みは Medium 1 px / High 1.5 pxで
+回転開始・中間・終了とも一定です。`PSEUDO_3D_DIRECTION` と preset は `visuals.rs` に集約し、
+side color は linear RGB の暗い neutral、opacity は現在1で source alpha を掛けます。
+既存 `PuzzleUniform` を32 bytes拡張し、buffer / storage binding / per-piece state は増やしません。
 
-shadow は main visibility / sort → selection preview → shadow depth / color → top → box の順です。
+描画順は main visibility / sort → selection preview → shadow depth / color → side → top → box です。
 既存 visible IDs / indirect args / image texture を再利用し、追加 culling や CPU piece list はありません。
 normal では同じ procedural profile / SDF / UV / source alpha、far では同じ quarter splat / center alpha を
 使用します。world / piece の回転に影響されない右下への pixel offset を viewport サイズから clip-space に
 変換するため、zoom しても距離は一定です。非 animation piece は既存 quarter-turn fast path を維持します。
-top / picking entrypoint は shadow 専用の計算や varying を持ちません。
+top / shadow / side は literal boolean を渡す別 entrypoint です。top / picking は optional offset / color
+計算や新しい varying を持ちません。side は同じ continuous position / angle を使い、elevation は読みません。
+同じ offset の全 silhouette を先に描き、元位置の top union で覆うため、connected component の内部辺に
+側面の線を作りません。side fragment は connected edge cache / component member を評価しません。
 
-main visibility の AABB だけに最大 base + lift の screen offset を inverse clip matrix で world-space に
-変換した保守的 extent を加えます。point / rectangle の ROI と raster は本体の bounds / geometry のままです。
-shadow だけの pixel は選択できません。ゲーム状態・Z-order・authority・protocol・save は変更しません。
+main visibility の `visual_cull_extent` は有効な shadow の最大 base + lift と side thickness の最大値を
+inverse clip matrix で world-space に変換した保守的 extent です。side だけ有効でも画面端を保持します。
+point / rectangle の ROI と raster は本体の bounds / geometry のままで、shadow / side だけの pixel は
+選択できません。ゲーム状態・Z-order・authority・protocol・save は変更しません。
 
 単純な alpha blend + depth write では、後方→前方に描いた shadow が積み重なります。
 そのため既存 Depth32Float target を clear して silhouette の最前 depth を確定する prepass を行い、
@@ -392,13 +399,17 @@ color pass は source alpha × opacity の黒を一度だけ blend します。s
 順序を保って `[0, 0.5]` に収め、最大 loose Zでも補正の余地を残します。color fragment の depth を
 正の float の1 ULPだけ進め、strict Greater test/write を使うことで、奥の shadow と同 rank の重複も
 拒否します。この微小な変更は shadow 専用の一時 depth だけに適用します。
-top pass は従来どおり depth を再 clear し、opaque / translucent の depth と ordering を維持します。
+side は indirect draw 1回です。opaque は既存 Z rank の depth test / write と blend なしで前面を決めます。
+translucent は既存の sorted visible IDs と alpha blend / depth writeなしを使い、新しい sort はありません。
+side の開始時と top の開始時に既存 depth target を clear し、shadow の一時 depth を引き継ぎません。
+top は従来の depth / ordering を維持します。
 shadow が有効で pipeline が準備済みの frame は indirect draw 2回、無効または準備中なら0回です。
 新しい texture / binding は不要です。
 同 rank・異 alpha の shadow が完全に重なる場合は最初に通った silhouette の alpha を使います。
 
-`shadow_draws` は既存 renderer counter と同じ frame 単位で記録し、GPU diagnostic span は
-`puzzle_shadow` です。実 GPU fixture と短い release 計測は [擬似3D描画](PSEUDO_3D.md)を参照してください。
+`shadow_draws` / `side_draws` は frame 単位で2 / 1回、無効または準備中なら0回です。
+GPU diagnostic span は `puzzle_shadow` / `puzzle_side` です。実 GPU fixture と短い release 計測は
+[擬似3D描画](PSEUDO_3D.md)を参照してください。
 
 2026-10-06、上記 RTX 5090 / Vulkan 環境で `procedural_gpu_benchmark` を直前の検証済み
 `48f55f8` release build と比較しました。4096²画像・1024² offscreen・非 continuous rotation
@@ -437,7 +448,7 @@ client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了
 
 rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root領域は共有metadataの先頭4 bytes / pieceで、preview collapseはbuffer長の1/3をroot capacityとして扱います。CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootを先頭領域へrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、rotation / previewが両方inactiveならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
-Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、topはdraw_indirect1回で、quality / LOD が有効な場合だけその前にshadow depth / colorを追加します。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
+Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、topはdraw_indirect1回で、quality / 独立LOD が有効で準備済みの場合だけ、その前にshadow depth / colorとsideを追加します。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 
 opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけをGPU radix sort（8bit × 3 pass）で後方→前方に並べblendし、depthを書きません。透明経路ではID順に可視IDを圧縮してから安定sortし、同じZのID順も維持します。workgroup数はGPUのinstance_countからindirect dispatchで決め、CPU readbackは不要です。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。sortは[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、選択は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 

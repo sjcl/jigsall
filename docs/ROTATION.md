@@ -217,7 +217,8 @@ connectivity・snap・physical / logical play area・Z-order にも加えませ�
 AABB・picking geometry・SDF・UV・depth は elevation を使用しません。fragment varying も増やしません。
 shadow 専用 path では、品質 / screen-space LOD で有効な静止 base shadow に elevation の追加 separation を
 加えます。`elevation != thickness` です。詳細は [擬似3D描画](PSEUDO_3D.md)を参照してください。
-side / thickness、bevel、lighting、drag / selection の通常 lift は後続です。
+side / thickness は同じ visual position / angle に追従し、elevation 非依存の一定 pixel 幅です。
+bevel、lighting、drag / selection の通常 lift は後続です。
 GPU layout と lifetime の詳細は
 [アーキテクチャ](ARCHITECTURE.md#continuous-rotation-presentation)を参照してください。
 

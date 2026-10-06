@@ -1,6 +1,6 @@
 # 擬似3D描画
 
-現在は hard shadow のみ実装しています。責務と描画順序は
+現在は hard shadow と厚紙の side / thickness を実装しています。責務と描画順序は
 [アーキテクチャ](ARCHITECTURE.md#pseudo-3d-presentation)を参照してください。
 
 ## 品質と screen-space LOD
@@ -9,23 +9,47 @@
 初期値は High です。preset を `ResolvedPieceVisuals` へ変換し、extract で frame の LOD を判定します。
 ユーザー向け UI と保存、Auto はまだありません。
 
-| quality | projected 短辺の threshold | base offset | extra lift | opacity |
+| shadow quality | projected 短辺の threshold | base offset | extra lift | opacity |
 | --- | ---: | ---: | ---: | ---: |
 | Low | 無効 | 0 px | 0 px | 0 |
-| Medium | 14 px | 1 px | 3 px | 0.20 |
-| High | 10 px | 1.5 px | 4.5 px | 0.25 |
+| Medium | 14 px | 2.5 px | 3 px | 0.20 |
+| High | 10 px | 3 px | 4.5 px | 0.25 |
+
+| side quality | projected 短辺の threshold | static thickness | neutral linear RGB | opacity |
+| --- | ---: | ---: | ---: | ---: |
+| Low | 無効 | 0 px | 0 | 1 |
+| Medium | 22 px | 1 px | (0.10, 0.10, 0.10) | 1 |
+| High | 14 px | 1.5 px | (0.06, 0.06, 0.06) | 1 |
 
 offset は右下への正規化ベクトルに掛ける距離です。physical pixel 単位で、DPI による logical pixel とは
-区別します。High の回転開始・中間・終了は 1.5 → 6 → 1.5 px です。
+区別します。共通の `PSEUDO_3D_DIRECTION` は camera / piece の回転に影響されません。
+High の shadow は回転開始・中間・終了で 3 → 7.5 → 3 px、side は常に1.5 pxです。
 静止中も shadow を描きます。`elevation != thickness` であり、normalized elevation は追加 lift だけです。
-side / thickness は将来、静止中にも存在する別パラメータとして追加します。
+side は静止中にも存在する別パラメータです。shadow と side の threshold は独立し、High の12 pxでは
+shadowだけを描きます。Low / LOD off では optional pseudo-3D pass 自体を発行せず、pipeline の新規
+queue / raster / fragment もありません。静止時の影が側面の先へ残るよう base shadow の距離を調整しました。
 bevel、lighting、blur、実 Z elevation、drag / selection lift は今回の対象外です。
+
+## 描画と準備待ち
+
+描画順は `shadow depth → shadow color → side → top` です。side は1回の indirect drawで、既存の
+visible IDs / args / image texture / continuous pose / quarter-turn fast path を再利用します。
+画像のRGBを貼り付けず、同じ SDF / source alpha で neutral color を描きます。opaque side は blendなしの
+depth test / write、translucent side は既存の sorted IDs と alpha blendです。重なった半透明 side は
+top と同じ source alpha の重なりとして合成し、neutral color に近づきます。
+side / top の開始時に depth を別々に clear するため、top の depth semantics は変わりません。
+結合部は元位置の top union で覆い、side 専用の connectivity scan / cache は追加しません。
+
+初回 epoch は要求された全 optional pipeline を待ってから `RenderReady` を進めます。表示済み epoch
+では準備中の feature だけを skip し、shadow / top / picking を継続します。失敗は renderer error として
+記録します。main culling の `visual_cull_extent` は有効な最大 visual offset を含み、pick は top のみです。
 
 ## 検証
 
 ```sh
 cargo test --locked -p jigsall-game --lib
 cargo test --release --locked -p jigsall-game gpu_shadow -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p jigsall-game gpu_side -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
 
@@ -45,6 +69,19 @@ far shader の shadow 対応は将来 threshold を調整できるよう維持�
 far mode の1.5 pxより大きいため、far raster fixture だけ test 用の threshold 0.25 pxで実行します。
 通常 production の far overview は shadow pass を完全 skip します。
 
+`render/tests/side_tests.rs` は、静止 side、独立LOD、回転開始 / 中間 / 終了の一定幅、zoom / camera回転、
+connected union の内部継ぎ目、normal / far の alpha、opaque depth / translucent sort、side-only picking、
+viewport端を実 GPU で確認します。shiftした flat top の参照 silhouette と全 pixel を比較し、side が
+elevation と無関係な同じ offset を使うことを確認します。side-only viewport fixture は cull 拡張を確実に
+通る10 px厚、far fixture は0.25 pxの test-only thresholdを使います。production preset は変更しません。
+非同期 fixture はLow → High、Highの12 px → 20 px、Medium → High、新 epoch初回Highを確認します。
+shadow専用 fixture はsideを無効にして従来の個別保証を維持します。storage buffer 上限は同じ8です。
+
+目視用に native 128² PNG を保存する場合は、`JIGSALL_VISUAL_PREVIEW_DIR` に出力先を指定して
+`gpu_side` を実行します。Medium / High の静止状態、High と結合componentの回転中を保存します。
+未指定のテストはファイルを書きません。非同期 fixture の最初の flat reference は Bevy の最終出力
+pipeline も準備されるまで待ち、feature queue 直後の frame の読み取りは待たずに直接行います。
+
 lazy compilation の回帰2件は `synchronous_pipeline_compilation: false` で実行します。
 queue 直後と準備中の frame を、次の frame に進めず texture から直接読み取ります。
 Low → Medium / High、High の5 px → 11 px zoom、11 pxでの Medium → Highでは、
@@ -53,7 +90,8 @@ Low → Medium / High、High の5 px → 11 px zoom、11 pxでの Medium → Hig
 進めないことも確認します。
 
 `gpu_shadow_million_overview_low_high_skip_draw_benchmark` は release で12 frameの GPU visibility / draw
-timestamp と `shadow_draws` を記録します。Low / Medium / High が同じ flat path を使うことの検証であり、
+timestamp と `shadow_draws` / `side_draws` を記録します。全 quality で両draw 0、両pipeline cache未生成、
+piece / mapping / animation / selection / dragの追加upload 0、同じ flat outputを確認します。この検証は
 60 fps、別 OS / GPU の runtime 互換性、bit 一致の保証ではありません。
 
 ## 実機記録
@@ -82,3 +120,23 @@ outline fixture の固定 AA margin が curved SDF の `fwidth` より狭いこ�
 変更前 `6043474` の draw shader に一時的に差し替えて同じ4件の失敗を再現しています。
 fixture を合法な400-unit offsetとCPU参照の2×2 pixel quadのAA boundへ更新し、runtime の
 play area / selection outline / top shader の挙動は変更していません。
+
+### side / thickness の追加検証
+
+同じ Windows / Vulkan / RTX 5090 環境で side の実 GPU 10件を追加し、描画全回帰48件が dev profileで
+通過しました。通常workspaceテスト903件（doctest 1件を含む）、Clippy全target、整形検証も通過しています。
+新規side 10件は releaseでも通過しています。
+静止・回転中のnative PNGを確認し、側面はtop近傍、影はその先に描かれることと、4 piece結合部に内部の
+暗い線がないことを確認しました。GPU state / rotation recordとstorage bindingの追加はありません。
+
+side追加後の同じ1000² grid / 512² offscreen / 白1×1不透明textureで、releaseの12 frame平均を
+短い1 runとして記録しました。全qualityで両draw 0、追加state / root / rotation / mapping / delta /
+selection / drag upload 0、両optional pipeline cache未生成、全pixel一致、可視instance数100万です。
+
+| quality | visibility GPU (ms) | top draw GPU (ms) | shadow draws | side draws |
+| --- | ---: | ---: | ---: | ---: |
+| Low | 0.0250 | 0.5120 | 0 | 0 |
+| Medium | 0.0261 | 0.4929 | 0 | 0 |
+| High | 0.0263 | 0.5123 | 0 | 0 |
+
+GPU timestampの短期変動を含む値であり、導入前との速度向上率・60 fps・別環境の互換性は示しません。
