@@ -2,6 +2,19 @@
 
 [Jigsall の紹介と起動方法](../README.md)に戻る。
 
+## 配布版の起動
+
+GitHub pre-release の Windows / Linux x86_64 向けアーカイブを取得し、添付の
+`SHA256SUMS` と照合してから `jigsall/` directory 全体を展開します。
+Windows は `jigsall.exe`、Linux は `./jigsall` を起動します。
+
+Windows 版には [Microsoft Visual C++ v14 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+の x64 版が必要です。`MSVCP140.dll` / `VCRUNTIME140.dll` / `VCRUNTIME140_1.dll`
+の不足が表示された場合は、Microsoft の案内にある最新の x64 版をインストールしてください。
+Windows build は未署名のため SmartScreen が警告する場合があります。
+Linux 版は Ubuntu 24.04 でビルドします。他の distribution での動作は実機確認が必要です。
+両 OS とも Bevy の描画に対応する GPU・ドライバーが必要です。
+
 ## 画像とピース数
 
 タイトルの「シングルプレイ → 新しいパズル」で画像を選び、ピース数を設定して「はじめる」を押します。初期設定は「正方形に近づける」で、100 ピースを目安にします。

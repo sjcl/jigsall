@@ -125,6 +125,10 @@ load 失敗を保存成功として扱わない。settings は write worker で�
 - [ ] archive 内の SHA256SUMS が各 payload と一致し、Release 添付 SHA256SUMS が
   両 archive と一致する。Linux executable の実行 permission がある。
 - [ ] clean な Windows / Linux で executable を起動できる（native runtime の不足も確認）。
+  Windows は [Visual C++ v14 Redistributable x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)
+  を前提とする。PE imports の MSVCP140 / VCRUNTIME140 / VCRUNTIME140_1 は
+  Microsoft の runtime installer で提供し、配布 ZIP に DLL を追加しない。
+  Linux は Ubuntu 24.04 の build を対象 OS で確認する。
   archive metadata は固定するが、compiler / native dependency / OS が異なる
   binary の bit 再現性は主張しない。
 - [ ] title UI、BUILD_INFO、診断ログの version / commit、GPU / backend を確認する。

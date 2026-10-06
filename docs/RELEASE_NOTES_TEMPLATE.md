@@ -8,6 +8,7 @@ GitHub. It is not the Steam release.
 - Multiplayer protocol compatibility may also change. All players should use
   the same build.
 - Windows builds are unsigned; SmartScreen may show a warning.
+- Windows requires the x64 [Microsoft Visual C++ v14 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 - Download the archive for Windows or Linux x86_64 and extract the entire
   `jigsall/` directory. Check the archive against the attached `SHA256SUMS`.
 - Controls, save locations and diagnostic logs: [playing guide](https://github.com/sjcl/jigsall/blob/master/docs/PLAYING.md).
