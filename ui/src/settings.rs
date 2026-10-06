@@ -150,7 +150,6 @@ pub(crate) fn paint_player_settings(
             (response, save_clicked)
         })
         .inner;
-    theme::hint(ui, i18n.text("settings-player-name-help"));
     let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
     if (save_clicked || enter) && state.commit(input) {
         *input = state
@@ -334,6 +333,7 @@ fn paint_settings(
                         });
                         theme::card().show(ui, |ui| {
                             paint_player_settings(ui, &mut dialog.profile_draft, profile, i18n);
+                            theme::hint(ui, i18n.text("settings-player-name-help"));
                         });
                         ui.add_enabled_ui(seconds.is_none(), |ui| {
                             theme::card().show(ui, |ui| {

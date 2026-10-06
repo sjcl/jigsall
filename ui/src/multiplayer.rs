@@ -929,7 +929,6 @@ pub(crate) fn paint_connection_fields(
             "multiplayer-join-password-hint"
         }),
     );
-    theme::hint(ui, i18n.text("multiplayer-password-clear-hint"));
     paint_invalid_fields(ui, draft, host, i18n);
     if draft.method == RuntimeConnectionMethod::DirectIp {
         paint_connection_help(ui, host, None, i18n);
@@ -1001,7 +1000,6 @@ pub(crate) fn paint_join(
     i18n: &Localization,
 ) {
     paint_connection_fields(ui, &mut state.join, false, profile, i18n);
-    theme::hint(ui, i18n.text("multiplayer-join-hint"));
     if let Some(error) = state.error {
         ui.colored_label(
             theme::DANGER,
