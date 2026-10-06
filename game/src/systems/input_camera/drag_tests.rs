@@ -146,9 +146,10 @@ fn camera_drag_locks_and_discards_motion_from_the_press_frame() {
 }
 
 #[test]
-fn camera_drag_applies_raw_motion_with_dpi_and_zoom_without_a_threshold() {
-    for dpi_scale in [1.0, 1.5, 2.0] {
-        for camera_scale in [0.25, 1.0, 3.0] {
+fn camera_drag_raw_pan_is_independent_of_dpi_and_respects_zoom() {
+    for camera_scale in [0.25, 1.0, 3.0] {
+        let mut reference_pan = None;
+        for dpi_scale in [1.0, 1.5, 2.0] {
             let (mut app, window, camera) = drag_app(dpi_scale, camera_scale);
             let initial = *app.world().get::<Transform>(camera).unwrap();
             frame(&mut app, window, Some(ButtonState::Pressed), Vec2::ZERO);
@@ -156,11 +157,18 @@ fn camera_drag_applies_raw_motion_with_dpi_and_zoom_without_a_threshold() {
                 let before = app.world().get::<Transform>(camera).unwrap().translation;
                 frame(&mut app, window, None, delta);
                 let transform = app.world().get::<Transform>(camera).unwrap();
-                let movement = delta / dpi_scale * camera_scale;
+                let movement = delta * camera_scale;
                 let expected = before + Vec3::new(-movement.x, movement.y, 0.0);
                 assert!((transform.translation - expected).length() < 0.00001);
                 assert_eq!(transform.scale, initial.scale);
             }
+            let pan =
+                app.world().get::<Transform>(camera).unwrap().translation - initial.translation;
+            assert_eq!(
+                pan,
+                *reference_pan.get_or_insert(pan),
+                "raw pan must match at display DPI scale {dpi_scale}"
+            );
         }
     }
 }

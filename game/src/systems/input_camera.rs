@@ -257,7 +257,8 @@ pub fn handle_camera_drag(
     }
 
     // Raw motion continues at the window edge and without absolute coordinates.
-    let movement = mouse_motion.delta / window.scale_factor();
+    // Its device-specific units do not depend on the window's display DPI.
+    let movement = mouse_motion.delta;
     if movement.is_finite() {
         for mut transform in &mut camera_query {
             let movement = movement * transform.scale.x;
