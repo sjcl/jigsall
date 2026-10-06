@@ -106,7 +106,9 @@ def native_notices(native, system):
     text = header.read_text(encoding="utf-8")
     sections.append(f"{header.relative_to(ROOT)}\n{text.split('*/', 1)[0]}*/")
     if system == "Windows":
-        share = native / "vcpkg/installed/x64-windows/share"
+        # This is the exact static library triplet selected by the vendored GNS
+        # build.rs. x64-windows holds host tools and cannot identify linked libs.
+        share = native / "vcpkg/installed/x64-windows-static-md-release/share"
         required = {"openssl", "protobuf", "abseil", "utf8-range"}
         found = {path.parent.name for path in share.glob("*/copyright")}
         if not required <= found:

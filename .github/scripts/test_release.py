@@ -67,7 +67,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 release.native_notices(native, "Windows")
             for name in ["openssl", "protobuf", "abseil", "utf8-range"]:
-                path = native / f"vcpkg/installed/x64-windows/share/{name}/copyright"
+                path = native / f"vcpkg/installed/x64-windows-static-md-release/share/{name}/copyright"
                 path.parent.mkdir(parents=True)
                 path.write_text(f"{name} exact installed license", encoding="utf-8")
             status = native / "vcpkg/installed/vcpkg/status"
