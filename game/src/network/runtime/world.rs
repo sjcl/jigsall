@@ -239,8 +239,15 @@ pub(super) fn prepare_join_world(world: &mut World) {
     if let Some(mut selection) = world.get_resource_mut::<crate::selection::PuzzleSelection>() {
         selection.cancel();
     }
-    if let Some(mut input) = world.get_resource_mut::<InputState>() {
-        *input = default();
+    if world.contains_resource::<InputState>() {
+        world.resource_scope(|world, mut input: Mut<InputState>| {
+            let mut windows = world.query_filtered::<
+                (&mut Window, &mut bevy::window::CursorOptions),
+                With<bevy::window::PrimaryWindow>,
+            >();
+            input.end_camera_drag(windows.iter_mut(world));
+            *input = default();
+        });
     }
     if let Some(mut overlay) = world.get_resource_mut::<crate::render::SelectionOverlay>() {
         *overlay = default();

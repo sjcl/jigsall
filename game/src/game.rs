@@ -1,6 +1,7 @@
 use crate::{components::*, resources::*, systems::*};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
+use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_egui::EguiPostUpdateSet;
 use jigsall_core::ClientCommand;
 use jigsall_core::*;
@@ -76,11 +77,20 @@ impl Plugin for GamePlugin {
                     .chain(),
             )
             .add_systems(OnEnter(GameSubState::Paused), release_local_drag)
+            .add_systems(OnExit(GameSubState::Playing), release_camera_drag)
+            .add_systems(OnExit(GameCompleteSubState::Viewing), release_camera_drag)
             .add_systems(
                 OnEnter(AppState::GameComplete),
                 (release_local_drag, auto_adjust_camera_zoom).chain(),
             )
             .add_systems(OnEnter(GameCompleteSubState::Paused), release_local_drag)
+            .add_systems(
+                PostUpdate,
+                release_camera_drag
+                    .after(EguiPostUpdateSet::EndPass)
+                    .before(handle_camera_zoom)
+                    .run_if(not(local_gameplay_enabled)),
+            )
             .add_systems(
                 PostUpdate,
                 release_local_drag
@@ -258,6 +268,7 @@ pub(crate) fn cleanup_game(
     entities: Query<Entity, With<GridReference>>,
     mut store: ResMut<PieceDataStore>,
     mut input: ResMut<InputState>,
+    mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut selection: ResMut<crate::selection::PuzzleSelection>,
     mut progress: ResMut<PieceGenerationProgress>,
@@ -274,6 +285,7 @@ pub(crate) fn cleanup_game(
     }
     *store = default();
     *overlay = default();
+    input.end_camera_drag(windows.iter_mut());
     *input = default();
     *interaction = default();
     selection.cancel();
@@ -317,6 +329,32 @@ mod tests {
         asset::AssetPlugin, input::InputPlugin, state::app::StatesPlugin,
         transform::TransformPlugin,
     };
+
+    fn capture_camera_for_cleanup(app: &mut App, window: Entity) {
+        let mut input = app.world_mut().resource_mut::<InputState>();
+        input.is_camera_dragging = true;
+        input.camera_drag_start_position = Some(Vec2::new(120.0, 90.0));
+        let mut cursor = app.world_mut().get_mut::<CursorOptions>(window).unwrap();
+        cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
+        cursor.visible = false;
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(Vec2::splat(300.0)));
+    }
+
+    fn assert_camera_released(app: &App, window: Entity) {
+        let input = app.world().resource::<InputState>();
+        assert!(!input.is_camera_dragging);
+        assert!(input.camera_drag_start_position.is_none());
+        let cursor = app.world().get::<CursorOptions>(window).unwrap();
+        assert_eq!(cursor.grab_mode, bevy::window::CursorGrabMode::None);
+        assert!(cursor.visible);
+        assert_eq!(
+            app.world().get::<Window>(window).unwrap().cursor_position(),
+            Some(Vec2::new(120.0, 90.0))
+        );
+    }
 
     #[test]
     fn modal_session_blocks_game_inputs_and_cancels_gestures_while_generation_continues() {
@@ -413,7 +451,12 @@ mod tests {
         world.insert_resource(selection);
         world.insert_resource(interaction);
         world.resource_mut::<InputState>().is_camera_dragging = true;
-        world.resource_mut::<InputState>().last_cursor_position = Some(Vec2::ZERO);
+        world
+            .resource_mut::<InputState>()
+            .camera_drag_start_position = Some(Vec2::ZERO);
+        let mut cursor = world.get_mut::<CursorOptions>(window).unwrap();
+        cursor.grab_mode = bevy::window::CursorGrabMode::Locked;
+        cursor.visible = false;
         world
             .resource_mut::<ButtonInput<MouseButton>>()
             .press(MouseButton::Right);
@@ -455,6 +498,13 @@ mod tests {
         assert!(world.resource::<PieceDataStore>().held_by.is_empty());
         assert!(world.resource::<PuzzleSelection>().latest.is_none());
         assert!(!world.resource::<InputState>().is_camera_dragging);
+        let cursor = world.get::<CursorOptions>(window).unwrap();
+        assert_eq!(cursor.grab_mode, bevy::window::CursorGrabMode::None);
+        assert!(cursor.visible);
+        assert_eq!(
+            world.get::<Window>(window).unwrap().cursor_position(),
+            Some(Vec2::ZERO)
+        );
         assert_eq!(
             *world
                 .query_filtered::<&Transform, With<MainCamera>>()
@@ -996,6 +1046,10 @@ mod tests {
             *app.world().resource::<State<AppState>>().get(),
             AppState::Menu
         );
+        let window = app
+            .world_mut()
+            .spawn((Window::default(), PrimaryWindow))
+            .id();
         for seed in [42, 43] {
             app.world_mut()
                 .resource_mut::<NextState<AppState>>()
@@ -1041,10 +1095,12 @@ mod tests {
                 2
             );
             assert_eq!(app.world().resource::<PuzzleDefinition>().seed, seed);
+            capture_camera_for_cleanup(&mut app, window);
             app.world_mut()
                 .resource_mut::<NextState<GameSubState>>()
                 .set(GameSubState::Paused);
             app.update();
+            assert_camera_released(&app, window);
             assert_eq!(
                 *app.world().resource::<State<GameSubState>>().get(),
                 GameSubState::Paused
@@ -1071,11 +1127,13 @@ mod tests {
                 }
             }
             app.update();
+            capture_camera_for_cleanup(&mut app, window);
             app.update();
             assert_eq!(
                 *app.world().resource::<State<AppState>>().get(),
                 AppState::GameComplete
             );
+            assert_camera_released(&app, window);
             assert_eq!(app.world().resource::<PieceDataStore>().placed_count, 4);
             assert_eq!(
                 *app.world().resource::<State<GameCompleteSubState>>().get(),
@@ -1106,15 +1164,14 @@ mod tests {
                 let transform =
                     Transform::from_xyz(45.0, -20.0, 0.0).with_scale(Vec3::new(2.0, 2.0, 1.0));
                 *app.world_mut().get_mut::<Transform>(camera).unwrap() = transform;
-                app.world_mut()
-                    .resource_mut::<InputState>()
-                    .is_camera_dragging = true;
+                capture_camera_for_cleanup(&mut app, window);
                 press_escape(&mut app);
                 assert_eq!(
                     *app.world().resource::<State<GameCompleteSubState>>().get(),
                     GameCompleteSubState::Paused
                 );
                 assert!(!app.world().resource::<InputState>().is_camera_dragging);
+                assert_camera_released(&app, window);
                 press_escape(&mut app);
                 assert_eq!(
                     *app.world().resource::<State<GameCompleteSubState>>().get(),
@@ -1132,10 +1189,12 @@ mod tests {
                 assert_eq!(app.world().get::<Transform>(camera).unwrap(), &transform);
                 press_escape(&mut app);
             }
+            capture_camera_for_cleanup(&mut app, window);
             app.world_mut()
                 .resource_mut::<NextState<AppState>>()
                 .set(AppState::Menu);
             app.update();
+            assert_camera_released(&app, window);
             assert!(app.world().resource::<PieceDataStore>().is_empty());
             assert!(app.world().get_resource::<PuzzleImage>().is_none());
             assert!(app.world().get_resource::<PuzzleDefinition>().is_none());

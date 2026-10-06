@@ -1,8 +1,8 @@
 use crate::components::*;
 use crate::resources::*;
-use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
+use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
+use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
 use jigsall_core::PuzzleDefinition;
 use jigsall_puzzle::{placement::placement_half_extents, procedural::MAX_TAB_DEPTH};
@@ -202,11 +202,20 @@ pub fn handle_camera_zoom(
     perf_monitor.end_system_timing("handle_camera_zoom", start_time);
 }
 
+pub fn release_camera_drag(
+    mut input: ResMut<InputState>,
+    mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
+) {
+    input.end_camera_drag(windows.iter_mut());
+}
+
+#[allow(clippy::too_many_arguments)] // Explicit raw motion and window capture resources.
 pub fn handle_camera_drag(
     mut input_state: ResMut<InputState>,
     mut camera_query: Query<&mut Transform, With<MainCamera>>,
     mouse_input: Res<ButtonInput<MouseButton>>,
-    windows: Query<&Window, With<PrimaryWindow>>,
+    mouse_motion: Res<AccumulatedMouseMotion>,
+    mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
     mut contexts: EguiContexts,
     ui_capture: Res<GameUiPointerCapture>,
     mut perf_monitor: ResMut<PerformanceMonitor>,
@@ -216,7 +225,8 @@ pub fn handle_camera_drag(
     let mouse_just_pressed = mouse_input.just_pressed(MouseButton::Right);
     let mouse_pressed = mouse_input.pressed(MouseButton::Right);
 
-    let Ok(window) = windows.single() else {
+    let Ok((window, mut cursor)) = windows.single_mut() else {
+        input_state.end_camera_drag(windows.iter_mut());
         perf_monitor.end_system_timing("handle_camera_drag", start_time);
         return;
     };
@@ -225,41 +235,34 @@ pub fn handle_camera_drag(
         || contexts
             .ctx_mut()
             .is_ok_and(|ctx| ctx.is_pointer_over_egui() || ctx.egui_wants_pointer_input());
-    if !window.focused || !mouse_pressed || window.cursor_position().is_none() {
-        input_state.is_camera_dragging = false;
-        input_state.last_cursor_position = None;
+    if !window.focused || !mouse_pressed {
+        input_state.end_camera_drag([(window, cursor)]);
         perf_monitor.end_system_timing("handle_camera_drag", start_time);
         return;
     }
     // Capture starts only with a fresh press on the game canvas.
-    if mouse_just_pressed && !over_ui {
-        input_state.is_camera_dragging = true;
-        input_state.last_cursor_position = window.cursor_position();
+    if !input_state.is_camera_dragging {
+        if mouse_just_pressed && !over_ui {
+            if let Some(position) = window.cursor_position() {
+                input_state.camera_drag_start_position = Some(position);
+                input_state.is_camera_dragging = true;
+                // Bevy retains its Locked -> Confined backend fallback.
+                cursor.grab_mode = CursorGrabMode::Locked;
+                cursor.visible = false;
+            }
+        }
+        // This frame's motion can include movement before the press or grab.
+        perf_monitor.end_system_timing("handle_camera_drag", start_time);
+        return;
     }
 
-    // カメラドラッグ中の処理
-    if input_state.is_camera_dragging && mouse_pressed {
-        if let (Some(current_cursor), Some(last_cursor)) =
-            (window.cursor_position(), input_state.last_cursor_position)
-        {
-            // スクリーン座標での移動量を計算
-            let cursor_movement = current_cursor - last_cursor;
-
-            // 移動量が0でない場合のみカメラを移動
-            if cursor_movement.length() > 0.5 {
-                for mut transform in camera_query.iter_mut() {
-                    // カメラスケールを考慮した移動量
-                    let scale_factor = transform.scale.x;
-                    let movement = cursor_movement * scale_factor;
-
-                    // カメラの移動（マウスの動きと逆方向に移動、Y軸は反転）
-                    transform.translation.x -= movement.x;
-                    transform.translation.y += movement.y; // スクリーン座標系ではY軸が反転
-                }
-
-                // カーソル位置を更新
-                input_state.last_cursor_position = Some(current_cursor);
-            }
+    // Raw motion continues at the window edge and without absolute coordinates.
+    let movement = mouse_motion.delta / window.scale_factor();
+    if movement.is_finite() {
+        for mut transform in &mut camera_query {
+            let movement = movement * transform.scale.x;
+            transform.translation.x -= movement.x;
+            transform.translation.y += movement.y;
         }
     }
 
@@ -335,6 +338,9 @@ pub fn handle_edge_scrolling(
         camera_transform.translation.y += movement.y;
     }
 }
+
+#[cfg(test)]
+mod drag_tests;
 
 #[cfg(test)]
 mod tests {

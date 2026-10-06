@@ -2088,6 +2088,27 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
         .insert_resource(crate::image_settings::ImageSettingsState::load(None))
         .init_resource::<bevy_egui::EguiUserTextures>();
     client.update();
+    let start_position = Vec2::new(120.0, 90.0);
+    let window = client
+        .world_mut()
+        .spawn((
+            Window::default(),
+            bevy::window::PrimaryWindow,
+            bevy::window::CursorOptions {
+                grab_mode: bevy::window::CursorGrabMode::Locked,
+                visible: false,
+                ..default()
+            },
+        ))
+        .id();
+    client
+        .world_mut()
+        .get_mut::<Window>(window)
+        .unwrap()
+        .set_cursor_position(Some(Vec2::splat(300.0)));
+    let mut input = client.world_mut().resource_mut::<InputState>();
+    input.is_camera_dragging = true;
+    input.camera_drag_start_position = Some(start_position);
     let old_reference = client
         .world_mut()
         .spawn(crate::components::GridReference)
@@ -2126,6 +2147,26 @@ fn joined_game_plugin_uses_installed_world_without_starting_a_generation_worker(
     )
     .unwrap();
     assert!(client.world().get_entity(old_reference).is_err());
+    let cursor = client
+        .world()
+        .get::<bevy::window::CursorOptions>(window)
+        .unwrap();
+    assert_eq!(cursor.grab_mode, bevy::window::CursorGrabMode::None);
+    assert!(cursor.visible);
+    assert_eq!(
+        client
+            .world()
+            .get::<Window>(window)
+            .unwrap()
+            .cursor_position(),
+        Some(start_position)
+    );
+    assert!(!client.world().resource::<InputState>().is_camera_dragging);
+    assert!(client
+        .world()
+        .resource::<InputState>()
+        .camera_drag_start_position
+        .is_none());
     let persistence = client
         .world()
         .resource::<crate::persistence::runtime::PersistenceState>();

@@ -1,6 +1,7 @@
 use crate::keybindings::{KeyAction, KeyBindingsState, KeyPresses};
 use crate::{components::*, resources::*};
 use bevy::prelude::*;
+use bevy::window::{CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
 use jigsall_core::ClientCommand;
 use jigsall_core::*;
@@ -91,6 +92,7 @@ pub fn release_local_drag(
     mut interaction: ResMut<crate::interaction::PieceInteraction>,
     mut store: ResMut<PieceDataStore>,
     mut commands: MessageWriter<ClientCommand>,
+    mut windows: Query<(&mut Window, &mut CursorOptions), With<PrimaryWindow>>,
 ) {
     for command in interaction.cancel(&mut store, &mut selection, local_player.0) {
         commands.write(ClientCommand {
@@ -98,8 +100,7 @@ pub fn release_local_drag(
             command,
         });
     }
-    input.is_camera_dragging = false;
-    input.last_cursor_position = None;
+    input.end_camera_drag(windows.iter_mut());
 }
 
 pub fn render_selection_box(
