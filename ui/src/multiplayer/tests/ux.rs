@@ -57,7 +57,7 @@ fn changing_method_or_opening_settings_wipes_both_secrets_with_a_visible_reason(
 }
 
 #[test]
-fn missing_fields_are_explicit_and_internet_never_requires_an_address() {
+fn empty_connection_fields_show_no_validation_warnings() {
     let mut i18n = crate::localization::tests::english();
     for locale in [Locale::EN_US, Locale::JA] {
         i18n.set_preference(LanguagePreference::Locale(locale));
@@ -70,18 +70,11 @@ fn missing_fields_are_explicit_and_internet_never_requires_an_address() {
                 draft.method = method;
                 let ctx = egui::Context::default();
                 let output = ctx.run_ui(default(), |ui| {
-                    paint_required_fields(ui, &draft, host, &i18n);
+                    paint_invalid_fields(ui, &draft, host, &i18n);
                 });
                 let text = labels(&output);
-                assert!(text.contains(&i18n.text("multiplayer-password-required").as_str()));
-                assert_eq!(
-                    text.contains(&i18n.text("multiplayer-address-required").as_str()),
-                    method == RuntimeConnectionMethod::DirectIp
-                );
-                assert_eq!(
-                    text.contains(&i18n.text("multiplayer-room-code-required").as_str()),
-                    method == RuntimeConnectionMethod::Internet && !host
-                );
+                assert!(text.is_empty());
+                assert!(!draft.valid(host));
                 output.drop_without_applying_deltas();
             }
         }

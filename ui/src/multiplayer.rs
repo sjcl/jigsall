@@ -930,30 +930,30 @@ pub(crate) fn paint_connection_fields(
         }),
     );
     theme::hint(ui, i18n.text("multiplayer-password-clear-hint"));
-    paint_required_fields(ui, draft, host, i18n);
+    paint_invalid_fields(ui, draft, host, i18n);
     if draft.method == RuntimeConnectionMethod::DirectIp {
         paint_connection_help(ui, host, None, i18n);
     }
 }
 
-/// Explain every disabled form requirement without waiting for a submit attempt.
-pub(crate) fn paint_required_fields(
+/// Show errors for supplied values while leaving empty fields quiet.
+fn paint_invalid_fields(
     ui: &mut egui::Ui,
     draft: &ConnectionDraft,
     host: bool,
     i18n: &Localization,
 ) {
     let target_error = match draft.method {
-        RuntimeConnectionMethod::DirectIp if draft.address.trim().is_empty() => {
-            Some("multiplayer-address-required")
-        }
-        RuntimeConnectionMethod::DirectIp if !valid_address(&draft.address, host) => {
+        RuntimeConnectionMethod::DirectIp
+            if !draft.address.trim().is_empty() && !valid_address(&draft.address, host) =>
+        {
             Some("multiplayer-error-address")
         }
-        RuntimeConnectionMethod::Internet if !host && draft.room_code.trim().is_empty() => {
-            Some("multiplayer-room-code-required")
-        }
-        RuntimeConnectionMethod::Internet if !host && !valid_room_code(&draft.room_code) => {
+        RuntimeConnectionMethod::Internet
+            if !host
+                && !draft.room_code.trim().is_empty()
+                && !valid_room_code(&draft.room_code) =>
+        {
             Some("multiplayer-error-room-code")
         }
         _ => None,
@@ -961,9 +961,9 @@ pub(crate) fn paint_required_fields(
     if let Some(key) = target_error {
         ui.colored_label(theme::DANGER, i18n.text(key));
     }
-    if draft.password.is_empty() {
-        ui.colored_label(theme::DANGER, i18n.text("multiplayer-password-required"));
-    } else if !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&draft.password.len()) {
+    if !draft.password.is_empty()
+        && !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&draft.password.len())
+    {
         ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-password"));
     }
 }

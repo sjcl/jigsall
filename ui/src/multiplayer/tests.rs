@@ -737,36 +737,46 @@ fn multiplayer_forms_save_names_inline_without_losing_passwords_or_other_setting
 }
 
 #[test]
-fn compact_host_setup_keeps_the_title_and_start_actions_visible_in_both_languages() {
+fn compact_host_setup_starts_only_from_room_settings_in_both_languages() {
     let (mut world, _, ctx) = screen_world();
     world.resource_mut::<MultiplayerUi>().host_setup = true;
     for locale in [Locale::EN_US, Locale::JA] {
         world
             .resource_mut::<Localization>()
             .set_preference(LanguagePreference::Locale(locale));
-        let mut render = || {
-            ctx.run_ui(
-                egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(640.0, 480.0),
-                    )),
-                    ..default()
-                },
-                |_| {
-                    world
-                        .run_system_once(crate::game_setup::draw_game_setup_ui)
-                        .unwrap();
-                },
-            )
-        };
-        render().drop_without_applying_deltas();
-        let output = render();
-        let text = labels(&output);
-        let i18n = world.resource::<Localization>();
-        assert!(text.contains(&i18n.text("common-back-title").as_str()));
-        assert!(text.contains(&i18n.text("multiplayer-start-host").as_str()));
-        output.drop_without_applying_deltas();
+        for network_tab in [false, true] {
+            world.resource_mut::<MultiplayerUi>().host_settings_tab = network_tab;
+            let mut render = || {
+                ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(640.0, 480.0),
+                        )),
+                        ..default()
+                    },
+                    |_| {
+                        world
+                            .run_system_once(crate::game_setup::draw_game_setup_ui)
+                            .unwrap();
+                    },
+                )
+            };
+            render().drop_without_applying_deltas();
+            let output = render();
+            let text = labels(&output);
+            let i18n = world.resource::<Localization>();
+            assert!(text.contains(&i18n.text("common-back-title").as_str()));
+            assert_eq!(
+                text.contains(&i18n.text("multiplayer-start-host").as_str()),
+                network_tab
+            );
+            assert_eq!(
+                text.contains(&i18n.text("multiplayer-next-settings").as_str()),
+                !network_tab
+            );
+            output.drop_without_applying_deltas();
+        }
     }
 }
 
@@ -794,6 +804,16 @@ fn starting_a_new_host_opens_puzzle_settings_even_after_a_previous_network_tab()
     let output = render_schedule(&mut app, &ctx, vec![]);
     assert!(labels(&output).contains(&"Select Image"));
     assert!(!labels(&output).contains(&"Accept connections at"));
+    assert!(!labels(&output).contains(&"Open Room & Play"));
+    output.drop_without_applying_deltas();
+    click_label(&mut app, &ctx, "Multiplayer Settings");
+    let state = app.world().resource::<MultiplayerUi>();
+    assert!(state.host_settings_tab);
+    assert!(!state.submitted);
+    assert!(state.action.is_none());
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    assert!(labels(&output).contains(&"Open Room & Play"));
+    assert!(!labels(&output).contains(&"Select Image"));
     output.drop_without_applying_deltas();
 }
 

@@ -179,22 +179,8 @@ pub fn draw_game_setup_ui(
                 {
                     theme::hint(ui, i18n.text("multiplayer-puzzle-tab-hint"));
                 }
-                if multiplayer.host_setup {
-                    if !image_loaded || config.image_path.is_empty() {
-                        theme::hint(ui, i18n.text("multiplayer-image-required"));
-                    }
-                    if !cfg!(feature = "gns") {
-                        theme::hint(ui, i18n.text("multiplayer-unavailable"));
-                    }
-                    if !multiplayer.host_settings_tab && !multiplayer.host.valid(true) {
-                        crate::multiplayer::paint_required_fields(
-                            ui,
-                            &multiplayer.host,
-                            true,
-                            &i18n,
-                        );
-                        theme::hint(ui, i18n.text("multiplayer-setup-required"));
-                    }
+                if multiplayer.host_setup && !cfg!(feature = "gns") {
+                    theme::hint(ui, i18n.text("multiplayer-unavailable"));
                 }
                 ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 10.0) * 0.5).min(240.0);
@@ -204,38 +190,53 @@ pub fn draw_game_setup_ui(
                         multiplayer.navigate(crate::multiplayer::MenuScreen::Title);
                         next_state.set(AppState::Menu);
                     }
-                    ui.add_enabled_ui(
-                        image_loaded
-                            && !config.image_path.is_empty()
-                            && !select_image
-                            && !multiplayer.submitted
-                            && (!multiplayer.host_setup
-                                || (multiplayer.host_available()
-                                    && original
-                                        .as_ref()
-                                        .is_some_and(|image| image.encoded.is_some()))),
-                        |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if multiplayer.host_setup && !multiplayer.host_settings_tab {
                             if theme::button(
                                 ui,
-                                i18n.text(if multiplayer.host_setup {
-                                    "multiplayer-start-host"
-                                } else {
-                                    "setup-start-game"
-                                }),
+                                i18n.text("multiplayer-next-settings"),
                                 button_width,
                                 true,
                             )
                             .clicked()
                             {
-                                if multiplayer.host_setup {
-                                    multiplayer.submit_host();
-                                } else {
-                                    multiplayer.submitted = true;
-                                    next_state.set(AppState::InGame);
-                                }
+                                multiplayer.host_settings_tab = true;
                             }
-                        },
-                    );
+                            return;
+                        }
+                        ui.add_enabled_ui(
+                            image_loaded
+                                && !config.image_path.is_empty()
+                                && !select_image
+                                && !multiplayer.submitted
+                                && (!multiplayer.host_setup
+                                    || (multiplayer.host_available()
+                                        && original
+                                            .as_ref()
+                                            .is_some_and(|image| image.encoded.is_some()))),
+                            |ui| {
+                                if theme::button(
+                                    ui,
+                                    i18n.text(if multiplayer.host_setup {
+                                        "multiplayer-start-host"
+                                    } else {
+                                        "setup-start-game"
+                                    }),
+                                    button_width,
+                                    true,
+                                )
+                                .clicked()
+                                {
+                                    if multiplayer.host_setup {
+                                        multiplayer.submit_host();
+                                    } else {
+                                        multiplayer.submitted = true;
+                                        next_state.set(AppState::InGame);
+                                    }
+                                }
+                            },
+                        );
+                    });
                 });
             });
         });
