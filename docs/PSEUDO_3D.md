@@ -5,10 +5,10 @@
 
 ## 品質と screen-space LOD
 
-「設定 → グラフィック → 擬似3D品質」のLow / Medium / Highを「適用」で切り替えます。
+「設定 → グラフィック → グラフィッククオリティー」のLow / Medium / Highを「適用」で切り替えます。
 既定はHighで、`settings.json`の既存`display.piece_visual_quality`へ保存します。fieldがない旧設定もHighです。
 品質だけなら15秒の確認なしで即時更新・保存要求を行い、解像度 / 画面モードとの同時変更では
-既存のpreview / Keep / Revertに含めます。設定の詳細は[設定ファイル](SETTINGS.md#擬似3d品質)を参照してください。
+既存のpreview / Keep / Revertに含めます。設定の詳細は[設定ファイル](SETTINGS.md#グラフィッククオリティー)を参照してください。
 
 `DisplaySettingsPlugin`はPostUpdateの設定action処理後に、`DisplaySettingsState.current`の品質を
 `game/src/render/visuals.rs`の`PieceVisualQuality` resourceへ同期します。次の描画frameから

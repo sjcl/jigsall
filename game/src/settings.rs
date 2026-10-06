@@ -54,8 +54,8 @@ pub enum ScreenMode {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GameBackground {
-    #[default]
     Light,
+    #[default]
     Dark,
 }
 

@@ -196,14 +196,14 @@ fn background_defaults_for_existing_settings_and_applies_to_main_camera() {
     assert!(initial.error.is_none());
     assert_eq!(initial.current.resolution, UVec2::new(800, 600));
     assert_eq!(initial.current.max_fps, Some(144));
-    assert_eq!(initial.current.game_background, GameBackground::Light);
+    assert_eq!(initial.current.game_background, GameBackground::Dark);
     assert!(matches!(
         app.world().get::<Camera>(main).unwrap().clear_color,
-        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Light.color()
+        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Dark.color()
     ));
     assert_eq!(GameBackground::Dark.color(), ClearColor::default().0);
     let mut settings = initial.current.clone();
-    settings.game_background = GameBackground::Dark;
+    settings.game_background = GameBackground::Light;
     action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
     assert!(app
         .world()
@@ -212,7 +212,7 @@ fn background_defaults_for_existing_settings_and_applies_to_main_camera() {
         .is_none());
     assert!(matches!(
         app.world().get::<Camera>(main).unwrap().clear_color,
-        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Dark.color()
+        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Light.color()
     ));
     assert!(matches!(
         app.world().get::<Camera>(other).unwrap().clear_color,
@@ -222,12 +222,12 @@ fn background_defaults_for_existing_settings_and_applies_to_main_camera() {
         DisplaySettingsState::load(Some(path.clone())).current,
         settings
     );
-    settings.game_background = GameBackground::Light;
+    settings.game_background = GameBackground::Dark;
     action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
     assert_eq!(DisplaySettingsState::load(Some(path)).current, settings);
     assert!(matches!(
         app.world().get::<Camera>(main).unwrap().clear_color,
-        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Light.color()
+        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Dark.color()
     ));
 }
 

@@ -42,7 +42,6 @@ fn piece_quality_widgets_select_all_three_values_and_enable_apply() {
             "settings-quality-low",
             "settings-quality-medium",
             "settings-quality-high",
-            "settings-piece-visual-quality-hint",
         ] {
             assert_ne!(i18n.text(key), key);
         }
@@ -55,14 +54,14 @@ fn background_widgets_select_dark_and_light() {
     let mut dialog = SettingsDialog::default();
     dialog.open(&DisplaySettingsState::load(None));
     dialog.tab = SettingsTab::Graphics;
-    assert_eq!(dialog.draft.game_background, GameBackground::Light);
-    assert!(click(&ctx, &mut dialog, "Dark").is_none());
+    assert_eq!(dialog.draft.game_background, GameBackground::Dark);
+    assert!(click(&ctx, &mut dialog, "Light").is_none());
     let Some(DisplaySettingsAction::Apply(settings)) = click(&ctx, &mut dialog, "Apply") else {
         panic!("Background change must enable Apply");
     };
-    assert_eq!(settings.game_background, GameBackground::Dark);
-    assert!(click(&ctx, &mut dialog, "Light").is_none());
-    assert_eq!(dialog.draft.game_background, GameBackground::Light);
+    assert_eq!(settings.game_background, GameBackground::Light);
+    assert!(click(&ctx, &mut dialog, "Dark").is_none());
+    assert_eq!(dialog.draft.game_background, GameBackground::Dark);
     assert!(click(&ctx, &mut dialog, "Apply").is_none());
 }
 
@@ -1260,9 +1259,9 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
                             tab == SettingsTab::Graphics
                         );
                         assert_eq!(
-                            has_text(&output, &i18n.text("settings-texture-budget")),
+                            has_text(&output, &i18n.text("settings-piece-visual-quality")),
                             tab == SettingsTab::Graphics,
-                            "{locale:?} {size:?} {transition}: texture budget must be visible at 720px height"
+                            "{locale:?} {size:?} {transition}: graphics quality must be visible at 720px height"
                         );
                     }
                     output.drop_without_applying_deltas();

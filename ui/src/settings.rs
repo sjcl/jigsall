@@ -436,8 +436,6 @@ fn paint_settings(
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
-                                ui.label(i18n.text("settings-max-fps"));
-                                ui.separator();
                                 ui.label(i18n.text("settings-game-background"));
                                 for (value, label) in [
                                     (GameBackground::Light, "settings-background-light"),
@@ -450,8 +448,15 @@ fn paint_settings(
                                     );
                                 }
                             });
+                        });
+                        ui.add_space(2.0);
+                        theme::card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             let mut unlimited = dialog.draft.max_fps.is_none();
-                            ui.checkbox(&mut unlimited, i18n.text("settings-unlimited"));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(i18n.text("settings-max-fps"));
+                                ui.checkbox(&mut unlimited, i18n.text("settings-unlimited"));
+                            });
                             ui.add_enabled_ui(!unlimited, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     ui.add(
@@ -481,7 +486,10 @@ fn paint_settings(
                             } else {
                                 Some(dialog.limited_fps)
                             };
-                            ui.add_space(4.0);
+                        });
+                        ui.add_space(2.0);
+                        theme::card().show(ui, |ui| {
+                            ui.set_width(ui.available_width());
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(i18n.text("settings-piece-visual-quality"));
                                 for (quality, label) in [
@@ -496,7 +504,6 @@ fn paint_settings(
                                     );
                                 }
                             });
-                            theme::hint(ui, i18n.text("settings-piece-visual-quality-hint"));
                         });
                         theme::card().show(ui, |ui| {
                             paint_image_settings(ui, image_settings, image_limits, i18n);
