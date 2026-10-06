@@ -18,6 +18,8 @@ fn main() {
         DefaultPlugins
             .set(bevy::log::LogPlugin {
                 custom_layer: jigsall_game::diagnostics::file_layer,
+                // Keep build/GPU identity available under a global RUST_LOG=warn.
+                filter: format!("{},jigsall_diagnostics=info", bevy::log::DEFAULT_FILTER),
                 ..default()
             })
             .set(WindowPlugin {
