@@ -703,7 +703,11 @@ fn gpu_far_zoom_million_initial_lattice_has_no_missing_coverage() {
         assert_eq!(gpu.drag_upload_bytes, 0);
         assert_eq!(gpu.remote_mapping_upload_bytes, 0);
         assert_eq!(gpu.remote_delta_upload_bytes, 0);
-        assert_eq!(gpu.buffers.as_ref().unwrap().remote_slots.size(), 4_000_000);
+        assert_eq!(gpu.rotation_upload_bytes, 0);
+        assert_eq!(
+            gpu.buffers.as_ref().unwrap().piece_metadata.size(),
+            12_000_000
+        );
         assert_eq!(gpu.buffers.as_ref().unwrap().remote_deltas.size(), 512);
     }
     assert_eq!(

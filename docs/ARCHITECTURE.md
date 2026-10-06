@@ -112,7 +112,7 @@ Moveの最終座標を適用してからReleaseとsnapを処理します。bulk 
 
 入力はPostUpdateのegui処理、camera pan / zoom / edge scrollingの後です。現Transformで座標変換し、UI上の押下を抑制します。開始済みdragはUIを横切っても継続・解放できます。pauseとfocus lossで保持を解放し、未確定の矩形選択を元に戻します。
 
-ドラッグ中のQ/EはRotateDragで表示中のdeltaと回転をcanonical stateへ一度に確定し、成功後だけpointer anchorを現在pointerへ更新します。対象全体をpreflightし、拒否時はstate / delta / anchorを維持します。Releaseと同frameならReleaseを優先し、回転中にはsnapしません。pointer dragはmembers + deltaのCPU O(1)、state / membership upload 0を維持し、明示的なdrag rotation時だけO(k)の計算と変更memberだけのuploadを行います。GPU stateは16 bytes、component root bufferとmembershipは回転で変更しません。詳細は[ROTATION.md](ROTATION.md)を参照してください。
+ドラッグ中のQ/EはRotateDragで表示中のdeltaと回転をcanonical stateへ一度に確定し、成功後だけpointer anchorを現在pointerへ更新します。対象全体をpreflightし、拒否時はstate / delta / anchorを維持します。Releaseと同frameならReleaseを優先し、回転中にはsnapしません。pointer dragはmembers + deltaのCPU O(1)、state / membership upload 0を維持し、明示的なdrag rotation時だけO(k)の計算と変更memberだけのuploadを行います。GPU stateは16 bytes、共有metadataのcomponent root領域とmembershipは回転で変更しません。詳細は[ROTATION.md](ROTATION.md)を参照してください。
 
 `PieceInteraction`はIdle / Dragging / BoxSelectingを持ちます。point結果の受信前にreleaseした場合も最終座標を保持します。矩形previewとrelease時の確定要求を分け、古いGPU応答が確定選択を上書きしないようにします。
 
@@ -206,6 +206,45 @@ RGBA8の元画像・出力・縮小の中間画素bufferはそれぞれ最大256
 
 ## GPU presentation
 
+### Shared per-piece GPU metadata
+
+`StateBuffers.piece_metadata` は次の3領域を1本の storage buffer に持つ SoA です。
+`N` は GPU piece capacity で、AoS の stride や新しい CPU mirror は追加しません。
+
+```text
+shared per-piece GPU metadata buffer (3N × u32)
+  ├─ [0, N)   component roots
+  ├─ [N, 2N)  remote drag slots
+  └─ [2N, 3N) rotation animation slots (DSU root で参照)
+```
+
+byte base は root = 0、remote = 4N、rotation = 8N です。
+Rust の `PieceMetadataLayout` が u64 で size / range offset を計算し、WGSL は
+`config.capacity` に基づく `component_root` / `remote_slot` / `rotation_slot` で参照します。
+新 epoch では `initial_roots` を先頭領域へ upload し、残りは wgpu の zero initialization
+を利用します。remote の既存初期 snapshot は remote 領域だけへ適用します。
+`root_revision` / `remote_revision` / `rotation_revision` と dirty range は独立しており、
+1領域の更新は他の2領域を再 upload しません。storage / copy-dst / copy-src を維持します。
+100万 pieces では3領域合計12,000,000 bytes（約12 MB / 11.44 MiB）で、旧3本の合計と同じです。
+512-byte remote delta uniform と可変長32-byte rotation record buffer は別に保持します。
+
+storage binding 数は main / pick visibility compute がそれぞれ10→8、draw / point /
+rectangle の vertex が9→7です。fragment は draw layout の6本と selection layout の2本を
+全 render pipeline で共有し、合計8本のままです。component preview compute は3本です。各 stage は8本以内ですが、
+4本以下の downlevel limit や storage を使えない backend まで対応する変更ではありません。
+通常 / far / picking の形状・presentation・画像 alpha の判定は共通のままです。
+
+2026-10-06 の Windows / RTX 5090 / Vulkan（driver 610.88）の release 検証では、
+device の storage binding 上限を8本に制限し、metadata の領域分離・sparse update・
+epoch 再初期化、100万 pieces、normal / far / point / rectangle、continuous rotation の
+DSU root history と通常 frame の upload 0、remote smoothing の mapping upload 0 を確認しました。
+通常 workspace テスト891件と doctest 1件、Clippy、fmt が成功しました。
+`gpu_` の ignored テスト（`gpu_million_selection_benchmark` と `gpu_remote_cursor_` を除外）は
+26件中22件成功、4件失敗です。変更前 `f4e9acd` でも同じ4件が同じ結果で失敗し、25件中21件成功でした。
+component preview の2 fixture は10,000座標の snapshot capture が `OutsidePlayArea(PieceId(0))`
+となり、connected outline と rotated connected outline の2件は白を期待する色比較が
+`[255, 250, 227, 255]` でした。これらの既存失敗は今回の検証では修正していません。
+
 ### Continuous rotation presentation
 
 回転の責務は次の順です。
@@ -234,11 +273,11 @@ local pointer delta は残差を適用した後に加算し、continuous angle �
 drag delta に戻しません。release の final delta を反映してから残差を handoff します。
 snap による component 結合・placement では対象の残差を破棄します。
 
-GPU は既存の DSU root buffer → `rotation_slots[root]` → 可変長 32-byte animation record
+GPU は metadata の component root 領域 → `rotation_slot(root)` → 可変長 32-byte animation record
 を参照します。stable minimum と DSU root が異なる union history にも対応します。
 固定 slot 上限はなく、独立 component はそれぞれ自身の pivot を持ちます。
-追加 GPU memory は root→slot の 4N bytes と、同時 animation record の capacity × 32 bytes
-（最低 1 record、増設時は 2 の冪）です。100万 pieces の lookup は 4,000,000 bytes です。
+rotation 用 GPU memory は metadata 内の root→slot 領域の 4N bytes と、同時 animation record の capacity × 32 bytes
+（最低 1 record、増設時は 2 の冪）です。100万 pieces の rotation lookup 領域は 4,000,000 bytes です。
 CPU は sparse な component record / slot map と upload 用 Arc を保持し、piece-sized な
 恒久 animation / root mirror は作りません。操作境界で table と変更した root slot を upload
 し、通常 frame は scalar clock と uniform だけ更新します。member scan、position 更新、
@@ -262,7 +301,7 @@ Direct-IP hostとclientは、game-layerの`network/runtime/presentation.rs`で�
 
 `PieceDataStore`がcanonical position・ownership・rotation・Z・connectivityの正本です。canonical positionはReliable authority commitでだけ変わり、networkがacceptedした`RemoteDragUpdate.delta`はpresentationの最新targetです。GPUが使うdeltaはCPUで平滑化したdisplayed deltaで、表示位置はcanonical position + displayed deltaです。Transient / smoothing frameは`GpuPieceState`、snapshot、save、progress、snap、authority cursorを変更せず、smoothed valueを`PeerReplicationState` / `ProtocolDragContexts`へ戻しません。local active pointerとpending Releaseは従来の`store.drag.members` / GPU bitset / `PuzzleUniform.drag_delta`を使用し、local playerはremote slotへ登録せず即時feedbackを維持します。HELDによる選択除外とcanonical Zを維持します。
 
-remoteは`u32 piece_slots[N]`（0=無し、1..64=slot）と512-byte固定delta uniformです。uniformは2つのVec2を1つのvec4にpackします。GPU追加常駐は4N + 512 bytes、100万pieceで4,000,512 bytes（約3.815 MiB）。CPU cacheは4N-byte mapping、dirty bitset（100万で125,000 bytes）、最大64のmembership bitsetとdeltaです。Dense accepted targetのbitsetはArc共有し、SparseはGrab境界でだけbitsetへ展開します。Sparseの新規bitsetは1 slotあたり最大125,000 bytes、全64 slotで最大8,000,000 bytesです。upload snapshot / rangesのpayloadは別途保持し、dense時は最大4N bytesです。PlayerIdはgame-layerの最大64件のslot lookupだけにあり、GPUはPlayerIdを検索しません。
+remoteはmetadataの`u32 remote drag slots[N]`領域（0=無し、1..64=slot）と512-byte固定delta uniformです。uniformは2つのVec2を1つのvec4にpackします。remoteのGPU常駐分は共有metadata内の4N + 512 bytes、100万pieceで4,000,512 bytes（約3.815 MiB）。CPU cacheは4N-byte mapping、dirty bitset（100万で125,000 bytes）、最大64のmembership bitsetとdeltaです。Dense accepted targetのbitsetはArc共有し、SparseはGrab境界でだけbitsetへ展開します。Sparseの新規bitsetは1 slotあたり最大125,000 bytes、全64 slotで最大8,000,000 bytesです。upload snapshot / rangesのpayloadは別途保持し、dense時は最大4N bytesです。PlayerIdはgame-layerの最大64件のslot lookupだけにあり、GPUはPlayerIdを検索しません。
 
 Reliable `GrabAccepted`でauthorityのexact accepted membershipを割り当て、displayed / targetをcontextの現在deltaへ即時一致させます。partial acceptanceも要求targetではなく受理済みcontextを参照します。最初の空slotを再利用し、前playerのtarget・displayed・smoothing ageを引き継ぎません。Release / Cancelでは保存した正確なbitsetを使ってmappingを0にし、両deltaとsmoothing stateを直ちに破棄します。ReleaseのsnapでDSUが結合しても、旧membershipは変わりません。lagが残っていてもReliable canonical final positionへ即時handoffし、post-release animationは行いません。`DragRotationCommitted`ではmembershipを維持し、Reliable rebase後のnew-basis context deltaへdisplayed / targetを即時一致させます。旧basisから補間せず、旧basis / release / cancel後、duplicate / staleのTransientは既存benign-drop contractで落とし、targetを変更しません。
 
@@ -278,7 +317,7 @@ client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 
-rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root bufferは4 bytes / piece、CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootをrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、preview_active == 0ならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
+rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root領域は共有metadataの先頭4 bytes / pieceで、preview collapseはbuffer長の1/3をroot capacityとして扱います。CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootを先頭領域へrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、rotation / previewが両方inactiveならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
 Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 

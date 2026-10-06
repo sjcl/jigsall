@@ -1,6 +1,6 @@
 // Rectangle-only reduction; direct hits retain their PieceId bits for readback.
 @group(0) @binding(0) var<storage,read> direct_hits:array<u32>;
-@group(0) @binding(1) var<storage,read> component_roots:array<u32>;
+@group(0) @binding(1) var<storage,read> piece_metadata:array<u32>;
 @group(0) @binding(2) var<storage,read_write> preview:array<atomic<u32>>;
 
 fn mark_roots(word:u32,bits:u32) {
@@ -11,8 +11,9 @@ fn mark_roots(word:u32,bits:u32) {
         let bit=firstTrailingBit(remaining);
         remaining&=remaining-1u;
         let id=word*32u+bit;
-        if id>=arrayLength(&component_roots) {continue;}
-        let root=component_roots[id];
+        // Only the first third contains roots; padding bits must not read slots.
+        if id>=arrayLength(&piece_metadata)/3u {continue;}
+        let root=piece_metadata[id];
         let next_word=root/32u;
         // Combine roots sharing a mask word before the atomic. In particular,
         // a giant component contributes once per input word, not once per hit.

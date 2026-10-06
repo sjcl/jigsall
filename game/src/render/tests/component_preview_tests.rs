@@ -105,7 +105,7 @@ fn roots(app: &App) -> Vec<u32> {
     let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
     bytemuck::cast_slice::<u8, u32>(&read_buffer(
         app,
-        &gpu.buffers.as_ref().unwrap().component_roots,
+        &gpu.buffers.as_ref().unwrap().piece_metadata,
         32,
     ))
     .to_vec()

@@ -28,12 +28,14 @@ fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
 @group(0) @binding(3) var<storage,read> drag_members:array<u32>;
 @group(0) @binding(4) var<storage,read> preview:array<u32>;
 @group(0) @binding(5) var<storage,read> selected:array<u32>;
-@group(0) @binding(6) var<storage,read> component_roots:array<u32>;
-@group(0) @binding(7) var<storage,read> remote_slots:array<u32>;
+@group(0) @binding(6) var<storage,read> piece_metadata:array<u32>;
 struct RemoteDeltas { entries:array<vec4<f32>,32> };
-@group(0) @binding(8) var<uniform> remote_deltas:RemoteDeltas;
-@group(0) @binding(9) var<storage,read> rotation_slots:array<u32>;
-@group(0) @binding(10) var<storage,read> rotation_animations:array<RotationAnimation>;
+@group(0) @binding(7) var<uniform> remote_deltas:RemoteDeltas;
+@group(0) @binding(8) var<storage,read> rotation_animations:array<RotationAnimation>;
+// SoA regions use buffer capacity, not the current visible/piece count.
+fn component_root(id:u32)->u32 {return piece_metadata[id];}
+fn remote_slot(id:u32)->u32 {return piece_metadata[config.capacity+id];}
+fn rotation_slot(root:u32)->u32 {return piece_metadata[2u*config.capacity+root];}
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -48,13 +50,13 @@ struct VertexOutput {
     let corners=array<vec2<f32>,4>(vec2(-1.0,-1.0),vec2(1.0,-1.0),vec2(-1.0,1.0),vec2(1.0,1.0));
     let id=visible[instance];let state=states[id];let cell=vec2(id%config.grid.x,id/config.grid.x);
     let local_member=config.drag_active!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u;
-    let slot=remote_slots[id];
+    let slot=remote_slot(id);
     let packed=remote_deltas.entries[(max(slot,1u)-1u)/2u];
     let remote_delta=select(packed.xy,packed.zw,slot!=0u && ((slot-1u)&1u)!=0u);
     var animation:RotationAnimation;
     if config.rotation_active!=0u {
-        let rotation_slot=rotation_slots[component_roots[id]];
-        if rotation_slot!=0u {animation=rotation_animations[rotation_slot-1u];}
+        let animation_slot=rotation_slot(component_root(id));
+        if animation_slot!=0u {animation=rotation_animations[animation_slot-1u];}
     }
     let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
     let position=pose.position;
@@ -92,7 +94,7 @@ struct VertexOutput {
     out.id=id;out.flags=state.flags&~6u;
     // An explicit branch keeps ordinary frames from loading component roots.
     if config.preview_active!=0u && (state.flags&9u)==0u {
-        let root=component_roots[id];
+        let root=component_root(id);
         if (preview[root/32u]&(1u<<(root%32u)))!=0u {out.flags|=4u;}
     }
     return out;

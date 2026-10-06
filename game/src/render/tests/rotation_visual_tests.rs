@@ -16,8 +16,8 @@ fn continuous_presentation_is_shared_by_draw_and_both_visibility_paths() {
             source.matches("presentation_pose(state.position,").count(),
             1
         );
-        assert!(source.contains("rotation_slots[component_roots[id]]"));
-        assert!(source.contains("rotation_animations[rotation_slot-1u]"));
+        assert!(source.contains("rotation_slot(component_root(id))"));
+        assert!(source.contains("rotation_animations[animation_slot-1u]"));
         assert!(source.contains("presentation_splat_size("));
     }
     let draw = include_str!("../puzzle_render.wgsl");
@@ -110,6 +110,7 @@ fn gpu_continuous_rotation_normal_far_draw_point_rectangle_and_zero_piece_upload
         assert_eq!(gpu.upload_bytes, 0);
         assert_eq!(gpu.root_upload_bytes, 0);
         assert_eq!(gpu.rotation_upload_bytes, 0);
+        assert_eq!(gpu.remote_mapping_upload_bytes, 0);
         app.world_mut().resource_mut::<VisualTime>().0 = 0.120;
         update_gpu(&mut app);
         assert!(

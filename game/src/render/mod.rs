@@ -316,11 +316,31 @@ fn extract_puzzle(
         .and_then(|r| pixel_region(r, scale, target, viewport));
 }
 
+/// Three independent u32 ranges in one storage binding, based on GPU capacity.
+#[derive(Clone, Copy)]
+struct PieceMetadataLayout {
+    capacity: u32,
+}
+impl PieceMetadataLayout {
+    fn size(self) -> u64 {
+        u64::from(self.capacity) * 3 * 4
+    }
+    fn root_offset(self, id: u32) -> u64 {
+        u64::from(id) * 4
+    }
+    fn remote_slot_offset(self, id: u32) -> u64 {
+        (u64::from(self.capacity) + u64::from(id)) * 4
+    }
+    fn rotation_slot_offset(self, root: u32) -> u64 {
+        (u64::from(self.capacity) * 2 + u64::from(root)) * 4
+    }
+}
+
 struct StateBuffers {
     epoch: u64,
     revision: u64,
     root_revision: u64,
-    component_roots: Buffer,
+    piece_metadata: Buffer,
     states: Buffer,
     visible: Buffer,
     args: Buffer,
@@ -329,11 +349,9 @@ struct StateBuffers {
     dummy_selection: Buffer,
     drag_members: Buffer,
     current_drag: Arc<[u32]>,
-    remote_slots: Buffer,
     remote_deltas: Buffer,
     remote_revision: u64,
     remote_delta_revision: u64,
-    rotation_slots: Buffer,
     rotation_animations: Buffer,
     rotation_capacity: usize,
     rotation_revision: u64,
@@ -494,11 +512,7 @@ impl GpuRenderer {
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None)
-                            .visibility(ShaderStages::VERTEX),
                         uniform_buffer_sized(false, None).visibility(ShaderStages::VERTEX),
-                        storage_buffer_read_only_sized(false, None)
-                            .visibility(ShaderStages::VERTEX),
                         storage_buffer_read_only_sized(false, None)
                             .visibility(ShaderStages::VERTEX),
                     ),
@@ -518,8 +532,6 @@ impl GpuRenderer {
                         storage_buffer_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         uniform_buffer_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                     ),
                 ),
@@ -580,8 +592,6 @@ impl GpuRenderer {
                         storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                         uniform_buffer_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
                         storage_buffer_read_only_sized(false, None),
                     ),
                 ),
@@ -829,13 +839,19 @@ fn prepare_buffers(
         let Some(initial_roots) = &frame.upload.initial_roots else {
             return;
         };
-        let component_roots = buffer(
+        let metadata = PieceMetadataLayout { capacity };
+        let piece_metadata = buffer(
             &device,
-            "component roots",
-            u64::from(count) * 4,
+            "piece metadata: component roots, remote slots, rotation slots",
+            metadata.size(),
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         );
-        queue.write_buffer(&component_roots, 0, bytemuck::cast_slice(initial_roots));
+        // wgpu zero-initializes the remote/rotation regions; only roots need data.
+        queue.write_buffer(
+            &piece_metadata,
+            metadata.root_offset(0),
+            bytemuck::cast_slice(initial_roots),
+        );
         gpu.root_upload_bytes = u64::from(count) * 4;
         gpu.root_upload_calls = 1;
         let states = buffer(
@@ -860,7 +876,7 @@ fn prepare_buffers(
             epoch: frame.upload.epoch,
             revision: frame.upload.revision,
             root_revision: frame.upload.root_revision,
-            component_roots,
+            piece_metadata,
             states,
             visible: buffer(
                 &device,
@@ -897,12 +913,6 @@ fn prepare_buffers(
                 BufferUsages::STORAGE | BufferUsages::COPY_DST,
             ),
             current_drag: Arc::default(),
-            remote_slots: buffer(
-                &device,
-                "remote piece slots",
-                u64::from(count) * 4,
-                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            ),
             remote_deltas: buffer(
                 &device,
                 "remote drag deltas",
@@ -917,12 +927,6 @@ fn prepare_buffers(
             ),
             remote_revision: u64::MAX,
             remote_delta_revision: u64::MAX,
-            rotation_slots: buffer(
-                &device,
-                "rotation slots by component root",
-                u64::from(count) * 4,
-                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
-            ),
             rotation_animations: buffer(
                 &device,
                 "rotation presentation records",
@@ -975,14 +979,17 @@ fn prepare_buffers(
     let Some(buffers) = &mut gpu.buffers else {
         return;
     };
+    let metadata = PieceMetadataLayout {
+        capacity: buffers.capacity,
+    };
     if frame.image.is_some() && frame.config.opaque == 0 && buffers.sort.is_none() {
         buffers.sort = Some(RadixBuffers::new(&device, buffers.capacity));
     }
     if buffers.root_revision != frame.upload.root_revision {
         for range in frame.upload.root_ranges.iter() {
             queue.write_buffer(
-                &buffers.component_roots,
-                u64::from(range.start) * 4,
+                &buffers.piece_metadata,
+                metadata.root_offset(range.start),
                 bytemuck::cast_slice(&range.roots),
             );
             root_bytes += range.roots.len() as u64 * 4;
@@ -1013,14 +1020,18 @@ fn prepare_buffers(
     if frame.remote.epoch == buffers.epoch {
         if buffers.remote_revision != frame.remote.revision {
             if let Some(initial) = &frame.remote.initial {
-                queue.write_buffer(&buffers.remote_slots, 0, bytemuck::cast_slice(initial));
+                queue.write_buffer(
+                    &buffers.piece_metadata,
+                    metadata.remote_slot_offset(0),
+                    bytemuck::cast_slice(initial),
+                );
                 remote_bytes = initial.len() as u64 * 4;
                 remote_calls = 1;
             } else {
                 for range in frame.remote.ranges.iter() {
                     queue.write_buffer(
-                        &buffers.remote_slots,
-                        u64::from(range.start) * 4,
+                        &buffers.piece_metadata,
+                        metadata.remote_slot_offset(range.start),
                         bytemuck::cast_slice(&range.slots),
                     );
                     remote_bytes += range.slots.len() as u64 * 4;
@@ -1062,8 +1073,8 @@ fn prepare_buffers(
         }
         for range in frame.rotation.ranges.iter() {
             queue.write_buffer(
-                &buffers.rotation_slots,
-                u64::from(range.start) * 4,
+                &buffers.piece_metadata,
+                metadata.rotation_slot_offset(range.start),
                 bytemuck::cast_slice(&range.slots),
             );
             rotation_bytes += range.slots.len() as u64 * 4;
@@ -1236,12 +1247,10 @@ fn puzzle_node(
         .clone();
     let dummy_selection = buffers.dummy_selection.clone();
     let drag_members = buffers.drag_members.clone();
-    let remote_slots = buffers.remote_slots.clone();
+    let piece_metadata = buffers.piece_metadata.clone();
     let remote_deltas = buffers.remote_deltas.clone();
     let preview = buffers.preview.clone();
     let selected = buffers.selected.clone();
-    let component_roots = buffers.component_roots.clone();
-    let rotation_slots = buffers.rotation_slots.clone();
     let rotation_animations = buffers.rotation_animations.clone();
     if gpu.depth.as_ref().is_none_or(|d| d.size != frame.target) {
         gpu.depth = Some(screen_target(
@@ -1263,10 +1272,8 @@ fn puzzle_node(
             selectable.as_entire_buffer_binding(),
             drag_members.as_entire_buffer_binding(),
             sort_counts.as_entire_buffer_binding(),
-            remote_slots.as_entire_buffer_binding(),
+            piece_metadata.as_entire_buffer_binding(),
             remote_deltas.as_entire_buffer_binding(),
-            component_roots.as_entire_buffer_binding(),
-            rotation_slots.as_entire_buffer_binding(),
             rotation_animations.as_entire_buffer_binding(),
         )),
     );
@@ -1280,10 +1287,8 @@ fn puzzle_node(
             drag_members.as_entire_buffer_binding(),
             preview.as_entire_buffer_binding(),
             selected.as_entire_buffer_binding(),
-            component_roots.as_entire_buffer_binding(),
-            remote_slots.as_entire_buffer_binding(),
+            piece_metadata.as_entire_buffer_binding(),
             remote_deltas.as_entire_buffer_binding(),
-            rotation_slots.as_entire_buffer_binding(),
             rotation_animations.as_entire_buffer_binding(),
         )),
     );
@@ -1585,10 +1590,8 @@ fn draw_selection(
             pick_ids.as_entire_buffer_binding(),
             pick_args.as_entire_buffer_binding(),
             buffers.drag_members.as_entire_buffer_binding(),
-            buffers.remote_slots.as_entire_buffer_binding(),
+            buffers.piece_metadata.as_entire_buffer_binding(),
             buffers.remote_deltas.as_entire_buffer_binding(),
-            buffers.component_roots.as_entire_buffer_binding(),
-            buffers.rotation_slots.as_entire_buffer_binding(),
             buffers.rotation_animations.as_entire_buffer_binding(),
         )),
     );
@@ -1610,10 +1613,8 @@ fn draw_selection(
             buffers.drag_members.as_entire_buffer_binding(),
             buffers.dummy_selection.as_entire_buffer_binding(),
             buffers.selected.as_entire_buffer_binding(),
-            buffers.component_roots.as_entire_buffer_binding(),
-            buffers.remote_slots.as_entire_buffer_binding(),
+            buffers.piece_metadata.as_entire_buffer_binding(),
             buffers.remote_deltas.as_entire_buffer_binding(),
-            buffers.rotation_slots.as_entire_buffer_binding(),
             buffers.rotation_animations.as_entire_buffer_binding(),
         )),
     );
@@ -1691,7 +1692,7 @@ fn draw_selection(
             &cache.get_bind_group_layout(&gpu.preview_layout),
             &BindGroupEntries::sequential((
                 buffers.direct_hits.as_entire_buffer_binding(),
-                buffers.component_roots.as_entire_buffer_binding(),
+                buffers.piece_metadata.as_entire_buffer_binding(),
                 buffers.preview.as_entire_buffer_binding(),
             )),
         );

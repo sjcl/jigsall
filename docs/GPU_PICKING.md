@@ -49,7 +49,7 @@ previewとselectedは共通のselection_boundary_distanceで内部接続辺を�
 
 release時のreadbackはcomponent maskではなくdirect hit maskの4 * ceil(N/32) bytesです。CPUのPieceBitSetへwordのまま復号し、commit_selection / selectable_members / canonical_membersによる最終展開・authority検証を維持します。確定selected bitsetだけを従来どおりuploadし、SELECTED flagのper-piece更新は不要です。
 
-追加常駐GPUメモリはroot bufferの4N bytesとdirect maskの4 * ceil(N/32) bytes（1Mで合計4,125,000 bytes）です。既存preview bufferをcomponent maskとして再利用します。CPUの追加常駐metadataはdirty root bitset（1Mで125,000 bytes）で、初回root uploadだけ一時的な4N-byte Arcを持ちます。preview computeは1 dispatch、O(words + hits)で、root lookupはdirect hitのset bitだけです。idle / pointer dragはroot scan・root upload・preview computeを行わず、vertexの明示的なifによりpreview_active == 0ではrootを読みません。
+preview用の常駐GPUメモリは共有`piece_metadata`内のroot領域4N bytesとdirect maskの4 * ceil(N/32) bytes（1Mで合計4,125,000 bytes）です。既存preview bufferをcomponent maskとして再利用します。CPUの追加常駐metadataはdirty root bitset（1Mで125,000 bytes）で、初回root uploadだけ一時的な4N-byte Arcを持ちます。preview computeは1 dispatch、O(words + hits)で、root lookupはdirect hitのset bitだけです。idle / pointer dragはroot scan・root upload・preview computeを行わず、vertexの明示的なifによりpreview_active == 0ではpreview用のrootを読みません（continuous rotationがactiveの場合はanimation lookupで参照します）。
 
 ## Multi-drag
 
@@ -64,7 +64,7 @@ pending ACK frameにはstate overrideの再計算/追加uploadがありません
 Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_pose`の内部で`presentation_position`がtranslationを合成します。main / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
 
 local Rotate / RotateDrag の continuous presentation も同じ `presentation_pose` に載せます。
-既存 root buffer から可変長 animation record を参照し、final pose に pivot 周りの残差を適用します。
+共有`piece_metadata`のroot領域 → rotation slot領域（DSU rootで参照）から可変長 animation record を参照し、final pose に pivot 周りの残差を適用します。
 point / rectangle の vertex、main visibility、pick ROI visibility、normal / far draw が同じ時刻と
 record を使います。orientation による AABB extent も共通 helper から求めるため、途中45°でも
 canonical90°のextentでcullingしません。previewを無効にしたpickでも、rotationがactiveな間は

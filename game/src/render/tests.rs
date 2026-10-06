@@ -3,6 +3,7 @@ mod component_preview_tests;
 mod far_zoom_tests;
 mod local_rotation_tests;
 mod outline_tests;
+mod piece_metadata_tests;
 mod remote_cursor_tests;
 mod remote_drag_tests;
 mod rotation_tests;
@@ -51,6 +52,12 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
                 render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
                     features: WgpuFeatures::TIMESTAMP_QUERY
                         | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS,
+                    // Exercise every puzzle path with the WebGPU storage limit,
+                    // even when the real adapter advertises more bindings.
+                    constrained_limits: Some(WgpuLimits {
+                        max_storage_buffers_per_shader_stage: 8,
+                        ..default()
+                    }),
                     ..default()
                 })),
                 ..default()
@@ -164,6 +171,9 @@ fn pick(app: &mut App, rect: Rect, mode: SelectionMode) -> Vec<PieceId> {
     }
 }
 fn read_buffer(app: &App, source: &Buffer, size: u64) -> Vec<u8> {
+    read_buffer_range(app, source, 0, size)
+}
+fn read_buffer_range(app: &App, source: &Buffer, offset: u64, size: u64) -> Vec<u8> {
     let world = app.sub_app(RenderApp).world();
     let device = world.resource::<RenderDevice>();
     let queue = world.resource::<RenderQueue>();
@@ -174,7 +184,7 @@ fn read_buffer(app: &App, source: &Buffer, size: u64) -> Vec<u8> {
         BufferUsages::COPY_DST | BufferUsages::MAP_READ,
     );
     let mut encoder = device.create_command_encoder(&default());
-    encoder.copy_buffer_to_buffer(source, 0, &staging, 0, size);
+    encoder.copy_buffer_to_buffer(source, offset, &staging, 0, size);
     queue.submit([encoder.finish()]);
     let (tx, rx) = crossbeam::channel::bounded(1);
     staging.slice(..).map_async(MapMode::Read, move |r| {

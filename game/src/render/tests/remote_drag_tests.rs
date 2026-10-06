@@ -93,7 +93,12 @@ fn gpu_remote_presentation_normal_far_culling_picking_and_scalar_uploads() {
             2
         );
         assert_eq!(
-            read_buffer(&app, &gpu.buffers.as_ref().unwrap().remote_slots, 16),
+            read_buffer_range(
+                &app,
+                &gpu.buffers.as_ref().unwrap().piece_metadata,
+                PieceMetadataLayout { capacity: 4 }.remote_slot_offset(0),
+                16,
+            ),
             bytemuck::cast_slice::<u32, u8>(&[slots[0], slots[1], 0, 0])
         );
         let canonical = app.world().resource::<PieceDataStore>().states.clone();
@@ -111,6 +116,7 @@ fn gpu_remote_presentation_normal_far_culling_picking_and_scalar_uploads() {
             assert_eq!(gpu.root_upload_bytes, 0);
             assert_eq!(gpu.selection_upload_bytes, 0);
             assert_eq!(gpu.remote_mapping_upload_bytes, 0);
+            assert_eq!(gpu.rotation_upload_bytes, 0);
             assert_eq!(gpu.remote_mapping_upload_calls, 0);
             assert_eq!(gpu.remote_delta_upload_bytes, 512);
             let presentation = app.world().resource::<RemoteDragPresentation>();
