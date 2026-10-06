@@ -3,6 +3,25 @@ struct RotationAnimation {
     pivot:vec2<f32>,offset:vec2<f32>,residual:f32,start:f32,duration:f32,padding:f32,
 };
 struct PresentationPose { position:vec2<f32>,rotation:vec2<f32> };
+// Same counterclockwise quarter turns and bits 9..10 as jigsall_core::rotation.
+fn decode_rotation(flags:u32)->u32 {return (flags>>9u)&3u;}
+fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
+    switch rotation&3u {
+        case 1u: {return vec2(-v.y,v.x);}
+        case 2u: {return -v;}
+        case 3u: {return vec2(v.y,-v.x);}
+        default: {return v;}
+    }
+}
+fn quarter_half_size(half:vec2<f32>,quarter:u32)->vec2<f32> {
+    return select(half,half.yx,(quarter&1u)!=0u);
+}
+// The local axes align with world X/Y, so no length/sqrt is needed even with
+// anisotropic viewport scales. Return local dimensions for rotate_quarter.
+fn quarter_splat_size(size:vec2<f32>,quarter:u32,pixel_world_size:vec2<f32>,minimum_px:f32)->vec2<f32> {
+    let local_pixel_size=quarter_half_size(pixel_world_size,quarter);
+    return max(size,local_pixel_size*minimum_px);
+}
 // Shared by normal/far draw and main/pick visibility. Local membership wins.
 fn presentation_position(canonical:vec2<f32>, flags:u32, local_member:bool, local_delta:vec2<f32>, remote_slot:u32, remote_delta:vec2<f32>)->vec2<f32> {
     if (flags&8u)==0u {return canonical;}
@@ -29,7 +48,7 @@ fn rotation_progress(animation:RotationAnimation,time:f32)->f32 {
     return clamp((time-animation.start)/animation.duration,0.0,1.0);
 }
 fn presentation_pose(canonical:vec2<f32>,flags:u32,local_member:bool,local_delta:vec2<f32>,remote_slot:u32,remote_delta:vec2<f32>,animation:RotationAnimation,time:f32)->PresentationPose {
-    let quarter=(flags>>9u)&3u;
+    let quarter=decode_rotation(flags);
     let rotations=array<vec2<f32>,4>(vec2(1.0,0.0),vec2(0.0,1.0),vec2(-1.0,0.0),vec2(0.0,-1.0));
     var rotation=rotations[quarter];
     var base=canonical;

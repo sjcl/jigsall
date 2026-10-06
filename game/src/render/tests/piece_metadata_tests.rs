@@ -204,6 +204,131 @@ fn prepare_frame(app: &mut App, edit: impl FnOnce(&mut ExtractedPuzzle)) {
 }
 
 #[test]
+fn renderer_failure_revokes_ready_and_is_scoped_to_its_epoch() {
+    let ready = RenderReady::waiting_for_test();
+    ready.signal_for_test(7);
+    assert!(ready.is_ready(7));
+    ready.fail(7, "invalid GPU metadata range");
+    assert!(!ready.is_ready(7));
+    assert_eq!(
+        ready.error(7).as_deref(),
+        Some("invalid GPU metadata range")
+    );
+    assert!(ready.error(8).is_none());
+    ready.signal_for_test(8);
+    assert!(ready.is_ready(8));
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_piece_metadata_invalid_ranges_report_error_stop_rendering_and_recover_next_epoch() {
+    let (mut app, _, target) = gpu_app(128);
+    app.insert_resource(definition(UVec2::new(5, 1), 100, 42));
+    for region in [
+        "initial component roots",
+        "component root range",
+        "initial remote slots",
+        "remote slot range",
+        "rotation slot range",
+    ] {
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .initialize(vec![Vec2::ZERO; 5]);
+        wait_ready(&mut app);
+        update_gpu(&mut app);
+        let epoch = app.world().resource::<PieceDataStore>().epoch;
+        let metadata = app
+            .sub_app(RenderApp)
+            .world()
+            .resource::<GpuRenderer>()
+            .buffers
+            .as_ref()
+            .unwrap()
+            .piece_metadata
+            .clone();
+        let before = read_buffer(&app, &metadata, 60);
+        if region == "initial component roots" {
+            app.sub_app_mut(RenderApp)
+                .world_mut()
+                .resource_mut::<GpuRenderer>()
+                .buffers = None;
+        }
+        prepare_frame(&mut app, |frame| match region {
+            "initial component roots" => {
+                frame.upload.initial = Some(
+                    vec![crate::resources::GpuPieceState::new(Vec2::ZERO, PieceId(0)); 5].into(),
+                );
+                frame.upload.initial_roots = Some(vec![0; 6].into());
+            }
+            "component root range" => {
+                frame.upload.root_revision += 1;
+                frame.upload.root_ranges = vec![ComponentRootRange {
+                    start: 4,
+                    roots: vec![1, 1],
+                }]
+                .into();
+            }
+            "initial remote slots" => {
+                frame.remote.revision += 1;
+                frame.remote.initial = Some(vec![1; 6].into());
+            }
+            "remote slot range" => {
+                frame.remote.revision += 1;
+                frame.remote.initial = None;
+                frame.remote.ranges = vec![RemoteSlotRange {
+                    start: 4,
+                    slots: vec![1, 1],
+                }]
+                .into();
+            }
+            "rotation slot range" => {
+                frame.rotation.revision += 1;
+                frame.rotation.ranges = vec![RotationSlotRange {
+                    start: 4,
+                    slots: vec![1, 1],
+                }]
+                .into();
+            }
+            _ => unreachable!(),
+        });
+        let ready = app.world().resource::<RenderReady>();
+        assert_eq!(
+            ready.error(epoch),
+            Some(format!(
+                "{region} exceed{} piece capacity",
+                if region.ends_with("range") { "s" } else { "" }
+            ))
+        );
+        assert!(!ready.is_ready(epoch));
+        assert_eq!(read_buffer(&app, &metadata, 60), before, "{region}");
+        // Extraction replaces the bad payload, but this epoch must stay stopped.
+        let pixels = rendered_pixels(&mut app, target.clone());
+        assert!(
+            pixels.chunks_exact(4).all(|p| p[..3] == [0, 0, 0]),
+            "{region}"
+        );
+        assert!(!app.world().resource::<RenderReady>().is_ready(epoch));
+        let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+        assert_eq!(
+            gpu.upload_bytes
+                + gpu.root_upload_bytes
+                + gpu.remote_mapping_upload_bytes
+                + gpu.rotation_upload_bytes,
+            0
+        );
+    }
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .initialize(vec![Vec2::ZERO; 5]);
+    wait_ready(&mut app);
+    let epoch = app.world().resource::<PieceDataStore>().epoch;
+    assert!(app.world().resource::<RenderReady>().error(epoch).is_none());
+    assert!(rendered_pixels(&mut app, target)
+        .chunks_exact(4)
+        .any(|p| p[0] != 0));
+}
+
+#[test]
 #[ignore = "requires a real GPU"]
 fn gpu_piece_metadata_initialization_sparse_regions_revisions_and_new_epoch() {
     let (mut app, _, _) = gpu_app(128);

@@ -71,6 +71,10 @@ impl RenderReady {
     pub fn is_ready(&self, epoch: u64) -> bool {
         !self.enabled || self.epoch.load(Ordering::Acquire) == epoch
     }
+    fn fail(&self, epoch: u64, error: impl Into<String>) {
+        self.epoch.store(0, Ordering::Release);
+        *self.error.lock().unwrap() = Some((epoch, error.into()));
+    }
     pub fn error(&self, epoch: u64) -> Option<String> {
         self.error
             .lock()
@@ -824,6 +828,10 @@ fn prepare_buffers(
         gpu.buffers = None;
         return;
     }
+    // Latch renderer failures for this puzzle. A fresh epoch can initialize again.
+    if ready.error(frame.upload.epoch).is_some() {
+        return;
+    }
     if gpu
         .buffers
         .as_ref()
@@ -838,10 +846,10 @@ fn prepare_buffers(
             return;
         }
         if u64::from(count) * 16 > device.limits().max_storage_buffer_binding_size {
-            *ready.error.lock().unwrap() = Some((
+            ready.fail(
                 frame.upload.epoch,
-                "GPU storage buffer limit is too small for this puzzle".into(),
-            ));
+                "GPU storage buffer limit is too small for this puzzle",
+            );
             return;
         }
         let capacity = count;
@@ -849,6 +857,13 @@ fn prepare_buffers(
             return;
         };
         let metadata = PieceMetadataLayout { capacity };
+        let Some(offset) = metadata.root_range_offset(0, initial_roots.len()) else {
+            ready.fail(
+                frame.upload.epoch,
+                "initial component roots exceed piece capacity",
+            );
+            return;
+        };
         let piece_metadata = buffer(
             &device,
             "piece metadata: component roots, remote slots, rotation slots",
@@ -856,13 +871,7 @@ fn prepare_buffers(
             BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
         );
         // wgpu zero-initializes the remote/rotation regions; only roots need data.
-        queue.write_buffer(
-            &piece_metadata,
-            metadata
-                .root_range_offset(0, initial_roots.len())
-                .expect("initial component roots exceed piece capacity"),
-            bytemuck::cast_slice(initial_roots),
-        );
+        queue.write_buffer(&piece_metadata, offset, bytemuck::cast_slice(initial_roots));
         gpu.root_upload_bytes = u64::from(count) * 4;
         gpu.root_upload_calls = 1;
         let states = buffer(
@@ -998,11 +1007,13 @@ fn prepare_buffers(
     }
     if buffers.root_revision != frame.upload.root_revision {
         for range in frame.upload.root_ranges.iter() {
+            let Some(offset) = metadata.root_range_offset(range.start, range.roots.len()) else {
+                ready.fail(buffers.epoch, "component root range exceeds piece capacity");
+                return;
+            };
             queue.write_buffer(
                 &buffers.piece_metadata,
-                metadata
-                    .root_range_offset(range.start, range.roots.len())
-                    .expect("component root range exceeds piece capacity"),
+                offset,
                 bytemuck::cast_slice(&range.roots),
             );
             root_bytes += range.roots.len() as u64 * 4;
@@ -1033,22 +1044,27 @@ fn prepare_buffers(
     if frame.remote.epoch == buffers.epoch {
         if buffers.remote_revision != frame.remote.revision {
             if let Some(initial) = &frame.remote.initial {
+                let Some(offset) = metadata.remote_range_offset(0, initial.len()) else {
+                    ready.fail(buffers.epoch, "initial remote slots exceed piece capacity");
+                    return;
+                };
                 queue.write_buffer(
                     &buffers.piece_metadata,
-                    metadata
-                        .remote_range_offset(0, initial.len())
-                        .expect("initial remote slots exceed piece capacity"),
+                    offset,
                     bytemuck::cast_slice(initial),
                 );
                 remote_bytes = initial.len() as u64 * 4;
                 remote_calls = 1;
             } else {
                 for range in frame.remote.ranges.iter() {
+                    let Some(offset) = metadata.remote_range_offset(range.start, range.slots.len())
+                    else {
+                        ready.fail(buffers.epoch, "remote slot range exceeds piece capacity");
+                        return;
+                    };
                     queue.write_buffer(
                         &buffers.piece_metadata,
-                        metadata
-                            .remote_range_offset(range.start, range.slots.len())
-                            .expect("remote slot range exceeds piece capacity"),
+                        offset,
                         bytemuck::cast_slice(&range.slots),
                     );
                     remote_bytes += range.slots.len() as u64 * 4;
@@ -1089,11 +1105,14 @@ fn prepare_buffers(
             rotation_bytes += count as u64 * 32;
         }
         for range in frame.rotation.ranges.iter() {
+            let Some(offset) = metadata.rotation_range_offset(range.start, range.slots.len())
+            else {
+                ready.fail(buffers.epoch, "rotation slot range exceeds piece capacity");
+                return;
+            };
             queue.write_buffer(
                 &buffers.piece_metadata,
-                metadata
-                    .rotation_range_offset(range.start, range.slots.len())
-                    .expect("rotation slot range exceeds piece capacity"),
+                offset,
                 bytemuck::cast_slice(&range.slots),
             );
             rotation_bytes += range.slots.len() as u64 * 4;
@@ -1202,7 +1221,7 @@ fn puzzle_node(
     ready: Res<RenderReady>,
     mut context: RenderContext,
 ) {
-    if frame.camera != Some(view.entity()) {
+    if frame.camera != Some(view.entity()) || ready.error(frame.upload.epoch).is_some() {
         return;
     }
     let target = view.into_inner();
@@ -1214,7 +1233,7 @@ fn puzzle_node(
         gpu.rectangle_pipeline.unwrap(),
     ] {
         if let CachedPipelineState::Err(error) = cache.get_render_pipeline_state(id) {
-            *ready.error.lock().unwrap() = Some((frame.upload.epoch, error.to_string()));
+            ready.fail(frame.upload.epoch, error.to_string());
             return;
         }
     }
@@ -1230,7 +1249,7 @@ fn puzzle_node(
         gpu.preview_collapse.unwrap(),
     ] {
         if let CachedPipelineState::Err(error) = cache.get_compute_pipeline_state(id) {
-            *ready.error.lock().unwrap() = Some((frame.upload.epoch, error.to_string()));
+            ready.fail(frame.upload.epoch, error.to_string());
             return;
         }
     }

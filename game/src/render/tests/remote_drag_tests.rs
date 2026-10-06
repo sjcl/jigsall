@@ -14,6 +14,12 @@ fn remote_presentation_shader_paths_share_the_position_function() {
             source.matches("presentation_pose(state.position,").count(),
             1
         );
+        assert_eq!(
+            source
+                .matches("presentation_position(state.position,")
+                .count(),
+            1
+        );
         assert!(!source.contains("position+=config.drag_delta"));
     }
 }

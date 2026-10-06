@@ -222,6 +222,10 @@ byte base は root = 0、remote = 4N、rotation = 8N です。
 Rust の `PieceMetadataLayout` が u64 で size / range offset を計算します。
 全 metadata write（root / remote の初期 snapshot を含む）は checked range helper を使い、
 `start <= capacity` と `len <= capacity - start` を満たさない場合は GPU write 前に拒否します。
+範囲異常は panic せず `RenderReady` に epoch 付き renderer error を記録し、ready を解除します。
+同じ epoch の upload / draw / picking を停止し、payload が正常に戻っても再開しません。
+新しい epoch では buffer を再初期化して再開できます。初期化中のエラーは既存の
+`GenerationError::Renderer` 経路で通知します。
 検証は release build でも有効で、隣接領域への侵入を防ぎます。領域末尾の空 range は許可します。
 WGSL は `config.capacity` に基づく `component_root` / `remote_slot` / `rotation_slot` で参照します。
 新 epoch では `initial_roots` を先頭領域へ upload し、残りは wgpu の zero initialization
@@ -255,6 +259,14 @@ component preview の2 fixture は10,000座標の snapshot capture が `OutsideP
 残る実 GPU 21件が成功しました。上記の既存失敗4件は除外しています。
 通常 `jigsall-game` テスト725件と doctest 1件、workspace の Clippy、fmt も成功しました。
 
+renderer error 化・quarter-turn 経路の追加後、同じ環境で通常 `jigsall-game` 727件と
+doctest 1件、workspace 全 target の Clippy、fmt が成功しました。release の実 GPU 24件も
+成功しました（上記の既存失敗4件を除外、既存の描画 benchmark を含む）。
+5種類の不正 metadata range（root 初期値・root range・remote 初期値・remote range・rotation range）で、
+隣接領域を変更せず renderer error を通知し、同 epoch の upload / draw を停止して次 epoch で
+復旧することを確認しました。別 component が animation 中の非回転 piece について、
+normal / far、四方向、非等方 pixel scale で idle 時と画像・point / rectangle picking が一致しました。
+
 ### Continuous rotation presentation
 
 回転の責務は次の順です。
@@ -263,7 +275,7 @@ component preview の2 fixture は10,000座標の snapshot capture が `OutsideP
 canonical quarter-turn (PieceDataStore.states; authority が即時 commit)
   → prediction final pose (store.local_rotation; 未 ACK suffix)
   → continuous visual presentation (store.rotation_visual; 時刻付き残差)
-  → render + GPU picking (presentation.wgsl::presentation_pose)
+  → render + GPU picking (presentation.wgsl の quarter-turn / presentation_pose)
 ```
 
 `resources/rotation_visual.rs` は連続角度・pivot・補正 translation・開始時刻・duration を
@@ -285,6 +297,13 @@ snap による component 結合・placement では対象の残差を破棄しま
 
 GPU は metadata の component root 領域 → `rotation_slot(root)` → 可変長 32-byte animation record
 を参照します。stable minimum と DSU root が異なる union history にも対応します。
+draw / main visibility / pick visibility は `rotation_active == 0` なら回転用の root / slot
+を読みません。active frame でも `rotation_slot == 0` の piece は quarter-turn 専用経路を使います。
+この経路の頂点変換は符号反転と xy 交換、AABB は偶奇による xy 交換です。
+far splat の最小寸法は world-per-pixel の xy 交換と max で求め、sin / cos / length / sqrt
+や animation progress を評価しません。非等方な pixel scale でも draw と picking の footprint
+を共有します。slot が非ゼロの piece だけが continuous pose / 回転 AABB / splat 計算を行います。
+selection preview が active の場合の root 参照は、回転処理と独立して維持します。
 固定 slot 上限はなく、独立 component はそれぞれ自身の pivot を持ちます。
 rotation 用 GPU memory は metadata 内の root→slot 領域の 4N bytes と、同時 animation record の capacity × 32 bytes
 （最低 1 record、増設時は 2 の冪）です。100万 pieces の rotation lookup 領域は 4,000,000 bytes です。
@@ -295,7 +314,7 @@ piece state / slot / record の再 upload はありません。終了 frame も�
 最後の animation が終わると uniform の active flag を落とし、shader の root lookup を省きます。
 期限切れ record は次の変更境界で回収し、table 作成の時刻を原点にして GPU f32 時刻の精度を保ちます。
 
-通常 / far draw、main / pick visibility、point / rectangle は同じ `presentation_pose` を
+continuous 経路の通常 / far draw、main / pick visibility、point / rectangle は同じ `presentation_pose` を
 使用し、continuous orientation に対応する AABB extent も共有します。
 far splat は従来の pixel snapping と共通の footprint / alpha 判定を保ちます。
 wire、save、snapshot、16-byte `GpuPieceState`、authority validation、snap / connectivity、
@@ -304,6 +323,19 @@ Puzzle 初期化、snapshot / baseline install、Menu cleanup は animation を�
 remote player の新規回転 animation はこの段階では開始せず、共通 transform と network から
 独立した record を今後の入口として残します。height / shadow / side / bevel と新たな quality /
 LOD は今回は追加していません。record の progress は後続の presentation effect に使えます。
+
+2026-10-06、上記 RTX 5090 / Vulkan 環境で `procedural_gpu_benchmark` を直前の検証済み
+`48f55f8` release build と比較しました。4096²画像・1024² offscreen・非 continuous rotation
+で変更前後を交互に各3回実行し、各 run の30 frame平均 GPU timestamp の中央値を使いました。
+100万 piece 全体表示（far）の結果は次のとおりです。
+
+| mode | cull before → after (ms) | draw before → after (ms) |
+| --- | --- | --- |
+| opaque | 0.0272 → 0.0280 | 0.4950 → 0.4949 |
+| translucent | 0.0182 → 0.0183 | 0.5080 → 0.5008 |
+
+全 benchmark 条件で visible count は一致しました。この測定では明確な時間短縮は確認できず、
+GPU / compiler / bottleneck に依存するため、演算の省略から速度向上率を推定しません。
 
 ### Remote drag presentation
 

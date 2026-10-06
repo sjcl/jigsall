@@ -1,4 +1,4 @@
-#import jigsall::presentation::{presentation_pose, presentation_rotate, presentation_splat_size, RotationAnimation}
+#import jigsall::presentation::{presentation_pose, presentation_position, presentation_rotate, presentation_splat_size, decode_rotation, rotate_quarter, quarter_splat_size, RotationAnimation}
 #import jigsall::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
@@ -12,16 +12,6 @@ struct PuzzleUniform {
     rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
-// Same counterclockwise quarter turns and bits 9..10 as jigsall_core::rotation.
-fn decode_rotation(flags:u32)->u32 {return (flags>>9u)&3u;}
-fn rotate_quarter(v:vec2<f32>,rotation:u32)->vec2<f32> {
-    switch rotation&3u {
-        case 1u: {return vec2(-v.y,v.x);}
-        case 2u: {return -v;}
-        case 3u: {return vec2(v.y,-v.x);}
-        default: {return v;}
-    }
-}
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
 @group(0) @binding(1) var<storage,read> states:array<PieceState>;
 @group(0) @binding(2) var<storage,read> visible:array<u32>;
@@ -53,21 +43,34 @@ struct VertexOutput {
     let slot=remote_slot(id);
     let packed=remote_deltas.entries[(max(slot,1u)-1u)/2u];
     let remote_delta=select(packed.xy,packed.zw,slot!=0u && ((slot-1u)&1u)!=0u);
-    var animation:RotationAnimation;
+    // Uniform gate avoids both metadata lookups on ordinary frames; a zero
+    // component slot also keeps unrelated pieces on the quarter-turn path.
+    var animation_slot=0u;
     if config.rotation_active!=0u {
-        let animation_slot=rotation_slot(component_root(id));
-        if animation_slot!=0u {animation=rotation_animations[animation_slot-1u];}
+        animation_slot=rotation_slot(component_root(id));
     }
-    let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
-    let position=pose.position;
+    let quarter=decode_rotation(state.flags);
+    var position=presentation_position(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta);
+    var rotation:vec2<f32>;
+    if animation_slot!=0u {
+        let animation=rotation_animations[animation_slot-1u];
+        let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
+        position=pose.position;rotation=pose.rotation;
+    }
     var out:VertexOutput;
-    let rotation=pose.rotation;
     if config.far_zoom!=0u {
         let center=config.clip_from_world*vec4(position,0.0,1.0);
         let center_px=config.viewport_origin+(center.xy/center.w*vec2(0.5,-0.5)+0.5)*config.viewport_size;
         let snapped_px=floor(center_px)+0.5;
-        let splat_size=presentation_splat_size(config.size,rotation,config.pixel_world_size,config.splat_min_px);
-        let offset=presentation_rotate(corners[vi]*splat_size*0.5,rotation)/config.pixel_world_size;
+        var world_offset:vec2<f32>;
+        if animation_slot==0u {
+            let splat_size=quarter_splat_size(config.size,quarter,config.pixel_world_size,config.splat_min_px);
+            world_offset=rotate_quarter(corners[vi]*splat_size*0.5,quarter);
+        } else {
+            let splat_size=presentation_splat_size(config.size,rotation,config.pixel_world_size,config.splat_min_px);
+            world_offset=presentation_rotate(corners[vi]*splat_size*0.5,rotation);
+        }
+        let offset=world_offset/config.pixel_world_size;
         let pixel=snapped_px+offset*vec2(1.0,-1.0);
         let ndc=(pixel-config.viewport_origin)/config.viewport_size*vec2(2.0,-2.0)+vec2(-1.0,1.0);
         out.position=vec4(ndc*center.w,center.z,center.w);
@@ -78,7 +81,10 @@ struct VertexOutput {
     } else {
         let half=config.size*0.5+0.22*min(config.size.x,config.size.y);
         let local=corners[vi]*half;let edges=piece_profiles(config.seed,config.grid,cell);
-        out.position=config.clip_from_world*vec4(position+presentation_rotate(local,rotation),0.0,1.0);
+        var world_offset:vec2<f32>;
+        if animation_slot==0u {world_offset=rotate_quarter(local,quarter);}
+        else {world_offset=presentation_rotate(local,rotation);}
+        out.position=config.clip_from_world*vec4(position+world_offset,0.0,1.0);
         out.local=local;out.uv=piece_uv(cell,local,config.size,config.image_size);
         out.top=edges[0];out.right=edges[1];out.bottom=edges[2];out.left=edges[3];
     }

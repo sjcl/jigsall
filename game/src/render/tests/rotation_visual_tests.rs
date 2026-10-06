@@ -23,15 +23,128 @@ fn continuous_presentation_is_shared_by_draw_and_both_visibility_paths() {
     let draw = include_str!("../puzzle_render.wgsl");
     assert!(draw.contains("presentation_rotate(local,rotation)"));
     assert!(draw.contains("presentation_rotate(corners[vi]*splat_size*0.5,rotation)"));
-    assert!(draw.contains("let rotation=pose.rotation"));
+    assert!(draw.contains("rotation=pose.rotation"));
     assert!(draw.contains("fn point_fragment"));
     assert!(draw.contains("fn rectangle_fragment"));
+}
+
+#[test]
+fn quarter_turn_path_gates_rotation_metadata_and_continuous_math() {
+    for source in [
+        include_str!("../puzzle_render.wgsl"),
+        include_str!("../visibility.wgsl"),
+        include_str!("../pick_visibility.wgsl"),
+    ] {
+        // Metadata is loaded only inside the uniform gate, and pose/trig only
+        // after a nonzero slot. Keep these performance guards explicit in WGSL.
+        let compact: String = source.split_whitespace().collect();
+        assert!(compact.contains(
+            "ifconfig.rotation_active!=0u{animation_slot=rotation_slot(component_root(id));}"
+        ));
+        assert!(
+            compact.contains(
+                "ifanimation_slot!=0u{letanimation=rotation_animations[animation_slot-1u];"
+            ) || compact.contains("}else{letanimation=rotation_animations[animation_slot-1u];")
+        );
+        let continuous = source
+            .find("let animation=rotation_animations[animation_slot-1u];")
+            .unwrap();
+        let pose = source.find("let pose=presentation_pose(").unwrap();
+        assert!(continuous < pose);
+        assert!(source.contains("if animation_slot==0u {"));
+        assert!(source.contains("quarter_splat_size(config.size,quarter,"));
+    }
+    let shared = include_str!("../presentation.wgsl");
+    let quarter_functions = shared.split("// Shared by normal/far draw").next().unwrap();
+    for expensive in ["sin(", "cos(", "length(", "sqrt(", "rotation_progress("] {
+        assert!(!quarter_functions.contains(expensive));
+    }
 }
 
 #[derive(Resource, Default)]
 struct VisualTime(f64);
 fn freeze_clock(time: Res<VisualTime>, mut store: ResMut<PieceDataStore>) {
     store.rotation_visual.clock = time.0;
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_quarter_turn_unanimated_component_matches_idle_during_other_animation() {
+    for far in [false, true] {
+        let (mut app, camera, target) = gpu_app(128);
+        app.init_resource::<VisualTime>()
+            .add_systems(First, freeze_clock.after(update_rotation_clock));
+        // Exercise different world-per-pixel scales along X and Y.
+        app.world_mut().get_mut::<Transform>(camera).unwrap().scale = Vec3::new(2.0, 1.0, 1.0);
+        let mut def = definition(UVec2::new(2, 1), if far { 2 } else { 40 }, 42);
+        def.image_size.y = if far { 8 } else { 10 };
+        app.insert_resource(def.clone());
+        for quarter in 0..4 {
+            app.world_mut().resource_mut::<VisualTime>().0 = 0.0;
+            {
+                let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+                store.initialize(vec![Vec2::new(-32.0, -24.0), Vec2::new(32.0, 24.0)]);
+                store.states[0].flags = jigsall_core::with_rotation(ENABLED, quarter);
+            }
+            wait_ready(&mut app);
+            let before = rendered_pixels(&mut app, target.clone());
+            let config = &app
+                .sub_app(RenderApp)
+                .world()
+                .resource::<ExtractedPuzzle>()
+                .config;
+            assert_eq!(config.far_zoom, u32::from(far));
+            assert_eq!(config.rotation_active, 0);
+            assert_eq!(config.pixel_world_size, Vec2::new(2.0, 1.0));
+            let center = Rect::new(48.0, 88.0, 49.0, 89.0);
+            for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+                assert_eq!(pick(&mut app, center, mode), vec![PieceId(0)]);
+            }
+            {
+                let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+                let cmd = PieceCommand::Rotate {
+                    target: PieceTarget::Component(
+                        ComponentRef::from_member(&store.connectivity, PieceId(1)).unwrap(),
+                    ),
+                    quarter_turns: 1,
+                };
+                let boundary = store.capture_rotation_command(&cmd, Some(&def));
+                assert_eq!(
+                    store
+                        .apply_command(LOCAL_PLAYER, &cmd, Some(&def), LOCAL_PLAYER)
+                        .rotated,
+                    1
+                );
+                store.finish_rotation_boundary(boundary);
+            }
+            app.world_mut().resource_mut::<VisualTime>().0 = 0.060;
+            let after = rendered_pixels(&mut app, target.clone());
+            assert_eq!(
+                app.sub_app(RenderApp)
+                    .world()
+                    .resource::<ExtractedPuzzle>()
+                    .config
+                    .rotation_active,
+                1
+            );
+            // Bottom half contains only the unanimated component, including its
+            // complete non-square shape/splat footprint, for all four quarters.
+            assert_eq!(
+                &before[64 * 128 * 4..],
+                &after[64 * 128 * 4..],
+                "far={far}, quarter={quarter}"
+            );
+            for mode in [SelectionMode::Point, SelectionMode::Rectangle] {
+                assert_eq!(pick(&mut app, center, mode), vec![PieceId(0)]);
+            }
+            assert_eq!(visible_ids(&app).len(), 2);
+            let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+            assert_eq!(
+                gpu.upload_bytes + gpu.root_upload_bytes + gpu.rotation_upload_bytes,
+                0
+            );
+        }
+    }
 }
 
 #[test]

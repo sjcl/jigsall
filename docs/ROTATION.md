@@ -182,7 +182,11 @@ GPU root buffer を使う root→slot lookup は4 bytes / piece、record は32 b
 です。slot 数は可変で、RotateDrag の独立 component は別々の pivot を持ちます。
 CPU は操作境界でだけ member planner / table 準備を行い、animation frame は clock / uniform
 を更新するだけです。CPU position の全 member 再計算と `GpuPieceState` 再 upload はありません。
-main / pick visibility、normal / far draw、point / rectangle は `presentation_pose` を共有します。
+main / pick visibility、normal / far draw、point / rectangle は quarter-turn と continuous の
+2経路を共有します。`rotation_active == 0` では回転用 root / slot lookup を省き、active frame
+でも slot が0の piece は quarter-turn 経路です。符号反転・xy交換で頂点と AABB を求め、
+far splat の最小寸法も pixel scale のxy交換とmaxで計算し、sin / cos / length / sqrt を使いません。
+slot が非ゼロの場合だけ `presentation_pose` と連続回転の footprint を評価します。
 UV / shape / alpha は canonical local の共通判定を保ちます。
 
 continuous angle / progress は save、snapshot、protocol、authority、snap、connectivity、
