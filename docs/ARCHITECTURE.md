@@ -405,6 +405,8 @@ elevation非依存でshadow / sideと独立してextractでO(1) resolveし、far
 全辺SDFによるcoverageを維持し、selection / previewと共有する`outer_boundary_distance`で結合内部辺を
 除外します。全4辺connected memberはfinite constantをderivativeへ渡してlightingをskipします。
 外周distanceのscreen derivativeをdiscard前・frame uniform分岐内で求め、その長さでpixel距離へ変換します。
+bevel band内だけ、local座標のscreen derivativeで外向きへ`inside_px + 0.75 px`進み、同じprofileの
+外周distanceが正になることを確認します。凸タブ内部のnominal rectangle zero contourには照明を適用しません。
 normalと共通方向の反対`-PSEUDO_3D_DIRECTION`の内積からlinear RGBを控えめに補正し、alphaを維持します。
 光源はscreen-space左上に固定され、camera / quarter-turn / continuous rotationでも同じ向きです。
 bevelの後に既存selection / preview outlineを適用します。elevationを幅・強度へ使いません。

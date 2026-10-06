@@ -111,6 +111,11 @@ normal zoomでは外周distanceの `dpdx` / `dpdy` をdiscardとper-piece分岐�
 `bevel_enabled` 分岐内で計算します。gradientの長さでdistanceをphysical pixelへ換算し、1 − smoothstep
 で内側だけを補正します。screen-spaceのouter normalと `-PSEUDO_3D_DIRECTION` の内積により、
 左上向きは少し明るく、右下向きは少し暗くします。piece / camera回転でも光源はscreen-space固定です。
+bevel band内だけ、現在fragmentから外向きへ `inside_px + 0.75 px` 進んだ位置で同じprofileの
+`piece_edge_distances` → `outer_boundary_distance` を再評価し、正のdistanceになった境界だけを照らします。
+移動は `dpdx(local)` / `dpdy(local)` でscreen-spaceからpiece-localへ変換するため、zoom / camera回転 /
+piece回転 / continuous rotationでもprobeはphysical pixel基準です。凸タブ内部に残るnominal rectangleの
+zero contourは、probe先も内部なので照明から除外します。形状・coverage用SDFとoutlineは変更しません。
 linear RGBを白 / 黒へ控えめに寄せてclampし、alphaはそのままです。その後にselection / preview outlineを
 適用するため、outline色が優先されます。画像alpha 0の領域にbevelだけを残しません。
 
@@ -145,6 +150,14 @@ cargo test --release --locked -p jigsall-game gpu_scaled_visuals -- --ignored --
 cargo test --release --locked -p jigsall-game --lib drag_elevation_million_grab_boundary_benchmark -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
+
+`gpu_bevel_convex_tab_has_no_nominal_rectangle_seam` は単独の凸タブpieceをLowのflat referenceと比較し、
+nominal rectangle edgeの両側とbevel幅内に明暗線がないこと、曲線・直線の実外周には明暗が残ることを
+実GPUで確認します。0°の静止、90°、連続回転中間、zoom差、camera回転、High品質を含みます。
+2026-10-07、Windows / RTX 5090 / Vulkan（NVIDIA 610.88）のreleaseで、
+`cargo test -p jigsall-game --release --locked render::tests -- --include-ignored --skip benchmark --nocapture --test-threads=1`
+を実行し、通常・実GPUのrendererテスト88件が成功しました。bevel、coverage、point / rectangle picking、
+alpha hole、outline、side / shadow、buffer layoutとuploadの回帰を含み、性能benchmarkは対象外です。
 
 `resources/drag_elevation/tests.rs` はgrab / hold / early cancel / release、fade中の再grab、部分解除、
 remote slot再利用 / teardown / epoch切替、rotationとのmaxの連続性を検証します。

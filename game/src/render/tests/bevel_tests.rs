@@ -125,10 +125,11 @@ fn bevel_is_fragment_only_without_new_bindings_or_elevation_work() {
         .split("fn check_selectable")
         .next()
         .unwrap();
-    assert!(
-        fragment.find("dpdx(bevel_boundary)").unwrap()
-            < fragment.find("sample_visible(in,d)").unwrap()
-    );
+    for derivative in ["dpdx(bevel_boundary)", "dpdx(in.local)", "dpdy(in.local)"] {
+        assert!(
+            fragment.find(derivative).unwrap() < fragment.find("sample_visible(in,d)").unwrap()
+        );
+    }
     assert!(
         fragment.find("bevel_color(").unwrap()
             < fragment.find("mix(color.rgb,line,coverage)").unwrap()
@@ -605,10 +606,131 @@ fn gpu_bevel_full_presentation_presets_can_save_native_previews() {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_bevel_convex_tab_has_no_nominal_rectangle_seam() {
+    let (mut app, camera, target) = fixture(80);
+    let size = Vec2::splat(80.0);
+    let half = size * 0.5;
+    // A broad, deep right tab leaves room to inspect both sides of the
+    // nominal rectangle edge without including the real curved contour.
+    let seed = (0..256)
+        .find(|&seed| {
+            let raw = piece_profiles(seed, UVec2::splat(2), UVec2::ZERO)[1];
+            let p = decode_profile(raw);
+            p.polarity > 0.0 && p.depth > 0.17 && p.neck_width > 0.10
+        })
+        .unwrap();
+    let def = definition(UVec2::splat(2), 160, seed);
+    let profiles = piece_profiles(seed, def.grid_size, UVec2::ZERO);
+    let tab = decode_profile(profiles[1]);
+    app.insert_resource(def);
+    {
+        let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+        store.initialize(vec![Vec2::ZERO; 4]);
+        for state in store.states.iter_mut().skip(1) {
+            state.flags = 0;
+        }
+    }
+    app.init_resource::<ShadowTime>()
+        .add_systems(First, freeze_shadow_clock.after(update_rotation_clock));
+    for time in [0.0, 0.030, 0.060, 0.120] {
+        if time == 0.030 {
+            turn(&mut app, 1);
+        }
+        app.world_mut().resource_mut::<ShadowTime>().0 = time;
+        for (scale, camera_angle) in [
+            (1.0, 0.0),
+            (1.5, 0.0),
+            (0.8, 0.37),
+            (1.5, std::f32::consts::FRAC_PI_2),
+        ] {
+            {
+                let mut transform = app.world_mut().get_mut::<Transform>(camera).unwrap();
+                transform.scale = Vec3::new(scale, scale, 1.0);
+                transform.rotation = Quat::from_rotation_z(camera_angle);
+                // Sample close to the seam as well as across the whole band.
+                transform.translation = Vec3::new(0.25, 0.125, 0.0);
+            }
+            set_visuals(&mut app, top_only(PieceVisualQuality::Low));
+            let flat = render_frame(&mut app, target.clone());
+            set_visuals(&mut app, top_only(PieceVisualQuality::High));
+            let actual = render_frame(&mut app, target.clone());
+            let config = config(&app);
+            assert_eq!(config.bevel_enabled, 1);
+            let rotation = Mat2::from_angle(display_angle(&app, time));
+            let mut seam = [0_usize; 2];
+            let mut band = [0; 2];
+            let mut away_from_seam = 0;
+            let mut curved = 0;
+            let mut straight = 0;
+            for y in 0..128 {
+                for x in 0..128 {
+                    let base = pixel(&flat, x, y);
+                    let lit = pixel(&actual, x, y);
+                    let local = rotation.transpose() * world_pixel(&config, x, y);
+                    if base == [255; 4] {
+                        assert_eq!(lit, base, "outside coverage at {x},{y}");
+                        continue;
+                    }
+                    assert_ne!(lit, &[255; 4]);
+                    assert_eq!(lit[3], base[3]);
+                    let q = Vec2::new(half.y - local.y, local.x - half.x);
+                    let nominal_px = q.y / scale;
+                    // Geometric samples through the tab neck, independent of
+                    // the shader's gradient/probe implementation. Include the
+                    // tab side and the body side of the nominal edge.
+                    if (q.x - tab.center * size.y).abs() < tab.neck_width * size.y * 0.25
+                        && nominal_px.abs() <= config.bevel_width_px
+                    {
+                        assert_eq!(
+                            lit, base,
+                            "nominal seam at {x},{y}: local={local:?}, time={time}, scale={scale}, camera={camera_angle}"
+                        );
+                        let side = usize::from(nominal_px > 0.0);
+                        band[side] += 1;
+                        if nominal_px.abs() <= 0.5 {
+                            seam[side] += 1;
+                        } else {
+                            away_from_seam += 1;
+                        }
+                    }
+                    // The head's curved exterior is beyond the nominal edge;
+                    // flat outer top/left edges are away from tabs and corners.
+                    if q.y > tab.depth * size.y * 0.55 && lit != base {
+                        curved += 1;
+                    }
+                    if ((half.y - local.y) / scale < config.bevel_width_px
+                        && local.x.abs() < half.x * 0.6
+                        || (local.x + half.x) / scale < config.bevel_width_px
+                            && local.y.abs() < half.y * 0.6)
+                        && lit != base
+                    {
+                        straight += 1;
+                    }
+                }
+            }
+            assert!(
+                seam.iter().sum::<usize>() >= 2
+                    && band.iter().all(|&count| count >= 2)
+                    && away_from_seam >= 2
+                    && curved >= 2
+                    && straight >= 10,
+                "samples: seam={seam:?}, band={band:?}, away={away_from_seam}, curved={curved}, straight={straight}, time={time}, scale={scale}, camera={camera_angle}"
+            );
+            assert_no_uploads(&app);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_bevel_curved_loose_contour_follows_screen_light_during_rotation() {
     let (mut app, _, target) = fixture(80);
     let def = definition(UVec2::splat(2), 80, 42);
     let profiles = piece_profiles(def.seed, def.grid_size, UVec2::ZERO);
+    let head_start = Vec2::new(
+        20.0 + decode_profile(profiles[1]).depth * 40.0 * 0.55,
+        20.0 + decode_profile(profiles[2]).depth * 40.0 * 0.55,
+    );
     app.insert_resource(def);
     {
         let mut store = app.world_mut().resource_mut::<PieceDataStore>();
@@ -640,10 +762,11 @@ fn gpu_bevel_curved_loose_contour_follows_screen_light_during_rotation() {
                 }
                 let world = world_pixel(&config, x, y);
                 let local = rotation.transpose() * world;
-                // Only the curved tab/blank region, away from rectangle corners
-                // and nominal straight edges. The shape reference is CPU-only.
-                if !((local.x.abs() - 20.0).abs() > 0.5 && local.y.abs() < 12.0
-                    || (local.y.abs() - 20.0).abs() > 0.5 && local.x.abs() < 12.0)
+                // Curved tab heads, away from nominal edges and root fillets.
+                // Near a concave root, finite differences across a raster quad
+                // can point back into the body instead of crossing the exterior.
+                if !(local.x > head_start.x && local.y.abs() < 12.0
+                    || local.y < -head_start.y && local.x.abs() < 12.0)
                 {
                     continue;
                 }

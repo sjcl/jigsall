@@ -157,13 +157,11 @@ fn outer_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
     let connected=(vec4(flags)&vec4(32u,64u,128u,256u))!=vec4(0u);
     return max_edge_distance(select(edges,vec4(-1e20),connected));
 }
-// No derivatives or presentation state here. The top entry point supplies a
-// screen-space gradient before any silhouette/alpha discard or per-piece branch.
-fn bevel_color(color:vec4<f32>,boundary:f32,gradient:vec2<f32>)->vec4<f32> {
-    let gradient_len=max(length(gradient),1e-6);
-    let inside_px=max(-boundary/gradient_len,0.0);
+// No derivatives or presentation state here. The top entry point validates the
+// exposed boundary and supplies its pixel distance and screen-space normal.
+fn bevel_color(color:vec4<f32>,inside_px:f32,normal:vec2<f32>)->vec4<f32> {
     let coverage=1.0-smoothstep(0.0,max(config.bevel_width_px,1e-6),inside_px);
-    let nl=dot(gradient/gradient_len,-config.pseudo_3d_direction);
+    let nl=dot(normal,-config.pseudo_3d_direction);
     let highlight=max(nl,0.0)*coverage*config.bevel_highlight_strength;
     let shade=max(-nl,0.0)*coverage*config.bevel_shadow_strength;
     let rgb=color.rgb+highlight*(vec3(1.0)-color.rgb)-shade*color.rgb;
@@ -213,21 +211,39 @@ struct ShadowOutput { @location(0) color:vec4<f32>, @builtin(frag_depth) depth:f
         if (flags&4u)!=0u {return vec4(mix(color.rgb,vec3(0.3,0.6,1.0),0.5),color.a);}
         return color;
     }
-    let edges=piece_edge_distances(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));
+    let profiles=array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left);
+    let edges=piece_edge_distances(in.local,config.size,profiles);
     let d=max_edge_distance(edges);
     // Evaluate derivatives before discard and non-uniform per-piece branches.
     let aa=fwidth(d);
     var bevel_boundary=0.0;
     var bevel_gradient=vec2(0.0);
+    var local_dx=vec2(0.0);
+    var local_dy=vec2(0.0);
     if config.bevel_enabled!=0u {
         // An enclosed piece supplies a finite constant instead of differentiating
         // the absent-boundary sentinel. It also skips all lighting work below.
         bevel_boundary=select(outer_boundary_distance(edges,in.flags),0.0,(in.flags&480u)==480u);
         bevel_gradient=vec2(dpdx(bevel_boundary),dpdy(bevel_boundary));
+        local_dx=dpdx(in.local);local_dy=dpdy(in.local);
     }
     var color=sample_visible(in,d);
     if config.bevel_enabled!=0u {
-        if (in.flags&480u)!=480u {color=bevel_color(color,bevel_boundary,bevel_gradient);}
+        if (in.flags&480u)!=480u {
+            let gradient_len=max(length(bevel_gradient),1e-6);
+            let inside_px=max(-bevel_boundary/gradient_len,0.0);
+            if inside_px<=config.bevel_width_px {
+                let normal=bevel_gradient/gradient_len;
+                // Union SDFs can retain a zero contour inside a convex tab.
+                // Cross the candidate boundary in physical pixels, mapping the
+                // screen normal back to local through the fragment Jacobian.
+                let probe_local=in.local+(local_dx*normal.x+local_dy*normal.y)*(inside_px+0.75);
+                let probe_edges=piece_edge_distances(probe_local,config.size,profiles);
+                if outer_boundary_distance(probe_edges,in.flags)>0.0 {
+                    color=bevel_color(color,inside_px,normal);
+                }
+            }
+        }
     }
     var flags=in.flags;
     if (selected[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=2u;}
