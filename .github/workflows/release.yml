@@ -233,6 +233,8 @@ jobs:
           if existing.returncode == 0:
               if not json.loads(existing.stdout)["isDraft"]:
                   raise RuntimeError("Refusing to modify an already published release")
+              if "-" in tag:
+                  subprocess.run(["gh", "release", "edit", "--prerelease", "--", tag], check=True)
               subprocess.run([
                   "gh", "release", "upload", "--clobber", "--", tag,
                   *map(str, assets)

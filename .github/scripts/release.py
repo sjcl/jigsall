@@ -71,6 +71,7 @@ def build():
     DIST.mkdir(exist_ok=True)
     native = None
     binary = None
+    commit = None
     arguments = ["cargo", "build", "--locked", "--release", "-p", "jigsall", "--bin", "jigsall",
                  "--features", "rendezvous", "--message-format=json-render-diagnostics"]
     with subprocess.Popen(arguments, cwd=ROOT, stdout=subprocess.PIPE, encoding="utf-8") as process:
@@ -78,13 +79,16 @@ def build():
             message = json.loads(line)
             if message.get("reason") == "build-script-executed" and "game-networking-sockets-sys" in message["package_id"]:
                 native = message["out_dir"]
+            if message.get("reason") == "build-script-executed" and "#jigsall-game@" in message["package_id"]:
+                commit = dict(message["env"]).get("JIGSALL_GIT_SHA")
             if message.get("reason") == "compiler-artifact" and message.get("executable"):
                 binary = message["executable"]
         if process.wait() != 0:
             raise subprocess.CalledProcessError(process.returncode, arguments)
-    if not native or not binary:
+    if not native or not binary or not commit:
         raise RuntimeError("Missing application or native build artifact")
-    (DIST / "build.json").write_text(json.dumps({"binary": binary, "native": native, "features": "gns,rendezvous"}), encoding="utf-8")
+    (DIST / "build.json").write_text(json.dumps({"binary": binary, "native": native,
+                                               "commit": commit, "features": "gns,rendezvous"}), encoding="utf-8")
 
 
 def native_notices(native, system):
@@ -173,7 +177,7 @@ def licenses(target, cargo_about):
 
 def archive_payload(binary):
     files = {binary.name: binary.read_bytes()}
-    for path in ["README.md", "ui/fonts/OFL.txt", "ui/fonts/README.md", "docs/PLAYING.md",
+    for path in ["README.md", "assets/menu-icon.png", "ui/fonts/OFL.txt", "ui/fonts/README.md", "docs/PLAYING.md",
                  "docs/PRE_RELEASE_CHECKLIST.md", "docs/RELEASE_NOTES_TEMPLATE.md"]:
         name = path.replace("ui/fonts/", "licenses/MPLUS1p/")
         files[name] = (ROOT / path).read_bytes()
@@ -185,7 +189,9 @@ def archive_payload(binary):
             files[path.name] = path.read_bytes()
     version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     build_info = json.loads((DIST / "build.json").read_text(encoding="utf-8"))
-    files["BUILD_INFO.txt"] = (f"Jigsall {version}\ncommit={command('git', 'rev-parse', 'HEAD')}\n"
+    if build_info["commit"] != command("git", "rev-parse", "HEAD"):
+        raise RuntimeError("Build commit differs from checkout; rebuild before packaging")
+    files["BUILD_INFO.txt"] = (f"Jigsall {version}\ncommit={build_info['commit']}\n"
                                f"features={build_info['features']}\n").encode()
     files["SHA256SUMS"] = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"
                                   for name, data in sorted(files.items())).encode()

@@ -32,6 +32,7 @@ def build(all_features=False):
     identity = None
     application = None
     native = None
+    commit = None
     with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE,
                           encoding="utf-8") as process:
         for line in process.stdout:
@@ -42,6 +43,8 @@ def build(all_features=False):
                 continue
             if message.get("reason") == "build-script-executed" and "game-networking-sockets-sys" in message["package_id"]:
                 native = message["out_dir"]
+            if message.get("reason") == "build-script-executed" and "#jigsall-game@" in message["package_id"]:
+                commit = dict(message["env"]).get("JIGSALL_GIT_SHA")
             if message.get("reason") != "compiler-artifact" or not message.get("executable"):
                 continue
             manifest = Path(message["manifest_path"])
@@ -54,7 +57,7 @@ def build(all_features=False):
                 application = message
         if process.wait() != 0:
             raise subprocess.CalledProcessError(process.returncode, command)
-    if not tests or identity is None or application is None or native is None:
+    if not tests or identity is None or application is None or native is None or commit is None:
         raise RuntimeError("Build did not emit the workspace tests, GNS initializer, and application")
     print(f"Linked application: {application['executable']}", flush=True)
     # Packaging smoke checks reuse this already-built executable and its exact
@@ -63,6 +66,7 @@ def build(all_features=False):
     dist.mkdir(exist_ok=True)
     (dist / "build.json").write_text(json.dumps({
         "binary": application["executable"], "native": native,
+        "commit": commit,
         "features": "gns,rendezvous,tracy,chrome" if all_features else "gns,rendezvous",
     }), encoding="utf-8")
     return sorted(tests, key=lambda test: (test["manifest_path"], test["target"]["name"])), identity

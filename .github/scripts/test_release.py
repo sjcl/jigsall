@@ -1,11 +1,13 @@
 """Regression checks for public configuration and distributable archives."""
 import hashlib
 import io
+import json
 from pathlib import Path
 import tarfile
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import release
@@ -76,6 +78,25 @@ class ReleaseTests(unittest.TestCase):
             notices = release.native_notices(native, "Windows")
             for text in ["protobuf exact installed license", "Version: test", "Valve Corporation", "M PLUS 1p"]:
                 self.assertIn(text, notices)
+
+    def test_payload_contains_required_files_and_rejects_a_stale_build(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(release, "DIST", Path(directory)):
+            binary = Path(directory) / "jigsall.exe"
+            binary.write_bytes(b"test binary")
+            for name in ["THIRD_PARTY_LICENSES.txt", "THIRD_PARTY_NOTICES.txt"]:
+                (Path(directory) / name).write_text("test notice", encoding="utf-8")
+            info = {"features": "gns,rendezvous", "commit": release.command("git", "rev-parse", "HEAD")}
+            metadata = Path(directory) / "build.json"
+            metadata.write_text(json.dumps(info), encoding="utf-8")
+            payload = release.archive_payload(binary)
+            for name in ["jigsall.exe", "README.md", "SHA256SUMS", "BUILD_INFO.txt",
+                         "THIRD_PARTY_LICENSES.txt", "THIRD_PARTY_NOTICES.txt", "licenses/MPLUS1p/OFL.txt"]:
+                self.assertIn(name, payload)
+            self.assertNotIn("internet-defaults.env", payload)
+            info["commit"] = "stale"
+            metadata.write_text(json.dumps(info), encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                release.archive_payload(binary)
 
 
 if __name__ == "__main__":
