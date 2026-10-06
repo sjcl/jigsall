@@ -39,10 +39,13 @@ far zoom では threshold を下げても bevel を有効にしません。blur�
 
 ## Drag elevation
 
-local / remote の held membership に共通の envelope を与えます。grab は0→1、release / cancel は
+local / remote の held membership に envelope を与えます。grab は0→1、release / cancel は
 その時点の値→0を real time の80ms smoothstepで補間します。定数は
 `game/src/resources/drag_elevation.rs` の `DRAG_ELEVATION_SECONDS` にまとめています。
 短いgrab、fade途中の再grabも現在値から開始します。componentの全memberは同じrecordを参照します。
+複数の独立componentを一度に再grabするときは、新しいmaskを旧presentation slotごとに分割します。
+fade中のAが0.5、idleのBが0なら、それぞれ0.5→1、0→1へ進み、BをAの高さへ跳ね上げません。
+slot 0と期限切れzero recordはidleとしてまとめ、DSU / canonical stateは参照しません。
 rotationと独立に評価し、shadow vertexだけで `max(rotation_elevation, drag_elevation)` を使います。
 Highのheld shadow separationは7.5pxで、side thickness・bevel幅/強度・top位置/Z/depth・pickingは変わりません。
 interaction envelopeはqualityに依存せず、Low / LOD offでも進行します。shadow passの追加発行はありません。
@@ -56,6 +59,10 @@ protocol・authority・save/snapshot・canonical state・`GpuPieceState`・conne
 
 member走査とslot mapping uploadはmembership変更/slot再利用の境界だけです。通常drag frameは時刻を
 既存336-byte uniformに渡すだけで、piece state / member / record uploadはありません。
+dirty IDは`PieceBitSet`で保持し、ID順のiteratorから連続upload rangeを作ります。100万pieceでも
+dirty bitsetは125,000 bytesで、memberごとのtree nodeは作りません。rangeが128個を超える場合は
+一つの包含rangeにまとめます。単一旧slotのgrabは元のmask Arcを共有し、混在時だけpartitionごとの
+ID listを作ります。ID listの合計は新しいmaskのmember数で、slotごとの全piece bitsetは作りません。
 GPUの既存piece metadata storage bindingを初回grab時だけ拡張し、4番目のSoA regionと16-byte envelope
 recordのtailを置きます。pool拡張はGPU copyで既存metadataを保存します。storage binding上限8を維持します。
 fade完了後のslotはzero recordにし、mappingの解除はslot再利用時まで遅らせます。
@@ -107,20 +114,28 @@ cargo test --release --locked -p jigsall-game gpu_side -- --ignored --nocapture 
 cargo test --release --locked -p jigsall-game gpu_bevel -- --ignored --nocapture --test-threads=1
 cargo test --locked -p jigsall-game drag_elevation
 cargo test --release --locked -p jigsall-game gpu_drag_elevation -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p jigsall-game --lib drag_elevation_million_grab_boundary_benchmark -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
 
 `resources/drag_elevation/tests.rs` はgrab / hold / early cancel / release、fade中の再grab、部分解除、
 remote slot再利用 / teardown / epoch切替、rotationとのmaxの連続性を検証します。
+異なる高さのfade / idleを含む再grabと各partitionのrelease、断片化dirty rangeとslot再利用も確認します。
 実際のlocal GrabGroup / ReleaseGroup / disconnect cleanupも観測し、canonical stateがpresentation更新で
 変わらないことを確認します。100万memberで10,000回のpointer更新を行い、piece state accessと
 mapping / record / range再生成がないことも確認します。
+`drag_elevation_million_grab_boundary_benchmark` は100万memberの初回grab、期限切れslotの再利用、
+50万memberがfade中・残りがidleのmixed re-grabを各7回測ります。fixture / maskの生成は計測外で、
+presentationのmapping・dirty管理・partition・upload snapshot生成は計測内です。authorityのGrabGroup処理、
+GPU buffer拡張 / 転送、入力から表示までの遅延は含めません。
 
 `render/tests/drag_elevation_tests.rs` は開始・中間・held・release直後・終了のshadowを、同じposeで
 hostが指定した分離距離の基準画像と全pixel比較します。connected全memberのslot共有、rotationとのmax、
 opaque / alpha 0.5 / alpha 0でのside・bevel・point / rectangle picking不変、Low / LODのdraw/upload 0、
 remote slot再利用とfadeを検証します。metadata拡張後もpreviewにroot領域だけをbindingし、padding bitが
 optional領域をrootとして読まないことを実GPUで確認します。
+mixed re-grab直前と直後の全pixel一致、A / Bそれぞれのshadow separation、中間からrelease終了までの
+連続性も検証します。
 
 `render/tests/shadow_tests.rs` は以下を実 GPU で確認します。通常 fixture と同じく storage buffer 上限を
 stage あたり8に制限します。
@@ -286,3 +301,26 @@ releaseの12 frame平均を短い1 runとして記録しました。
 
 短期timestamp変動を含みます。GPU速度の導入前比較・ゲーム全体の60 fps・別OSの実機互換性は
 この検証から主張しません。
+
+### mixed re-grab と grab 境界の修正
+
+2026-10-06、同じ Windows / Vulkan / RTX 5090 環境で、CPU回帰3件と実GPU回帰1件を追加しました。
+通常workspaceテスト915件（doctest 1件を含む）、全target Clippy、整形検証が通過しています。
+描画全回帰64件はdev profileで通過しました。mixed re-grab直前と直後の全pixelが一致し、
+fade中のAとidleのBが別々の開始値から持ち上がること、releaseも各現在値から下降することを確認します。
+dirty IDの125,000-byte bitsetは初回grab時にだけ確保し、空のrelease / expiry更新はbitset走査も省きます。
+
+最終コードのdrag実GPU7件と100万piece overview fixtureはreleaseでも通過しています。
+overviewはheld中 / release完了後とも基準と全pixel一致し、追加draw / 通常frameのdata uploadは0です。
+AMD Ryzen 9 9950X / Rust 1.97のreleaseで、100万memberのpresentation準備を各7回測定しました。
+fixtureとmaskは計測前に生成し、初回のmapping確保やslot再利用時のmapping解除は計測に含めます。
+
+| grab境界 | 中央値 (ms) | 最小 (ms) | 最大 (ms) |
+| --- | ---: | ---: | ---: |
+| 初回grab | 10.860 | 10.435 | 12.183 |
+| 期限切れslot再利用 | 18.913 | 18.249 | 20.516 |
+| 50万fade + 50万idleのmixed re-grab | 13.409 | 11.431 | 14.736 |
+
+authorityの命令処理やGPU拡張 / 転送を含むgrab全体の遅延ではありません。変更前のBTreeMapとの
+速度比較は行っていません。通常pointer frameのO(1)処理とupload不変は、別の100万member / 10,000更新の
+回帰テストで確認します。

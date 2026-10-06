@@ -2,7 +2,8 @@
 use super::{remote_drag::RemoteDragPresentation, PieceDataStore};
 use bevy::prelude::*;
 use bytemuck::{Pod, Zeroable};
-use std::{collections::BTreeMap, sync::Arc};
+use jigsall_core::{PieceBitSet, PieceId};
+use std::sync::Arc;
 
 /// Real-time smoothstep duration for both grab and release.
 pub(crate) const DRAG_ELEVATION_SECONDS: f64 = 0.080;
@@ -16,11 +17,30 @@ pub(crate) struct GpuDragElevation {
     pub duration: f32,
 }
 
+enum EnvelopeMembers {
+    Shared(Arc<[u32]>),
+    Partition(Vec<u32>),
+}
+impl EnvelopeMembers {
+    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        let (words, ids): (&[u32], &[u32]) = match self {
+            Self::Shared(words) => (words, &[]),
+            Self::Partition(ids) => (&[], ids),
+        };
+        members(words).chain(ids.iter().copied())
+    }
+}
 struct Envelope {
-    members: Arc<[u32]>,
+    members: EnvelopeMembers,
     from: f32,
     to: f32,
     start: f64,
+}
+
+#[derive(Default)]
+struct DragSource {
+    members: Option<Arc<[u32]>>,
+    slots: Vec<u32>,
 }
 impl Envelope {
     fn value(&self, now: f64) -> f32 {
@@ -50,7 +70,7 @@ pub(crate) struct DragElevationPresentation {
     count: usize,
     local: Arc<[u32]>,
     remote_version: Option<Arc<()>>,
-    sources: Vec<Option<u32>>,
+    sources: Vec<DragSource>,
     mapping: Vec<u32>,
     records: Vec<Envelope>,
     free: Vec<u32>,
@@ -58,7 +78,7 @@ pub(crate) struct DragElevationPresentation {
     next_expiry: f64,
     held: usize,
     origin: f64,
-    dirty: BTreeMap<u32, u32>,
+    dirty: PieceBitSet,
 }
 
 // Only used at membership/control boundaries, never in ordinary pointer frames.
@@ -78,65 +98,122 @@ fn members(words: &[u32]) -> impl Iterator<Item = u32> + '_ {
 
 impl DragElevationPresentation {
     fn change_source(&mut self, source: usize, mask: Option<Arc<[u32]>>, now: f64) -> bool {
-        if let Some(slot) = self.sources[source] {
-            if mask
-                .as_ref()
-                .is_some_and(|mask| Arc::ptr_eq(mask, &self.records[slot as usize - 1].members))
-            {
-                return false;
-            }
+        let previous = &self.sources[source];
+        if match (&previous.members, &mask) {
+            (Some(previous), Some(mask)) => Arc::ptr_eq(previous, mask),
+            (None, None) => true,
+            _ => false,
+        } {
+            return false;
+        }
+        // A gesture may own several envelopes after a mixed re-grab. Release
+        // every one from its own current value, without walking their members.
+        let previous = std::mem::take(&mut self.sources[source]);
+        self.held -= previous.slots.len();
+        for slot in previous.slots {
             let record = &mut self.records[slot as usize - 1];
             record.from = record.value(now);
             record.to = 0.0;
             record.start = now;
             self.fades.push((slot, now + DRAG_ELEVATION_SECONDS));
-            self.held -= 1;
-            self.sources[source] = None;
-        } else if mask.is_none() {
-            return false;
         }
         if let Some(mask) = mask {
             if self.mapping.is_empty() {
                 self.mapping.resize(self.count, 0);
+                self.dirty = PieceBitSet::new(self.count);
             }
-            // Regrabbing an envelope in flight starts at its displayed value.
-            // One common start value also keeps every component member together.
-            let from = members(&mask)
-                .map(|id| self.value(id, now))
-                .fold(0.0, f32::max);
-            let slot = if let Some(slot) = self.free.pop() {
-                for id in members(&self.records[slot as usize - 1].members) {
-                    if self.mapping[id as usize] == slot {
-                        self.mapping[id as usize] = 0;
-                        self.dirty.insert(id, 0);
-                    }
-                }
-                self.records[slot as usize - 1] = Envelope {
-                    members: mask.clone(),
-                    from,
-                    to: 1.0,
-                    start: now,
-                };
-                slot
-            } else {
-                self.records.push(Envelope {
-                    members: mask.clone(),
-                    from,
-                    to: 1.0,
-                    start: now,
-                });
-                self.records.len() as u32
-            };
+            // Index by old presentation slot, never by piece/component/DSU.
+            // Count first so the common one-envelope grab shares the original
+            // bitset and mixed grabs allocate exactly one ID list per old slot.
+            let mut indices = vec![usize::MAX; self.records.len() + 1];
+            let mut groups: Vec<(u32, usize)> = Vec::new();
             for id in members(&mask) {
-                self.mapping[id as usize] = slot;
-                self.dirty.insert(id, slot);
+                let old = self.previous_slot(id);
+                let index = &mut indices[old as usize];
+                if *index == usize::MAX {
+                    *index = groups.len();
+                    groups.push((old, 0));
+                }
+                groups[*index].1 += 1;
             }
-            self.sources[source] = Some(slot);
-            self.held += 1;
+            let partitions = if groups.len() == 1 {
+                vec![EnvelopeMembers::Shared(mask.clone())]
+            } else {
+                let mut ids: Vec<Vec<u32>> = groups
+                    .iter()
+                    .map(|&(_, count)| Vec::with_capacity(count))
+                    .collect();
+                for id in members(&mask) {
+                    ids[indices[self.previous_slot(id) as usize]].push(id);
+                }
+                ids.into_iter().map(EnvelopeMembers::Partition).collect()
+            };
+            // Capture all starts before any free-slot reuse can overwrite a
+            // previous record. Every partition keeps its own displayed height.
+            let starts: Vec<f32> = groups
+                .iter()
+                .map(|&(old, _)| {
+                    if old == 0 {
+                        0.0
+                    } else {
+                        self.records[old as usize - 1].value(now)
+                    }
+                })
+                .collect();
+            let mut slots = Vec::with_capacity(groups.len());
+            for (members, from) in partitions.into_iter().zip(starts) {
+                slots.push(self.allocate(Envelope {
+                    members,
+                    from,
+                    to: 1.0,
+                    start: now,
+                }));
+            }
+            self.held += slots.len();
+            self.sources[source] = DragSource {
+                members: Some(mask),
+                slots,
+            };
         }
         true
     }
 
+    fn previous_slot(&self, id: u32) -> u32 {
+        let slot = self.mapping[id as usize];
+        // Expired mappings are deliberately retained until reuse. All zero
+        // records belong to the idle partition, so they need no separate list.
+        if slot != 0
+            && (self.records[slot as usize - 1].from != 0.0
+                || self.records[slot as usize - 1].to != 0.0)
+        {
+            slot
+        } else {
+            0
+        }
+    }
+
+    fn allocate(&mut self, record: Envelope) -> u32 {
+        let slot = if let Some(slot) = self.free.pop() {
+            for id in self.records[slot as usize - 1].members.iter() {
+                if self.mapping[id as usize] == slot {
+                    self.mapping[id as usize] = 0;
+                    self.dirty.insert(PieceId(id));
+                }
+            }
+            self.records[slot as usize - 1] = record;
+            slot
+        } else {
+            self.records.push(record);
+            self.records.len() as u32
+        };
+        for id in self.records[slot as usize - 1].members.iter() {
+            self.mapping[id as usize] = slot;
+            self.dirty.insert(PieceId(id));
+        }
+        slot
+    }
+
+    #[cfg(test)]
     fn value(&self, id: u32, now: f64) -> f32 {
         let slot = self.mapping.get(id as usize).copied().unwrap_or(0);
         if slot == 0 {
@@ -182,31 +259,30 @@ impl DragElevationPresentation {
                 duration: DRAG_ELEVATION_SECONDS as f32,
             })
             .collect();
-        let mut ranges: Vec<DragElevationRange> = Vec::new();
-        for (&id, &slot) in &self.dirty {
-            if let Some(range) = ranges
-                .last_mut()
-                .filter(|r| r.start + r.slots.len() as u32 == id)
-            {
-                range.slots.push(slot);
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        // Empty release/expiry updates never scan the piece-sized bitset.
+        for id in self.dirty.iter().take(self.dirty.len()) {
+            let id = id.0 as usize;
+            if let Some(span) = spans.last_mut().filter(|(_, end)| *end == id) {
+                span.1 += 1;
             } else {
-                if ranges.len() == 128 {
-                    let start = ranges[0].start;
-                    let end = *self.dirty.last_key_value().unwrap().0 as usize + 1;
-                    ranges = vec![DragElevationRange {
-                        start,
-                        slots: self.mapping[start as usize..end].to_vec(),
-                    }];
+                if spans.len() == 128 {
+                    let start = spans[0].0;
+                    let end = self.dirty.iter().last().unwrap().0 as usize + 1;
+                    spans = vec![(start, end)];
                     break;
                 }
-                ranges.push(DragElevationRange {
-                    start: id,
-                    slots: vec![slot],
-                });
+                spans.push((id, id + 1));
             }
         }
         self.dirty.clear();
-        upload.ranges = ranges.into();
+        upload.ranges = spans
+            .into_iter()
+            .map(|(start, end)| DragElevationRange {
+                start: start as u32,
+                slots: self.mapping[start..end].to_vec(),
+            })
+            .collect();
         upload.revision += 1;
     }
 
@@ -221,7 +297,9 @@ impl DragElevationPresentation {
             *self = Self {
                 epoch: store.epoch,
                 count: store.len(),
-                sources: vec![None; 1 + super::remote_drag::REMOTE_DRAG_SLOTS],
+                sources: (0..=super::remote_drag::REMOTE_DRAG_SLOTS)
+                    .map(|_| DragSource::default())
+                    .collect(),
                 next_expiry: f64::INFINITY,
                 ..default()
             };

@@ -125,6 +125,60 @@ fn drag_elevation_shader_is_shadow_only_and_reuses_uniform_and_storage_layouts()
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_drag_elevation_mixed_regrab_preserves_each_component_shadow_without_a_jump() {
+    let (mut app, _, target) = fixture(false);
+    app.insert_resource(PieceVisualQuality::High);
+    local_members(&mut app, &[0]);
+    render_frame(&mut app, target.clone());
+    time(&mut app, 0.1);
+    render_frame(&mut app, target.clone());
+    local_members(&mut app, &[]);
+    render_frame(&mut app, target.clone());
+    time(&mut app, 0.14);
+    let before = render_frame(&mut app, target.clone());
+    local_members(&mut app, &[0, 1]);
+    assert!(
+        render_frame(&mut app, target.clone()) == before,
+        "mixed grab must preserve A's fading shadow and B's base shadow"
+    );
+    let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
+    assert_eq!(
+        read_buffer_range(&app, &gpu.buffers.as_ref().unwrap().piece_metadata, 24, 8),
+        bytemuck::cast_slice::<u32, u8>(&[2, 3])
+    );
+    time(&mut app, 0.18);
+    let actual = render_frame(&mut app, target.clone());
+    for (side, elevation) in [(0, 0.75), (1, 0.5)] {
+        app.sub_app_mut(RenderApp)
+            .world_mut()
+            .resource_mut::<LiftReference>()
+            .0 = Some(elevation);
+        let expected = render_frame(&mut app, target.clone());
+        for y in 0..128 {
+            // Exclude the other piece's shadow from the uniform reference.
+            for x in if side == 0 { 0..64 } else { 72..128 } {
+                let offset = (y * 128 + x) * 4;
+                assert_eq!(&actual[offset..offset + 4], &expected[offset..offset + 4]);
+            }
+        }
+    }
+    app.sub_app_mut(RenderApp)
+        .world_mut()
+        .resource_mut::<LiftReference>()
+        .0 = None;
+    time(&mut app, 0.221);
+    let held = compare_reference(&mut app, &target, 1.0);
+    local_members(&mut app, &[]);
+    assert!(compare_reference(&mut app, &target, 1.0) == held);
+    time(&mut app, 0.261);
+    compare_reference(&mut app, &target, 0.5);
+    time(&mut app, 0.302);
+    compare_reference(&mut app, &target, 0.0);
+    assert_eq!(config(&app).drag_elevation_active, 0);
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_drag_elevation_component_grab_release_smoothly_moves_only_shadow() {
     let (mut app, _, target) = fixture(true);
     app.insert_resource(PieceVisualQuality::High);

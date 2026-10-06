@@ -239,6 +239,110 @@ fn drag_elevation_observes_actual_local_release_and_disconnect_cleanup() {
 }
 
 #[test]
+fn drag_elevation_mixed_regrab_keeps_fading_and_idle_components_at_their_own_heights() {
+    let (mut store, remote, mut presentation, mut upload) = fixture(4);
+    store.connectivity.union(PieceId(0), PieceId(1));
+    store.connectivity.union(PieceId(2), PieceId(3));
+    store.drag.members = mask(4, [0, 1]).words().clone();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.0);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.1);
+    store.drag = default();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.1);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.14);
+    let before: Vec<_> = (0..4).map(|id| presentation.value(id, 0.14)).collect();
+    assert!((before[0] - 0.5).abs() < 1e-6);
+    assert_eq!(&before[2..], &[0.0, 0.0]);
+    store.drag.members = mask(4, 0..4).words().clone();
+    super::super::pieces::without_piece_state_access(|| {
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.14);
+    });
+    for id in 0..4 {
+        assert_eq!(presentation.value(id, 0.14), before[id as usize]);
+    }
+    assert_eq!(presentation.mapping[0], presentation.mapping[1]);
+    assert_eq!(presentation.mapping[2], presentation.mapping[3]);
+    assert_ne!(presentation.mapping[0], presentation.mapping[2]);
+    assert_eq!(presentation.sources[0].slots.len(), 2);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.18);
+    assert!((presentation.value(0, 0.18) - 0.75).abs() < 1e-6);
+    assert!((presentation.value(2, 0.18) - 0.5).abs() < 1e-6);
+    // Releasing a gesture with several envelopes preserves each current value.
+    let before: Vec<_> = (0..4).map(|id| presentation.value(id, 0.18)).collect();
+    store.drag = default();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.18);
+    for id in 0..4 {
+        assert_eq!(presentation.value(id, 0.18), before[id as usize]);
+    }
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.22);
+    assert!((presentation.value(0, 0.22) - 0.375).abs() < 1e-6);
+    assert!((presentation.value(2, 0.22) - 0.25).abs() < 1e-6);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.261);
+    assert!(!upload.active);
+    for id in 0..4 {
+        assert_eq!(presentation.value(id, 0.261), 0.0);
+    }
+}
+
+#[test]
+fn drag_elevation_mixed_remote_fades_and_idle_regrab_preserve_three_envelopes() {
+    let (mut store, mut remote, mut presentation, mut upload) = fixture(6);
+    let a = remote.allocate(mask(6, [0, 1]), Vec2::ZERO).unwrap();
+    let b = remote.allocate(mask(6, [2, 3]), Vec2::ZERO).unwrap();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.0);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.1);
+    remote.release(a);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.1);
+    remote.release(b);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.12);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.14);
+    let before: Vec<_> = (0..6).map(|id| presentation.value(id, 0.14)).collect();
+    assert!((before[0] - 0.5).abs() < 1e-6);
+    assert!((before[2] - 0.84375).abs() < 1e-6);
+    assert_eq!(before[4], 0.0);
+    store.drag.members = mask(6, 0..6).words().clone();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.14);
+    for id in 0..6 {
+        assert_eq!(presentation.value(id, 0.14), before[id as usize]);
+    }
+    assert_eq!(presentation.sources[0].slots.len(), 3);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.221);
+    for id in 0..6 {
+        assert_eq!(presentation.value(id, 0.221), 1.0);
+    }
+    // An expired slot reused for another group must not clear the new mappings
+    // that already replaced its fading membership.
+    store.drag.members = mask(6, [0, 1, 4, 5]).words().clone();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.221);
+    for id in [0, 1, 4, 5] {
+        assert_eq!(presentation.value(id, 0.221), 1.0);
+    }
+    assert!(presentation.dirty.is_empty());
+}
+
+#[test]
+fn drag_elevation_bitset_dirty_ranges_coalesce_and_bound_fragmented_reuse() {
+    let (mut store, remote, mut presentation, mut upload) = fixture(1024);
+    store.drag.members = mask(1024, (0..600).step_by(2)).words().clone();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.0);
+    assert_eq!(upload.ranges.len(), 1);
+    assert_eq!(upload.ranges[0].start, 0);
+    assert_eq!(upload.ranges[0].slots.len(), 599);
+    for (id, &slot) in upload.ranges[0].slots.iter().enumerate() {
+        assert_eq!(slot, if id % 2 == 0 { 1 } else { 0 });
+    }
+    store.drag = default();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.1);
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.181);
+    store.drag.members = mask(1024, [999]).words().clone();
+    at(&mut store, &remote, &mut presentation, &mut upload, 0.2);
+    assert_eq!(upload.ranges.len(), 1);
+    assert_eq!(upload.ranges[0].slots.len(), 1000);
+    assert!(upload.ranges[0].slots[..999].iter().all(|&slot| slot == 0));
+    assert_eq!(upload.ranges[0].slots[999], 1);
+    assert!(presentation.dirty.is_empty());
+}
+
+#[test]
 fn drag_elevation_million_pointer_frames_keep_membership_records_and_uploads_unchanged() {
     let (mut store, remote, mut presentation, mut upload) = fixture(1_000_000);
     assert!(presentation.mapping.is_empty()); // idle allocates no per-piece lift data
@@ -269,4 +373,60 @@ fn drag_elevation_million_pointer_frames_keep_membership_records_and_uploads_unc
     }
     assert_eq!(presentation.value(999_999, 1000.0), 1.0);
     assert_eq!(std::mem::size_of::<GpuDragElevation>(), 16);
+}
+
+#[test]
+#[ignore = "release CPU benchmark"]
+fn drag_elevation_million_grab_boundary_benchmark() {
+    use std::time::Instant;
+    let count = 1_000_000;
+    let mut full = PieceBitSet::new(count);
+    full.fill();
+    let half = mask(count, 0..500_000);
+    let mut cold = Vec::new();
+    let mut reused = Vec::new();
+    let mut mixed = Vec::new();
+    for _ in 0..7 {
+        let (mut store, remote, mut presentation, mut upload) = fixture(count);
+        store.drag.members = full.words().clone();
+        let start = Instant::now();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.0);
+        cold.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(upload.records.len(), 1);
+        assert!(
+            matches!(&presentation.records[0].members, EnvelopeMembers::Shared(words) if Arc::ptr_eq(words, full.words()))
+        );
+        assert_eq!(presentation.dirty.words().len() * 4, 125_000);
+        assert_eq!(upload.ranges.len(), 1);
+        assert_eq!(upload.ranges[0].slots.len(), count);
+        store.drag = default();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.1);
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.181);
+        store.drag.members = full.words().clone();
+        let start = Instant::now();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.2);
+        reused.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(upload.records.len(), 1);
+        store.drag = default();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.3);
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.381);
+        store.drag.members = half.words().clone();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.4);
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.5);
+        store.drag = default();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.5);
+        store.drag.members = full.words().clone();
+        let start = Instant::now();
+        at(&mut store, &remote, &mut presentation, &mut upload, 0.54);
+        mixed.push(start.elapsed().as_secs_f64() * 1000.0);
+        assert_eq!(presentation.sources[0].slots.len(), 2);
+        assert_eq!(upload.ranges.len(), 1);
+        assert_eq!(upload.ranges[0].slots.len(), count);
+        assert!((presentation.value(0, 0.54) - 0.5).abs() < 1e-6);
+        assert_eq!(presentation.value(999_999, 0.54), 0.0);
+    }
+    for (name, mut samples) in [("cold", cold), ("reused", reused), ("mixed", mixed)] {
+        samples.sort_by(f64::total_cmp);
+        eprintln!("million drag presentation grab: {name}, median={:.3} ms, min={:.3} ms, max={:.3} ms, samples=7", samples[3], samples[0], samples[6]);
+    }
 }

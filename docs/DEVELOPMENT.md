@@ -129,6 +129,8 @@ cargo build --workspace --locked --all-features
 ```sh
 # 実 GPU 検証と 1k〜1M ピースの計測
 cargo test -p jigsall-game --release --locked gpu_ -- --ignored --nocapture --test-threads=1
+# 100万memberのdrag lift準備（初回grab / slot再利用 / mixed re-grabのCPU境界コスト）
+cargo test -p jigsall-game --release --locked --lib drag_elevation_million_grab_boundary_benchmark -- --ignored --nocapture --test-threads=1
 # 単色 matching / 1000 ピース / worst case / 輪郭識別性
 cargo run --release --locked -p jigsall-puzzle --features shape-analysis --example edge_fingerprint_preview -- target
 # 無作為 matching・5 縦横比・各軸の実効寄与・人間向け HTML tool

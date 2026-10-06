@@ -240,6 +240,10 @@ WGSL は `config.capacity` に基づく `component_root` / `remote_slot` / `rota
 100万 pieces では3領域合計12,000,000 bytes（約12 MB / 11.44 MiB）で、旧3本の合計と同じです。
 512-byte remote delta uniform と可変長32-byte rotation record buffer は別に保持します。
 初回drag後はlift mappingに4,000,000 bytesと小さなrecord poolを追加します。
+CPUのdirty IDは125,000 bytes/100万pieceの`PieceBitSet`にまとめ、ID順から連続upload rangeを作ります。
+grab境界でmemberごとのtree nodeは作りません。通常pointer frameはmapping / recordを再生成しません。
+再grabのmaskは旧lift slotごとに分け、各partitionの現在値から独立したenvelopeを開始します。
+単一partitionは元のmask Arcを共有し、混在時のID listは合計member数だけ保持します。DSUは参照しません。
 
 storage binding 数は main / pick visibility compute がそれぞれ10→8です。draw / point /
 rectangle の vertex は統合で9→7、さらに visibility を絞って6本です。
@@ -350,7 +354,8 @@ snap・physical / logical play area・Z-order にも含めません。本体の 
 picking geometry、SDF、UV、depth は elevation を使用しません。fragment varying も増やしません。
 shadow 専用 vertex だけが elevation を screen-space separation に変換します。
 side / thickness は elevation 非依存の静的な screen-space offset です。
-bevel / lighting、drag / selection による通常 lift は後続実装です。
+top bevelは静的な表面補正、local / remote drag liftは独立した80ms envelopeとして実装しています。
+selection単独のliftは未実装です。
 
 ### Pseudo-3D presentation
 
