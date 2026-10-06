@@ -21,6 +21,16 @@ cargo build --locked --release
 参加者は「マルチプレイ → 部屋に参加」でホスト名またはIPアドレス・ポート（例：example.com:27015）とパスワードを入力します。
 game layerのprogrammatic APIは[Direct-IP runtime](DIRECT_IP_RUNTIME.md)を参照してください。
 
+## 起動時のコンソールとログ出力
+
+Windows向けの実行ファイルはGUIアプリとしてビルドします（debug / release共通）。
+Explorerから起動したときはコンソールウィンドウを作成しません。
+PowerShellやコマンドプロンプト、`cargo run`から起動したときは、起動元のコンソールに接続してログを出力します。
+標準出力・標準エラーのファイルやパイプへのリダイレクトも維持します。
+
+GUIアプリのため、シェルによっては終了を待たずにプロンプトが戻ります。
+コマンドプロンプトで終了を待つ場合は`start /wait "" .\target\release\jigsall.exe`を使用してください。
+
 ## 実行ファイルのアイコン
 
 Windows向けのビルドでは、ルートの`build.rs`が`assets/icon.ico`を実行ファイルへ埋め込みます。

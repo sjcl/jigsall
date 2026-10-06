@@ -3872,6 +3872,7 @@ dependencies = [
  "bevy",
  "jigsall-game",
  "jigsall-ui",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 

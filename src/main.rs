@@ -1,8 +1,16 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use bevy::prelude::*;
 use jigsall_game::{asset_reader::DirectFileAssetPlugin, GamePlugin, WindowIconPlugin};
 use jigsall_ui::GameUiPlugin;
 
+#[cfg(windows)]
+mod windows_console;
+
 fn main() {
+    #[cfg(windows)]
+    windows_console::attach_parent_console();
+
     let mut app = App::new();
     #[cfg(feature = "rendezvous")]
     configure_internet(&mut app);

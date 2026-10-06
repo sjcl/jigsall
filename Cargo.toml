@@ -54,6 +54,7 @@ zeroize = "1.9"
 instant = "0.1"
 winresource = "0.1.31"
 winit = { version = "0.30.13", default-features = false }
+windows-sys = "0.61.2"
 
 # wgpu-hal 29.0.4 and gpu-allocator 0.28 use incompatible Windows COM types.
 # Keep the compatible patch until upstream aligns these dependencies.
@@ -73,6 +74,9 @@ publish.workspace = true
 bevy.workspace = true
 jigsall-game.workspace = true
 jigsall-ui.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console"] }
 
 [build-dependencies]
 winresource.workspace = true
