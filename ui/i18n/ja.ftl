@@ -26,8 +26,6 @@ multiplayer-password = パスワード
 multiplayer-password-hint = 半角英数字なら8〜128文字。開始前に参加者へ伝えてください。開始後は再表示できません。
 multiplayer-join-password-hint = 部屋を開いた人に教えてもらってください。
 multiplayer-player-name = プレイヤー名：{ $name }
-multiplayer-default-name = プレイヤー
-multiplayer-name-settings = 名前を変更
 multiplayer-join-hint = パズルの画像は参加時に届きます。
 multiplayer-preparing-host = パズルを準備中…
 multiplayer-resolving = ホスト名を確認中…
@@ -302,7 +300,7 @@ multiplayer-existing-game-continues = 現在のゲーム接続は継続してい
 
 multiplayer-internet-hint = ルームコードとパスワードで部屋を開く・参加する接続方法です。
 multiplayer-direct-ip-hint = ホストのアドレスとポート番号で接続します。同じネットワーク内、または手動で接続設定をした環境向けです。
-multiplayer-password-clear-hint = 設定を開く、または接続方法を変えると、入力したパスワードは消去されます。
+multiplayer-password-clear-hint = 接続方法を変えると、入力したパスワードは消去されます。
 multiplayer-password-cleared = 安全のためパスワードを消去しました。開始する前にもう一度入力してください。
 multiplayer-address-required = アドレスとポート番号を入力してください。
 multiplayer-room-code-required = ホストに教えてもらったルームコードを入力してください。

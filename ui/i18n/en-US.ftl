@@ -27,8 +27,6 @@ multiplayer-password = Password
 multiplayer-password-hint = Use 8–128 English letters or digits. Share it before starting; it cannot be shown again afterward.
 multiplayer-join-password-hint = Enter the password shared by the host.
 multiplayer-player-name = Player name: { $name }
-multiplayer-default-name = Player
-multiplayer-name-settings = Change Name
 multiplayer-join-hint = You receive the puzzle image when you join.
 multiplayer-preparing-host = Preparing puzzle…
 multiplayer-resolving = Looking up the host…
@@ -303,7 +301,7 @@ multiplayer-existing-game-continues = The current game connection remains active
 
 multiplayer-internet-hint = Create or join a room using a room code and password.
 multiplayer-direct-ip-hint = Connect using the host’s address and port. For a local network or a manually configured internet connection.
-multiplayer-password-clear-hint = Opening settings or changing connection method clears this password.
+multiplayer-password-clear-hint = Changing connection method clears this password.
 multiplayer-password-cleared = Password cleared for your privacy. Enter it again before starting.
 multiplayer-address-required = Enter the address and port.
 multiplayer-room-code-required = Enter the room code shared by the host.

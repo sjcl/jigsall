@@ -74,6 +74,10 @@ fn title_menu_has_mode_then_game_choices_and_multiplayer_has_host_and_join() {
                 _ => None,
             })
             .collect();
+        assert_eq!(
+            labels.contains(&"Settings"),
+            matches!(screen, MenuScreen::Title | MenuScreen::SinglePlayer)
+        );
         match screen {
             MenuScreen::Title => {
                 assert!(labels.contains(&"Single Player"));
@@ -614,12 +618,121 @@ fn new_host_has_separate_settings_tabs_and_keeps_the_connection_draft_when_switc
         assert!(labels.contains(&"Puzzle"));
         assert!(labels.contains(&"Room Settings"));
         assert_eq!(labels.contains(&"Accept connections at"), network_tab);
+        assert_eq!(labels.contains(&"Save name"), network_tab);
+        assert!(!labels.contains(&"Change Name"));
+        assert!(!labels.contains(&"Settings"));
         assert_eq!(labels.contains(&"Select Image"), !network_tab);
         assert_eq!(
             world.resource::<MultiplayerUi>().host.password.as_str(),
             "test password"
         );
         output.drop_without_applying_deltas();
+    }
+}
+
+#[test]
+fn multiplayer_forms_save_names_inline_without_losing_passwords_or_other_settings() {
+    for (screen, new_host, enter) in [
+        (MenuScreen::Join, false, false),
+        (MenuScreen::HostLoadSettings, false, true),
+        (MenuScreen::Host, true, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"player":{"display_name":"Before"},"preferences":{"language":"ja"}}"#,
+        )
+        .unwrap();
+        let (mut app, ctx) = scheduled_screens();
+        app.world_mut()
+            .insert_resource(PlayerSettingsState::load(Some(path.clone())));
+        app.world_mut().insert_resource(State::new(if new_host {
+            AppState::GameSetup
+        } else {
+            AppState::Menu
+        }));
+        {
+            let mut state = app.world_mut().resource_mut::<MultiplayerUi>();
+            state.navigate(screen);
+            state.host_setup = new_host;
+            state.host_settings_tab = new_host;
+            *state.host.password = "host password".into();
+            *state.join.password = "join password".into();
+        }
+        render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        let output = render_schedule(&mut app, &ctx, vec![]);
+        assert!(labels(&output).contains(&"Save name"));
+        assert!(!labels(&output).contains(&"Change Name"));
+        assert!(!labels(&output).contains(&"Settings"));
+        output.drop_without_applying_deltas();
+
+        click_label(&mut app, &ctx, "Before");
+        let select_all = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                ctrl: true,
+                command: true,
+                ..default()
+            },
+        };
+        render_schedule(
+            &mut app,
+            &ctx,
+            vec![select_all, egui::Event::Paste("　Alice 🧩　".into())],
+        )
+        .drop_without_applying_deltas();
+        let profile = app.world().resource::<PlayerSettingsState>();
+        assert_eq!(
+            profile.current.display_name.as_ref().unwrap().as_ref(),
+            "Before"
+        );
+        assert!(!profile.is_save_pending());
+        if enter {
+            render_schedule(
+                &mut app,
+                &ctx,
+                vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: default(),
+                }],
+            )
+            .drop_without_applying_deltas();
+        } else {
+            click_label(&mut app, &ctx, "Save name");
+        }
+        let profile = app.world().resource::<PlayerSettingsState>();
+        assert_eq!(
+            profile.current.display_name.as_ref().unwrap().as_ref(),
+            "Alice 🧩"
+        );
+        let state = app.world().resource::<MultiplayerUi>();
+        assert_eq!(state.host.password.as_str(), "host password");
+        assert_eq!(state.join.password.as_str(), "join password");
+        assert!(
+            !app.world()
+                .resource::<crate::settings::SettingsDialog>()
+                .open
+        );
+
+        let mut profile = app.world_mut().resource_mut::<PlayerSettingsState>();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while profile.is_save_pending() {
+            assert!(Instant::now() < deadline, "player name save timed out");
+            profile.poll_save();
+            std::thread::yield_now();
+        }
+        assert!(profile.error.is_none());
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["player"]["display_name"], "Alice 🧩");
+        assert_eq!(saved["preferences"]["language"], "ja");
     }
 }
 
@@ -911,7 +1024,7 @@ fn leaving_connection_forms_wipes_both_password_drafts() {
 #[test]
 fn password_cannot_be_restored_from_egui_undo_history_after_the_form_closes() {
     let ctx = egui::Context::default();
-    let profile = PlayerSettingsState::load(None);
+    let mut profile = PlayerSettingsState::load(None);
     let i18n = crate::localization::tests::english();
     let mut draft = ConnectionDraft::new("127.0.0.1:27015");
     let id = egui::Id::new("multiplayer-join-password");
@@ -922,7 +1035,7 @@ fn password_cannot_be_restored_from_egui_undo_history_after_the_form_closes() {
                 events,
                 ..default()
             },
-            |ui| paint_connection_fields(ui, &mut draft, false, &profile, &i18n),
+            |ui| paint_connection_fields(ui, &mut draft, false, &mut profile, &i18n),
         )
         .drop_without_applying_deltas();
     };
@@ -948,7 +1061,7 @@ fn password_cannot_be_restored_from_egui_undo_history_after_the_form_closes() {
             }],
             ..default()
         },
-        |ui| paint_connection_fields(ui, &mut draft, false, &profile, &i18n),
+        |ui| paint_connection_fields(ui, &mut draft, false, &mut profile, &i18n),
     )
     .drop_without_applying_deltas();
     assert!(draft.password.is_empty());
@@ -1115,7 +1228,7 @@ fn host_waits_for_generation_and_gpu_barrier_then_blocks_missing_encoded_image()
 }
 
 #[test]
-fn forms_show_confirmed_name_address_contract_and_secret_field_in_both_languages() {
+fn forms_show_name_editor_address_contract_and_secret_field_in_both_languages() {
     let mut i18n = crate::localization::tests::english();
     let mut profile = PlayerSettingsState::load(None);
     profile.commit("Alice");
@@ -1137,7 +1250,7 @@ fn forms_show_confirmed_name_address_contract_and_secret_field_in_both_languages
                 |ui| {
                     theme::prepare(ui.ctx());
                     ui.set_width(320.0);
-                    paint_connection_fields(ui, &mut draft, host, &profile, &i18n);
+                    paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n);
                 },
             );
             let labels: Vec<_> = output
@@ -1148,11 +1261,9 @@ fn forms_show_confirmed_name_address_contract_and_secret_field_in_both_languages
                     _ => None,
                 })
                 .collect();
-            assert!(labels.contains(
-                &i18n
-                    .format("multiplayer-player-name", &[("name", "Alice".into())])
-                    .as_str()
-            ));
+            assert!(labels.contains(&"Alice"));
+            assert!(labels.contains(&i18n.text("settings-player-name").as_str()));
+            assert!(labels.contains(&i18n.text("settings-player-name-save").as_str()));
             assert!(labels.contains(
                 &i18n
                     .text(if host {

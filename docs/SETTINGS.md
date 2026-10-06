@@ -34,7 +34,7 @@
 
 ## プレイヤー表示名
 
-`player.display_name` は表示専用のローカル設定です。空欄は `null`（名前なし）になり、UIでは翻訳済みの既定名を表示します。前後のUnicode空白を除去し、32 Unicode scalar / UTF-8 128 bytes以内、control・bidi format文字なしを要求します。入力中はdraftだけを更新し、不正な値は保存せずエラーを表示します。保存した名前は次のoffline puzzleで使用し、将来のHost/Join UIから `HostOptions.display_name` / `JoinOptions.display_name` に渡せます。進行中のsessionの名前は変更しません。passwordや接続先secretはこのsectionへ保存しません。
+`player.display_name` は表示専用のローカル設定です。一般設定とマルチプレイの部屋設定・参加フォームで共通の名前編集UIを使い、「名前を保存」または入力欄のEnterで検証・保存します。どちらも既存の `PlayerSettingsState::commit` と共通の非同期設定保存ワーカーを使います。空欄は `null`（名前なし）になり、UIでは翻訳済みの既定名を表示します。前後のUnicode空白を除去し、32 Unicode scalar / UTF-8 128 bytes以内、control・bidi format文字なしを要求します。入力中はdraftだけを更新し、不正な値は保存せずエラーを表示します。保存した名前は次のoffline puzzleで使用し、Host/Join UIから `HostOptions.display_name` / `JoinOptions.display_name` に渡します。進行中のsessionの名前は変更しません。passwordや接続先secretはこのsectionへ保存しません。
 
 ## パズル画像のメモリ予算
 

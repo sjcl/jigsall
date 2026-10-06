@@ -16,7 +16,7 @@ pub fn draw_menu_ui(
     mut exit: MessageWriter<AppExit>,
     mut settings_dialog: ResMut<crate::settings::SettingsDialog>,
     display_settings: Res<jigsall_game::settings::DisplaySettingsState>,
-    profile: Res<jigsall_game::player_settings::PlayerSettingsState>,
+    mut profile: ResMut<jigsall_game::player_settings::PlayerSettingsState>,
     status: Res<jigsall_game::network::runtime::NetworkStatus>,
     mut multiplayer: ResMut<MultiplayerUi>,
     #[cfg(feature = "rendezvous")] rendezvous_config: Option<
@@ -158,18 +158,11 @@ pub fn draw_menu_ui(
                                         if !cfg!(feature = "gns") {
                                             theme::hint(ui, i18n.text("multiplayer-unavailable"));
                                         }
-                                        if ui
-                                            .small_button(i18n.text("multiplayer-name-settings"))
-                                            .clicked()
-                                        {
-                                            multiplayer.clear_passwords_for_settings();
-                                            settings_dialog.open(&display_settings);
-                                        }
                                         multiplayer.paint_password_notice(ui, &i18n);
                                         multiplayer::paint_join(
                                             ui,
                                             &mut multiplayer,
-                                            &profile,
+                                            &mut profile,
                                             &i18n,
                                         );
                                     }
@@ -183,19 +176,12 @@ pub fn draw_menu_ui(
                                         if let Some((_, title)) = &multiplayer.selected_save {
                                             ui.label(title);
                                         }
-                                        if ui
-                                            .small_button(i18n.text("multiplayer-name-settings"))
-                                            .clicked()
-                                        {
-                                            multiplayer.clear_passwords_for_settings();
-                                            settings_dialog.open(&display_settings);
-                                        }
                                         multiplayer.paint_password_notice(ui, &i18n);
                                         multiplayer::paint_connection_fields(
                                             ui,
                                             &mut multiplayer.host,
                                             true,
-                                            &profile,
+                                            &mut profile,
                                             &i18n,
                                         );
                                         let valid =
@@ -214,7 +200,10 @@ pub fn draw_menu_ui(
                                         });
                                     }
                                 }
-                                if theme::button(ui, i18n.text("menu-settings"), width, false)
+                                if matches!(
+                                    multiplayer.screen,
+                                    MenuScreen::Title | MenuScreen::SinglePlayer
+                                ) && theme::button(ui, i18n.text("menu-settings"), width, false)
                                     .clicked()
                                 {
                                     multiplayer.clear_passwords_for_settings();

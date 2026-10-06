@@ -113,6 +113,7 @@ pub(crate) struct ConnectionDraft {
     pub address: String,
     pub room_code: String,
     pub method: RuntimeConnectionMethod,
+    player_name_draft: Option<String>,
     // No serialization, Debug, or Clone; dropping/replacing a draft wipes its buffer.
     pub password: Zeroizing<String>,
 }
@@ -122,6 +123,7 @@ impl ConnectionDraft {
             address: address.into(),
             room_code: String::new(),
             method: RuntimeConnectionMethod::DirectIp,
+            player_name_draft: None,
             password: Zeroizing::new(String::new()),
         }
     }
@@ -289,6 +291,8 @@ impl MultiplayerUi {
     pub fn navigate(&mut self, screen: MenuScreen) {
         self.host.clear_password();
         self.join.clear_password();
+        self.host.player_name_draft = None;
+        self.join.player_name_draft = None;
         self.error = None;
         self.password_cleared = false;
         self.selected_save = None;
@@ -852,7 +856,7 @@ pub(crate) fn paint_connection_fields(
     ui: &mut egui::Ui,
     draft: &mut ConnectionDraft,
     host: bool,
-    profile: &PlayerSettingsState,
+    profile: &mut PlayerSettingsState,
     i18n: &Localization,
 ) {
     theme::section(
@@ -863,16 +867,7 @@ pub(crate) fn paint_connection_fields(
             "multiplayer-join"
         }),
     );
-    let name = profile
-        .current
-        .display_name
-        .as_ref()
-        .map(|n| n.as_ref().to_owned())
-        .unwrap_or_else(|| i18n.text("multiplayer-default-name"));
-    theme::hint(
-        ui,
-        i18n.format("multiplayer-player-name", &[("name", name.as_str().into())]),
-    );
+    crate::settings::paint_player_settings(ui, &mut draft.player_name_draft, profile, i18n);
     match draft.method {
         RuntimeConnectionMethod::DirectIp => {
             ui.label(i18n.text(if host {
@@ -1002,7 +997,7 @@ fn paint_connection_help(
 pub(crate) fn paint_join(
     ui: &mut egui::Ui,
     state: &mut MultiplayerUi,
-    profile: &PlayerSettingsState,
+    profile: &mut PlayerSettingsState,
     i18n: &Localization,
 ) {
     paint_connection_fields(ui, &mut state.join, false, profile, i18n);
@@ -1061,7 +1056,7 @@ fn connection_text(status: &NetworkStatus) -> &'static str {
 fn paint_host_retry(
     ui: &mut egui::Ui,
     state: &mut MultiplayerUi,
-    profile: &PlayerSettingsState,
+    profile: &mut PlayerSettingsState,
     i18n: &Localization,
 ) {
     if state.prepared_host && state.retry_host.is_none() {
@@ -1147,7 +1142,7 @@ pub(crate) fn draw_connection_ui(
     i18n: Res<Localization>,
     status: Res<NetworkStatus>,
     mut state: ResMut<MultiplayerUi>,
-    profile: Res<PlayerSettingsState>,
+    mut profile: ResMut<PlayerSettingsState>,
     mut saves: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<PersistenceState>,
     definition: Option<Res<jigsall_core::PuzzleDefinition>>,
@@ -1219,7 +1214,7 @@ pub(crate) fn draw_connection_ui(
                     .show(ui, |ui| {
                         theme::heading(ui, i18n.text("menu-multiplayer"));
                         if state.editing_host_retry {
-                            paint_host_retry(ui, &mut state, &profile, &i18n);
+                            paint_host_retry(ui, &mut state, &mut profile, &i18n);
                             return;
                         }
                         if let Some(error) = error {

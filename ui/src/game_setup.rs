@@ -23,10 +23,9 @@ pub fn draw_game_setup_ui(
     mut next_state: ResMut<NextState<AppState>>,
     mut multiplayer: ResMut<crate::multiplayer::MultiplayerUi>,
     status: Res<jigsall_game::network::runtime::NetworkStatus>,
-    profile: Res<jigsall_game::player_settings::PlayerSettingsState>,
+    mut profile: ResMut<jigsall_game::player_settings::PlayerSettingsState>,
     original: Option<Res<jigsall_game::persistence::runtime::OriginalPuzzleImage>>,
-    mut settings: ResMut<crate::settings::SettingsDialog>,
-    display: Res<jigsall_game::settings::DisplaySettingsState>,
+    settings: Res<crate::settings::SettingsDialog>,
     #[cfg(feature = "rendezvous")] rendezvous_config: Option<
         Res<jigsall_game::network::runtime::RendezvousRuntimeConfig>,
     >,
@@ -112,19 +111,12 @@ pub fn draw_game_setup_ui(
                                 internet_available,
                                 &i18n,
                             );
-                            if ui
-                                .small_button(i18n.text("multiplayer-name-settings"))
-                                .clicked()
-                            {
-                                multiplayer.clear_passwords_for_settings();
-                                settings.open(&display);
-                            }
                             multiplayer.paint_password_notice(ui, &i18n);
                             crate::multiplayer::paint_connection_fields(
                                 ui,
                                 &mut multiplayer.host,
                                 true,
-                                &profile,
+                                &mut profile,
                                 &i18n,
                             );
                             if image_loaded

@@ -122,7 +122,7 @@ fn mode_label(mode: ScreenMode, i18n: &Localization) -> String {
     }
 }
 
-fn paint_player_settings(
+pub(crate) fn paint_player_settings(
     ui: &mut egui::Ui,
     draft: &mut Option<String>,
     state: &mut PlayerSettingsState,

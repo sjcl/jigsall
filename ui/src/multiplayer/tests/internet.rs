@@ -175,7 +175,7 @@ fn internet_scheduled_menu_switches_methods_and_falls_back_without_configuration
 #[test]
 fn internet_forms_show_room_fields_and_hide_direct_address_and_network_details() {
     let ctx = egui::Context::default();
-    let profile = PlayerSettingsState::load(None);
+    let mut profile = PlayerSettingsState::load(None);
     let i18n = crate::localization::tests::english();
     for host in [true, false] {
         for method in [
@@ -187,7 +187,7 @@ fn internet_forms_show_room_fields_and_hide_direct_address_and_network_details()
             draft.room_code = "abcdefghjk".into();
             *draft.password = "private password".into();
             let output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                paint_connection_fields(ui, &mut draft, host, &profile, &i18n)
+                paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n)
             });
             let text = labels(&output).join(" ");
             assert!(!text.contains("private password"));
