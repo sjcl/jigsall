@@ -49,6 +49,22 @@ pub enum ScreenMode {
     Fullscreen,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GameBackground {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl GameBackground {
+    pub fn color(self) -> Color {
+        match self {
+            Self::Light => Color::srgb_u8(243, 234, 215),
+            Self::Dark => Color::srgb_u8(43, 44, 47),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisplaySettings {
@@ -56,6 +72,8 @@ pub struct DisplaySettings {
     pub mode: ScreenMode,
     /// None removes the software frame limit. Presentation may still be driver limited.
     pub max_fps: Option<u32>,
+    #[serde(default)]
+    pub game_background: GameBackground,
 }
 
 impl Default for DisplaySettings {
@@ -64,6 +82,7 @@ impl Default for DisplaySettings {
             resolution: UVec2::new(1280, 720),
             mode: ScreenMode::Windowed,
             max_fps: Some(60),
+            game_background: GameBackground::default(),
         }
     }
 }
@@ -226,6 +245,7 @@ impl DisplaySettingsState {
             && capabilities.validate_settings(settings).is_ok()
             && (self.display_changed(settings)
                 || settings.max_fps != self.current.max_fps
+                || settings.game_background != self.current.game_background
                 || matches!(
                     self.error,
                     Some(
@@ -322,7 +342,12 @@ impl Plugin for DisplaySettingsPlugin {
             })
             .add_systems(
                 PostUpdate,
-                (refresh_capabilities, process_actions, apply_window_settings)
+                (
+                    refresh_capabilities,
+                    process_actions,
+                    apply_window_settings,
+                    apply_game_background,
+                )
                     .chain()
                     .after(EguiPostUpdateSet::EndPass),
             );
@@ -408,6 +433,19 @@ fn process_actions(
                     state.commit();
                 }
             }
+        }
+    }
+}
+
+fn apply_game_background(
+    state: Res<DisplaySettingsState>,
+    mut cameras: Query<&mut Camera, With<crate::components::MainCamera>>,
+) {
+    let color = state.current.game_background.color();
+    for mut camera in &mut cameras {
+        if !matches!(camera.clear_color, bevy::camera::ClearColorConfig::Custom(current) if current == color)
+        {
+            camera.clear_color = bevy::camera::ClearColorConfig::Custom(color);
         }
     }
 }

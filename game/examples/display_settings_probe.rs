@@ -141,6 +141,7 @@ fn probe(
                 mode: ScreenMode::Fullscreen,
                 resolution: size,
                 max_fps: Some(60),
+                ..default()
             }
         }
         6 => DisplaySettings {

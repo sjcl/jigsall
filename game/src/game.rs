@@ -177,9 +177,19 @@ impl Plugin for GamePlugin {
             .add_systems(Last, crate::resources::pieces::prepare_piece_upload);
     }
 }
-fn setup_game(mut commands: Commands) {
+fn setup_game(mut commands: Commands, settings: Res<crate::settings::DisplaySettingsState>) {
     // Single-sample normal rendering and picking share pixel coverage at edges.
-    commands.spawn((Camera2d, MainCamera, Msaa::Off));
+    commands.spawn((
+        Camera2d,
+        Camera {
+            clear_color: bevy::camera::ClearColorConfig::Custom(
+                settings.current.game_background.color(),
+            ),
+            ..default()
+        },
+        MainCamera,
+        Msaa::Off,
+    ));
 }
 #[allow(clippy::too_many_arguments)] // Explicit ECS resources include process identity.
 fn initialize_game(

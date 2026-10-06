@@ -1,5 +1,60 @@
 use super::*;
 
+#[test]
+fn background_defaults_for_existing_settings_and_applies_to_main_camera() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(
+        &path,
+        r#"{"display":{"resolution":[800,600],"mode":"Windowed","max_fps":144}}"#,
+    )
+    .unwrap();
+    let mut app = test_app(Some(path.clone()));
+    let main = app
+        .world_mut()
+        .spawn((Camera::default(), crate::components::MainCamera))
+        .id();
+    let other = app.world_mut().spawn(Camera::default()).id();
+    app.update();
+    let initial = app.world().resource::<DisplaySettingsState>();
+    assert!(initial.error.is_none());
+    assert_eq!(initial.current.resolution, UVec2::new(800, 600));
+    assert_eq!(initial.current.max_fps, Some(144));
+    assert_eq!(initial.current.game_background, GameBackground::Light);
+    assert!(matches!(
+        app.world().get::<Camera>(main).unwrap().clear_color,
+        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Light.color()
+    ));
+    assert_eq!(GameBackground::Dark.color(), ClearColor::default().0);
+    let mut settings = initial.current.clone();
+    settings.game_background = GameBackground::Dark;
+    action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
+    assert!(app
+        .world()
+        .resource::<DisplaySettingsState>()
+        .confirmation_seconds()
+        .is_none());
+    assert!(matches!(
+        app.world().get::<Camera>(main).unwrap().clear_color,
+        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Dark.color()
+    ));
+    assert!(matches!(
+        app.world().get::<Camera>(other).unwrap().clear_color,
+        bevy::camera::ClearColorConfig::Default
+    ));
+    assert_eq!(
+        DisplaySettingsState::load(Some(path.clone())).current,
+        settings
+    );
+    settings.game_background = GameBackground::Light;
+    action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
+    assert_eq!(DisplaySettingsState::load(Some(path)).current, settings);
+    assert!(matches!(
+        app.world().get::<Camera>(main).unwrap().clear_color,
+        bevy::camera::ClearColorConfig::Custom(color) if color == GameBackground::Light.color()
+    ));
+}
+
 fn test_app(path: Option<PathBuf>) -> App {
     let mut app = App::new();
     app.add_plugins(MinimalPlugins)
@@ -158,6 +213,7 @@ fn modes_use_supported_fullscreen_video_and_restore_physical_window_size() {
         resolution: UVec2::new(1920, 1080),
         mode: ScreenMode::Fullscreen,
         max_fps: None,
+        ..default()
     };
     action(&mut app, DisplaySettingsAction::Apply(settings));
     let window = app

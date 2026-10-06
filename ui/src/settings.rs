@@ -426,7 +426,21 @@ fn paint_settings(
                         ui.add_space(2.0);
                         theme::card().show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ui.label(i18n.text("settings-max-fps"));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(i18n.text("settings-max-fps"));
+                                ui.separator();
+                                ui.label(i18n.text("settings-game-background"));
+                                for (value, label) in [
+                                    (GameBackground::Light, "settings-background-light"),
+                                    (GameBackground::Dark, "settings-background-dark"),
+                                ] {
+                                    ui.selectable_value(
+                                        &mut dialog.draft.game_background,
+                                        value,
+                                        i18n.text(label),
+                                    );
+                                }
+                            });
                             let mut unlimited = dialog.draft.max_fps.is_none();
                             ui.checkbox(&mut unlimited, i18n.text("settings-unlimited"));
                             ui.add_enabled_ui(!unlimited, |ui| {

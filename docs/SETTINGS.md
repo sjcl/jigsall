@@ -11,7 +11,8 @@
   "display": {
     "resolution": [1280, 720],
     "mode": "Windowed",
-    "max_fps": 60
+    "max_fps": 60,
+    "game_background": "Light"
   },
   "keybindings": {},
   "image": {
@@ -31,6 +32,10 @@
 ```
 
 `keybindings` の省略した操作は初期割り当てを使います。`autosave.interval_minutes` の `null` は無効、`display.max_fps` の `null` は無制限を表します。`autosave.max_saves_per_game` は同じゲームIDのオートセーブを保持する件数（1以上、既定1）です。上限変更は次回のオートセーブ成功後のローテーションに適用します。言語IDは `auto`、`en-US`、`ja` です。
+
+## ゲーム画面の背景色
+
+ゲーム画面の背景色は「設定 → グラフィック → ゲーム画面の背景色」で選び、「適用」で反映・保存します。既定はライト（クリーム色、`Light`、sRGB `#F3EAD7`）です。「ダーク」（`Dark`、sRGB `#2B2C2F`）で以前の色に戻せます。既存の `display` に `game_background` がない場合はライトを使い、他の表示設定を保持します。背景色だけの変更に15秒の確認は不要です。
 
 ## プレイヤー表示名
 

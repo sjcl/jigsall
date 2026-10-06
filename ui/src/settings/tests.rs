@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn background_widgets_select_dark_and_light() {
+    let ctx = egui::Context::default();
+    let mut dialog = SettingsDialog::default();
+    dialog.open(&DisplaySettingsState::load(None));
+    dialog.tab = SettingsTab::Graphics;
+    assert_eq!(dialog.draft.game_background, GameBackground::Light);
+    assert!(click(&ctx, &mut dialog, "Dark").is_none());
+    let Some(DisplaySettingsAction::Apply(settings)) = click(&ctx, &mut dialog, "Apply") else {
+        panic!("Background change must enable Apply");
+    };
+    assert_eq!(settings.game_background, GameBackground::Dark);
+    assert!(click(&ctx, &mut dialog, "Light").is_none());
+    assert_eq!(dialog.draft.game_background, GameBackground::Light);
+    assert!(click(&ctx, &mut dialog, "Apply").is_none());
+}
+
+#[test]
 fn player_name_draft_does_not_save_until_commit_and_errors_are_visible() {
     let mut state = PlayerSettingsState::load(None);
     let mut draft = Some("Alice".to_owned());
