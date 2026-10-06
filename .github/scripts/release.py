@@ -132,6 +132,32 @@ def native_notices(native, system):
     return "\n\n".join(sections) + "\n"
 
 
+def rust_source_notices(target):
+    # cargo-about resolves license alternatives. Also retain upstream NOTICE /
+    # copyright files verbatim, including the embedded egui fonts' attribution.
+    metadata = json.loads(command("cargo", "metadata", "--locked", "--features", "rendezvous",
+                                  "--filter-platform", target, "--format-version", "1"))
+    resolved = {node["id"] for node in metadata["resolve"]["nodes"]}
+    sections = []
+    for package in sorted(metadata["packages"], key=lambda item: (item["name"], item["version"])):
+        if package["id"] not in resolved or package["id"] in metadata["workspace_members"]:
+            continue
+        directory = Path(package["manifest_path"]).parent
+        files = {path for path in directory.iterdir() if path.is_file()
+                 and path.name.upper().startswith(("LICENSE", "COPYING", "NOTICE", "UNLICENSE"))}
+        if package.get("license_file"):
+            files.add(directory / package["license_file"])
+        if package["name"] == "epaint_default_fonts":
+            font_notices = set((directory / "fonts").glob("*.txt"))
+            if not font_notices:
+                raise RuntimeError("Missing egui embedded font notices")
+            files.update(font_notices)
+        for path in sorted(files):
+            label = f"{package['name']} {package['version']} / {path.relative_to(directory)}"
+            sections.append(f"{label}\n{'=' * 79}\n{path.read_text(encoding='utf-8')}")
+    return "\n\n".join(sections) + "\n"
+
+
 def licenses(target, cargo_about):
     DIST.mkdir(exist_ok=True)
     subprocess.run([cargo_about, "generate", "--locked", "--features", "rendezvous", "--target", target,
@@ -139,6 +165,7 @@ def licenses(target, cargo_about):
     build_info = json.loads((DIST / "build.json").read_text(encoding="utf-8"))
     system = "Windows" if target == "x86_64-pc-windows-msvc" else "Linux"
     notices = native_notices(Path(build_info["native"]), system)
+    notices += rust_source_notices(target)
     (DIST / "THIRD_PARTY_NOTICES.txt").write_text(notices, encoding="utf-8")
 
 
