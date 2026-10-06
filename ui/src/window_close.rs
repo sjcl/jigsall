@@ -69,7 +69,7 @@ pub(crate) fn handle_close_requests(
         exit.write(AppExit::Success);
         return;
     }
-    dialogs.request_window_exit(&mut persistence, &i18n);
+    dialogs.request_window_exit(&mut persistence, completed, &i18n);
     if completed {
         next_complete.set(GameCompleteSubState::Paused);
     } else {

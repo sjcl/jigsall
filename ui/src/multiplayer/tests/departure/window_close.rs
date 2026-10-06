@@ -102,6 +102,26 @@ fn click_save_button(app: &mut App, ctx: &egui::Context, label: &str) {
 }
 
 #[test]
+fn window_close_skips_confirmation_for_saved_completed_puzzles() {
+    for role in [None, Some(RuntimeRole::Host)] {
+        for autosave in [false, true] {
+            for completed in [false, true] {
+                let (mut app, ctx, primary) = window_game(role, completed);
+                record_saved_game(&mut app, autosave);
+                close(&mut app, primary);
+                render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+                if completed {
+                    assert_departed(&app, DepartureAction::Exit);
+                } else {
+                    assert_window_open(&app, primary, role);
+                    assert!(app.world().resource::<PersistenceState>().title_dialog_open);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn window_close_pauses_before_showing_save_and_keeps_the_window_until_confirmed() {
     for role in [None, Some(RuntimeRole::Host)] {
         for completed in [false, true] {

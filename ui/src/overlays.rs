@@ -87,6 +87,7 @@ pub fn draw_in_game_menu_ui(
                                 crate::persistence::DepartureAction::Title,
                                 network_status.role,
                                 &mut persistence,
+                                completed,
                                 &i18n,
                             );
                         }
@@ -104,6 +105,7 @@ pub fn draw_in_game_menu_ui(
                                 crate::persistence::DepartureAction::Exit,
                                 network_status.role,
                                 &mut persistence,
+                                completed,
                                 &i18n,
                             );
                         }

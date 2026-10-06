@@ -72,6 +72,7 @@ impl SaveDialogs {
     pub(crate) fn request_window_exit(
         &mut self,
         state: &mut PersistenceState,
+        completed: bool,
         i18n: &Localization,
     ) {
         match self.departure {
@@ -105,7 +106,7 @@ impl SaveDialogs {
                 DepartureFlow::Prompt(DepartureAction::Exit)
             });
         } else {
-            self.request_departure(DepartureAction::Exit, None, state, i18n);
+            self.request_departure(DepartureAction::Exit, None, state, completed, i18n);
         }
     }
 
@@ -123,9 +124,14 @@ impl SaveDialogs {
         action: DepartureAction,
         role: Option<RuntimeRole>,
         state: &mut PersistenceState,
+        completed: bool,
         i18n: &Localization,
     ) {
-        if role == Some(RuntimeRole::Client) {
+        // An earlier checkpoint is enough once the puzzle is complete, even
+        // when it was saved before placing the final piece.
+        let saved_completion =
+            completed && (state.current_save.is_some() || state.current_autosave.is_some());
+        if role == Some(RuntimeRole::Client) || saved_completion {
             self.departure = Some(DepartureFlow::Ready(action));
         } else {
             self.open_title(state, i18n);

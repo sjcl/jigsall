@@ -137,6 +137,7 @@ pub fn draw_completion_ui(
                                     crate::persistence::DepartureAction::Title,
                                     network_status.role,
                                     &mut persistence,
+                                    true,
                                     &i18n,
                                 );
                             }

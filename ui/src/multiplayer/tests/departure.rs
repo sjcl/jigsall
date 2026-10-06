@@ -4,6 +4,54 @@ use jigsall_core::{session::ImageHash, PuzzleDefinition, GENERATOR_VERSION};
 use jigsall_game::persistence::{SaveError, StorageError};
 mod window_close;
 
+fn record_saved_game(app: &mut App, autosave: bool) {
+    use jigsall_game::persistence::{SaveId, SaveMetadata, SaveTitle};
+    let mut state = app.world_mut().resource_mut::<PersistenceState>();
+    let metadata = SaveMetadata {
+        id: SaveId(1),
+        game_id: state.game_id,
+        title: SaveTitle::new("Earlier checkpoint").unwrap(),
+        revision: 1,
+        created_at: 1,
+        updated_at: 1,
+        is_autosave: autosave,
+    };
+    if autosave {
+        state.current_autosave = Some(metadata);
+    } else {
+        state.current_save = Some(metadata);
+    }
+}
+
+#[test]
+fn saved_puzzle_departure_skips_confirmation_only_after_completion() {
+    for role in [None, Some(RuntimeRole::Host)] {
+        for autosave in [false, true] {
+            for completed in [false, true] {
+                for action in [DepartureAction::Title, DepartureAction::Exit] {
+                    let (mut app, ctx) = paused_game(role, completed);
+                    record_saved_game(&mut app, autosave);
+                    if completed {
+                        app.world_mut()
+                            .insert_resource(State::new(GameCompleteSubState::Paused));
+                    }
+                    click_label(&mut app, &ctx, menu_label(action, role));
+                    if completed {
+                        assert_departed(&app, action);
+                    } else {
+                        assert_staying(&app, role);
+                        assert!(app.world().resource::<PersistenceState>().title_dialog_open);
+                    }
+                }
+            }
+            let (mut app, ctx) = paused_game(role, true);
+            record_saved_game(&mut app, autosave);
+            click_label(&mut app, &ctx, menu_label(DepartureAction::Title, role));
+            assert_departed(&app, DepartureAction::Title);
+        }
+    }
+}
+
 fn paused_game(role: Option<RuntimeRole>, completed: bool) -> (App, egui::Context) {
     let (mut app, ctx) = scheduled_screens();
     let world = app.world_mut();
