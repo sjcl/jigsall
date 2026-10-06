@@ -37,6 +37,12 @@ use std::{
 };
 
 fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
+    gpu_app_with_pipeline_compilation(resolution, true)
+}
+fn gpu_app_with_pipeline_compilation(
+    resolution: u32,
+    synchronous_pipeline_compilation: bool,
+) -> (App, Entity, Handle<Image>) {
     crate::test_logging::init();
     let mut app = App::new();
     app.add_plugins(
@@ -49,7 +55,7 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
             .set(RenderPlugin {
                 // Pixel readback must wait for Bevy's output pipelines as well
                 // as the puzzle pipelines; avoid startup compile timing races.
-                synchronous_pipeline_compilation: true,
+                synchronous_pipeline_compilation,
                 render_creation: RenderCreation::Automatic(Box::new(WgpuSettings {
                     features: WgpuFeatures::TIMESTAMP_QUERY
                         | WgpuFeatures::TIMESTAMP_QUERY_INSIDE_ENCODERS,
@@ -453,6 +459,67 @@ fn compute_output(
     queue.submit([encoder.finish()]);
     read_buffer(app, &output, output_bytes)
 }
+// Read the completed frame directly. Calling app.update again here would hide
+// a one-frame rendering gap or stale projection in regression tests.
+fn frame_pixels(app: &App, target: &Handle<Image>, resolution: u32) -> Vec<u8> {
+    let world = app.sub_app(RenderApp).world();
+    let device = world.resource::<RenderDevice>();
+    let queue = world.resource::<RenderQueue>();
+    let image = world
+        .resource::<RenderAssets<GpuImage>>()
+        .get(target.id())
+        .unwrap();
+    let bytes_per_row = (resolution * 4).div_ceil(256) * 256;
+    let staging = buffer(
+        device,
+        "test same-frame readback",
+        u64::from(bytes_per_row * resolution),
+        BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+    );
+    let mut encoder = device.create_command_encoder(&default());
+    encoder.copy_texture_to_buffer(
+        TexelCopyTextureInfo {
+            texture: &image.texture,
+            mip_level: 0,
+            origin: Origin3d::ZERO,
+            aspect: TextureAspect::All,
+        },
+        TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(resolution),
+            },
+        },
+        Extent3d {
+            width: resolution,
+            height: resolution,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    let (tx, rx) = crossbeam::channel::bounded(1);
+    staging.slice(..).map_async(MapMode::Read, move |r| {
+        tx.send(r).unwrap();
+    });
+    device
+        .poll(PollType::Wait {
+            timeout: Some(Duration::from_secs(20)),
+            submission_index: None,
+        })
+        .unwrap();
+    rx.recv().unwrap().unwrap();
+    let pixels = staging
+        .slice(..)
+        .get_mapped_range()
+        .chunks(bytes_per_row as usize)
+        .flat_map(|row| row[..resolution as usize * 4].iter().copied())
+        .collect();
+    staging.unmap();
+    pixels
+}
+
 fn rendered_pixels(app: &mut App, target: Handle<Image>) -> Vec<u8> {
     let pixels = Arc::new(Mutex::new(None));
     let out = pixels.clone();

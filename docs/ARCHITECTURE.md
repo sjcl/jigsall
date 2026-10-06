@@ -361,6 +361,11 @@ rotation elevation * extra separation
 `ResolvedPieceVisuals` に変換します。暫定 default は同じ箇所の High です。
 extract は projected piece の短辺と threshold から、その frame の shadow 有効・無効を O(1) で決めます。
 Low または LOD 未満では shadow pipeline を新規準備せず、shadow raster / draw を一切発行しません。
+shadow が初めて必要になった frame で pipeline を lazy queue します。現在の epoch がまだ
+`RenderReady` でない初回表示は shadow も準備できるまで待ちます。表示済みの epoch では、
+準備中の shadow だけを skip し、top / selection の描画を続けます。LOD / quality の切替で本体を
+消さず、両 shadow pipeline が完成した frame から shadow を追加します。後続の side / thickness の
+lazy pipeline も同じ初回表示・表示済み epoch の区別を維持します。
 100万 piece の far overview も High で shadow draw 0です。
 UI、Auto、設定保存、frame-time による動的調整は未実装です。
 
@@ -388,7 +393,8 @@ color pass は source alpha × opacity の黒を一度だけ blend します。s
 正の float の1 ULPだけ進め、strict Greater test/write を使うことで、奥の shadow と同 rank の重複も
 拒否します。この微小な変更は shadow 専用の一時 depth だけに適用します。
 top pass は従来どおり depth を再 clear し、opaque / translucent の depth と ordering を維持します。
-shadow が有効な frame は indirect draw 2回、無効なら0回です。新しい texture / binding は不要です。
+shadow が有効で pipeline が準備済みの frame は indirect draw 2回、無効または準備中なら0回です。
+新しい texture / binding は不要です。
 同 rank・異 alpha の shadow が完全に重なる場合は最初に通った silhouette の alpha を使います。
 
 `shadow_draws` は既存 renderer counter と同じ frame 単位で記録し、GPU diagnostic span は

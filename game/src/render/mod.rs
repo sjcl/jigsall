@@ -1328,10 +1328,13 @@ fn puzzle_node(
                 return;
             }
         }
-        let [Some(depth), Some(color)] = ids.map(|id| cache.get_render_pipeline(id)) else {
-            return;
-        };
-        Some([depth, color])
+        match ids.map(|id| cache.get_render_pipeline(id)) {
+            [Some(depth), Some(color)] => Some([depth, color]),
+            // Initial display waits for all requested visuals. Once this epoch
+            // is visible, lazy feature compilation must not interrupt top draw.
+            _ if !ready.is_ready(frame.upload.epoch) => return,
+            _ => None,
+        }
     } else {
         None
     };

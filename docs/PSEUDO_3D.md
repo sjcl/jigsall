@@ -45,6 +45,13 @@ far shader の shadow 対応は将来 threshold を調整できるよう維持�
 far mode の1.5 pxより大きいため、far raster fixture だけ test 用の threshold 0.25 pxで実行します。
 通常 production の far overview は shadow pass を完全 skip します。
 
+lazy compilation の回帰2件は `synchronous_pipeline_compilation: false` で実行します。
+queue 直後と準備中の frame を、次の frame に進めず texture から直接読み取ります。
+Low → Medium / High、High の5 px → 11 px zoom、11 pxでの Medium → Highでは、
+表示済み epoch の top が flat reference と全 pixel 一致し、準備完了後に shadow が追加されることを
+確認します。初回表示と次の epoch のロードでは、要求した shadow を描くまで `RenderReady` を
+進めないことも確認します。
+
 `gpu_shadow_million_overview_low_high_skip_draw_benchmark` は release で12 frameの GPU visibility / draw
 timestamp と `shadow_draws` を記録します。Low / Medium / High が同じ flat path を使うことの検証であり、
 60 fps、別 OS / GPU の runtime 互換性、bit 一致の保証ではありません。
@@ -54,6 +61,9 @@ timestamp と `shadow_draws` を記録します。Low / Medium / High が同じ 
 2026-10-06、Windows / RTX 5090 / NVIDIA 610.88 / Vulkan、Rust 1.97。
 workspace 通常テスト900件（doctest 1件を含む）、Clippy 全 target、整形検証が通過しました。
 実 GPU の機能回帰36件は dev profile、新規 shadow 6件と100万 piece の計測 fixture は release で通過しています。
+同日、lazy compilation の修正前 `1e674b0` で、queue 直後の frame が背景だけになることを
+非同期 GPU fixture で再現しました。修正後は追加2件を含む実 GPU 回帰38件が dev profile で通過し、
+通常テスト・Clippy 全 target・整形検証も通過しています。
 1000² grid の実初期配置、512² offscreen、白の1×1不透明 texture、12 frame平均の短い1 runです。
 導入前との速度比較や改善率ではなく、quality を変えても LOD 無効時の pass が増えないことを確認します。
 

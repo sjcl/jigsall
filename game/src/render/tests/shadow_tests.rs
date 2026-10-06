@@ -149,6 +149,141 @@ fn assert_no_uploads(app: &App) {
 
 #[test]
 #[ignore = "requires a real GPU"]
+fn gpu_shadow_lazy_compilation_keeps_ready_epoch_visible() {
+    for (initial_quality, initial_scale, quality, scale) in [
+        (PieceVisualQuality::Low, 1.0, PieceVisualQuality::High, 1.0),
+        (
+            PieceVisualQuality::Low,
+            1.0,
+            PieceVisualQuality::Medium,
+            1.0,
+        ),
+        (
+            PieceVisualQuality::High,
+            8.0,
+            PieceVisualQuality::High,
+            40.0 / 11.0,
+        ),
+        (
+            PieceVisualQuality::Medium,
+            40.0 / 11.0,
+            PieceVisualQuality::High,
+            40.0 / 11.0,
+        ),
+    ] {
+        let (mut app, camera, target) = gpu_app_with_pipeline_compilation(128, false);
+        app.insert_resource(ClearColor(Color::WHITE));
+        red_source(&mut app, 255);
+        app.insert_resource(definition(UVec2::ONE, 40, 42));
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .initialize(vec![Vec2::ZERO]);
+        app.world_mut().get_mut::<Transform>(camera).unwrap().scale = Vec3::new(scale, scale, 1.0);
+        wait_ready(&mut app);
+        // Capture the flat reference at the zoom used by the transition.
+        let flat = render_frame(&mut app, target.clone());
+        assert_eq!(&flat[(64 * 128 + 64) * 4..][..4], &[255, 0, 0, 255]);
+        app.insert_resource(initial_quality);
+        app.world_mut().get_mut::<Transform>(camera).unwrap().scale =
+            Vec3::new(initial_scale, initial_scale, 1.0);
+        render_frame(&mut app, target.clone());
+        assert!(app
+            .sub_app(RenderApp)
+            .world()
+            .resource::<GpuRenderer>()
+            .shadow_pipelines
+            .is_empty());
+        let epoch = app.world().resource::<PieceDataStore>().epoch;
+
+        app.insert_resource(quality);
+        app.world_mut().get_mut::<Transform>(camera).unwrap().scale = Vec3::new(scale, scale, 1.0);
+        update_gpu(&mut app);
+        assert_ne!(config(&app).shadow_enabled, 0);
+        // puzzle_node queues these after PipelineCache has processed this frame.
+        // Read this exact frame, without advancing past the compilation gap.
+        assert_eq!(shadow_draws(&app), 0);
+        let world = app.sub_app(RenderApp).world();
+        let gpu = world.resource::<GpuRenderer>();
+        let cache = world.resource::<PipelineCache>();
+        assert!(gpu
+            .shadow_pipelines
+            .values()
+            .flatten()
+            .all(|id| cache.get_render_pipeline(*id).is_none()));
+        assert!(
+            frame_pixels(&app, &target, 128) == flat,
+            "first lazy shadow frame lost top pieces"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while shadow_draws(&app) == 0 {
+            assert!(app.world().resource::<RenderReady>().is_ready(epoch));
+            assert!(app.world().resource::<RenderReady>().error(epoch).is_none());
+            assert!(
+                frame_pixels(&app, &target, 128) == flat,
+                "top pieces disappeared while compiling shadows"
+            );
+            update_gpu(&mut app);
+            assert!(
+                Instant::now() < deadline,
+                "shadow pipeline did not become ready"
+            );
+        }
+        assert_eq!(shadow_draws(&app), 2);
+        let pixels = frame_pixels(&app, &target, 128);
+        assert!(!shadow_pixels(&pixels).is_empty());
+        assert_eq!(&pixels[(64 * 128 + 64) * 4..][..4], &[255, 0, 0, 255]);
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_shadow_unready_epoch_waits_for_requested_pipelines() {
+    for previous_epoch_ready in [false, true] {
+        let (mut app, _, target) = gpu_app_with_pipeline_compilation(128, false);
+        app.insert_resource(ClearColor(Color::WHITE));
+        red_source(&mut app, 255);
+        app.insert_resource(definition(UVec2::ONE, 40, 42));
+        if previous_epoch_ready {
+            app.world_mut()
+                .resource_mut::<PieceDataStore>()
+                .initialize(vec![Vec2::ZERO]);
+            wait_ready(&mut app);
+        }
+        app.insert_resource(PieceVisualQuality::High);
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .initialize(vec![Vec2::ZERO]);
+        let epoch = app.world().resource::<PieceDataStore>().epoch;
+        assert!(!app.world().resource::<RenderReady>().is_ready(epoch));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            update_gpu(&mut app);
+            assert!(!app.world().resource::<RenderReady>().is_ready(epoch));
+            assert!(app.world().resource::<RenderReady>().error(epoch).is_none());
+            if !app
+                .sub_app(RenderApp)
+                .world()
+                .resource::<GpuRenderer>()
+                .shadow_pipelines
+                .is_empty()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shadow pipelines were not queued"
+            );
+        }
+        assert_eq!(shadow_draws(&app), 0);
+        wait_ready(&mut app);
+        assert_eq!(shadow_draws(&app), 2);
+        assert!(!shadow_pixels(&rendered_pixels(&mut app, target)).is_empty());
+    }
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
 fn gpu_shadow_static_low_flat_pixels_lod_and_top_only_picking() {
     let (mut app, camera, target) = fixture(40);
     let flat = render_frame(&mut app, target.clone());

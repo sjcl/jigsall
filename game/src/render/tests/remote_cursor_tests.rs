@@ -7,67 +7,6 @@ use ab_glyph::{Font, FontRef, ScaleFont};
 use jigsall_core::PlayerId;
 use std::collections::BTreeMap;
 
-// Read the completed frame directly. Calling app.update again here would hide
-// a one-frame stale projection and make the camera regression test ineffective.
-fn frame_pixels(app: &App, target: &Handle<Image>, resolution: u32) -> Vec<u8> {
-    let world = app.sub_app(RenderApp).world();
-    let device = world.resource::<RenderDevice>();
-    let queue = world.resource::<RenderQueue>();
-    let image = world
-        .resource::<RenderAssets<GpuImage>>()
-        .get(target.id())
-        .unwrap();
-    let bytes_per_row = (resolution * 4).div_ceil(256) * 256;
-    let staging = buffer(
-        device,
-        "cursor same-frame readback",
-        u64::from(bytes_per_row * resolution),
-        BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-    );
-    let mut encoder = device.create_command_encoder(&default());
-    encoder.copy_texture_to_buffer(
-        TexelCopyTextureInfo {
-            texture: &image.texture,
-            mip_level: 0,
-            origin: Origin3d::ZERO,
-            aspect: TextureAspect::All,
-        },
-        TexelCopyBufferInfo {
-            buffer: &staging,
-            layout: TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(bytes_per_row),
-                rows_per_image: Some(resolution),
-            },
-        },
-        Extent3d {
-            width: resolution,
-            height: resolution,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-    let (tx, rx) = crossbeam::channel::bounded(1);
-    staging.slice(..).map_async(MapMode::Read, move |r| {
-        tx.send(r).unwrap();
-    });
-    device
-        .poll(PollType::Wait {
-            timeout: Some(Duration::from_secs(20)),
-            submission_index: None,
-        })
-        .unwrap();
-    rx.recv().unwrap().unwrap();
-    let pixels = staging
-        .slice(..)
-        .get_mapped_range()
-        .chunks(bytes_per_row as usize)
-        .flat_map(|row| row[..resolution as usize * 4].iter().copied())
-        .collect();
-    staging.unmap();
-    pixels
-}
-
 fn japanese_atlas(app: &mut App, scale: f32) -> Arc<RemoteCursorLabelAtlas> {
     // Tests read the same asset from disk; the application embeds it only once.
     let bytes = std::fs::read(concat!(
