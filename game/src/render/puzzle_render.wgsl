@@ -9,7 +9,7 @@ struct PuzzleUniform {
     piece_size_px:vec2<f32>,pixel_world_size:vec2<f32>,
     render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
-    rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
+    rotation_time:f32,rotation_active:u32,drag_elevation_time:f32,drag_elevation_active:u32,
     pseudo_3d_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
     shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
     visual_cull_extent:vec2<f32>,bevel_width_px:f32,bevel_enabled:u32,
@@ -31,6 +31,17 @@ struct RemoteDeltas { entries:array<vec4<f32>,32> };
 fn component_root(id:u32)->u32 {return piece_metadata[id];}
 fn remote_slot(id:u32)->u32 {return piece_metadata[config.capacity+id];}
 fn rotation_slot(root:u32)->u32 {return piece_metadata[2u*config.capacity+root];}
+fn drag_elevation(id:u32)->f32 {
+    let slot=piece_metadata[3u*config.capacity+id];
+    if slot==0u {return 0.0;}
+    let offset=4u*config.capacity+(slot-1u)*4u;
+    let start_value=bitcast<f32>(piece_metadata[offset]);
+    let end_value=bitcast<f32>(piece_metadata[offset+1u]);
+    let start=bitcast<f32>(piece_metadata[offset+2u]);
+    let duration=bitcast<f32>(piece_metadata[offset+3u]);
+    let progress=clamp((config.drag_elevation_time-start)/duration,0.0,1.0);
+    return mix(start_value,end_value,progress*progress*(3.0-2.0*progress));
+}
 @group(1) @binding(0) var image:texture_2d<f32>;
 @group(1) @binding(1) var image_sampler:sampler;
 @group(2) @binding(0) var<storage,read_write> selection:array<atomic<u32>>;
@@ -68,6 +79,9 @@ fn piece_vertex(vi:u32,instance:u32,shadow:bool,side:bool)->VertexOutput {
         let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
         position=pose.position;rotation=pose.rotation;
         if shadow {elevation=pose.elevation;}
+    }
+    if shadow && config.drag_elevation_active!=0u {
+        elevation=max(elevation,drag_elevation(id));
     }
     var out:VertexOutput;
     if config.far_zoom!=0u {

@@ -180,7 +180,7 @@ fn piece_metadata_shader_and_layout_bindings_fit_eight_storage_buffers_per_stage
     let preview = include_str!("../component_preview.wgsl");
     assert!(preview.contains("var<storage,read> piece_metadata:array<u32>;"));
     assert!(!preview.contains("component_roots"));
-    assert!(preview.contains("arrayLength(&piece_metadata)/3u"));
+    assert!(preview.contains("id>=arrayLength(&piece_metadata)"));
 }
 
 fn metadata_words(app: &App) -> Vec<u32> {

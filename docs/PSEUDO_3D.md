@@ -35,7 +35,32 @@ side は静止中にも存在する別パラメータです。shadow と side �
 shadowだけを描きます。Low / LOD off では optional pseudo-3D pass 自体を発行せず、pipeline の新規
 queue / raster / fragment もありません。静止時の影が側面の先へ残るよう base shadow の距離を調整しました。
 bevel の LOD も独立し、High の16 pxでは shadow / side が有効でも bevel は無効です。
-far zoom では threshold を下げても bevel を有効にしません。blur、実 Z elevation、drag / selection lift は対象外です。
+far zoom では threshold を下げても bevel を有効にしません。blur、実 Z elevation、selection lift は対象外です。
+
+## Drag elevation
+
+local / remote の held membership に共通の envelope を与えます。grab は0→1、release / cancel は
+その時点の値→0を real time の80ms smoothstepで補間します。定数は
+`game/src/resources/drag_elevation.rs` の `DRAG_ELEVATION_SECONDS` にまとめています。
+短いgrab、fade途中の再grabも現在値から開始します。componentの全memberは同じrecordを参照します。
+rotationと独立に評価し、shadow vertexだけで `max(rotation_elevation, drag_elevation)` を使います。
+Highのheld shadow separationは7.5pxで、side thickness・bevel幅/強度・top位置/Z/depth・pickingは変わりません。
+interaction envelopeはqualityに依存せず、Low / LOD offでも進行します。shadow passの追加発行はありません。
+
+`DragElevationPresentation` はmain-worldの描画専用resourceです。localのfrozen membershipのArcと、
+既存remote cacheのmembership versionを監視します。remoteはaccepted grab / release / cancelと
+teardownのmembershipを使い、Transient deltaだけではenvelopeを再開始しません。
+releaseでtranslation membershipが消えても、liftのslot mappingとrecordをfade終了まで有効にします。
+focus loss / disconnectなど同じepochのcleanupも下降し、新しいpuzzle epochではcacheを破棄します。
+protocol・authority・save/snapshot・canonical state・`GpuPieceState`・connectivity/snapには追加しません。
+
+member走査とslot mapping uploadはmembership変更/slot再利用の境界だけです。通常drag frameは時刻を
+既存336-byte uniformに渡すだけで、piece state / member / record uploadはありません。
+GPUの既存piece metadata storage bindingを初回grab時だけ拡張し、4番目のSoA regionと16-byte envelope
+recordのtailを置きます。pool拡張はGPU copyで既存metadataを保存します。storage binding上限8を維持します。
+fade完了後のslotはzero recordにし、mappingの解除はslot再利用時まで遅らせます。
+idleではuniform gateでlookup/補間をskipし、初回drag前のCPU/GPU mapping allocationも増やしません。
+通常frameの追加draw・O(N) CPU処理・piece uploadはありません。
 
 ## Top surface の bevel
 
@@ -80,8 +105,22 @@ cargo test --locked -p jigsall-game --lib
 cargo test --release --locked -p jigsall-game gpu_shadow -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_side -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_bevel -- --ignored --nocapture --test-threads=1
+cargo test --locked -p jigsall-game drag_elevation
+cargo test --release --locked -p jigsall-game gpu_drag_elevation -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
+
+`resources/drag_elevation/tests.rs` はgrab / hold / early cancel / release、fade中の再grab、部分解除、
+remote slot再利用 / teardown / epoch切替、rotationとのmaxの連続性を検証します。
+実際のlocal GrabGroup / ReleaseGroup / disconnect cleanupも観測し、canonical stateがpresentation更新で
+変わらないことを確認します。100万memberで10,000回のpointer更新を行い、piece state accessと
+mapping / record / range再生成がないことも確認します。
+
+`render/tests/drag_elevation_tests.rs` は開始・中間・held・release直後・終了のshadowを、同じposeで
+hostが指定した分離距離の基準画像と全pixel比較します。connected全memberのslot共有、rotationとのmax、
+opaque / alpha 0.5 / alpha 0でのside・bevel・point / rectangle picking不変、Low / LODのdraw/upload 0、
+remote slot再利用とfadeを検証します。metadata拡張後もpreviewにroot領域だけをbindingし、padding bitが
+optional領域をrootとして読まないことを実GPUで確認します。
 
 `render/tests/shadow_tests.rs` は以下を実 GPU で確認します。通常 fixture と同じく storage buffer 上限を
 stage あたり8に制限します。
@@ -220,3 +259,30 @@ releaseの12 frame平均を短い1 runとして記録しました。
 
 短期timestamp変動を含む値です。bevel有効時のGPUコストや、導入前との速度比較・60 fps・別環境の
 互換性を示す測定ではありません。
+
+### drag elevation の追加検証
+
+2026-10-06、Windows / NVIDIA GeForce RTX 5090 / Vulkanで、通常workspaceテスト912件
+（doctest 1件を含む）、全target Clippy、整形検証が通過しました。追加のCPU / layout回帰は7件、
+実GPU回帰は6件です。既存を含む実GPU63件がdev profileで、追加6件がreleaseで通過しました。
+grab前・held・release中間のnative PNGでもshadowだけのseparation変化を確認しました。
+side・bevel・picking・canonical stateの不変、component共有、rotationとのmax、remote再利用と
+disconnect fade、metadata拡張後のpreview padding除外を検証しています。
+
+同じreleaseテスト実行ファイルで100万piece fixtureも通過しました。1000² grid / 512² offscreen /
+白1×1不透明textureで、初回drag前のLow / Medium / Highはlift mapping未確保、shadow / side draw 0、
+bevel off、追加data upload 0、optional pipeline cache未生成、全pixel一致、可視instance数100万です。
+100万memberのheld中とrelease完了後も全pixelが基準と一致し、通常frameの全upload 0、
+追加draw 0を確認しました。grab境界だけmappingと共通recordをuploadします。
+
+releaseの12 frame平均を短い1 runとして記録しました。
+
+| 状態 / quality | visibility GPU (ms) | top draw GPU (ms) | shadow / side draws |
+| --- | ---: | ---: | --- |
+| idle / Low | 0.0262 | 0.4876 | 0 / 0 |
+| idle / Medium | 0.0259 | 0.4989 | 0 / 0 |
+| idle / High | 0.0269 | 0.5335 | 0 / 0 |
+| held / High | 0.0273 | 0.5067 | 0 / 0 |
+
+短期timestamp変動を含みます。GPU速度の導入前比較・ゲーム全体の60 fps・別OSの実機互換性は
+この検証から主張しません。

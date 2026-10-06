@@ -1,6 +1,7 @@
 use super::*;
 mod bevel_tests;
 mod component_preview_tests;
+mod drag_elevation_tests;
 mod far_zoom_tests;
 mod local_rotation_tests;
 mod outline_tests;

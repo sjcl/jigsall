@@ -2,6 +2,9 @@
 use crate::{
     components::MainCamera,
     resources::{
+        drag_elevation::{
+            prepare_drag_elevation_upload, DragElevationPresentation, DragElevationUpload,
+        },
         remote_drag::{prepare_remote_drag_upload, RemoteDragPresentation, RemoteDragUpload},
         rotation_visual::{
             prepare_rotation_visual_upload, update_rotation_clock, RotationVisualUpload,
@@ -99,10 +102,16 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
         .init_resource::<PieceVisualQuality>()
         .init_resource::<RemoteDragUpload>()
         .init_resource::<RotationVisualUpload>()
+        .init_resource::<DragElevationPresentation>()
+        .init_resource::<DragElevationUpload>()
         .add_systems(First, update_rotation_clock.after(bevy::time::TimeSystems))
         .add_systems(
             Last,
-            (prepare_remote_drag_upload, prepare_rotation_visual_upload),
+            (
+                prepare_remote_drag_upload,
+                prepare_rotation_visual_upload,
+                prepare_drag_elevation_upload.after(prepare_remote_drag_upload),
+            ),
         );
     if !enabled {
         return;
@@ -199,7 +208,8 @@ pub struct PuzzleUniform {
     pub splat_padding: UVec2,
     pub rotation_time: f32,
     pub rotation_active: u32,
-    pub rotation_padding: UVec2,
+    pub drag_elevation_time: f32,
+    pub drag_elevation_active: u32,
     pub pseudo_3d_direction: Vec2,
     pub shadow_base_offset_px: f32,
     pub shadow_lift_offset_px: f32,
@@ -278,6 +288,7 @@ struct ExtractedPuzzle {
     upload: PieceUpload,
     remote: RemoteDragUpload,
     rotation: RotationVisualUpload,
+    drag_elevation: DragElevationUpload,
     image: Option<AssetId<Image>>,
     config: PuzzleUniform,
     camera: Option<Entity>,
@@ -294,6 +305,7 @@ fn extract_puzzle(
         Res<RemoteDragUpload>,
         Res<RotationVisualUpload>,
         Res<PieceVisualQuality>,
+        Res<DragElevationUpload>,
     )>,
     image: Extract<Option<Res<PuzzleImage>>>,
     overlay: Extract<Option<Res<SelectionOverlay>>>,
@@ -302,6 +314,7 @@ fn extract_puzzle(
 ) {
     out.remote = (*presentations.0).clone();
     out.rotation = (*presentations.1).clone();
+    out.drag_elevation = (*presentations.3).clone();
     out.camera = None;
     out.image = None;
     out.request = selection.latest;
@@ -361,6 +374,10 @@ fn extract_puzzle(
         preview_active: u32::from(selection.preview_active),
         rotation_time: out.rotation.time,
         rotation_active: u32::from(out.rotation.active && out.rotation.epoch == out.upload.epoch),
+        drag_elevation_time: out.drag_elevation.time,
+        drag_elevation_active: u32::from(
+            out.drag_elevation.active && out.drag_elevation.epoch == out.upload.epoch,
+        ),
         ..default()
     };
     out.config.configure_screen_space(viewport);
@@ -379,7 +396,8 @@ fn extract_puzzle(
         .and_then(|r| pixel_region(r, scale, target, viewport));
 }
 
-/// Three independent u32 ranges in one storage binding, based on GPU capacity.
+/// Three always-present SoA regions. Drag lift adds a fourth region and a
+/// compact record tail lazily, keeping the idle allocation and bindings intact.
 #[derive(Clone, Copy)]
 struct PieceMetadataLayout {
     capacity: u32,
@@ -405,6 +423,15 @@ impl PieceMetadataLayout {
     fn rotation_range_offset(self, root: u32, len: usize) -> Option<u64> {
         self.range_offset(2, root, len)
     }
+    fn drag_elevation_range_offset(self, start: u32, len: usize) -> Option<u64> {
+        self.range_offset(3, start, len)
+    }
+    fn drag_elevation_records_offset(self) -> u64 {
+        u64::from(self.capacity) * 4 * 4
+    }
+    fn drag_elevation_size(self, records: usize) -> u64 {
+        self.drag_elevation_records_offset() + records as u64 * 16
+    }
 }
 
 struct StateBuffers {
@@ -412,6 +439,8 @@ struct StateBuffers {
     revision: u64,
     root_revision: u64,
     piece_metadata: Buffer,
+    drag_elevation_capacity: usize,
+    drag_elevation_revision: u64,
     states: Buffer,
     visible: Buffer,
     args: Buffer,
@@ -433,6 +462,15 @@ struct StateBuffers {
     capacity: u32,
     pick_visible: Buffer,
     pick_args: Buffer,
+}
+impl StateBuffers {
+    fn root_binding(&self) -> BufferBinding<'_> {
+        BufferBinding {
+            buffer: &self.piece_metadata,
+            offset: 0,
+            size: BufferSize::new(u64::from(self.capacity) * 4),
+        }
+    }
 }
 #[derive(Clone)]
 struct RadixBuffers {
@@ -536,6 +574,7 @@ struct GpuRenderer {
     upload_bytes: u64,
     upload_calls: usize,
     drag_upload_bytes: u64,
+    drag_elevation_upload_bytes: u64,
     remote_mapping_upload_bytes: u64,
     remote_mapping_upload_calls: usize,
     remote_delta_upload_bytes: u64,
@@ -702,6 +741,7 @@ impl GpuRenderer {
             upload_bytes: 0,
             upload_calls: 0,
             drag_upload_bytes: 0,
+            drag_elevation_upload_bytes: 0,
             remote_mapping_upload_bytes: 0,
             remote_mapping_upload_calls: 0,
             remote_delta_upload_bytes: 0,
@@ -1005,6 +1045,7 @@ fn prepare_buffers(
     gpu.upload_bytes = 0;
     gpu.upload_calls = 0;
     gpu.drag_upload_bytes = 0;
+    gpu.drag_elevation_upload_bytes = 0;
     gpu.remote_mapping_upload_bytes = 0;
     gpu.remote_mapping_upload_calls = 0;
     gpu.remote_delta_upload_bytes = 0;
@@ -1088,6 +1129,8 @@ fn prepare_buffers(
             revision: frame.upload.revision,
             root_revision: frame.upload.root_revision,
             piece_metadata,
+            drag_elevation_capacity: 0,
+            drag_elevation_revision: u64::MAX,
             states,
             visible: buffer(
                 &device,
@@ -1310,7 +1353,68 @@ fn prepare_buffers(
         }
         buffers.rotation_revision = frame.rotation.revision;
     }
+    let mut lift_bytes = 0;
+    if frame.drag_elevation.epoch == buffers.epoch
+        && buffers.drag_elevation_revision != frame.drag_elevation.revision
+    {
+        let count = frame.drag_elevation.records.len();
+        if count > buffers.drag_elevation_capacity {
+            let capacity = count.next_power_of_two();
+            let size = metadata.drag_elevation_size(capacity);
+            if size > device.limits().max_storage_buffer_binding_size {
+                ready.fail(
+                    buffers.epoch,
+                    "GPU storage buffer limit is too small for drag presentation",
+                );
+                return;
+            }
+            let grown = buffer(
+                &device,
+                "piece metadata with drag elevation",
+                size,
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            );
+            let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("grow presentation metadata"),
+            });
+            encoder.copy_buffer_to_buffer(
+                &buffers.piece_metadata,
+                0,
+                &grown,
+                0,
+                buffers.piece_metadata.size(),
+            );
+            // Submit the preservation copy before queuing changed mappings and
+            // records. No dense CPU upload is needed when the record pool grows.
+            queue.submit([encoder.finish()]);
+            buffers.piece_metadata = grown;
+            buffers.drag_elevation_capacity = capacity;
+        }
+        if count != 0 {
+            queue.write_buffer(
+                &buffers.piece_metadata,
+                metadata.drag_elevation_records_offset(),
+                bytemuck::cast_slice(&frame.drag_elevation.records),
+            );
+            lift_bytes += count as u64 * 16;
+        }
+        for range in frame.drag_elevation.ranges.iter() {
+            let Some(offset) = metadata.drag_elevation_range_offset(range.start, range.slots.len())
+            else {
+                ready.fail(buffers.epoch, "drag elevation slots exceed piece capacity");
+                return;
+            };
+            queue.write_buffer(
+                &buffers.piece_metadata,
+                offset,
+                bytemuck::cast_slice(&range.slots),
+            );
+            lift_bytes += range.slots.len() as u64 * 4;
+        }
+        buffers.drag_elevation_revision = frame.drag_elevation.revision;
+    }
     gpu.rotation_upload_bytes = rotation_bytes;
+    gpu.drag_elevation_upload_bytes = lift_bytes;
     gpu.remote_mapping_upload_bytes = remote_bytes;
     gpu.remote_mapping_upload_calls = remote_calls;
     gpu.remote_delta_upload_bytes = delta_bytes;
@@ -2028,7 +2132,7 @@ fn draw_selection(
             &cache.get_bind_group_layout(&gpu.preview_layout),
             &BindGroupEntries::sequential((
                 buffers.direct_hits.as_entire_buffer_binding(),
-                buffers.piece_metadata.as_entire_buffer_binding(),
+                buffers.root_binding(),
                 buffers.preview.as_entire_buffer_binding(),
             )),
         );

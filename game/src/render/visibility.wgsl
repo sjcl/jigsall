@@ -8,7 +8,7 @@ struct PuzzleUniform {
     piece_size_px:vec2<f32>,pixel_world_size:vec2<f32>,
     render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
-    rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
+    rotation_time:f32,rotation_active:u32,drag_elevation_time:f32,drag_elevation_active:u32,
     pseudo_3d_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
     shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
     visual_cull_extent:vec2<f32>,bevel_width_px:f32,bevel_enabled:u32,

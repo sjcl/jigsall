@@ -163,7 +163,8 @@ pub(super) fn assert_no_uploads(app: &App) {
             + gpu.remote_mapping_upload_bytes
             + gpu.remote_delta_upload_bytes
             + gpu.selection_upload_bytes
-            + gpu.drag_upload_bytes,
+            + gpu.drag_upload_bytes
+            + gpu.drag_elevation_upload_bytes,
         0
     );
 }
@@ -648,6 +649,8 @@ fn gpu_shadow_million_overview_low_high_skip_draw_benchmark() {
         let gpu = app.sub_app(RenderApp).world().resource::<GpuRenderer>();
         assert!(gpu.shadow_pipelines.is_empty());
         assert!(gpu.side_pipelines.is_empty());
+        assert_eq!(gpu.buffers.as_ref().unwrap().drag_elevation_capacity, 0);
+        assert_eq!(config(&app).drag_elevation_active, 0);
         assert_eq!(visible_ids(&app).len(), 1_000_000);
         bevy::log::info!(
             ?quality,
@@ -659,4 +662,52 @@ fn gpu_shadow_million_overview_low_high_skip_draw_benchmark() {
             "million shadow LOD benchmark"
         );
     }
+    // A million-member drag still advances only one envelope. Boundary mapping
+    // upload is allowed; ordinary held and post-release frames must upload zero.
+    app.insert_resource(ShadowTime(1.0))
+        .add_systems(First, freeze_shadow_clock.after(update_rotation_clock));
+    let mut members = jigsall_core::PieceBitSet::new(1_000_000);
+    members.fill();
+    app.world_mut()
+        .resource_mut::<PieceDataStore>()
+        .drag
+        .members = members.words().clone();
+    update_gpu(&mut app);
+    app.world_mut().resource_mut::<ShadowTime>().0 = 1.1;
+    for _ in 0..8 {
+        update_gpu(&mut app);
+    }
+    assert_eq!(render_frame(&mut app, target.clone()), reference);
+    assert_eq!(config(&app).drag_elevation_active, 1);
+    let mut cull = 0.0;
+    let mut draw = 0.0;
+    for _ in 0..12 {
+        update_gpu(&mut app);
+        assert_no_uploads(&app);
+        assert_eq!(shadow_draws(&app), 0);
+        assert_eq!(
+            app.sub_app(RenderApp)
+                .world()
+                .resource::<GpuRenderer>()
+                .side_draws,
+            0
+        );
+        cull += gpu_ms(&app, "puzzle_visibility");
+        draw += gpu_ms(&app, "puzzle_draw");
+    }
+    bevy::log::info!(
+        visibility_ms = cull / 12.0,
+        draw_ms = draw / 12.0,
+        "million drag elevation LOD benchmark"
+    );
+    app.world_mut().resource_mut::<PieceDataStore>().drag = default();
+    app.world_mut().resource_mut::<ShadowTime>().0 = 2.0;
+    update_gpu(&mut app);
+    app.world_mut().resource_mut::<ShadowTime>().0 = 2.1;
+    for _ in 0..8 {
+        update_gpu(&mut app);
+    }
+    assert_eq!(config(&app).drag_elevation_active, 0);
+    assert_eq!(render_frame(&mut app, target), reference);
+    assert_no_uploads(&app);
 }

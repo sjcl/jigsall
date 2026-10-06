@@ -115,7 +115,10 @@ fn elevation_uses_one_progress_sample_without_new_bindings_or_varyings() {
     ] {
         assert_eq!(source.matches("@binding(").count(), bindings);
         if !source.contains("fn shadow_vertex") {
-            assert!(!source.contains("elevation"));
+            // The shared uniform carries drag timing, but culling still must
+            // not evaluate either elevation input.
+            let runtime = source.split("struct PieceState").nth(1).unwrap();
+            assert!(!runtime.contains("elevation"));
         }
     }
 }

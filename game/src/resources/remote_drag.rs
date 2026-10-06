@@ -24,6 +24,7 @@ pub struct RemoteDragPresentation {
     pub(crate) epoch: u64,
     mapping: Vec<u32>,
     members: [Option<PieceBitSet>; REMOTE_DRAG_SLOTS],
+    membership_version: Arc<()>,
     displayed_deltas: [[f32; 2]; REMOTE_DRAG_SLOTS],
     targets: [[f32; 2]; REMOTE_DRAG_SLOTS],
     smoothing_age: [f64; REMOTE_DRAG_SLOTS],
@@ -39,6 +40,7 @@ impl Default for RemoteDragPresentation {
             epoch: 0,
             mapping: vec![],
             members: std::array::from_fn(|_| None),
+            membership_version: Arc::new(()),
             displayed_deltas: [[0.0; 2]; REMOTE_DRAG_SLOTS],
             targets: [[0.0; 2]; REMOTE_DRAG_SLOTS],
             smoothing_age: [0.0; REMOTE_DRAG_SLOTS],
@@ -63,6 +65,7 @@ impl RemoteDragPresentation {
         self.epoch = epoch;
         self.mapping = vec![0; count];
         self.members = std::array::from_fn(|_| None);
+        self.membership_version = Arc::new(());
         self.displayed_deltas = [[0.0; 2]; REMOTE_DRAG_SLOTS];
         self.targets = [[0.0; 2]; REMOTE_DRAG_SLOTS];
         self.smoothing_age = [0.0; REMOTE_DRAG_SLOTS];
@@ -82,6 +85,7 @@ impl RemoteDragPresentation {
             self.dirty.insert(id);
         }
         self.members[index] = Some(members);
+        self.membership_version = Arc::new(());
         self.rebase(slot, delta);
         Some(slot)
     }
@@ -158,6 +162,7 @@ impl RemoteDragPresentation {
     pub(crate) fn release(&mut self, slot: u32) {
         let index = slot as usize - 1;
         if let Some(members) = self.members[index].take() {
+            self.membership_version = Arc::new(());
             for id in members.iter() {
                 self.mapping[id.0 as usize] = 0;
                 self.dirty.insert(id);
@@ -177,6 +182,14 @@ impl RemoteDragPresentation {
         } else {
             Vec2::from_array(self.displayed_deltas[slot as usize - 1])
         }
+    }
+    pub(crate) fn membership_version(&self) -> &Arc<()> {
+        &self.membership_version
+    }
+    pub(crate) fn held_members(&self) -> impl Iterator<Item = Option<Arc<[u32]>>> + '_ {
+        self.members
+            .iter()
+            .map(|members| members.as_ref().map(|members| members.words().clone()))
     }
     #[cfg(test)]
     pub(crate) fn target(&self, id: PieceId) -> Vec2 {

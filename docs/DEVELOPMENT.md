@@ -151,7 +151,7 @@ cargo run --locked --release --features chrome
 | 分野 | 資料 |
 | --- | --- |
 | 現在の構成・責務 | [アーキテクチャ](ARCHITECTURE.md) |
-| 擬似3D品質・LOD・hard shadow・厚紙の側面 | [擬似3D描画](PSEUDO_3D.md) |
+| 擬似3D品質・LOD・shadow・side・bevel・drag lift | [擬似3D描画](PSEUDO_3D.md) |
 | Remote cursor の描画・atlas・検証 | [GPU cursor presentation](REMOTE_CURSOR_GPU.md) |
 | 描画移行の方針と結果 | [移行方針](INSTRUCTION.md)、[procedural renderer](PROCEDURAL_RENDERER.md) |
 | GPU 選択・大量選択・透明描画 | [GPU picking](GPU_PICKING.md)、[100 万ピースの選択](MILLION_SELECTION.md)、[radix sort](TRANSPARENT_RADIX_SORT.md) |

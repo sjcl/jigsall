@@ -11,8 +11,9 @@ fn mark_roots(word:u32,bits:u32) {
         let bit=firstTrailingBit(remaining);
         remaining&=remaining-1u;
         let id=word*32u+bit;
-        // Only the first third contains roots; padding bits must not read slots.
-        if id>=arrayLength(&piece_metadata)/3u {continue;}
+        // This binding exposes only the root region, regardless of optional
+        // presentation regions/tails in the underlying metadata allocation.
+        if id>=arrayLength(&piece_metadata) {continue;}
         let root=piece_metadata[id];
         let next_word=root/32u;
         // Combine roots sharing a mask word before the atomic. In particular,

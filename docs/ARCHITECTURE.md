@@ -209,16 +209,21 @@ RGBA8の元画像・出力・縮小の中間画素bufferはそれぞれ最大256
 ### Shared per-piece GPU metadata
 
 `StateBuffers.piece_metadata` は次の3領域を1本の storage buffer に持つ SoA です。
-`N` は GPU piece capacity で、AoS の stride や新しい CPU mirror は追加しません。
+`N` は GPU piece capacity です。drag liftは初回grab時だけ4番目のmappingとrecord tailを追加し、
+CPUのlift mappingもその時点で遅延生成します。piece stateのAoS strideは変更しません。
 
 ```text
 shared per-piece GPU metadata buffer (3N × u32)
   ├─ [0, N)   component roots
   ├─ [N, 2N)  remote drag slots
   └─ [2N, 3N) rotation animation slots (DSU root で参照)
+
+first grab only:
+  ├─ [3N, 4N) drag elevation slots
+  └─ [4N, ...) 16-byte drag envelope records (shared storage binding)
 ```
 
-byte base は root = 0、remote = 4N、rotation = 8N です。
+byte base は root = 0、remote = 4N、rotation = 8N、drag lift = 12N、lift records = 16Nです。
 Rust の `PieceMetadataLayout` が u64 で size / range offset を計算します。
 全 metadata write（root / remote の初期 snapshot を含む）は checked range helper を使い、
 `start <= capacity` と `len <= capacity - start` を満たさない場合は GPU write 前に拒否します。
@@ -231,9 +236,10 @@ WGSL は `config.capacity` に基づく `component_root` / `remote_slot` / `rota
 新 epoch では `initial_roots` を先頭領域へ upload し、残りは wgpu の zero initialization
 を利用します。remote の既存初期 snapshot は remote 領域だけへ適用します。
 `root_revision` / `remote_revision` / `rotation_revision` と dirty range は独立しており、
-1領域の更新は他の2領域を再 upload しません。storage / copy-dst / copy-src を維持します。
+1領域の更新は他の領域を再 upload しません。storage / copy-dst / copy-src を維持します。
 100万 pieces では3領域合計12,000,000 bytes（約12 MB / 11.44 MiB）で、旧3本の合計と同じです。
 512-byte remote delta uniform と可変長32-byte rotation record buffer は別に保持します。
+初回drag後はlift mappingに4,000,000 bytesと小さなrecord poolを追加します。
 
 storage binding 数は main / pick visibility compute がそれぞれ10→8です。draw / point /
 rectangle の vertex は統合で9→7、さらに visibility を絞って6本です。
@@ -353,7 +359,7 @@ quality + screen-space LOD
         ↓
 resolved visual config
         ↓
-shadow separation = base + rotation elevation * extra lift
+shadow separation = base + max(rotation elevation, drag elevation) * extra lift
         ↓
 static side / thickness = quality / LOD で決定、elevation 非依存
         ↓
@@ -372,7 +378,8 @@ Low / LOD off の optional pass は pipeline を新規 queue せず、raster / d
 UI、Auto、設定保存、frame-time による動的調整は未実装です。
 
 静止 piece は base shadow を持ち、animation slot が非ゼロの場合だけ既存の continuous pose の
-elevation を使って追加 separation を加えます。`elevation != thickness != bevel` です。
+elevation を使って追加 separation を加えます。local / remote dragの80ms smoothstep envelopeも独立に
+評価し、rotationとのmaxだけをshadow separationへ使います。`elevation != thickness != bevel` です。
 elevation が0に戻っても base shadow と side は残ります。side の厚みは Medium 1 px / High 1.5 pxで
 回転開始・中間・終了とも一定です。`PSEUDO_3D_DIRECTION` と preset は `visuals.rs` に集約し、
 side color は linear RGB の暗い neutral、opacity は現在1で source alpha を掛けます。
@@ -420,7 +427,11 @@ shadow が有効で pipeline が準備済みの frame は indirect draw 2回、�
 同 rank・異 alpha の shadow が完全に重なる場合は最初に通った silhouette の alpha を使います。
 
 `shadow_draws` / `side_draws` は frame 単位で2 / 1回、無効または準備中なら0回です。
-GPU diagnostic span は `puzzle_shadow` / `puzzle_side` です。実 GPU fixture と短い release 計測は
+GPU diagnostic span は `puzzle_shadow` / `puzzle_side` です。dragのmembership変更を描画専用resourceで
+監視し、release後も下降中のrecordを維持します。member走査・mapping uploadはcontrol境界だけです。
+既存metadata bindingを初回grab時にだけ拡張し、lift用SoA mappingと16-byte record tailを共有します。
+pool拡張はGPU copy、通常drag frameは既存uniformの時刻だけ更新します。idleのlookup/補間はgateで
+skipし、追加draw・piece upload・O(N) CPU処理はありません。実 GPU fixture と短い release 計測は
 [擬似3D描画](PSEUDO_3D.md)を参照してください。
 
 2026-10-06、上記 RTX 5090 / Vulkan 環境で `procedural_gpu_benchmark` を直前の検証済み
@@ -458,7 +469,7 @@ client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 
-rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root領域は共有metadataの先頭4 bytes / pieceで、preview collapseはbuffer長の1/3をroot capacityとして扱います。CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootを先頭領域へrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、rotation / previewが両方inactiveならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
+rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root領域は共有metadataの先頭4 bytes / pieceで、preview collapseには先頭のroot領域だけをbindingし、その長さをroot capacityとして扱います。CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootを先頭領域へrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、rotation / previewが両方inactiveならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
 Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、topはdraw_indirect1回で、quality / 独立LOD が有効で準備済みの場合だけ、その前にshadow depth / colorとsideを追加します。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 

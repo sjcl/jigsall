@@ -1,6 +1,7 @@
 //! Game resources grouped by responsibility.
 pub mod app;
 pub mod config;
+pub(crate) mod drag_elevation;
 pub mod generation;
 pub mod images;
 pub mod input;
