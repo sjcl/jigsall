@@ -114,8 +114,9 @@ fn elevation_uses_one_progress_sample_without_new_bindings_or_varyings() {
         (include_str!("../pick_visibility.wgsl"), 10),
     ] {
         assert_eq!(source.matches("@binding(").count(), bindings);
-        // The scalar stays inside the continuous helper for future effects.
-        assert!(!source.contains("elevation"));
+        if !source.contains("fn shadow_vertex") {
+            assert!(!source.contains("elevation"));
+        }
     }
 }
 

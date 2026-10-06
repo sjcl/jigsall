@@ -177,6 +177,17 @@ fn repeated_q_e_retarget_from_displayed_angle_including_reversal_and_wrap() {
         let a = store.rotation_visual.animation(PieceId(0)).unwrap();
         assert_eq!(a.start_elevation, elevation);
         assert_eq!(a.elevation(0.050), elevation);
+        for quality in [
+            crate::render::visuals::PieceVisualQuality::Medium,
+            crate::render::visuals::PieceVisualQuality::High,
+        ] {
+            let visuals = quality.resolve();
+            assert_eq!(
+                visuals.shadow_offset_px(elevation),
+                visuals.shadow_offset_px(a.elevation(0.050))
+            );
+            assert!(visuals.shadow_offset_px(elevation).length() > visuals.shadow_base_offset_px);
+        }
         assert!(a.elevation(a.start + a.duration * 0.1) >= elevation);
         assert_eq!(a.elevation(a.start + a.duration), 0.0);
         store.rotation_visual.clock += 0.020;

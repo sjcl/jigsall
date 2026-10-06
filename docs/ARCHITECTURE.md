@@ -1,6 +1,6 @@
 # Jigsall のアーキテクチャ
 
-2026-10-05。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2からprocedural GPU rendererへ移行済みです。移行検証用の旧 CPU メッシュ生成と CPU picking は削除しました。現在は開発時v4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v1（開発時v5）です。初回リリース向けにgeneratorとsnapshot schemaをそれぞれ5→1に整理し、生成結果とsnapshotのlayoutは維持しています。開発中の形式との互換性や移行は提供しません。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
+2026-10-06。基準`22e0aa135c5bdc6a881a3fe2ab6d976087d728ba`のnative lyon generator v2からprocedural GPU rendererへ移行済みです。移行検証用の旧 CPU メッシュ生成と CPU picking は削除しました。現在は開発時v4の楕円弧の付け根を保ちながら辺の識別性を高めたgenerator v1（開発時v5）です。初回リリース向けにgeneratorとsnapshot schemaをそれぞれ5→1に整理し、生成結果とsnapshotのlayoutは維持しています。開発中の形式との互換性や移行は提供しません。v3移行時の数値は[PROCEDURAL_RENDERER.md](PROCEDURAL_RENDERER.md)、付け根修正は[ROOT_TRANSITION.md](ROOT_TRANSITION.md)、現在のclass decodeと検証結果は[EDGE_FINGERPRINT.md](EDGE_FINGERPRINT.md)を参照してください。
 
 ## Workspaceと責務
 
@@ -288,7 +288,7 @@ GPU と CPU 参照は同じ smoothstep easing を使い、final pose に対す�
 戻します。個別 position の lerp は行わず、component 全体へ同じ剛体変換を適用します。
 pivot は authority / prediction の `rotation_plan_with` が計算した AABB 中心を使います。
 
-elevation は presentation-only の normalized scalar です。0は平面、1は回転中の最大 lift を
+elevation は presentation-only の normalized scalar です。0は通常状態、1は回転中の最大追加 lift を
 意味し、ゲーム上の高さや pixel offset ではありません。CPU `RotationAnimation::elevation(now)` と
 WGSL `PresentationPose.elevation` が同じ cheap polynomial `s(t) = t²(3 - 2t)` を使います。
 前半は start_elevation→peak、後半は peak→0 と補間し、開始・中間・終了の速度は0です。
@@ -340,10 +340,59 @@ Puzzle 初期化、snapshot / baseline install、Menu cleanup は animation を�
 remote player の新規回転 animation はこの段階では開始せず、共通 transform と network から
 独立した record を今後の入口として残します。elevation も同じ record で利用できます。
 elevation は canonical / network / save / snapshot に存在せず、命令・authority・connectivity・
-snap・physical / logical play area・Z-order にも含めません。world / clip position、AABB、
-picking geometry、SDF、UV、depth は elevation をまだ使用しません。fragment varying も増やしません。
-shadow / side / thickness / bevel / lighting、pixel offset 変換、graphics quality / LOD、
-drag / selection による通常 lift は後続実装です。
+snap・physical / logical play area・Z-order にも含めません。本体の world / clip position、AABB、
+picking geometry、SDF、UV、depth は elevation を使用しません。fragment varying も増やしません。
+shadow 専用 vertex だけが elevation を screen-space separation に変換します。
+side / thickness / bevel / lighting、drag / selection による通常 lift は後続実装です。
+
+### Pseudo-3D presentation
+
+```text
+quality + screen-space LOD
+        ↓
+resolved visual config
+        ↓
+static base shadow
+        +
+rotation elevation * extra separation
+```
+
+`render/visuals.rs` のローカル `PieceVisualQuality` resource は Low / Medium / High を
+`ResolvedPieceVisuals` に変換します。暫定 default は同じ箇所の High です。
+extract は projected piece の短辺と threshold から、その frame の shadow 有効・無効を O(1) で決めます。
+Low または LOD 未満では shadow pipeline を新規準備せず、shadow raster / draw を一切発行しません。
+100万 piece の far overview も High で shadow draw 0です。
+UI、Auto、設定保存、frame-time による動的調整は未実装です。
+
+静止 piece は base shadow を持ち、animation slot が非ゼロの場合だけ既存の continuous pose の
+elevation を使って追加 separation を加えます。`elevation != thickness` です。
+elevation が0に戻っても base shadow は残ります。後続の side / thickness は、静止中にも存在する
+別パラメータです。screen direction と preset は一箇所で定義し、既存 `PuzzleUniform` だけを
+拡張します。buffer / storage binding / per-piece state の追加はありません。
+
+shadow は main visibility / sort → selection preview → shadow depth / color → top → box の順です。
+既存 visible IDs / indirect args / image texture を再利用し、追加 culling や CPU piece list はありません。
+normal では同じ procedural profile / SDF / UV / source alpha、far では同じ quarter splat / center alpha を
+使用します。world / piece の回転に影響されない右下への pixel offset を viewport サイズから clip-space に
+変換するため、zoom しても距離は一定です。非 animation piece は既存 quarter-turn fast path を維持します。
+top / picking entrypoint は shadow 専用の計算や varying を持ちません。
+
+main visibility の AABB だけに最大 base + lift の screen offset を inverse clip matrix で world-space に
+変換した保守的 extent を加えます。point / rectangle の ROI と raster は本体の bounds / geometry のままです。
+shadow だけの pixel は選択できません。ゲーム状態・Z-order・authority・protocol・save は変更しません。
+
+単純な alpha blend + depth write では、後方→前方に描いた shadow が積み重なります。
+そのため既存 Depth32Float target を clear して silhouette の最前 depth を確定する prepass を行い、
+color pass は source alpha × opacity の黒を一度だけ blend します。shadow 専用の depth は既存 rank の
+順序を保って `[0, 0.5]` に収め、最大 loose Zでも補正の余地を残します。color fragment の depth を
+正の float の1 ULPだけ進め、strict Greater test/write を使うことで、奥の shadow と同 rank の重複も
+拒否します。この微小な変更は shadow 専用の一時 depth だけに適用します。
+top pass は従来どおり depth を再 clear し、opaque / translucent の depth と ordering を維持します。
+shadow が有効な frame は indirect draw 2回、無効なら0回です。新しい texture / binding は不要です。
+同 rank・異 alpha の shadow が完全に重なる場合は最初に通った silhouette の alpha を使います。
+
+`shadow_draws` は既存 renderer counter と同じ frame 単位で記録し、GPU diagnostic span は
+`puzzle_shadow` です。実 GPU fixture と短い release 計測は [擬似3D描画](PSEUDO_3D.md)を参照してください。
 
 2026-10-06、上記 RTX 5090 / Vulkan 環境で `procedural_gpu_benchmark` を直前の検証済み
 `48f55f8` release build と比較しました。4096²画像・1024² offscreen・非 continuous rotation
@@ -382,7 +431,7 @@ client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了
 
 rectangleはselectableなdirect hitだけをmaskへrasterし、preview中だけ1回のGPU computeでcomponent rootのmaskへcollapseします。component atomicなauthority更新とvalidated restoreにより、正規状態のselectabilityはcomponent内で揃います。main vertexがpreview中だけrootとpreview maskを読み、結果のPREVIEW bitを既存のflat flagsでfragmentへ渡します。root用varyingは追加せず、pick用uniformはpreview_activeを0にしてselection rasterのroot参照も避けます。final readbackは従来のdirect hit bitsetで、CPUのcommit_selectionがcomponent全体を再検証・確定します。GPU root領域は共有metadataの先頭4 bytes / pieceで、preview collapseはbuffer長の1/3をroot capacityとして扱います。CPUにはroot dirty bitsetだけを持ち、unionでabsorbed memberをdirtyにして最終rootを先頭領域へrange uploadします。initial / restore時だけDSUから全rootを生成します。idle / camera / pointer dragでroot scan・root upload・preview computeはなく、rotation / previewが両方inactiveならvertexもrootを参照しません。pipelineとメモリ・計算量は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 
-Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、mainはdraw_indirect1回です。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
+Core2d main transparent pass後のカスタムpassです。背景画像Spriteは通常Bevy描画。GPUは拡張quad AABBでvisible IDとindirect argsを生成し、topはdraw_indirect1回で、quality / LOD が有効な場合だけその前にshadow depth / colorを追加します。4頂点はvertex_indexから作り、vertexで4辺を2 u32ずつ生成してflat varyingへ渡します。fragmentはSDF・画像alphaでdiscardし、UV・outlineを評価します。
 
 opaqueは任意のinstance順でdepth test/write、半透明は可視IDだけをGPU radix sort（8bit × 3 pass）で後方→前方に並べblendし、depthを書きません。透明経路ではID順に可視IDを圧縮してから安定sortし、同じZのID順も維持します。workgroup数はGPUのinstance_countからindirect dispatchで決め、CPU readbackは不要です。matrix・state・visibleをpickingにも共有します。矩形overlayは追加draw1回です。sortは[TRANSPARENT_RADIX_SORT.md](TRANSPARENT_RADIX_SORT.md)、選択は[GPU_PICKING.md](GPU_PICKING.md)に記載しています。
 

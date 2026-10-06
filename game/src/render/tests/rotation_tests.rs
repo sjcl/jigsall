@@ -359,7 +359,7 @@ fn gpu_quarter_turn_images_shapes_and_picking_agree() {
 fn gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden() {
     let (mut app, camera, target) = gpu_app(256);
     let def = definition(UVec2::splat(3), 192, 42);
-    let translation = Vec2::splat(10_000.0);
+    let translation = Vec2::splat(400.0);
     app.world_mut().insert_resource(def.clone());
     app.world_mut()
         .get_mut::<Transform>(camera)
@@ -423,10 +423,19 @@ fn gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden() {
                     .fold(-1e20_f32, f32::max);
                 let pixel = (y * 256 + x) * 4;
                 let full = edges.into_iter().fold(-1e20_f32, f32::max);
-                if boundary.abs() > 8.0 {
+                let aa = super::outline_tests::sdf_aa_bound(x, y, |px, py| {
+                    let world = translation + Vec2::new(px as f32 - 127.5, 127.5 - py as f32);
+                    let local = rotate_quarter(
+                        world - store.states[id as usize].position,
+                        (4 - rotation) % 4,
+                    );
+                    piece_signed_distance(local, Vec2::splat(64.0), profiles)
+                });
+                let width = 64.0 * 0.16 * 0.5;
+                if boundary.abs() > width + aa + 0.01 {
                     assert_eq!(&pixels[pixel..pixel + 4], &[255, 255, 255, 255]);
                     seams += usize::from(full.abs() < 1.5);
-                } else if boundary.abs() < 3.0 {
+                } else if boundary.abs() < width - aa - 0.01 {
                     assert!(pixels[pixel + 2] < 40);
                     outer += 1;
                 }

@@ -9,6 +9,7 @@ mod remote_drag_tests;
 mod rotation_tests;
 mod rotation_visual_tests;
 mod selection_bench;
+mod shadow_tests;
 use crate::{
     resources::{
         pieces::{prepare_piece_upload, ENABLED},
@@ -71,6 +72,8 @@ fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
     .init_resource::<crate::resources::LocalPlayerId>()
     .init_resource::<PieceUpload>()
     .add_plugins(PuzzleSelectionPlugin)
+    // Existing fixtures explicitly exercise the original flat reference path.
+    .insert_resource(PieceVisualQuality::Low)
     .add_systems(Last, prepare_piece_upload)
     .insert_resource(ClearColor(Color::BLACK));
     app.finish();

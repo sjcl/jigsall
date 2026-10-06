@@ -172,8 +172,8 @@ smoothstep の ease-in-out を使います。連打時は現在の表示角か�
 270°→0°で逆方向へ270°回転しません。個別 piece の position lerp は使いません。
 authority と prediction が共有する `rotation_plan_with` の pivot に対する剛体回転です。
 
-rotation record は presentation-only の elevation も保持します。0は通常の平面状態、
-1は回転中の最大 lift を表す normalized value であり、ゲーム上の高さではありません。
+rotation record は presentation-only の elevation も保持します。0は通常状態、
+1は回転中の最大追加 lift を表す normalized value であり、ゲーム上の高さではありません。
 CPU `RotationAnimation::elevation(now)` と WGSL `PresentationPose.elevation` で取得でき、
 位置・回転・elevation は GPU continuous helper の1回の progress 計算から導出します。
 前半は start_elevation→peak、後半は peak→0 を `s(t) = t²(3 - 2t)` で補間し、
@@ -213,10 +213,11 @@ UV / shape / alpha は canonical local の共通判定を保ちます。
 continuous angle / progress は save、snapshot、protocol、authority、snap、connectivity、
 gameplay validation に含めません。remote player の新規回転 animation は未対応です。
 elevation は canonical / network / save / snapshot に存在せず、PieceCommand・authority・
-connectivity・snap・physical / logical play area・Z-order にも加えません。world / clip position・
-AABB・picking geometry・SDF・UV・depth は elevation をまだ使用しません。fragment varying も増やしません。
-shadow、side / thickness、bevel、lighting、pixel offset 変換、graphics quality、screen-space LOD、
-drag / selection の通常 lift は後続です。同じ elevation を次の effect の入口に使えます。
+connectivity・snap・physical / logical play area・Z-order にも加えません。本体の world / clip position・
+AABB・picking geometry・SDF・UV・depth は elevation を使用しません。fragment varying も増やしません。
+shadow 専用 path では、品質 / screen-space LOD で有効な静止 base shadow に elevation の追加 separation を
+加えます。`elevation != thickness` です。詳細は [擬似3D描画](PSEUDO_3D.md)を参照してください。
+side / thickness、bevel、lighting、drag / selection の通常 lift は後続です。
 GPU layout と lifetime の詳細は
 [アーキテクチャ](ARCHITECTURE.md#continuous-rotation-presentation)を参照してください。
 
@@ -233,7 +234,7 @@ rebase、拒否・cancel の引き継ぎと exact settle、32-byte layout と期
 network runtime の early ACK 回帰でも envelope を比較します。shader source 回帰は progress の
 共有、binding 数、varying なし、slot==0 の fast path を検査します。
 実 GPU の `gpu_rotation_elevation_matches_cpu_envelope_and_record_layout` は残差角・開始 elevation・
-時刻の460 sampleで CPU/GPU を比較します。既存 normal / far fixture は同じ時刻で elevation
+時刻の460 sampleで CPU/GPU を比較します。既存 normal / far fixture は Low の flat path で同じ時刻の elevation
 だけを変え、全 pixel・可視 ID・point / rectangle の結果が不変であることも検査します。
 
 ```powershell

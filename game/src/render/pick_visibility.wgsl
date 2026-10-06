@@ -9,6 +9,9 @@ struct PuzzleUniform {
     render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
     rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
+    shadow_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
+    shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
+    shadow_cull_extent:vec2<f32>,shadow_cull_padding:vec2<f32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 struct MainArgs {vertex_count:u32,instance_count:u32,first_vertex:u32,first_instance:u32};

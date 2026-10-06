@@ -13,7 +13,7 @@ fn restore_components(app: &mut App, def: &PuzzleDefinition, unions: &[(u32, u32
     let mut source = PieceDataStore::default();
     source.initialize(
         (0..def.piece_count() as u32)
-            .map(|id| def.correct_position(PieceId(id)) + Vec2::splat(10_000.0))
+            .map(|id| def.correct_position(PieceId(id)) + Vec2::splat(400.0))
             .collect(),
     );
     for &(a, b) in unions {
@@ -164,7 +164,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
     app.world_mut()
         .get_mut::<Transform>(camera)
         .unwrap()
-        .translation = Vec2::splat(10_000.0).extend(0.0);
+        .translation = Vec2::splat(400.0).extend(0.0);
     restore_components(&mut app, &def, &[(0, 1), (2, 6)]);
     assert_eq!(roots(&app), [0, 0, 2, 3, 4, 5, 2, 7]);
     let a = Rect::new(92.0, 156.0, 100.0, 164.0);
@@ -360,7 +360,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
     app.world_mut()
         .get_mut::<Transform>(camera)
         .unwrap()
-        .translation = Vec2::splat(10_000.0).extend(0.0);
+        .translation = Vec2::splat(400.0).extend(0.0);
     restore_components(&mut app, &def, &[(0, 1), (2, 6)]);
     update_gpu(&mut app);
 
@@ -400,7 +400,7 @@ fn gpu_component_rectangle_preview_matches_final_selection_without_readback() {
         .get_mut::<Transform>(camera)
         .unwrap()
         .translation
-        .x = 10_000.0;
+        .x = 400.0;
     app.world_mut().resource_mut::<PieceDataStore>().drag.delta = Vec2::ZERO;
     restore_components(&mut app, &def, &[(1, 2), (1, 3)]);
     assert_eq!(roots(&app), [0, 1, 1, 1, 4, 5, 6, 7]);
@@ -432,7 +432,7 @@ fn gpu_component_preview_crosses_mask_words_and_preserves_direct_high_bits() {
     app.world_mut()
         .get_mut::<Transform>(camera)
         .unwrap()
-        .translation = Vec2::splat(10_000.0).extend(0.0);
+        .translation = Vec2::splat(400.0).extend(0.0);
     restore_components(&mut app, &def, &[(54, 55), (55, 63)]);
     let root = app
         .world()

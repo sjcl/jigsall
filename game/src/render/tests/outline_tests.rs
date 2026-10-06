@@ -34,12 +34,24 @@ pub(super) fn edge_distances(local: Vec2, size: Vec2, profiles: [[u32; 2]; 4]) -
     ]
 }
 
+// Bound either fine/coarse fwidth over the fragment's 2x2 pixel quad. Curved
+// procedural profiles can have a wider AA transition than a fixed 3px margin.
+pub(super) fn sdf_aa_bound(x: usize, y: usize, distance_at: impl Fn(usize, usize) -> f32) -> f32 {
+    let x = x & !1;
+    let y = y & !1;
+    let a = distance_at(x, y);
+    let b = distance_at(x + 1, y);
+    let c = distance_at(x, y + 1);
+    let d = distance_at(x + 1, y + 1);
+    (a - b).abs().max((c - d).abs()) + (a - c).abs().max((b - d).abs())
+}
+
 #[test]
 #[ignore = "requires a real GPU"]
 fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
     let (mut app, camera, target) = gpu_app(256);
     let def = definition(UVec2::splat(3), 192, 42);
-    let offset = Vec2::splat(10_000.0);
+    let offset = Vec2::splat(400.0);
     app.world_mut().insert_resource(def.clone());
     app.world_mut()
         .get_mut::<Transform>(camera)
@@ -111,7 +123,11 @@ fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
                     })
                     .fold(-1e20_f32, f32::max);
                 let full = edges.into_iter().fold(-1e20_f32, f32::max);
-                if boundary.abs() > width + 3.0 {
+                let aa = sdf_aa_bound(x, y, |px, py| {
+                    let world = Vec2::new(px as f32 - 127.5, 127.5 - py as f32);
+                    piece_signed_distance(world - def.correct_position(PieceId(id)), size, profiles)
+                });
+                if boundary.abs() > width + aa + 0.01 {
                     assert_eq!(
                         &highlighted[pixel..pixel + 4],
                         &[255, 255, 255, 255],
@@ -120,7 +136,7 @@ fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
                     if full.abs() < 1.5 {
                         seam_pixels += 1;
                     }
-                } else if boundary.abs() < width - 2.0 {
+                } else if boundary.abs() < width - aa - 0.01 {
                     assert!(
                         highlighted[pixel + 2] < 40,
                         "outer outline {ids:?} at {x},{y}"

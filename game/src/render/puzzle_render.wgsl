@@ -10,6 +10,9 @@ struct PuzzleUniform {
     render_clip_scale:vec2<f32>,render_clip_offset:vec2<f32>,
     far_zoom:u32,splat_min_px:f32,splat_padding:vec2<u32>,
     rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
+    shadow_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
+    shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
+    shadow_cull_extent:vec2<f32>,shadow_cull_padding:vec2<f32>,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
@@ -36,7 +39,9 @@ struct VertexOutput {
     @location(4) @interpolate(flat) top:vec2<u32>,@location(5) @interpolate(flat) right:vec2<u32>,
     @location(6) @interpolate(flat) bottom:vec2<u32>,@location(7) @interpolate(flat) left:vec2<u32>,
 };
-@vertex fn vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
+// Literal entry-point argument lets the compiler remove shadow-only work from
+// top/picking. No new varying; elevation is consumed only by shadow vertices.
+fn piece_vertex(vi:u32,instance:u32,shadow:bool)->VertexOutput {
     let corners=array<vec2<f32>,4>(vec2(-1.0,-1.0),vec2(1.0,-1.0),vec2(-1.0,1.0),vec2(1.0,1.0));
     let id=visible[instance];let state=states[id];let cell=vec2(id%config.grid.x,id/config.grid.x);
     let local_member=config.drag_active!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u;
@@ -52,10 +57,12 @@ struct VertexOutput {
     let quarter=decode_rotation(state.flags);
     var position=presentation_position(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta);
     var rotation:vec2<f32>;
+    var elevation=0.0;
     if animation_slot!=0u {
         let animation=rotation_animations[animation_slot-1u];
         let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
         position=pose.position;rotation=pose.rotation;
+        if shadow {elevation=pose.elevation;}
     }
     var out:VertexOutput;
     if config.far_zoom!=0u {
@@ -97,13 +104,26 @@ struct VertexOutput {
         if config.far_zoom!=0u {rank+=f32(id)/f32(config.count);}
     }
     out.position.z=rank/16777216.0*out.position.w;
+    if shadow {
+        // Preserve rank order in temporary shadow depth, leaving headroom for
+        // the color pass's 1 ULP even at the maximum canonical loose Z rank.
+        out.position.z*=0.5;
+        let offset_px=config.shadow_direction*(config.shadow_base_offset_px+elevation*config.shadow_lift_offset_px);
+        out.position=vec4(out.position.xy+offset_px/config.viewport_size*vec2(2.0,-2.0)*out.position.w,out.position.zw);
+    }
     out.id=id;out.flags=state.flags&~6u;
     // An explicit branch keeps ordinary frames from loading component roots.
-    if config.preview_active!=0u && (state.flags&9u)==0u {
+    if !shadow && config.preview_active!=0u && (state.flags&9u)==0u {
         let root=component_root(id);
         if (preview[root/32u]&(1u<<(root%32u)))!=0u {out.flags|=4u;}
     }
     return out;
+}
+@vertex fn vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
+    return piece_vertex(vi,instance,false);
+}
+@vertex fn shadow_vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
+    return piece_vertex(vi,instance,true);
 }
 fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
 fn selection_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
@@ -125,6 +145,23 @@ fn sample_splat(in:VertexOutput)->vec4<f32> {
 }
 fn pick_visible(in:VertexOutput) {
     if config.far_zoom!=0u {sample_splat(in);} else {sample_visible(in,distance(in));}
+}
+fn shadow_source(in:VertexOutput)->vec4<f32> {
+    if config.far_zoom!=0u {return sample_splat(in);}
+    return sample_visible(in,distance(in));
+}
+@fragment fn shadow_depth_fragment(in:VertexOutput)->@location(0) vec4<f32> {
+    shadow_source(in);
+    return vec4(0.0);
+}
+struct ShadowOutput { @location(0) color:vec4<f32>, @builtin(frag_depth) depth:f32 };
+@fragment fn shadow_fragment(in:VertexOutput)->ShadowOutput {
+    let source=shadow_source(in);
+    // Color uses strict Greater against the completed depth prepass. Advance
+    // one positive Depth32Float ULP, so only a frontmost silhouette passes and
+    // writes a depth that also rejects any equal-rank duplicate. Late depth
+    // testing uses this output, after alpha/SDF discard. Top clears depth again.
+    return ShadowOutput(vec4(vec3(0.0),config.shadow_opacity*source.a),bitcast<f32>(bitcast<u32>(in.position.z)+1u));
 }
 @fragment fn fragment(in:VertexOutput)->@location(0) vec4<f32> {
     if config.far_zoom!=0u {
