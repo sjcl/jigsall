@@ -207,11 +207,13 @@ pub struct PuzzleUniform {
     pub shadow_enabled: u32,
     pub shadow_padding: UVec2,
     pub visual_cull_extent: Vec2,
-    pub visual_cull_padding: Vec2,
+    pub bevel_width_px: f32,
+    pub bevel_enabled: u32,
     pub side_color: Vec4,
     pub side_thickness_px: f32,
     pub side_enabled: u32,
-    pub side_padding: UVec2,
+    pub bevel_highlight_strength: f32,
+    pub bevel_shadow_strength: f32,
 }
 impl PuzzleUniform {
     fn configure_visuals(&mut self, visuals: ResolvedPieceVisuals) {
@@ -223,6 +225,11 @@ impl PuzzleUniform {
         self.side_enabled = u32::from(visuals.side_for_frame(self.piece_size_px));
         self.side_color = visuals.side_color.extend(visuals.side_opacity);
         self.side_thickness_px = visuals.side_thickness_px;
+        self.bevel_enabled =
+            u32::from(visuals.bevel_for_frame(self.piece_size_px, self.far_zoom != 0));
+        self.bevel_width_px = visuals.bevel_width_px;
+        self.bevel_highlight_strength = visuals.bevel_highlight_strength;
+        self.bevel_shadow_strength = visuals.bevel_shadow_strength;
         self.visual_cull_extent = Vec2::ZERO;
         let shadow_offset = if self.shadow_enabled != 0 {
             visuals.shadow_base_offset_px + visuals.shadow_lift_offset_px

@@ -38,7 +38,7 @@ fn restore_components(app: &mut App, def: &PuzzleDefinition, unions: &[(u32, u32
         .unwrap();
     wait_ready(app);
 }
-fn preview(app: &mut App, rect: Rect) {
+pub(super) fn preview(app: &mut App, rect: Rect) {
     // Settle any preceding CPU authority/selection edit before measuring the
     // preview request itself (which must upload no selection/root metadata).
     update_gpu(app);

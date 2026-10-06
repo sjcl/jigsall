@@ -12,8 +12,9 @@ struct PuzzleUniform {
     rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
     pseudo_3d_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
     shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
-    visual_cull_extent:vec2<f32>,visual_cull_padding:vec2<f32>,
-    side_color:vec4<f32>,side_thickness_px:f32,side_enabled:u32,side_padding:vec2<u32>,
+    visual_cull_extent:vec2<f32>,bevel_width_px:f32,bevel_enabled:u32,
+    side_color:vec4<f32>,side_thickness_px:f32,side_enabled:u32,
+    bevel_highlight_strength:f32,bevel_shadow_strength:f32,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
@@ -136,11 +137,23 @@ fn piece_vertex(vi:u32,instance:u32,shadow:bool,side:bool)->VertexOutput {
     return piece_vertex(vi,instance,false,true);
 }
 fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
-fn selection_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
+fn outer_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
     // Bits 5..8: canonical top/right/bottom/left (resources/pieces.rs). An enclosed
     // piece has no outline candidates. Coverage/picking still use every edge.
     let connected=(vec4(flags)&vec4(32u,64u,128u,256u))!=vec4(0u);
     return max_edge_distance(select(edges,vec4(-1e20),connected));
+}
+// No derivatives or presentation state here. The top entry point supplies a
+// screen-space gradient before any silhouette/alpha discard or per-piece branch.
+fn bevel_color(color:vec4<f32>,boundary:f32,gradient:vec2<f32>)->vec4<f32> {
+    let gradient_len=max(length(gradient),1e-6);
+    let inside_px=max(-boundary/gradient_len,0.0);
+    let coverage=1.0-smoothstep(0.0,max(config.bevel_width_px,1e-6),inside_px);
+    let nl=dot(gradient/gradient_len,-config.pseudo_3d_direction);
+    let highlight=max(nl,0.0)*coverage*config.bevel_highlight_strength;
+    let shade=max(-nl,0.0)*coverage*config.bevel_shadow_strength;
+    let rgb=color.rgb+highlight*(vec3(1.0)-color.rgb)-shade*color.rgb;
+    return vec4(clamp(rgb,vec3(0.0),vec3(1.0)),color.a);
 }
 fn sample_visible(in:VertexOutput,d:f32)->vec4<f32> {
     if d>0.0 {discard;}
@@ -187,9 +200,21 @@ struct ShadowOutput { @location(0) color:vec4<f32>, @builtin(frag_depth) depth:f
         return color;
     }
     let edges=piece_edge_distances(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));
-    let d=max_edge_distance(edges);let color=sample_visible(in,d);
-    // Evaluate derivatives before the per-piece highlight branch.
+    let d=max_edge_distance(edges);
+    // Evaluate derivatives before discard and non-uniform per-piece branches.
     let aa=fwidth(d);
+    var bevel_boundary=0.0;
+    var bevel_gradient=vec2(0.0);
+    if config.bevel_enabled!=0u {
+        // An enclosed piece supplies a finite constant instead of differentiating
+        // the absent-boundary sentinel. It also skips all lighting work below.
+        bevel_boundary=select(outer_boundary_distance(edges,in.flags),0.0,(in.flags&480u)==480u);
+        bevel_gradient=vec2(dpdx(bevel_boundary),dpdy(bevel_boundary));
+    }
+    var color=sample_visible(in,d);
+    if config.bevel_enabled!=0u {
+        if (in.flags&480u)!=480u {color=bevel_color(color,bevel_boundary,bevel_gradient);}
+    }
     var flags=in.flags;
     if (selected[in.id/32u]&(1u<<(in.id%32u)))!=0u {flags|=2u;}
     if (flags&6u)==0u {return color;}
@@ -199,7 +224,7 @@ struct ShadowOutput { @location(0) color:vec4<f32>, @builtin(frag_depth) depth:f
     if (flags&2u)!=0u {
         line=vec3(1.0,0.8,0.0);
     }
-    if (flags&480u)!=0u {boundary=selection_boundary_distance(edges,flags);}
+    if (flags&480u)!=0u {boundary=outer_boundary_distance(edges,flags);}
     let coverage=1.0-smoothstep(width-aa,width+aa,abs(boundary));
     return vec4(mix(color.rgb,line,coverage),color.a);
 }

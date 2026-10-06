@@ -11,8 +11,9 @@ struct PuzzleUniform {
     rotation_time:f32,rotation_active:u32,rotation_padding:vec2<u32>,
     pseudo_3d_direction:vec2<f32>,shadow_base_offset_px:f32,shadow_lift_offset_px:f32,
     shadow_opacity:f32,shadow_enabled:u32,shadow_padding:vec2<u32>,
-    visual_cull_extent:vec2<f32>,visual_cull_padding:vec2<f32>,
-    side_color:vec4<f32>,side_thickness_px:f32,side_enabled:u32,side_padding:vec2<u32>,
+    visual_cull_extent:vec2<f32>,bevel_width_px:f32,bevel_enabled:u32,
+    side_color:vec4<f32>,side_thickness_px:f32,side_enabled:u32,
+    bevel_highlight_strength:f32,bevel_shadow_strength:f32,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
 struct MainArgs {vertex_count:u32,instance_count:u32,first_vertex:u32,first_instance:u32};

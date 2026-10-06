@@ -168,11 +168,15 @@ pub(super) fn assert_no_uploads(app: &App) {
     );
 }
 
-// Preserve these fixtures as shadow-only references; side has separate fixtures.
+// Preserve these fixtures as shadow-only references.
 fn shadow_only(app: &mut App) {
     app.sub_app_mut(RenderApp).add_systems(
         ExtractSchedule,
-        (|mut frame: ResMut<ExtractedPuzzle>| frame.config.side_enabled = 0).after(extract_puzzle),
+        (|mut frame: ResMut<ExtractedPuzzle>| {
+            frame.config.side_enabled = 0;
+            frame.config.bevel_enabled = 0;
+        })
+        .after(extract_puzzle),
     );
 }
 
@@ -309,7 +313,9 @@ fn gpu_shadow_unready_epoch_waits_for_requested_pipelines() {
         assert_eq!(shadow_draws(&app), 0);
         wait_ready(&mut app);
         assert_eq!(shadow_draws(&app), 2);
-        assert!(!shadow_pixels(&rendered_pixels(&mut app, target)).is_empty());
+        // RenderReady covers the puzzle pipelines, not Bevy's independently
+        // compiled final output pipeline. Wait for actual pixels before reading.
+        assert!(!shadow_pixels(&wait_red_frame(&mut app, target)).is_empty());
     }
 }
 
@@ -622,6 +628,7 @@ fn gpu_shadow_million_overview_low_high_skip_draw_benchmark() {
         assert_eq!(config(&app).far_zoom, 1);
         assert_eq!(config(&app).shadow_enabled, 0);
         assert_eq!(config(&app).side_enabled, 0);
+        assert_eq!(config(&app).bevel_enabled, 0);
         let mut cull = 0.0;
         let mut draw = 0.0;
         for _ in 0..12 {
@@ -648,6 +655,7 @@ fn gpu_shadow_million_overview_low_high_skip_draw_benchmark() {
             draw_ms = draw / 12.0,
             shadow_draws = shadow_draws(&app),
             side_draws = gpu.side_draws,
+            bevel_enabled = config(&app).bevel_enabled,
             "million shadow LOD benchmark"
         );
     }

@@ -1,4 +1,5 @@
 use super::*;
+mod bevel_tests;
 mod component_preview_tests;
 mod far_zoom_tests;
 mod local_rotation_tests;

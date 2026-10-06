@@ -29,6 +29,11 @@ pub struct ResolvedPieceVisuals {
     /// Linear RGB, independent of the source image's color.
     pub side_color: Vec3,
     pub side_opacity: f32,
+    pub bevel_enabled: bool,
+    pub bevel_min_piece_px: f32,
+    pub bevel_width_px: f32,
+    pub bevel_highlight_strength: f32,
+    pub bevel_shadow_strength: f32,
 }
 
 impl PieceVisualQuality {
@@ -38,6 +43,11 @@ impl PieceVisualQuality {
             Self::Low => (false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
             Self::Medium => (true, 14.0, 2.5, 3.0, 0.20, 22.0, 1.0, 0.10),
             Self::High => (true, 10.0, 3.0, 4.5, 0.25, 14.0, 1.5, 0.06),
+        };
+        let (bevel_minimum, bevel_width, highlight, bevel_shadow) = match self {
+            Self::Low => (0.0, 0.0, 0.0, 0.0),
+            Self::Medium => (28.0, 1.0, 0.06, 0.09),
+            Self::High => (18.0, 1.5, 0.10, 0.14),
         };
         ResolvedPieceVisuals {
             shadow_enabled: enabled,
@@ -50,6 +60,11 @@ impl PieceVisualQuality {
             side_thickness_px: thickness,
             side_color: Vec3::splat(color),
             side_opacity: 1.0,
+            bevel_enabled: enabled,
+            bevel_min_piece_px: bevel_minimum,
+            bevel_width_px: bevel_width,
+            bevel_highlight_strength: highlight,
+            bevel_shadow_strength: bevel_shadow,
         }
     }
 }
@@ -69,5 +84,9 @@ impl ResolvedPieceVisuals {
 
     pub fn side_offset_px(self) -> Vec2 {
         PSEUDO_3D_DIRECTION * self.side_thickness_px
+    }
+
+    pub fn bevel_for_frame(self, piece_size_px: Vec2, far_zoom: bool) -> bool {
+        self.bevel_enabled && !far_zoom && piece_size_px.min_element() >= self.bevel_min_piece_px
     }
 }

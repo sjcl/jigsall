@@ -123,7 +123,7 @@ fn side_entrypoint_keeps_static_thickness_fast_paths_and_existing_bindings() {
     assert!(!pick.contains("visual_cull_extent"));
 }
 
-fn side_draws(app: &App) -> usize {
+pub(super) fn side_draws(app: &App) -> usize {
     app.sub_app(RenderApp)
         .world()
         .resource::<GpuRenderer>()
@@ -132,6 +132,13 @@ fn side_draws(app: &App) -> usize {
 
 fn fixture(size: u32, synchronous: bool) -> (App, Entity, Handle<Image>) {
     let (mut app, camera, target) = gpu_app_with_pipeline_compilation(128, synchronous);
+    // Keep the existing side fixtures independent of top surface lighting.
+    app.sub_app_mut(RenderApp).add_systems(
+        ExtractSchedule,
+        (|mut frame: ResMut<ExtractedPuzzle>| frame.config.bevel_enabled = 0)
+            .after(extract_puzzle)
+            .after(override_visuals),
+    );
     app.insert_resource(ClearColor(Color::WHITE));
     red_source(&mut app, 255);
     app.insert_resource(definition(UVec2::ONE, size, 42));
@@ -152,7 +159,7 @@ fn override_visuals(mut frame: ResMut<ExtractedPuzzle>, visuals: Option<Res<Visu
         frame.config.configure_visuals(visuals.0);
     }
 }
-fn set_visuals(app: &mut App, visuals: ResolvedPieceVisuals) {
+pub(super) fn set_visuals(app: &mut App, visuals: ResolvedPieceVisuals) {
     if !app
         .sub_app(RenderApp)
         .world()
@@ -174,7 +181,7 @@ fn is_side(pixel: &[u8]) -> bool {
 fn mask(pixels: &[u8], predicate: fn(&[u8]) -> bool) -> Vec<bool> {
     pixels.chunks_exact(4).map(predicate).collect()
 }
-fn preview_if_requested(name: &str, pixels: &[u8]) {
+pub(super) fn preview_if_requested(name: &str, pixels: &[u8]) {
     if let Some(directory) = std::env::var_os("JIGSALL_VISUAL_PREVIEW_DIR") {
         let directory = std::path::PathBuf::from(directory);
         std::fs::create_dir_all(&directory).unwrap();
@@ -488,7 +495,7 @@ fn gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation()
     }
 }
 
-fn srgb_byte(linear: f32) -> u8 {
+pub(super) fn srgb_byte(linear: f32) -> u8 {
     let srgb = if linear <= 0.0031308 {
         linear * 12.92
     } else {

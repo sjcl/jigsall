@@ -368,15 +368,27 @@ Low / LOD off の optional pass は pipeline を新規 queue せず、raster / d
 `optional_render_pipelines` が準備状況を扱います。現在の epoch がまだ `RenderReady` でない初回表示は
 要求された shadow / side が完成するまで待ちます。表示済み epoch では準備中の feature だけを skip し、
 準備済み feature / top / picking を継続します。compile failure は従来どおり epoch の renderer error です。
-100万 piece の far overview は全 quality で shadow / side draw 0です。
+100万 piece の far overview は全 quality で shadow / side draw 0、bevel無効です。
 UI、Auto、設定保存、frame-time による動的調整は未実装です。
 
 静止 piece は base shadow を持ち、animation slot が非ゼロの場合だけ既存の continuous pose の
-elevation を使って追加 separation を加えます。`elevation != thickness` です。
+elevation を使って追加 separation を加えます。`elevation != thickness != bevel` です。
 elevation が0に戻っても base shadow と side は残ります。side の厚みは Medium 1 px / High 1.5 pxで
 回転開始・中間・終了とも一定です。`PSEUDO_3D_DIRECTION` と preset は `visuals.rs` に集約し、
 side color は linear RGB の暗い neutral、opacity は現在1で source alpha を掛けます。
-既存 `PuzzleUniform` を32 bytes拡張し、buffer / storage binding / per-piece state は増やしません。
+side導入時に既存 `PuzzleUniform` を32 bytes拡張しました。top bevelは未使用paddingへ4 scalarを収め、
+336 bytesを維持します。buffer / storage binding / per-piece state は増やしません。
+
+top bevelは既存top fragment内だけのstatic fake lightingです。Mediumは28 px以上で幅1 px、
+Highは18 px以上で幅1.5 pxです。shadow / sideと独立してextractでO(1) resolveし、farでは常に無効です。
+全辺SDFによるcoverageを維持し、selection / previewと共有する`outer_boundary_distance`で結合内部辺を
+除外します。全4辺connected memberはfinite constantをderivativeへ渡してlightingをskipします。
+外周distanceのscreen derivativeをdiscard前・frame uniform分岐内で求め、その長さでpixel距離へ変換します。
+normalと共通方向の反対`-PSEUDO_3D_DIRECTION`の内積からlinear RGBを控えめに補正し、alphaを維持します。
+光源はscreen-space左上に固定され、camera / quarter-turn / continuous rotationでも同じ向きです。
+bevelの後に既存selection / preview outlineを適用します。elevationを幅・強度へ使いません。
+Low / LOD off / farは高価なbevel計算をskipします。追加draw / pipeline variant / cull拡張はなく、
+pick / shadow / side fragmentとtop vertexのquarter-turn fast pathは維持します。
 
 描画順は main visibility / sort → selection preview → shadow depth / color → side → top → box です。
 既存 visible IDs / indirect args / image texture を再利用し、追加 culling や CPU piece list はありません。

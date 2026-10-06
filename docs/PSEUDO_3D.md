@@ -1,6 +1,6 @@
 # 擬似3D描画
 
-現在は hard shadow と厚紙の side / thickness を実装しています。責務と描画順序は
+現在は hard shadow、厚紙の side / thickness、top surface の bevel / fake lighting を実装しています。責務と描画順序は
 [アーキテクチャ](ARCHITECTURE.md#pseudo-3d-presentation)を参照してください。
 
 ## 品質と screen-space LOD
@@ -21,6 +21,12 @@
 | Medium | 22 px | 1 px | (0.10, 0.10, 0.10) | 1 |
 | High | 14 px | 1.5 px | (0.06, 0.06, 0.06) | 1 |
 
+| bevel quality | projected 短辺の threshold | width | highlight strength | shadow strength |
+| --- | ---: | ---: | ---: | ---: |
+| Low | 無効 | 0 px | 0 | 0 |
+| Medium | 28 px | 1 px | 0.06 | 0.09 |
+| High | 18 px | 1.5 px | 0.10 | 0.14 |
+
 offset は右下への正規化ベクトルに掛ける距離です。physical pixel 単位で、DPI による logical pixel とは
 区別します。共通の `PSEUDO_3D_DIRECTION` は camera / piece の回転に影響されません。
 High の shadow は回転開始・中間・終了で 3 → 7.5 → 3 px、side は常に1.5 pxです。
@@ -28,7 +34,30 @@ High の shadow は回転開始・中間・終了で 3 → 7.5 → 3 px、side �
 side は静止中にも存在する別パラメータです。shadow と side の threshold は独立し、High の12 pxでは
 shadowだけを描きます。Low / LOD off では optional pseudo-3D pass 自体を発行せず、pipeline の新規
 queue / raster / fragment もありません。静止時の影が側面の先へ残るよう base shadow の距離を調整しました。
-bevel、lighting、blur、実 Z elevation、drag / selection lift は今回の対象外です。
+bevel の LOD も独立し、High の16 pxでは shadow / side が有効でも bevel は無効です。
+far zoom では threshold を下げても bevel を有効にしません。blur、実 Z elevation、drag / selection lift は対象外です。
+
+## Top surface の bevel
+
+`elevation != thickness != bevel` です。shadow は base + elevation × extra lift、side は static thickness、
+top bevel は static な表面の明暗で、回転中も幅・強度を変更しません。bevel は既存 top fragment 内だけで
+処理し、draw / pipeline variant / buffer / binding / texture / sampler を追加しません。
+`PuzzleUniform` の visual cull / side padding を4 scalarへ置き換え、336 bytesのサイズを維持しています。
+
+coverage / source alpha は従来の全辺SDFを使います。bevel は selection / preview と共有する
+`outer_boundary_distance` で connected internal edge を除外します。完全に囲まれたpieceは有限な定数を
+derivativeへ渡し、lightingをskipします。selection側のsentinelと既存outline判定は維持しています。
+
+normal zoomでは外周distanceの `dpdx` / `dpdy` をdiscardとper-piece分岐より前、frame uniformの
+`bevel_enabled` 分岐内で計算します。gradientの長さでdistanceをphysical pixelへ換算し、1 − smoothstep
+で内側だけを補正します。screen-spaceのouter normalと `-PSEUDO_3D_DIRECTION` の内積により、
+左上向きは少し明るく、右下向きは少し暗くします。piece / camera回転でも光源はscreen-space固定です。
+linear RGBを白 / 黒へ控えめに寄せてclampし、alphaはそのままです。その後にselection / preview outlineを
+適用するため、outline色が優先されます。画像alpha 0の領域にbevelだけを残しません。
+
+Low / LOD offではgradient・length・smoothstep・lighting dot・RGB補正をskipし、far fragmentは
+bevel処理前にreturnします。既存selection AAの `fwidth(d)` は維持します。top vertexのquarter-turn
+fast path、shadow / sideの色、pick silhouette、main / pick cullingは変更しません。
 
 ## 描画と準備待ち
 
@@ -50,6 +79,7 @@ side / top の開始時に depth を別々に clear するため、top の depth
 cargo test --locked -p jigsall-game --lib
 cargo test --release --locked -p jigsall-game gpu_shadow -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_side -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p jigsall-game gpu_bevel -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
 
@@ -95,6 +125,15 @@ topの背後にsideが透ける全体的な暗さは参照にも含め、結合�
 alpha 128の結合componentの回転中（shadow無効 / 有効）を保存します。
 未指定のテストはファイルを書きません。非同期 fixture の最初の flat reference は Bevy の最終出力
 pipeline も準備されるまで待ち、feature queue 直後の frame の読み取りは待たずに直接行います。
+
+`render/tests/bevel_tests.rs` はLowの矩形全pixel、独立LOD / far強制無効、同じtop pipelineの再利用、
+zoom / camera回転 / quarter-turn / continuous rotationでの光源方向とpixel幅、曲線tab / blankのCPU形状参照、
+2×1 / 2×2 / 3×3結合の内部辺（alpha 128と全4辺connected memberを含む）、linear RGB合成と
+alpha 0 / 128 / 255、画像alpha穴、
+selection / preview優先、同じposeでGPU rotation recordのstart elevationだけを変えたpixel一致、
+bevel ON/OFFのpoint / rectangle一致と追加upload 0を実GPUで確認します。
+shadow / side専用fixtureはbevelを無効にし、既存の個別保証を維持します。
+`gpu_bevel` は同じ環境変数でMedium / High静止、High回転中、High結合回転中のPNGを保存できます。
 
 lazy compilation の回帰2件は `synchronous_pipeline_compilation: false` で実行します。
 queue 直後と準備中の frame を、次の frame に進めず texture から直接読み取ります。
@@ -158,3 +197,26 @@ GPU timestampの短期変動を含む値であり、導入前との速度向上�
 同日、半透明connected componentのfixtureを1件追加し、sideの実GPU 11件がdev profileで
 通過しました。Clippy全target・整形検証も通過しています。上記のpixel center一致時の境界問題は
 切り分けて記録し、描画コードは変更していません。
+
+### top bevel の追加検証
+
+同じ Windows / Vulkan / RTX 5090 環境でbevelの実GPU 8件を追加し、描画全回帰57件がdev profileで
+通過しました。通常workspaceテスト905件（doctest 1件を含む）・Clippy全target・整形検証も通過しています。
+Medium / Highの静止、Highの回転中と結合回転中のnative PNGを確認しました。
+追加draw / pipeline variant / storage binding / per-piece stateはなく、uniformは336 bytesです。
+非同期の初回shadow fixtureにはBevy最終出力pipelineの表示待ちを適用し、RenderReadyの検証後に
+実pixelを確認します。表示済みepochのcompile直後frameを待たずに読む回帰は従来のままです。
+
+新規bevel 8件はreleaseでも通過しました。既存100万piece俯瞰fixtureの同じ1000² grid / 512² target /
+白1×1不透明textureでも、全qualityで`bevel_enabled == 0`、shadow / side draw 0、追加data upload 0、
+両optional pipeline cache未生成、可視instance数100万、Lowとの全pixel一致を確認しています。
+releaseの12 frame平均を短い1 runとして記録しました。
+
+| quality | visibility GPU (ms) | top draw GPU (ms) | bevel | shadow / side draws |
+| --- | ---: | ---: | --- | --- |
+| Low | 0.0255 | 0.4793 | off | 0 / 0 |
+| Medium | 0.0259 | 0.4935 | off | 0 / 0 |
+| High | 0.0255 | 0.4940 | off | 0 / 0 |
+
+短期timestamp変動を含む値です。bevel有効時のGPUコストや、導入前との速度比較・60 fps・別環境の
+互換性を示す測定ではありません。
