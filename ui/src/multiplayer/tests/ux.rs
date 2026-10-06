@@ -178,7 +178,9 @@ fn invitation_is_dismissible_keeps_playing_and_does_not_reappear_each_frame() {
     let output = render_schedule(&mut app, &ctx, vec![]);
     let text = labels(&output);
     assert!(text.contains(&"Invite Players"));
-    assert!(text.contains(&"ABCDEFGHJK"));
+    assert!(!text.contains(&"ABCDEFGHJK"));
+    assert_eq!(text.iter().filter(|&&text| text == "Show").count(), 2);
+    assert_eq!(text.iter().filter(|&&text| text == "Copy").count(), 2);
     assert!(text.iter().any(|text| text.contains("room password")));
     assert!(text
         .iter()
@@ -202,55 +204,87 @@ fn invitation_is_dismissible_keeps_playing_and_does_not_reappear_each_frame() {
 }
 
 #[test]
-fn room_code_copy_reports_success_without_taking_keyboard_focus() {
-    let status = NetworkStatus {
+fn room_code_visibility_and_copy_work_without_taking_keyboard_focus() {
+    let mut status = NetworkStatus {
         room_code: Some("ABCDEFGHJK".into()),
         ..default()
     };
-    let i18n = crate::localization::tests::english();
-    let ctx = egui::Context::default();
-    let render = |events| {
-        ctx.run_ui(
-            egui::RawInput {
-                events,
-                ..default()
-            },
-            |ui| {
-                paint_room_code(ui, &status, &i18n);
-            },
-        )
-    };
-    render(vec![]).drop_without_applying_deltas();
-    let output = render(vec![]);
-    let point = output
-        .shapes
-        .iter()
-        .find_map(|shape| match &shape.shape {
-            egui::Shape::Text(text) if text.galley.job.text == "Copy" => {
-                Some(text.pos + text.galley.size() * 0.5)
+    let mut i18n = crate::localization::tests::english();
+    for locale in [Locale::EN_US, Locale::JA] {
+        i18n.set_preference(LanguagePreference::Locale(locale));
+        status.room_code = Some("ABCDEFGHJK".into());
+        let ctx = egui::Context::default();
+        let render = |status: &NetworkStatus, events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..default()
+                },
+                |ui| paint_room_code(ui, status, &i18n),
+            )
+        };
+        let click = |label: &str| {
+            render(&status, vec![]).drop_without_applying_deltas();
+            let output = render(&status, vec![]);
+            let point = output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text == label => {
+                        Some(text.pos + text.galley.size() * 0.5)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            output.drop_without_applying_deltas();
+            let pointer = |pressed| {
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: default(),
+                    },
+                ]
+            };
+            render(&status, pointer(true)).drop_without_applying_deltas();
+            render(&status, pointer(false))
+        };
+        for (visible, toggle) in [
+            (false, None),
+            (true, Some("multiplayer-show-room-code")),
+            (false, Some("multiplayer-hide-room-code")),
+        ] {
+            if let Some(key) = toggle {
+                click(&i18n.text(key)).drop_without_applying_deltas();
             }
-            _ => None,
-        })
-        .unwrap();
-    output.drop_without_applying_deltas();
-    let mut copied = false;
-    let mut confirmed = false;
-    for pressed in [true, false] {
-        let output = render(vec![
-            egui::Event::PointerMoved(point),
-            egui::Event::PointerButton {
-                pos: point,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: default(),
-            },
-        ]);
-        copied |= output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "ABCDEFGHJK"));
-        confirmed |= labels(&output).contains(&"Copied");
+            let output = render(&status, vec![]);
+            assert_eq!(labels(&output).contains(&"ABCDEFGHJK"), visible);
+            assert!(labels(&output).contains(
+                &i18n
+                    .text(if visible {
+                        "multiplayer-hide-room-code"
+                    } else {
+                        "multiplayer-show-room-code"
+                    })
+                    .as_str()
+            ));
+            output.drop_without_applying_deltas();
+            let output = click(&i18n.text("multiplayer-copy"));
+            assert!(output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text == "ABCDEFGHJK")));
+            assert!(labels(&output).contains(&i18n.text("multiplayer-copied").as_str()));
+            assert_eq!(labels(&output).contains(&"ABCDEFGHJK"), visible);
+            assert!(ctx.memory(|memory| memory.focused().is_none()));
+            output.drop_without_applying_deltas();
+        }
+        click(&i18n.text("multiplayer-show-room-code")).drop_without_applying_deltas();
+        status.room_code = Some("23456789AB".into());
+        let output = render(&status, vec![]);
+        assert!(!labels(&output).contains(&"23456789AB"));
+        assert!(!labels(&output).contains(&i18n.text("multiplayer-copied").as_str()));
         output.drop_without_applying_deltas();
     }
-    assert!(copied && confirmed);
-    assert!(ctx.memory(|memory| memory.focused().is_none()));
 }
 
 #[test]

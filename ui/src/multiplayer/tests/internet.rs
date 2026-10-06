@@ -295,7 +295,7 @@ fn internet_wrong_password_keeps_code_clears_secret_and_returns_to_join() {
     assert!(app.world().resource::<MultiplayerUi>().screen == MenuScreen::Join);
 }
 #[test]
-fn internet_host_status_exposes_code_copy_and_control_warning_on_registered_screens() {
+fn internet_host_hides_code_allows_copy_and_omits_code_controls_from_pause_menu() {
     let (mut app, ctx) = scheduled_screens();
     app.world_mut().insert_resource(NetworkStatus {
         role: Some(RuntimeRole::Host),
@@ -307,7 +307,8 @@ fn internet_host_status_exposes_code_copy_and_control_warning_on_registered_scre
     });
     render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
     let output = render_schedule(&mut app, &ctx, vec![]);
-    assert!(labels(&output).contains(&"ABCDEFGHJK"));
+    assert!(!labels(&output).contains(&"ABCDEFGHJK"));
+    assert!(labels(&output).contains(&"Show"));
     let point = output
         .shapes
         .iter()
@@ -342,10 +343,22 @@ fn internet_host_status_exposes_code_copy_and_control_warning_on_registered_scre
         output.drop_without_applying_deltas();
     }
     assert!(copied);
-    app.world_mut()
-        .insert_resource(State::new(GameSubState::Paused));
+    click_label(&mut app, &ctx, "Show");
     let output = render_schedule(&mut app, &ctx, vec![]);
     assert!(labels(&output).contains(&"ABCDEFGHJK"));
+    assert!(labels(&output).contains(&"Hide"));
+    assert!(ctx.memory(|memory| memory.focused().is_none()));
+    output.drop_without_applying_deltas();
+    app.world_mut()
+        .insert_resource(State::new(GameSubState::Paused));
+    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+    let output = render_schedule(&mut app, &ctx, vec![]);
+    let text = labels(&output);
+    assert!(text.contains(&"Multiplayer Menu"));
+    // The only code and controls belong to the HUD, even after revealing it.
+    for label in ["Room Code", "ABCDEFGHJK", "Hide", "Copy"] {
+        assert_eq!(text.iter().filter(|&&text| text == label).count(), 1);
+    }
     output.drop_without_applying_deltas();
     let mut status = app.world_mut().resource_mut::<NetworkStatus>();
     status.room_code = None;

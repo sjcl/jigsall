@@ -812,7 +812,6 @@ pub(crate) fn paint_host_status(ui: &mut egui::Ui, status: &NetworkStatus, i18n:
         ui.label(i18n.text(key));
     }
     if status.connection_method == Some(RuntimeConnectionMethod::Internet) {
-        paint_room_code(ui, status, i18n);
         paint_control_warning(ui, status, i18n);
         if status.room_code.is_some()
             && status.rendezvous_control == Some(RendezvousControlStatus::Available)
@@ -1334,7 +1333,26 @@ pub(crate) fn paint_room_code(ui: &mut egui::Ui, status: &NetworkStatus, i18n: &
     if let Some(code) = &status.room_code {
         ui.label(i18n.text("multiplayer-room-code"));
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(code).monospace().size(24.0).strong());
+            // Visibility is local to this UI and code, and is never saved to disk.
+            let visible_id = ui.make_persistent_id(("room-code-visible", code));
+            let mut visible = ui.data(|data| data.get_temp::<bool>(visible_id).unwrap_or(false));
+            if ui
+                .add(
+                    egui::Button::new(i18n.text(if visible {
+                        "multiplayer-hide-room-code"
+                    } else {
+                        "multiplayer-show-room-code"
+                    }))
+                    .sense(egui::Sense::CLICK),
+                )
+                .clicked()
+            {
+                visible = !visible;
+                ui.data_mut(|data| data.insert_temp(visible_id, visible));
+            }
+            if visible {
+                ui.label(egui::RichText::new(code).monospace().size(24.0).strong());
+            }
             let copied_id = ui.make_persistent_id(("room-code-copied", code));
             let now = ui.input(|input| input.time);
             if ui
@@ -1425,6 +1443,9 @@ fn paint_invite_panel(
         .default_pos(ctx.content_rect().left_top() + egui::vec2(24.0, 80.0))
         .show(ctx, |ui| {
             paint_host_status(ui, status, i18n);
+            if status.connection_method == Some(RuntimeConnectionMethod::Internet) {
+                paint_room_code(ui, status, i18n);
+            }
             theme::hint(ui, i18n.text("multiplayer-invite-playing"));
             dismissed = ui.button(i18n.text("common-close")).clicked();
         });
