@@ -9,4 +9,4 @@ publish.workspace = true
 bevy_ecs.workspace = true
 bevy_math.workspace = true
 serde.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
