@@ -1,5 +1,8 @@
 //! Display settings, independent of the menu. Resolutions are physical pixels.
-use crate::settings_file::{SettingsFile, SettingsSection};
+use crate::{
+    render::visuals::PieceVisualQuality,
+    settings_file::{SettingsFile, SettingsSection},
+};
 use bevy::{
     prelude::*,
     time::TimeSystems,
@@ -74,6 +77,8 @@ pub struct DisplaySettings {
     pub max_fps: Option<u32>,
     #[serde(default)]
     pub game_background: GameBackground,
+    #[serde(default)]
+    pub piece_visual_quality: PieceVisualQuality,
 }
 
 impl Default for DisplaySettings {
@@ -83,6 +88,7 @@ impl Default for DisplaySettings {
             mode: ScreenMode::Windowed,
             max_fps: Some(60),
             game_background: GameBackground::default(),
+            piece_visual_quality: PieceVisualQuality::default(),
         }
     }
 }
@@ -246,6 +252,7 @@ impl DisplaySettingsState {
             && (self.display_changed(settings)
                 || settings.max_fps != self.current.max_fps
                 || settings.game_background != self.current.game_background
+                || settings.piece_visual_quality != self.current.piece_visual_quality
                 || matches!(
                     self.error,
                     Some(
@@ -333,6 +340,7 @@ pub struct DisplaySettingsPlugin;
 impl Plugin for DisplaySettingsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DisplaySettingsState>()
+            .init_resource::<PieceVisualQuality>()
             .init_resource::<DisplayCapabilities>()
             .init_resource::<FramePacer>()
             .add_message::<DisplaySettingsAction>()
@@ -347,6 +355,7 @@ impl Plugin for DisplaySettingsPlugin {
                     process_actions,
                     apply_window_settings,
                     apply_game_background,
+                    apply_piece_visual_quality,
                 )
                     .chain()
                     .after(EguiPostUpdateSet::EndPass),
@@ -434,6 +443,17 @@ fn process_actions(
                 }
             }
         }
+    }
+}
+
+// Settings own this synchronization, so standalone renderer fixtures can still
+// replace the quality resource without installing display settings.
+fn apply_piece_visual_quality(
+    state: Res<DisplaySettingsState>,
+    mut quality: ResMut<PieceVisualQuality>,
+) {
+    if *quality != state.current.piece_visual_quality {
+        *quality = state.current.piece_visual_quality;
     }
 }
 

@@ -5,10 +5,18 @@
 
 ## 品質と screen-space LOD
 
-`game/src/render/visuals.rs` の `PieceVisualQuality` resource を main world で変更できます。
-初期値は High です。qualityを寸法ルール付きの`ResolvedPieceVisuals`へ変換し、extractで
+「設定 → グラフィック → 擬似3D品質」のLow / Medium / Highを「適用」で切り替えます。
+既定はHighで、`settings.json`の既存`display.piece_visual_quality`へ保存します。fieldがない旧設定もHighです。
+品質だけなら15秒の確認なしで即時更新・保存要求を行い、解像度 / 画面モードとの同時変更では
+既存のpreview / Keep / Revertに含めます。設定の詳細は[設定ファイル](SETTINGS.md#擬似3d品質)を参照してください。
+
+`DisplaySettingsPlugin`はPostUpdateの設定action処理後に、`DisplaySettingsState.current`の品質を
+`game/src/render/visuals.rs`の`PieceVisualQuality` resourceへ同期します。次の描画frameから
+qualityを寸法ルール付きの`ResolvedPieceVisuals`へ変換し、extractで
 `FramePieceVisuals`をO(1) resolveして既存の`PuzzleUniform`へ渡します。
-ユーザー向け UI と保存、Auto はまだありません。
+renderer単独のfixtureは設定pluginを使わず、resourceを直接差し替えられます。
+品質変更でpuzzle reload / GPU buffer再生成 / piece state変更 / metadata uploadを起こしません。
+Auto、feature個別設定、frame-timeによる動的調整は未実装です。preset / LOD / activation方針は維持します。
 
 以下の`p`は`piece_size_px.min_element()`、`clamp(scale × p, min, max)`の結果はphysical pxです。
 per-piece / componentの大きさは参照せず、cameraから得た代表pieceのprojected短辺をframe全体で使います。
@@ -391,3 +399,17 @@ releaseの12 frame平均を短い1 runとして記録しました。
 
 短期timestamp変動を含む値です。導入前との速度比較・擬似3D有効時のGPU速度・ゲーム全体の60 fps・
 別OSの実機互換性を示す測定ではありません。
+
+### グラフィック設定UIへの接続検証
+
+2026-10-06、設定のCPU回帰3件、実際のegui widgetの回帰1件、実GPU回帰1件を追加しました。
+通常workspaceテスト925件（doctest 1件を含む）、全target Clippy、整形検証が通過しています。
+旧displayでfieldがない場合のHigh、3品質のJSON round-tripと再起動時の読み込み、品質だけの
+即時保存、display previewのRevert / Dismiss / timeout / Keepとrenderer resourceの同期を確認しました。
+UIのLow / Medium / High選択・適用と翻訳catalog契約を検証し、小画面・両言語の既存表示回帰も通過しました。
+
+Windows / Vulkan / NVIDIA GeForce RTX 5090で、追加1件と関連する実GPU4件がdev profileで通過しました。
+設定actionの次のextracted frameから品質が一致し、epoch・canonical piece state・state / metadata /
+visible / indirect args / selection / dragのbuffer IDを維持します。品質変更frameの全data uploadは0です。
+Lowへ戻した全pixelも元のflat frameと一致します。renderer単独のresource直接変更と、表示済みepochでの
+optional pipeline lazy compilationも通過しています。preset・threshold・elevation envelopeは変更していません。

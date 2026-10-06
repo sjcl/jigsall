@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn piece_quality_widgets_select_all_three_values_and_enable_apply() {
+    let ctx = egui::Context::default();
+    let mut dialog = SettingsDialog::default();
+    dialog.open(&DisplaySettingsState::load(None));
+    dialog.tab = SettingsTab::Graphics;
+    assert_eq!(dialog.draft.piece_visual_quality, PieceVisualQuality::High);
+    for (label, quality) in [
+        ("Low", PieceVisualQuality::Low),
+        ("Medium", PieceVisualQuality::Medium),
+    ] {
+        assert!(click(&ctx, &mut dialog, label).is_none());
+        assert_eq!(dialog.draft.piece_visual_quality, quality);
+        let Some(DisplaySettingsAction::Apply(settings)) = click(&ctx, &mut dialog, "Apply") else {
+            panic!("Quality-only change must enable Apply");
+        };
+        assert_eq!(settings.piece_visual_quality, quality);
+        assert_eq!(settings.resolution, DisplaySettings::default().resolution);
+        assert_eq!(settings.mode, ScreenMode::Windowed);
+    }
+    assert!(click(&ctx, &mut dialog, "High").is_none());
+    assert_eq!(dialog.draft.piece_visual_quality, PieceVisualQuality::High);
+    assert!(click(&ctx, &mut dialog, "Apply").is_none());
+    let mut state = DisplaySettingsState::load(None);
+    state.current.piece_visual_quality = PieceVisualQuality::Low;
+    dialog.open(&state);
+    dialog.tab = SettingsTab::Graphics;
+    assert!(click_with_state(&ctx, &mut dialog, &state, &capabilities(), "High").is_none());
+    let Some(DisplaySettingsAction::Apply(settings)) =
+        click_with_state(&ctx, &mut dialog, &state, &capabilities(), "Apply")
+    else {
+        panic!("High must be selectable from a saved Low quality");
+    };
+    assert_eq!(settings.piece_visual_quality, PieceVisualQuality::High);
+    let mut i18n = english();
+    for locale in [Locale::EN_US, Locale::JA] {
+        i18n.set_preference(LanguagePreference::Locale(locale));
+        for key in [
+            "settings-piece-visual-quality",
+            "settings-quality-low",
+            "settings-quality-medium",
+            "settings-quality-high",
+            "settings-piece-visual-quality-hint",
+        ] {
+            assert_ne!(i18n.text(key), key);
+        }
+    }
+}
+
+#[test]
 fn background_widgets_select_dark_and_light() {
     let ctx = egui::Context::default();
     let mut dialog = SettingsDialog::default();
@@ -1212,7 +1261,8 @@ fn settings_geometry_is_stable_from_the_first_visible_frame() {
                         );
                         assert_eq!(
                             has_text(&output, &i18n.text("settings-texture-budget")),
-                            tab == SettingsTab::Graphics
+                            tab == SettingsTab::Graphics,
+                            "{locale:?} {size:?} {transition}: texture budget must be visible at 720px height"
                         );
                     }
                     output.drop_without_applying_deltas();

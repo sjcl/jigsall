@@ -6,6 +6,7 @@ mod far_zoom_tests;
 mod local_rotation_tests;
 mod outline_tests;
 mod piece_metadata_tests;
+mod quality_settings_tests;
 mod remote_cursor_tests;
 mod remote_drag_tests;
 mod rotation_tests;
@@ -47,6 +48,13 @@ fn gpu_app_with_pipeline_compilation(
     resolution: u32,
     synchronous_pipeline_compilation: bool,
 ) -> (App, Entity, Handle<Image>) {
+    gpu_app_with_setup(resolution, synchronous_pipeline_compilation, |_| {})
+}
+fn gpu_app_with_setup(
+    resolution: u32,
+    synchronous_pipeline_compilation: bool,
+    setup: impl FnOnce(&mut App),
+) -> (App, Entity, Handle<Image>) {
     crate::test_logging::init();
     let mut app = App::new();
     app.add_plugins(
@@ -86,6 +94,7 @@ fn gpu_app_with_pipeline_compilation(
     .insert_resource(PieceVisualQuality::Low)
     .add_systems(Last, prepare_piece_upload)
     .insert_resource(ClearColor(Color::BLACK));
+    setup(&mut app);
     app.finish();
     app.cleanup();
     let info = app

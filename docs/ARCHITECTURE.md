@@ -384,7 +384,9 @@ Low / LOD off の optional pass は pipeline を新規 queue せず、raster / d
 要求された shadow / side が完成するまで待ちます。表示済み epoch では準備中の feature だけを skip し、
 準備済み feature / top / picking を継続します。compile failure は従来どおり epoch の renderer error です。
 100万 piece の far overview は全 quality で shadow / side draw 0、bevel無効です。
-UI、Auto、設定保存、frame-time による動的調整は未実装です。
+「設定 → グラフィック」のLow / Medium / Highは既存display sectionへ保存し、設定pluginがPostUpdateで
+rendererのquality resourceへ同期します。品質だけなら即時適用、表示変更との同時適用はpreview / Revert対象です。
+renderer単独のfixtureはresourceを直接差し替えられます。Autoとframe-timeによる動的調整は未実装です。
 
 静止 piece は base shadow を持ち、animation slot が非ゼロの場合だけ既存の continuous pose の
 elevation を使って追加 separation を加えます。local / remote dragの80ms smoothstep envelopeも独立に

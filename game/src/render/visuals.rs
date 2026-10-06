@@ -1,8 +1,9 @@
-//! Local presentation settings; never part of gameplay, snapshots or saves.
+//! Local graphics preferences, separate from canonical gameplay and puzzle saves.
 use bevy::prelude::*;
+use serde::{Deserialize, Serialize};
 
-/// Internal quality switch, ready for a future graphics settings UI.
-#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Local graphics quality, persisted in the display settings section.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PieceVisualQuality {
     Low,
     Medium,
@@ -80,7 +81,7 @@ pub struct FramePieceVisuals {
 }
 
 impl PieceVisualQuality {
-    /// Keep presets and the temporary default together in this module.
+    /// Keep quality presets together in this module.
     pub fn resolve(self) -> ResolvedPieceVisuals {
         let (enabled, minimum, base, lift, opacity, side_minimum, thickness, color) = match self {
             Self::Low => (

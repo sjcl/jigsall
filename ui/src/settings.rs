@@ -11,6 +11,7 @@ use jigsall_game::image_settings::{ImageSettingsError, ImageSettingsState, Textu
 use jigsall_game::keybindings::KeyBindingsState;
 use jigsall_game::persistence::autosave::{AutosaveSettingsError, AutosaveSettingsState};
 use jigsall_game::player_settings::{PlayerSettingsError, PlayerSettingsState};
+use jigsall_game::render::visuals::PieceVisualQuality;
 use jigsall_game::resources::PuzzleImageLimits;
 use jigsall_game::settings::*;
 
@@ -270,7 +271,15 @@ fn paint_settings(
             }
             egui::ScrollArea::vertical()
                 .max_height(
-                    (screen.height() - if seconds.is_some() { 380.0 } else { 320.0 }).max(32.0),
+                    (screen.height()
+                        - if seconds.is_some() {
+                            380.0
+                        } else if dialog.tab == SettingsTab::Graphics && screen.width() >= 640.0 {
+                            240.0
+                        } else {
+                            320.0
+                        })
+                    .max(32.0),
                 )
                 .show(ui, |ui| {
                     if dialog.tab == SettingsTab::Keys {
@@ -472,6 +481,22 @@ fn paint_settings(
                             } else {
                                 Some(dialog.limited_fps)
                             };
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(i18n.text("settings-piece-visual-quality"));
+                                for (quality, label) in [
+                                    (PieceVisualQuality::Low, "settings-quality-low"),
+                                    (PieceVisualQuality::Medium, "settings-quality-medium"),
+                                    (PieceVisualQuality::High, "settings-quality-high"),
+                                ] {
+                                    ui.selectable_value(
+                                        &mut dialog.draft.piece_visual_quality,
+                                        quality,
+                                        i18n.text(label),
+                                    );
+                                }
+                            });
+                            theme::hint(ui, i18n.text("settings-piece-visual-quality-hint"));
                         });
                         theme::card().show(ui, |ui| {
                             paint_image_settings(ui, image_settings, image_limits, i18n);

@@ -1,6 +1,182 @@
 use super::*;
 
 #[test]
+fn piece_quality_defaults_and_json_round_trips_preserve_display_fields() {
+    let legacy =
+        r#"{"resolution":[800,600],"mode":"Windowed","max_fps":144,"game_background":"Dark"}"#;
+    let mut settings: DisplaySettings = serde_json::from_str(legacy).unwrap();
+    assert_eq!(settings.piece_visual_quality, PieceVisualQuality::High);
+    assert_eq!(settings.resolution, UVec2::new(800, 600));
+    assert_eq!(settings.max_fps, Some(144));
+    assert_eq!(settings.game_background, GameBackground::Dark);
+    for (quality, name) in [
+        (PieceVisualQuality::Low, "Low"),
+        (PieceVisualQuality::Medium, "Medium"),
+        (PieceVisualQuality::High, "High"),
+    ] {
+        settings.piece_visual_quality = quality;
+        let value = serde_json::to_value(&settings).unwrap();
+        assert_eq!(value["piece_visual_quality"], name);
+        assert_eq!(
+            serde_json::from_value::<DisplaySettings>(value).unwrap(),
+            settings
+        );
+        assert_eq!(
+            serde_json::to_string(&quality).unwrap(),
+            format!("\"{name}\"")
+        );
+        assert_eq!(
+            serde_json::from_str::<PieceVisualQuality>(&format!("\"{name}\"")).unwrap(),
+            quality
+        );
+    }
+}
+
+#[test]
+fn piece_quality_only_apply_updates_renderer_and_saves_without_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    std::fs::write(
+        &path,
+        r#"{"display":{"resolution":[800,600],"mode":"Windowed","max_fps":144,"game_background":"Dark"},"future":{"value":42}}"#,
+    ).unwrap();
+    let mut app = test_app(Some(path.clone()));
+    let initial = app
+        .world()
+        .resource::<DisplaySettingsState>()
+        .current
+        .clone();
+    assert_eq!(initial.piece_visual_quality, PieceVisualQuality::High);
+    assert_eq!(
+        *app.world().resource::<PieceVisualQuality>(),
+        PieceVisualQuality::High
+    );
+    for quality in [
+        PieceVisualQuality::Low,
+        PieceVisualQuality::Medium,
+        PieceVisualQuality::High,
+    ] {
+        let settings = DisplaySettings {
+            piece_visual_quality: quality,
+            ..initial.clone()
+        };
+        assert!(app
+            .world()
+            .resource::<DisplaySettingsState>()
+            .can_apply(&settings, app.world().resource::<DisplayCapabilities>()));
+        action(&mut app, DisplaySettingsAction::Apply(settings.clone()));
+        let state = app.world().resource::<DisplaySettingsState>();
+        assert_eq!(state.current, settings);
+        assert_eq!(state.confirmation_seconds(), None);
+        assert_eq!(state.notice, Some(DisplaySettingsNotice::Saved));
+        assert!(!state.can_apply(&settings, app.world().resource::<DisplayCapabilities>()));
+        assert_eq!(*app.world().resource::<PieceVisualQuality>(), quality);
+        let loaded = DisplaySettingsState::load(Some(path.clone()));
+        assert!(loaded.error.is_none());
+        assert_eq!(loaded.current, settings);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["future"]["value"], 42);
+        let window = app
+            .world_mut()
+            .query_filtered::<&Window, With<PrimaryWindow>>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(window.mode, WindowMode::Windowed);
+        assert_eq!(window.resolution.physical_size(), initial.resolution);
+        let changed = app
+            .world()
+            .resource_ref::<PieceVisualQuality>()
+            .last_changed();
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource_ref::<PieceVisualQuality>()
+                .last_changed(),
+            changed
+        );
+    }
+    let mut restarted = test_app(Some(path));
+    restarted.update();
+    assert_eq!(
+        *restarted.world().resource::<PieceVisualQuality>(),
+        PieceVisualQuality::High
+    );
+}
+
+#[test]
+fn piece_quality_display_preview_reverts_renderer_and_only_keep_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let mut app = test_app(Some(path.clone()));
+    let previous = DisplaySettings {
+        piece_visual_quality: PieceVisualQuality::Medium,
+        ..default()
+    };
+    action(&mut app, DisplaySettingsAction::Apply(previous.clone()));
+    let draft = DisplaySettings {
+        resolution: UVec2::new(800, 600),
+        piece_visual_quality: PieceVisualQuality::Low,
+        ..previous.clone()
+    };
+    for end in [
+        DisplaySettingsAction::Revert,
+        DisplaySettingsAction::Dismiss,
+    ] {
+        action(&mut app, DisplaySettingsAction::Apply(draft.clone()));
+        assert!(app
+            .world()
+            .resource::<DisplaySettingsState>()
+            .confirmation_seconds()
+            .is_some());
+        assert_eq!(
+            *app.world().resource::<PieceVisualQuality>(),
+            PieceVisualQuality::Low
+        );
+        assert_eq!(
+            DisplaySettingsState::load(Some(path.clone())).current,
+            previous
+        );
+        action(&mut app, end);
+        assert_eq!(
+            app.world().resource::<DisplaySettingsState>().current,
+            previous
+        );
+        assert_eq!(
+            *app.world().resource::<PieceVisualQuality>(),
+            PieceVisualQuality::Medium
+        );
+    }
+    action(&mut app, DisplaySettingsAction::Apply(draft.clone()));
+    app.world_mut()
+        .resource_mut::<DisplaySettingsState>()
+        .preview
+        .as_mut()
+        .unwrap()
+        .deadline = Instant::now() - Duration::from_secs(1);
+    app.update();
+    assert_eq!(
+        app.world().resource::<DisplaySettingsState>().current,
+        previous
+    );
+    assert_eq!(
+        *app.world().resource::<PieceVisualQuality>(),
+        PieceVisualQuality::Medium
+    );
+    action(&mut app, DisplaySettingsAction::Apply(draft.clone()));
+    action(&mut app, DisplaySettingsAction::Keep);
+    assert_eq!(
+        DisplaySettingsState::load(Some(path.clone())).current,
+        draft
+    );
+    let restarted = test_app(Some(path));
+    assert_eq!(
+        *restarted.world().resource::<PieceVisualQuality>(),
+        PieceVisualQuality::Low
+    );
+}
+
+#[test]
 fn background_defaults_for_existing_settings_and_applies_to_main_camera() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
