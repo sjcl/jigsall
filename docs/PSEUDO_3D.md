@@ -6,36 +6,54 @@
 ## 品質と screen-space LOD
 
 `game/src/render/visuals.rs` の `PieceVisualQuality` resource を main world で変更できます。
-初期値は High です。preset を `ResolvedPieceVisuals` へ変換し、extract で frame の LOD を判定します。
+初期値は High です。qualityを寸法ルール付きの`ResolvedPieceVisuals`へ変換し、extractで
+`FramePieceVisuals`をO(1) resolveして既存の`PuzzleUniform`へ渡します。
 ユーザー向け UI と保存、Auto はまだありません。
+
+以下の`p`は`piece_size_px.min_element()`、`clamp(scale × p, min, max)`の結果はphysical pxです。
+per-piece / componentの大きさは参照せず、cameraから得た代表pieceのprojected短辺をframe全体で使います。
 
 | shadow quality | projected 短辺の threshold | base offset | extra lift | opacity |
 | --- | ---: | ---: | ---: | ---: |
 | Low | 無効 | 0 px | 0 px | 0 |
-| Medium | 14 px | 2.5 px | 3 px | 0.20 |
-| High | 10 px | 3 px | 4.5 px | 0.25 |
+| Medium | 14 px | clamp(0.030 p, 1.5, 4.5) | clamp(0.040 p, 2, 6) | 0.20 |
+| High | 10 px | clamp(0.040 p, 2, 6) | clamp(0.060 p, 3, 9) | 0.25 |
 
-| side quality | projected 短辺の threshold | static thickness | neutral linear RGB | opacity |
+| side quality | projected 短辺の threshold | thickness | neutral linear RGB | opacity |
 | --- | ---: | ---: | ---: | ---: |
 | Low | 無効 | 0 px | 0 | 1 |
-| Medium | 22 px | 1 px | (0.10, 0.10, 0.10) | 1 |
-| High | 14 px | 1.5 px | (0.06, 0.06, 0.06) | 1 |
+| Medium | 22 px | clamp(0.016 p, 0.75, 2.5) | (0.10, 0.10, 0.10) | 1 |
+| High | 14 px | clamp(0.025 p, 1, 4) | (0.06, 0.06, 0.06) | 1 |
 
 | bevel quality | projected 短辺の threshold | width | highlight strength | shadow strength |
 | --- | ---: | ---: | ---: | ---: |
 | Low | 無効 | 0 px | 0 | 0 |
-| Medium | 28 px | 1 px | 0.06 | 0.09 |
-| High | 18 px | 1.5 px | 0.10 | 0.14 |
+| Medium | 28 px | clamp(0.0125 p, 0.75, 2) | 0.06 | 0.09 |
+| High | 18 px | clamp(0.020 p, 1, 3) | 0.10 | 0.14 |
 
 offset は右下への正規化ベクトルに掛ける距離です。physical pixel 単位で、DPI による logical pixel とは
 区別します。共通の `PSEUDO_3D_DIRECTION` は camera / piece の回転に影響されません。
-High の shadow は回転開始・中間・終了で 3 → 7.5 → 3 px、side は常に1.5 pxです。
+Highの20 px pieceでは回転開始・中間・終了のshadow separationが2 → 5 → 2 px、sideは1 pxです。
+100 px pieceでは4 → 10 → 4 px、sideは2.5 pxです。同じzoomならside / bevelはelevationで変わりません。
 静止中も shadow を描きます。`elevation != thickness` であり、normalized elevation は追加 lift だけです。
 side は静止中にも存在する別パラメータです。shadow と side の threshold は独立し、High の12 pxでは
 shadowだけを描きます。Low / LOD off では optional pseudo-3D pass 自体を発行せず、pipeline の新規
-queue / raster / fragment もありません。静止時の影が側面の先へ残るよう base shadow の距離を調整しました。
+queue / raster / fragmentもありません。threshold未満では寸法・opacity・lighting strengthも0にします。
 bevel の LOD も独立し、High の16 pxでは shadow / side が有効でも bevel は無効です。
 far zoom では threshold を下げても bevel を有効にしません。blur、実 Z elevation、selection lift は対象外です。
+
+thresholdは従来のhard gateを維持します。寸法の最小値を小さく抑え、threshold以上では連続したclamp式を
+使います。別のactivation rampは入れていません。bevelのhighlight / shadow strengthは固定preset値です。
+`ProjectedDimension`がpresetの係数 / 最小 / 最大を保持し、`FramePieceVisuals`だけが解決済みpx値を持ちます。
+最大cull offsetもframeのbase + full lift / side thicknessから求め、pickingのboundsには加えません。
+quality / zoom変更は既存uniformだけを更新し、piece state / metadataのupload、buffer / bindingを追加しません。
+
+| Highのprojected短辺 | side (px) | bevel (px) | shadow base (px) | lift extra (px) |
+| --- | ---: | ---: | ---: | ---: |
+| 20 px | 1 | 1 | 2 | 3 |
+| 50 px | 1.25 | 1 | 2 | 3 |
+| 100 px | 2.5 | 2 | 4 | 6 |
+| 200 px | 4 | 3 | 6 | 9 |
 
 ## Drag elevation
 
@@ -47,7 +65,8 @@ local / remote の held membership に envelope を与えます。grab は0→1�
 fade中のAが0.5、idleのBが0なら、それぞれ0.5→1、0→1へ進み、BをAの高さへ跳ね上げません。
 slot 0と期限切れzero recordはidleとしてまとめ、DSU / canonical stateは参照しません。
 rotationと独立に評価し、shadow vertexだけで `max(rotation_elevation, drag_elevation)` を使います。
-Highのheld shadow separationは7.5pxで、side thickness・bevel幅/強度・top位置/Z/depth・pickingは変わりません。
+Highのheld shadow separationはframeのbase + liftで5〜15 pxです。
+side thickness・bevel幅/強度・top位置/Z/depth・pickingはelevationで変わりません。
 interaction envelopeはqualityに依存せず、Low / LOD offでも進行します。shadow passの追加発行はありません。
 
 `DragElevationPresentation` はmain-worldの描画専用resourceです。localのfrozen membershipのArcと、
@@ -114,6 +133,7 @@ cargo test --release --locked -p jigsall-game gpu_side -- --ignored --nocapture 
 cargo test --release --locked -p jigsall-game gpu_bevel -- --ignored --nocapture --test-threads=1
 cargo test --locked -p jigsall-game drag_elevation
 cargo test --release --locked -p jigsall-game gpu_drag_elevation -- --ignored --nocapture --test-threads=1
+cargo test --release --locked -p jigsall-game gpu_scaled_visuals -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game --lib drag_elevation_million_grab_boundary_benchmark -- --ignored --nocapture --test-threads=1
 cargo test --release --locked -p jigsall-game gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
 ```
@@ -128,6 +148,12 @@ mapping / record / range再生成がないことも確認します。
 50万memberがfade中・残りがidleのmixed re-grabを各7回測ります。fixture / maskの生成は計測外で、
 presentationのmapping・dirty管理・partition・upload snapshot生成は計測内です。authorityのGrabGroup処理、
 GPU buffer拡張 / 転送、入力から表示までの遅延は含めません。
+
+`render/tests/scaled_visuals_tests.rs`は20 / 50 / 100 / 200 px、短辺の軸入れ替え、連続zoom、min/max clamp、
+LOD / Low / far gateとpeak cull extentを検証します。実GPUでは実際のquality / camera scale変更を使い、
+同じpx値を固定した基準と全pixel比較します。point / rectangle picking、metadata sizeと全data upload 0も
+確認し、各zoomでrotation / dragのmaxをhost指定separationの基準画像と比較します。
+`JIGSALL_VISUAL_PREVIEW_DIR`を指定すると、このfixtureは各quality / sizeの256² PNGを保存します。
 
 `render/tests/drag_elevation_tests.rs` は開始・中間・held・release直後・終了のshadowを、同じposeで
 hostが指定した分離距離の基準画像と全pixel比較します。connected全memberのslot共有、rotationとのmax、
@@ -150,14 +176,17 @@ stage あたり8に制限します。
 
 Q/Q・Q/E の既存 CPU retarget test は、境界の shadow offset も連続していることを確認します。
 far shader の shadow 対応は将来 threshold を調整できるよう維持します。現行 preset の threshold は
-far mode の1.5 pxより大きいため、far raster fixture だけ test 用の threshold 0.25 pxで実行します。
+far mode の1.5 pxより大きいため、far raster fixtureだけtest用threshold 0.25 pxと固定したoffsetを使います。
 通常 production の far overview は shadow pass を完全 skip します。
+shadow-only viewport fixtureも、保守的なquad paddingを越える固定separationを使ってcull拡張を検証します。
+実際のclamp寸法と最大liftを覆うcull extentは`scaled_visuals_tests`で別途確認します。
 
 `render/tests/side_tests.rs` は、静止 side、独立LOD、回転開始 / 中間 / 終了の一定幅、zoom / camera回転、
 connected union の内部継ぎ目、normal / far の alpha、opaque depth / translucent sort、side-only picking、
 viewport端を実 GPU で確認します。shiftした flat top の参照 silhouette と全 pixel を比較し、side が
 elevation と無関係な同じ offset を使うことを確認します。side-only viewport fixture は cull 拡張を確実に
-通る10 px厚、far fixture は0.25 pxの test-only thresholdを使います。production preset は変更しません。
+通る10 px厚、far fixtureは0.25 pxのtest-only thresholdと固定1.5 px厚を使います。
+productionのclamp式とは独立したraster / clipping検証です。
 非同期 fixture はLow → High、Highの12 px → 20 px、Medium → High、新 epoch初回Highを確認します。
 shadow専用 fixture はsideを無効にして従来の個別保証を維持します。storage buffer 上限は同じ8です。
 
@@ -165,6 +194,8 @@ shadow専用 fixture はsideを無効にして従来の個別保証を維持し�
 1枚の矩形pieceと比較します。High side の静止 / 回転開始 / 中間 / 終了、shadow無効 / 有効で、
 全pixelの各channelが参照より余分に暗くならないことを確認します（8-bit出力の差1を許容）。
 topの背後にsideが透ける全体的な暗さは参照にも含め、結合境界での追加の暗い帯を検出します。
+1枚の参照pieceもmemberのprojected短辺から得た同じside / shadow寸法に固定し、外形全体の大きさで
+厚みが変わることによる暗さをこの継ぎ目検証へ混ぜません。
 
 このfixtureはcameraを(0.25, 0.125) world unitずらし、45°の直線境界がpixel centerへ完全に
 重なる条件を避けます。同条件をずらさず試すと、side無効のtopにも半透明の重複がありました。
@@ -186,6 +217,8 @@ zoom / camera回転 / quarter-turn / continuous rotationでの光源方向とpix
 alpha 0 / 128 / 255、画像alpha穴、
 selection / preview優先、同じposeでGPU rotation recordのstart elevationだけを変えたpixel一致、
 bevel ON/OFFのpoint / rectangle一致と追加upload 0を実GPUで確認します。
+曲線の狭いbevelはCPU中央差分ではなく2×2 pixel quadのfine / coarse derivative範囲で確認し、
+両方で照明方向とbevel帯が確定するsampleだけを比較します。
 shadow / side専用fixtureはbevelを無効にし、既存の個別保証を維持します。
 `gpu_bevel` は同じ環境変数でMedium / High静止、High回転中、High結合回転中のPNGを保存できます。
 
@@ -324,3 +357,37 @@ fixtureとmaskは計測前に生成し、初回のmapping確保やslot再利用�
 authorityの命令処理やGPU拡張 / 転送を含むgrab全体の遅延ではありません。変更前のBTreeMapとの
 速度比較は行っていません。通常pointer frameのO(1)処理とupload不変は、別の100万member / 10,000更新の
 回帰テストで確認します。
+
+### projected piece size に応じた寸法の追加検証
+
+2026-10-06、Windows / Vulkan / NVIDIA GeForce RTX 5090で、CPU回帰4件と実GPU回帰2件を追加しました。
+最新masterを含む通常workspaceテスト921件（doctest 1件を含む）、全target Clippy、整形検証が
+通過しています。描画全回帰66件はdev profileで通過しました。
+
+High / Medium / Lowの20 / 50 / 100 / 200 pxを、同じ寸法を固定した参照画像と全pixel比較し、
+quality / zoom変更のpiece state / metadata / 全data upload 0、metadata buffer寸法の不変、
+point / rectangle pickingの一致を確認しました。各zoomのrotation + grab / releaseも、
+host指定のmax elevationから得たshadow separationと全pixelが一致します。
+uniformは336 bytes、追加buffer / binding / drawはありません。
+
+全quality / 4サイズのnative 256² PNGを保存し、Highの20 / 50 / 200 pxとMediumの200 pxを
+目視確認しました。寸法の強さはclamp式で変わり、bevelのstrengthとdrag / rotationのenvelopeは維持します。
+曲線bevelと静止sideの既存fixtureは、狭いbandのquad derivativeとpixel位相に合わせて参照条件を更新しました。
+
+最終コードの追加実GPU2件はreleaseでも通過しました。同じrelease実行ファイルの100万piece fixtureは、
+1000² grid / 512² offscreen / 白1×1不透明textureで、Low / Medium / Highともshadow / side draw 0、
+bevel off、optional pipeline cache未生成、全data upload 0、Lowとの全pixel一致を確認しています。
+100万memberのheld中とrelease完了後も全pixelが基準と一致し、通常frameのupload / 追加drawは0です。
+初回drag前のlift mappingは未確保で、quality / zoom解決によるmetadata拡張もありません。
+
+releaseの12 frame平均を短い1 runとして記録しました。
+
+| 状態 / quality | visibility GPU (ms) | top draw GPU (ms) | shadow / side draws |
+| --- | ---: | ---: | --- |
+| idle / Low | 0.0256 | 0.4944 | 0 / 0 |
+| idle / Medium | 0.0250 | 0.4900 | 0 / 0 |
+| idle / High | 0.0266 | 0.5258 | 0 / 0 |
+| held / High | 0.0250 | 0.4877 | 0 / 0 |
+
+短期timestamp変動を含む値です。導入前との速度比較・擬似3D有効時のGPU速度・ゲーム全体の60 fps・
+別OSの実機互換性を示す測定ではありません。

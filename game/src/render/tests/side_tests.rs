@@ -43,18 +43,17 @@ fn side_lod_is_independent_and_visual_bounds_include_side_without_shadow() {
             ..default()
         };
         config.configure_visuals(side_only);
+        let frame = visuals.for_frame(config.piece_size_px, false);
         let expected = config
             .clip_from_world
             .inverse()
-            .transform_vector3(
-                (visuals.side_offset_px() / 128.0 * Vec2::new(2.0, -2.0)).extend(0.0),
-            )
+            .transform_vector3((frame.side_offset_px() / 128.0 * Vec2::new(2.0, -2.0)).extend(0.0))
             .truncate()
             .abs();
         assert!(config.visual_cull_extent.abs_diff_eq(expected, 1e-6));
         assert_eq!(
-            visuals.side_offset_px(),
-            PSEUDO_3D_DIRECTION * visuals.side_thickness_px
+            frame.side_offset_px(),
+            PSEUDO_3D_DIRECTION * frame.side_thickness_px
         );
     }
     let mut config = PuzzleUniform {
@@ -171,6 +170,11 @@ pub(super) fn set_visuals(app: &mut App, visuals: ResolvedPieceVisuals) {
     app.sub_app_mut(RenderApp)
         .insert_resource(VisualOverride(visuals));
 }
+pub(super) fn clear_visuals(app: &mut App) {
+    app.sub_app_mut(RenderApp)
+        .world_mut()
+        .remove_resource::<VisualOverride>();
+}
 
 fn is_top(pixel: &[u8]) -> bool {
     pixel[..3] == [255, 0, 0]
@@ -216,6 +220,11 @@ fn shifted_top(app: &mut App, camera: Entity, target: &Handle<Image>, offset: Ve
 #[ignore = "requires a real GPU"]
 fn gpu_side_static_quality_lod_ordering_flat_output_and_top_only_picking() {
     let (mut app, camera, target) = fixture(40, true);
+    // Separate the smaller side/shadow minima on the hard pixel grid.
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = Vec3::new(-0.45, 0.45, 0.0);
     let flat = render_frame(&mut app, target.clone());
     assert_eq!(side_draws(&app), 0);
     for quality in [PieceVisualQuality::Medium, PieceVisualQuality::High] {
@@ -267,7 +276,7 @@ fn gpu_side_static_quality_lod_ordering_flat_output_and_top_only_picking() {
 
 #[test]
 #[ignore = "requires a real GPU"]
-fn gpu_side_constant_screen_thickness_tracks_continuous_pose_zoom_and_camera_rotation() {
+fn gpu_side_scaled_screen_thickness_tracks_continuous_pose_zoom_and_camera_rotation() {
     let (mut app, camera, target) = fixture(48, true);
     let mut def = definition(UVec2::ONE, 48, 42);
     def.image_size.y = 32;
@@ -287,16 +296,12 @@ fn gpu_side_constant_screen_thickness_tracks_continuous_pose_zoom_and_camera_rot
             app.insert_resource(PieceVisualQuality::Low);
             let flat = render_frame(&mut app, target.clone());
             let top = mask(&flat, is_top);
-            let side = shifted_top(&mut app, camera, &target, visuals.side_offset_px());
+            let frame = visuals.for_frame(config(&app).piece_size_px, false);
+            let side = shifted_top(&mut app, camera, &target, frame.side_offset_px());
             // Restore the projection before constructing the shadow reference.
             render_frame(&mut app, target.clone());
             let elevation = if time == 0.060 { 1.0 } else { 0.0 };
-            let shadow = shifted_top(
-                &mut app,
-                camera,
-                &target,
-                visuals.shadow_offset_px(elevation),
-            );
+            let shadow = shifted_top(&mut app, camera, &target, frame.shadow_offset_px(elevation));
             app.insert_resource(PieceVisualQuality::High);
             let pixels = render_frame(&mut app, target.clone());
             if time == 0.060 && scale == 1.0 {
@@ -322,7 +327,7 @@ fn gpu_side_constant_screen_thickness_tracks_continuous_pose_zoom_and_camera_rot
                 }
             }
             assert!(side_count > 10);
-            assert_eq!(config(&app).side_thickness_px, 1.5);
+            assert_eq!(config(&app).side_thickness_px, frame.side_thickness_px);
             assert_eq!(side_draws(&app), 1);
             assert_no_uploads(&app);
         }
@@ -358,12 +363,10 @@ fn gpu_side_connected_union_has_no_internal_seams_during_rotation() {
         app.insert_resource(PieceVisualQuality::Low);
         let flat = render_frame(&mut app, target.clone());
         let top = mask(&flat, is_top);
-        let side = shifted_top(
-            &mut app,
-            camera,
-            &target,
-            PieceVisualQuality::High.resolve().side_offset_px(),
-        );
+        let frame = PieceVisualQuality::High
+            .resolve()
+            .for_frame(config(&app).piece_size_px, false);
+        let side = shifted_top(&mut app, camera, &target, frame.side_offset_px());
         app.insert_resource(PieceVisualQuality::High);
         let pixels = render_frame(&mut app, target.clone());
         if time == 0.060 {
@@ -417,6 +420,14 @@ fn gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation()
         for shadow_enabled in [false, true] {
             let mut visuals = PieceVisualQuality::High.resolve();
             visuals.shadow_enabled = shadow_enabled;
+            // Both geometric representations must use the component member's
+            // dimensions; the single-piece union has a larger projected size.
+            let frame = visuals.for_frame(Vec2::splat(40.0), false);
+            visuals.side_thickness = visuals::ProjectedDimension::fixed(frame.side_thickness_px);
+            visuals.shadow_base_offset =
+                visuals::ProjectedDimension::fixed(frame.shadow_base_offset_px);
+            visuals.shadow_lift_offset =
+                visuals::ProjectedDimension::fixed(frame.shadow_lift_offset_px);
             set_visuals(&mut app, visuals);
             let mut reference = Vec::new();
             for layout in [UVec2::ONE, grid] {
@@ -566,6 +577,7 @@ fn gpu_side_far_splat_uses_center_alpha_and_excludes_shifted_pixels_from_picking
     let mut visuals = PieceVisualQuality::High.resolve();
     visuals.shadow_enabled = false;
     visuals.side_min_piece_px = 0.25;
+    visuals.side_thickness = visuals::ProjectedDimension::fixed(1.5);
     set_visuals(&mut app, visuals);
     for alpha in [255, 128, 0] {
         red_source(&mut app, alpha);
@@ -615,7 +627,7 @@ fn gpu_side_visual_culling_keeps_side_only_viewport_edge_without_shadow() {
     visuals.shadow_enabled = false;
     visuals.side_min_piece_px = 0.25;
     // Exceed the procedural quad padding to exercise the visual cull expansion.
-    visuals.side_thickness_px = 10.0;
+    visuals.side_thickness = visuals::ProjectedDimension::fixed(10.0);
     set_visuals(&mut app, visuals);
     let pixels = render_frame(&mut app, target);
     assert_eq!(visible_ids(&app), vec![0]);

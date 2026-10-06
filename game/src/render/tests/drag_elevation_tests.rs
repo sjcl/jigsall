@@ -19,14 +19,17 @@ fn reference_offset(reference: Res<LiftReference>, mut frame: ResMut<ExtractedPu
         frame.config.shadow_lift_offset_px = 0.0;
     }
 }
+pub(super) fn install_reference(app: &mut App) {
+    app.sub_app_mut(RenderApp)
+        .init_resource::<LiftReference>()
+        .add_systems(ExtractSchedule, reference_offset.after(extract_puzzle));
+}
 fn fixture(connected: bool) -> (App, Entity, Handle<Image>) {
     let (mut app, camera, target) = gpu_app(128);
     app.init_resource::<ShadowTime>()
         .add_systems(First, freeze_shadow_clock.after(update_rotation_clock))
         .insert_resource(ClearColor(Color::WHITE));
-    app.sub_app_mut(RenderApp)
-        .init_resource::<LiftReference>()
-        .add_systems(ExtractSchedule, reference_offset.after(extract_puzzle));
+    install_reference(&mut app);
     let mut def = definition(UVec2::new(2, 1), 80, 42);
     def.image_size.y = 40;
     app.insert_resource(def.clone());
@@ -72,7 +75,7 @@ fn smooth(t: f64) -> f32 {
     let t = t.clamp(0.0, 1.0) as f32;
     t * t * (3.0 - 2.0 * t)
 }
-fn compare_reference(app: &mut App, target: &Handle<Image>, elevation: f32) -> Vec<u8> {
+pub(super) fn compare_reference(app: &mut App, target: &Handle<Image>, elevation: f32) -> Vec<u8> {
     app.sub_app_mut(RenderApp)
         .world_mut()
         .resource_mut::<LiftReference>()

@@ -10,6 +10,7 @@ mod remote_cursor_tests;
 mod remote_drag_tests;
 mod rotation_tests;
 mod rotation_visual_tests;
+mod scaled_visuals_tests;
 mod selection_bench;
 mod shadow_tests;
 mod side_tests;

@@ -181,7 +181,7 @@ fn repeated_q_e_retarget_from_displayed_angle_including_reversal_and_wrap() {
             crate::render::visuals::PieceVisualQuality::Medium,
             crate::render::visuals::PieceVisualQuality::High,
         ] {
-            let visuals = quality.resolve();
+            let visuals = quality.resolve().for_frame(Vec2::splat(40.0), false);
             assert_eq!(
                 visuals.shadow_offset_px(elevation),
                 visuals.shadow_offset_px(a.elevation(0.050))

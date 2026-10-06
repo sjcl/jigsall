@@ -294,10 +294,10 @@ fn gpu_bevel_screen_light_and_pixel_width_follow_zoom_camera_and_continuous_rota
                     let gradient = Vec2::new(normal.dot(world_dx), normal.dot(world_dy));
                     let inside_px = distances[axis] / gradient.length();
                     let nl = gradient.normalize().dot(-PSEUDO_3D_DIRECTION);
-                    if inside_px > visuals.bevel_width_px + 0.01 {
+                    if inside_px > config.bevel_width_px + 0.01 {
                         assert_eq!(lit, base, "interior x={x} y={y} time={time} scale={scale}");
                         interior += 1;
-                    } else if inside_px < visuals.bevel_width_px - 0.2 && nl.abs() > 0.25 {
+                    } else if inside_px < config.bevel_width_px - 0.2 && nl.abs() > 0.25 {
                         if nl > 0.0 {
                             assert!(
                                 lit[0] > base[0],
@@ -315,7 +315,11 @@ fn gpu_bevel_screen_light_and_pixel_width_follow_zoom_camera_and_continuous_rota
                     assert_eq!(lit[3], base[3]);
                 }
             }
-            assert!(bright > 20 && dark > 20 && interior > 100);
+            // A 1px band at 2x zoom has fewer eligible rotated edge samples.
+            assert!(
+                bright >= 10 && dark >= 10 && interior > 100,
+                "samples: bright={bright} dark={dark} interior={interior}, time={time} scale={scale} camera={camera_angle}"
+            );
             assert_no_uploads(&app);
             if time == 0.060 && scale == 1.0 {
                 set_visuals(&mut app, PieceVisualQuality::High.resolve());
@@ -408,7 +412,8 @@ fn gpu_bevel_linear_color_preserves_source_alpha_and_both_pick_results() {
     let (mut app, _, target) = fixture(80);
     let visuals = top_only(PieceVisualQuality::High);
     let linear = ((128.0_f32 / 255.0 + 0.055) / 1.055).powf(2.4);
-    let coverage = 1.0 - (3.0 * (0.5_f32 / 1.5).powi(2) - 2.0 * (0.5_f32 / 1.5).powi(3));
+    let width = visuals.for_frame(Vec2::splat(80.0), false).bevel_width_px;
+    let coverage = 1.0 - (3.0 * (0.5 / width).powi(2) - 2.0 * (0.5 / width).powi(3));
     for alpha in [0, 128, 255] {
         source(&mut app, [128, 128, 128, alpha]);
         set_visuals(&mut app, top_only(PieceVisualQuality::Low));
@@ -625,13 +630,6 @@ fn gpu_bevel_curved_loose_contour_follows_screen_light_during_rotation() {
         let actual = render_frame(&mut app, target.clone());
         let config = config(&app);
         let rotation = Mat2::from_angle(display_angle(&app, time));
-        let inverse = config.clip_from_world.inverse();
-        let world_dx = inverse
-            .transform_vector3(Vec3::new(2.0 / 128.0, 0.0, 0.0))
-            .truncate();
-        let world_dy = inverse
-            .transform_vector3(Vec3::new(0.0, -2.0 / 128.0, 0.0))
-            .truncate();
         for y in 1..127 {
             for x in 1..127 {
                 let base = pixel(&flat, x, y);
@@ -653,17 +651,30 @@ fn gpu_bevel_curved_loose_contour_follows_screen_light_during_rotation() {
                     piece_signed_distance(rotation.transpose() * world, Vec2::splat(40.0), profiles)
                 };
                 let d = distance(world);
-                let gradient = Vec2::new(
-                    distance(world + world_dx) - distance(world - world_dx),
-                    distance(world + world_dy) - distance(world - world_dy),
-                ) * 0.5;
-                let length = gradient.length();
-                if length < 0.1 {
-                    continue;
-                }
-                let inside_px = -d / length;
-                let nl = gradient.normalize().dot(-PSEUDO_3D_DIRECTION);
-                if !(0.1..0.8).contains(&inside_px) || nl.abs() < 0.8 {
+                // Bound fine/coarse derivatives over the hardware's 2x2 quad.
+                // Central differences can misclassify a narrow curved bevel.
+                let qx = x & !1;
+                let qy = y & !1;
+                let a = distance(world_pixel(&config, qx, qy));
+                let b = distance(world_pixel(&config, qx + 1, qy));
+                let c = distance(world_pixel(&config, qx, qy + 1));
+                let e = distance(world_pixel(&config, qx + 1, qy + 1));
+                let gradients = [
+                    Vec2::new(b - a, c - a),
+                    Vec2::new(b - a, e - b),
+                    Vec2::new(e - c, c - a),
+                    Vec2::new(e - c, e - b),
+                ];
+                let nl = gradients[0].normalize().dot(-PSEUDO_3D_DIRECTION);
+                if !gradients.iter().all(|gradient| {
+                    let length = gradient.length();
+                    let inside_px = -d / length;
+                    let light = gradient.normalize().dot(-PSEUDO_3D_DIRECTION);
+                    length >= 0.1
+                        && (0.1..config.bevel_width_px - 0.2).contains(&inside_px)
+                        && light.abs() >= 0.8
+                        && light.signum() == nl.signum()
+                }) {
                     continue;
                 }
                 if nl > 0.0 {

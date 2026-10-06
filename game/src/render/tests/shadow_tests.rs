@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::visuals::ProjectedDimension;
 use crate::resources::rotation_visual::update_rotation_clock;
 use jigsall_core::{
     protocol::{ComponentRef, PieceTarget},
@@ -30,13 +31,14 @@ fn shadow_quality_and_lod_resolve_once_per_frame() {
                 config.shadow_enabled == 0
             );
         }
+        let frame = visuals.for_frame(Vec2::splat(40.0), false);
         assert_eq!(
-            visuals.shadow_offset_px(0.0),
-            PSEUDO_3D_DIRECTION * visuals.shadow_base_offset_px
+            frame.shadow_offset_px(0.0),
+            PSEUDO_3D_DIRECTION * frame.shadow_base_offset_px
         );
         assert_eq!(
-            visuals.shadow_offset_px(1.0),
-            PSEUDO_3D_DIRECTION * (visuals.shadow_base_offset_px + visuals.shadow_lift_offset_px)
+            frame.shadow_offset_px(1.0),
+            PSEUDO_3D_DIRECTION * (frame.shadow_base_offset_px + frame.shadow_lift_offset_px)
         );
     }
     assert_eq!(PuzzleUniform::min_size().get() % 16, 0);
@@ -424,7 +426,15 @@ fn gpu_shadow_rotation_separation_and_screen_direction_survive_zoom_and_rotation
             let pixels = render_frame(&mut app, target.clone());
             let shadows = shadow_pixels(&pixels);
             assert!(!shadows.is_empty());
-            let expected = if time == 0.060 { 5 } else { 2 };
+            let frame = config(&app);
+            let expected = (PSEUDO_3D_DIRECTION.x
+                * (frame.shadow_base_offset_px
+                    + if time == 0.060 {
+                        frame.shadow_lift_offset_px
+                    } else {
+                        0.0
+                    }))
+            .round() as i32;
             for axis in 0..2 {
                 let top_max = top.iter().map(|p| p[axis]).max().unwrap();
                 let shadow_max = shadows.iter().map(|p| p[axis]).max().unwrap();
@@ -448,6 +458,9 @@ fn gpu_shadow_rotation_separation_and_screen_direction_survive_zoom_and_rotation
 fn enable_far_shadow(mut frame: ResMut<ExtractedPuzzle>) {
     let mut visuals = PieceVisualQuality::High.resolve();
     visuals.shadow_min_piece_px = 0.25;
+    // Keep the isolated far-splat pixel fixture's geometry unchanged.
+    visuals.shadow_base_offset = visuals::ProjectedDimension::fixed(3.0);
+    visuals.shadow_lift_offset = visuals::ProjectedDimension::fixed(4.5);
     frame.config.configure_visuals(visuals);
 }
 
@@ -554,6 +567,12 @@ fn gpu_shadow_culling_keeps_shadow_only_viewport_edge() {
     assert!(visible_ids(&app).is_empty());
     assert!(flat.chunks_exact(4).all(|p| p[..3] == [255; 3]));
     app.insert_resource(PieceVisualQuality::High);
+    // Keep this clipping fixture's separation beyond the conservative quad
+    // padding. Production size rules are covered by scaled_visuals_tests.
+    let mut visuals = PieceVisualQuality::High.resolve();
+    visuals.shadow_base_offset = ProjectedDimension::fixed(3.0);
+    visuals.shadow_lift_offset = ProjectedDimension::fixed(4.5);
+    super::side_tests::set_visuals(&mut app, visuals);
     let pixels = render_frame(&mut app, target);
     assert_eq!(visible_ids(&app), vec![0]);
     assert!(shadow_pixels(&pixels).iter().any(|p| p.x == 0));

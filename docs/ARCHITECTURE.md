@@ -362,18 +362,22 @@ selection単独のliftは未実装です。
 ```text
 quality + screen-space LOD
         ↓
-resolved visual config
+ResolvedPieceVisuals (quality presetの係数 / clamp範囲)
+        ↓
+FramePieceVisuals (projected短辺からframeのpx値をO(1) resolve)
         ↓
 shadow separation = base + max(rotation elevation, drag elevation) * extra lift
         ↓
-static side / thickness = quality / LOD で決定、elevation 非依存
+side / thickness = quality / LOD / projected sizeで決定、elevation 非依存
         ↓
 top piece
 ```
 
 `render/visuals.rs` のローカル `PieceVisualQuality` resource は Low / Medium / High を
 `ResolvedPieceVisuals` に変換します。暫定 default は同じ箇所の High です。
-extract は projected piece の短辺から shadow / side の独立した threshold を O(1) で解決します。
+extractはprojected pieceの短辺からshadow / side / bevelの独立thresholdとclamp寸法をO(1)で解決し、
+`FramePieceVisuals`のpx値だけを既存336-byte uniformへコピーします。presetにはpx確定値を置きません。
+Low / LOD offは寸法計算もskipし、無効なfeatureのpx値・opacity・strengthを0にします。
 Low / LOD off の optional pass は pipeline を新規 queue せず、raster / draw を完全 skip します。
 初めて必要になった frame で要求された optional pipeline をまとめて lazy queue し、共通 helper
 `optional_render_pipelines` が準備状況を扱います。現在の epoch がまだ `RenderReady` でない初回表示は
@@ -385,14 +389,17 @@ UI、Auto、設定保存、frame-time による動的調整は未実装です。
 静止 piece は base shadow を持ち、animation slot が非ゼロの場合だけ既存の continuous pose の
 elevation を使って追加 separation を加えます。local / remote dragの80ms smoothstep envelopeも独立に
 評価し、rotationとのmaxだけをshadow separationへ使います。`elevation != thickness != bevel` です。
-elevation が0に戻っても base shadow と side は残ります。side の厚みは Medium 1 px / High 1.5 pxで
-回転開始・中間・終了とも一定です。`PSEUDO_3D_DIRECTION` と preset は `visuals.rs` に集約し、
+elevationが0に戻ってもbase shadowとsideは残ります。Highのsideはprojected短辺の0.025倍を1〜4 pxに
+clampします。同じzoomなら回転開始・中間・終了とも一定です。shadow base / liftも短辺からclampします。
+quality / zoom変更でpiece state / metadataのuploadやGPU buffer / bindingを追加しません。
+`PSEUDO_3D_DIRECTION`とpresetは`visuals.rs`に集約し、
 side color は linear RGB の暗い neutral、opacity は現在1で source alpha を掛けます。
 side導入時に既存 `PuzzleUniform` を32 bytes拡張しました。top bevelは未使用paddingへ4 scalarを収め、
 336 bytesを維持します。buffer / storage binding / per-piece state は増やしません。
 
-top bevelは既存top fragment内だけのstatic fake lightingです。Mediumは28 px以上で幅1 px、
-Highは18 px以上で幅1.5 pxです。shadow / sideと独立してextractでO(1) resolveし、farでは常に無効です。
+top bevelは既存top fragment内だけのfake lightingです。thresholdはMedium 28 px / High 18 pxです。
+幅はMediumの短辺×0.0125を0.75〜2 px、Highの短辺×0.020を1〜3 pxにclampし、strengthは固定です。
+elevation非依存でshadow / sideと独立してextractでO(1) resolveし、farでは常に無効です。
 全辺SDFによるcoverageを維持し、selection / previewと共有する`outer_boundary_distance`で結合内部辺を
 除外します。全4辺connected memberはfinite constantをderivativeへ渡してlightingをskipします。
 外周distanceのscreen derivativeをdiscard前・frame uniform分岐内で求め、その長さでpixel距離へ変換します。
