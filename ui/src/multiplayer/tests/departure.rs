@@ -139,6 +139,7 @@ fn multiplayer_menu_explains_local_pause_and_distinguishes_host_and_client_depar
                     DepartureAction::Title.menu_key(role),
                     DepartureAction::Exit.menu_key(role),
                     "common-save-game",
+                    "menu-settings",
                 ] {
                     assert!(text.contains(&i18n.text(key).as_str()), "missing {key}");
                 }
@@ -151,6 +152,96 @@ fn multiplayer_menu_explains_local_pause_and_distinguishes_host_and_client_depar
                     assert!(!text.contains(&i18n.text("pause-resume").as_str()));
                 }
                 output.drop_without_applying_deltas();
+            }
+        }
+    }
+}
+
+#[test]
+fn pause_settings_close_and_escape_return_to_the_same_menu_without_resuming() {
+    for role in [None, Some(RuntimeRole::Host), Some(RuntimeRole::Client)] {
+        for completed in [false, true] {
+            for escape in [false, true] {
+                let (mut app, ctx) = paused_game(role, completed);
+                if completed {
+                    app.world_mut()
+                        .insert_resource(State::new(GameCompleteSubState::Paused));
+                }
+                let epoch = app.world().resource::<PieceDataStore>().epoch;
+                let pieces = app.world().resource::<PieceDataStore>().states.to_vec();
+                let i18n = app.world().resource::<Localization>();
+                let heading = i18n.text(if completed {
+                    "pause-puzzle-menu"
+                } else if role.is_some() {
+                    "pause-multiplayer-menu"
+                } else {
+                    "pause-title"
+                });
+                let settings = i18n.text("settings-title");
+                let close = i18n.text("common-close");
+                click_label(&mut app, &ctx, "Settings");
+                let output = render_schedule(&mut app, &ctx, vec![]);
+                assert!(labels(&output).contains(&settings.as_str()));
+                assert!(!labels(&output).contains(&heading.as_str()));
+                assert!(
+                    app.world()
+                        .resource::<crate::settings::SettingsDialog>()
+                        .open
+                );
+                assert!(!app
+                    .world_mut()
+                    .run_system_once(jigsall_game::resources::local_gameplay_enabled)
+                    .unwrap());
+                output.drop_without_applying_deltas();
+
+                if escape {
+                    render_schedule(
+                        &mut app,
+                        &ctx,
+                        vec![egui::Event::Key {
+                            key: egui::Key::Escape,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: default(),
+                        }],
+                    )
+                    .drop_without_applying_deltas();
+                } else {
+                    click_label(&mut app, &ctx, &close);
+                }
+                assert!(
+                    !app.world()
+                        .resource::<crate::settings::SettingsDialog>()
+                        .open
+                );
+                for _ in 0..2 {
+                    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+                }
+                let output = render_schedule(&mut app, &ctx, vec![]);
+                assert!(labels(&output).contains(&heading.as_str()));
+                assert!(!labels(&output).contains(&close.as_str()));
+                output.drop_without_applying_deltas();
+                assert!(app
+                    .world_mut()
+                    .run_system_once(jigsall_game::resources::local_gameplay_enabled)
+                    .unwrap());
+                assert!(matches!(
+                    app.world().resource::<NextState<GameSubState>>(),
+                    NextState::Unchanged
+                ));
+                assert!(matches!(
+                    app.world().resource::<NextState<GameCompleteSubState>>(),
+                    NextState::Unchanged
+                ));
+                assert!(matches!(
+                    app.world().resource::<NextState<AppState>>(),
+                    NextState::Unchanged
+                ));
+                assert_eq!(app.world().resource::<NetworkStatus>().role, role);
+                let store = app.world().resource::<PieceDataStore>();
+                assert_eq!(store.epoch, epoch);
+                assert_eq!(&*store.states, pieces.as_slice());
             }
         }
     }

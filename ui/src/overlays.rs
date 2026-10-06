@@ -15,8 +15,10 @@ pub fn draw_in_game_menu_ui(
     mut dialogs: ResMut<crate::persistence::SaveDialogs>,
     mut persistence: ResMut<jigsall_game::persistence::runtime::PersistenceState>,
     network_status: Res<jigsall_game::network::runtime::NetworkStatus>,
+    mut settings_dialog: ResMut<crate::settings::SettingsDialog>,
+    display_settings: Res<jigsall_game::settings::DisplaySettingsState>,
 ) {
-    if persistence.title_dialog_open || dialogs.departure_pending() {
+    if settings_dialog.open || persistence.title_dialog_open || dialogs.departure_pending() {
         return;
     }
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -71,6 +73,9 @@ pub fn draw_in_game_menu_ui(
                         if theme::button(ui, i18n.text("common-save-game"), width, false).clicked()
                         {
                             dialogs.open_title(&mut persistence, &i18n);
+                        }
+                        if theme::button(ui, i18n.text("menu-settings"), width, false).clicked() {
+                            settings_dialog.open(&display_settings);
                         }
                         if theme::button(
                             ui,

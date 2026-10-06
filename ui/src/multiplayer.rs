@@ -463,10 +463,12 @@ pub(crate) fn disconnected_game_available(status: Res<NetworkStatus>) -> bool {
 pub(crate) fn sync_local_gameplay_block(
     ui: Res<MultiplayerUi>,
     status: Res<NetworkStatus>,
+    settings: Res<crate::settings::SettingsDialog>,
     next: Res<NextState<AppState>>,
     mut blocked: ResMut<LocalGameplayBlocked>,
 ) {
-    let value = ui.connection_screen(&status)
+    let value = settings.open
+        || ui.connection_screen(&status)
         || matches!(
             *next,
             NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu)

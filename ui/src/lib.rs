@@ -59,6 +59,8 @@ impl Plugin for GameUiPlugin {
             .add_systems(OnEnter(AppState::Menu), persistence::reset_dialogs)
             .add_systems(OnEnter(AppState::Menu), settings::reset_dialog)
             .add_systems(OnExit(AppState::Menu), settings::reset_dialog)
+            .add_systems(OnExit(GameSubState::Paused), settings::reset_dialog)
+            .add_systems(OnExit(GameCompleteSubState::Paused), settings::reset_dialog)
             .add_plugins(EguiPlugin::default());
         register_screens(app);
     }
@@ -98,7 +100,14 @@ fn register_screens(app: &mut App) {
                 .in_set(GameplayUi)
                 .after(menu::draw_menu_ui)
                 .after(game_setup::draw_game_setup_ui)
-                .run_if(in_state(AppState::Menu).or_else(in_state(AppState::GameSetup))),
+                .after(overlays::draw_in_game_menu_ui)
+                .run_if(
+                    in_state(AppState::Menu)
+                        .or_else(in_state(AppState::GameSetup))
+                        .or_else(in_state(GameSubState::Paused))
+                        .or_else(in_state(GameCompleteSubState::Paused)),
+                )
+                .run_if(not(window_close::exit_dialog_pending)),
             game_setup::draw_game_setup_ui.run_if(in_state(AppState::GameSetup)),
             multiplayer::draw_connection_ui
                 .run_if(not(window_close::exit_dialog_pending))
