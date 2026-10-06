@@ -391,6 +391,103 @@ fn gpu_side_connected_union_has_no_internal_seams_during_rotation() {
     }
 }
 
+#[test]
+#[ignore = "requires a real GPU"]
+fn gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation() {
+    let (mut app, camera, target) = fixture(80, true);
+    red_source(&mut app, 128);
+    app.init_resource::<ShadowTime>()
+        .add_systems(First, freeze_shadow_clock.after(update_rotation_clock));
+    let offset = Vec2::splat(100.0);
+    // Avoid putting an entire 45-degree join exactly on pixel centers;
+    // hard SDF equality/interpolation already produces top-only raster ties.
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .unwrap()
+        .translation = (offset + Vec2::new(0.25, 0.125)).extend(0.0);
+
+    for grid in [UVec2::new(2, 1), UVec2::splat(2)] {
+        for shadow_enabled in [false, true] {
+            let mut visuals = PieceVisualQuality::High.resolve();
+            visuals.shadow_enabled = shadow_enabled;
+            set_visuals(&mut app, visuals);
+            let mut reference = Vec::new();
+            for layout in [UVec2::ONE, grid] {
+                // The assembled union and the single rectangle have the same
+                // extent, source alpha and pivot, but only one has internal joins.
+                let mut def = definition(layout, 80, 42);
+                def.image_size.y = 40 * grid.y;
+                app.insert_resource(def.clone());
+                app.world_mut().resource_mut::<ShadowTime>().0 = 0.0;
+                {
+                    let mut store = app.world_mut().resource_mut::<PieceDataStore>();
+                    store.initialize(
+                        (0..def.piece_count())
+                            .map(|id| def.correct_position(PieceId(id as u32)) + offset)
+                            .collect(),
+                    );
+                    if layout != UVec2::ONE {
+                        store.snap_fixture_component(PieceId(0), &def);
+                    }
+                    assert_eq!(
+                        store.connectivity.component_size(PieceId(0)),
+                        def.piece_count()
+                    );
+                }
+                for (phase, time) in [0.0, 0.0, 0.060, 0.120].into_iter().enumerate() {
+                    if phase == 1 {
+                        turn(&mut app, 1);
+                    }
+                    app.world_mut().resource_mut::<ShadowTime>().0 = time;
+                    let pixels = render_frame(&mut app, target.clone());
+                    assert_eq!(
+                        (shadow_draws(&app), side_draws(&app)),
+                        (usize::from(shadow_enabled) * 2, 1)
+                    );
+                    assert_eq!(config(&app).rotation_active != 0, phase == 1 || phase == 2);
+                    let center = &pixels[(64 * 128 + 64) * 4..][..4];
+                    assert!(
+                        center[0] > center[1]
+                            && center[1] > 0
+                            && center[1] < srgb_byte(1.0 - 128.0 / 255.0),
+                        "translucent top must show side behind it: {center:?}"
+                    );
+                    assert_no_uploads(&app);
+                    if layout == UVec2::ONE {
+                        reference.push(pixels);
+                        continue;
+                    }
+                    if phase == 2 {
+                        preview_if_requested(
+                            &format!(
+                                "side-connected-alpha128-{}x{}-shadow{shadow_enabled}.png",
+                                grid.x, grid.y
+                            ),
+                            &pixels,
+                        );
+                    }
+                    // Check every pixel, including curved joins and the 2x2
+                    // junction, against the single-piece brightness floor. Hard
+                    // SDF interpolation can leave isolated brighter seam samples;
+                    // this regression targets excess dark side accumulation.
+                    for (i, (actual, expected)) in pixels
+                        .chunks_exact(4)
+                        .zip(reference[phase].chunks_exact(4))
+                        .enumerate()
+                    {
+                        assert!(
+                            actual.iter().zip(expected).all(|(&a, &b)| a >= b.saturating_sub(1)),
+                            "extra dark band grid={grid:?} shadow={shadow_enabled} phase={phase} pixel=({}, {}): actual={actual:?} single={expected:?}",
+                            i % 128,
+                            i / 128
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn srgb_byte(linear: f32) -> u8 {
     let srgb = if linear <= 0.0031308 {
         linear * 12.92

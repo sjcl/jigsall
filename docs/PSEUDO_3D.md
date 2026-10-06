@@ -77,8 +77,22 @@ elevation と無関係な同じ offset を使うことを確認します。side-
 非同期 fixture はLow → High、Highの12 px → 20 px、Medium → High、新 epoch初回Highを確認します。
 shadow専用 fixture はsideを無効にして従来の個別保証を維持します。storage buffer 上限は同じ8です。
 
+半透明 connected fixture は、alpha 128 の2×1 / 2×2 component を同じ外形・透明度・回転中心の
+1枚の矩形pieceと比較します。High side の静止 / 回転開始 / 中間 / 終了、shadow無効 / 有効で、
+全pixelの各channelが参照より余分に暗くならないことを確認します（8-bit出力の差1を許容）。
+topの背後にsideが透ける全体的な暗さは参照にも含め、結合境界での追加の暗い帯を検出します。
+
+このfixtureはcameraを(0.25, 0.125) world unitずらし、45°の直線境界がpixel centerへ完全に
+重なる条件を避けます。同条件をずらさず試すと、side無効のtopにも半透明の重複がありました。
+2×1、alpha 128、回転0.060秒、camera / component中心(100,100)ではpixel(50,50)のRGBが
+結合pieceで(255,136,136)、1枚参照で(255,187,187)でした。side有効時にも境界の差が残ります。
+サブピクセル移動後にも回転終了時の2×2に参照より明るい孤立pixelがあるため、追加fixtureは
+「余分な暗い帯」の回帰検証であり、全配置での継ぎ目解消や参照との完全一致を保証しません。
+硬いSDF境界の重複・隙間は今回変更していません。
+
 目視用に native 128² PNG を保存する場合は、`JIGSALL_VISUAL_PREVIEW_DIR` に出力先を指定して
-`gpu_side` を実行します。Medium / High の静止状態、High と結合componentの回転中を保存します。
+`gpu_side` を実行します。Medium / High の静止状態、High と結合componentの回転中、
+alpha 128の結合componentの回転中（shadow無効 / 有効）を保存します。
 未指定のテストはファイルを書きません。非同期 fixture の最初の flat reference は Bevy の最終出力
 pipeline も準備されるまで待ち、feature queue 直後の frame の読み取りは待たずに直接行います。
 
@@ -140,3 +154,7 @@ selection / drag upload 0、両optional pipeline cache未生成、全pixel一致
 | High | 0.0263 | 0.5123 | 0 | 0 |
 
 GPU timestampの短期変動を含む値であり、導入前との速度向上率・60 fps・別環境の互換性は示しません。
+
+同日、半透明connected componentのfixtureを1件追加し、sideの実GPU 11件がdev profileで
+通過しました。Clippy全target・整形検証も通過しています。上記のpixel center一致時の境界問題は
+切り分けて記録し、描画コードは変更していません。
