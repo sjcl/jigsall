@@ -325,14 +325,22 @@ impl PieceMetadataLayout {
     fn size(self) -> u64 {
         u64::from(self.capacity) * 3 * 4
     }
-    fn root_offset(self, id: u32) -> u64 {
-        u64::from(id) * 4
+    fn range_offset(self, region: u64, start: u32, len: usize) -> Option<u64> {
+        // Subtract before comparing so malformed ranges cannot overflow or
+        // cross into the next region, even in release builds.
+        if len > self.capacity.checked_sub(start)? as usize {
+            return None;
+        }
+        Some((u64::from(self.capacity) * region + u64::from(start)) * 4)
     }
-    fn remote_slot_offset(self, id: u32) -> u64 {
-        (u64::from(self.capacity) + u64::from(id)) * 4
+    fn root_range_offset(self, start: u32, len: usize) -> Option<u64> {
+        self.range_offset(0, start, len)
     }
-    fn rotation_slot_offset(self, root: u32) -> u64 {
-        (u64::from(self.capacity) * 2 + u64::from(root)) * 4
+    fn remote_range_offset(self, start: u32, len: usize) -> Option<u64> {
+        self.range_offset(1, start, len)
+    }
+    fn rotation_range_offset(self, root: u32, len: usize) -> Option<u64> {
+        self.range_offset(2, root, len)
     }
 }
 
@@ -503,18 +511,19 @@ impl GpuRenderer {
             draw_layout: BindGroupLayoutDescriptor::new(
                 "procedural puzzle",
                 &BindGroupLayoutEntries::sequential(
-                    ShaderStages::VERTEX_FRAGMENT,
+                    ShaderStages::VERTEX,
                     (
-                        uniform_buffer::<PuzzleUniform>(false),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        storage_buffer_read_only_sized(false, None),
-                        uniform_buffer_sized(false, None).visibility(ShaderStages::VERTEX),
+                        uniform_buffer::<PuzzleUniform>(false)
+                            .visibility(ShaderStages::VERTEX_FRAGMENT),
+                        storage_buffer_read_only_sized(false, None), // states
+                        storage_buffer_read_only_sized(false, None), // visible
+                        storage_buffer_read_only_sized(false, None), // drag_members
+                        storage_buffer_read_only_sized(false, None), // preview
                         storage_buffer_read_only_sized(false, None)
-                            .visibility(ShaderStages::VERTEX),
+                            .visibility(ShaderStages::FRAGMENT), // selected
+                        storage_buffer_read_only_sized(false, None), // piece_metadata
+                        uniform_buffer_sized(false, None),           // remote_deltas
+                        storage_buffer_read_only_sized(false, None), // rotation_animations
                     ),
                 ),
             ),
@@ -849,7 +858,9 @@ fn prepare_buffers(
         // wgpu zero-initializes the remote/rotation regions; only roots need data.
         queue.write_buffer(
             &piece_metadata,
-            metadata.root_offset(0),
+            metadata
+                .root_range_offset(0, initial_roots.len())
+                .expect("initial component roots exceed piece capacity"),
             bytemuck::cast_slice(initial_roots),
         );
         gpu.root_upload_bytes = u64::from(count) * 4;
@@ -989,7 +1000,9 @@ fn prepare_buffers(
         for range in frame.upload.root_ranges.iter() {
             queue.write_buffer(
                 &buffers.piece_metadata,
-                metadata.root_offset(range.start),
+                metadata
+                    .root_range_offset(range.start, range.roots.len())
+                    .expect("component root range exceeds piece capacity"),
                 bytemuck::cast_slice(&range.roots),
             );
             root_bytes += range.roots.len() as u64 * 4;
@@ -1022,7 +1035,9 @@ fn prepare_buffers(
             if let Some(initial) = &frame.remote.initial {
                 queue.write_buffer(
                     &buffers.piece_metadata,
-                    metadata.remote_slot_offset(0),
+                    metadata
+                        .remote_range_offset(0, initial.len())
+                        .expect("initial remote slots exceed piece capacity"),
                     bytemuck::cast_slice(initial),
                 );
                 remote_bytes = initial.len() as u64 * 4;
@@ -1031,7 +1046,9 @@ fn prepare_buffers(
                 for range in frame.remote.ranges.iter() {
                     queue.write_buffer(
                         &buffers.piece_metadata,
-                        metadata.remote_slot_offset(range.start),
+                        metadata
+                            .remote_range_offset(range.start, range.slots.len())
+                            .expect("remote slot range exceeds piece capacity"),
                         bytemuck::cast_slice(&range.slots),
                     );
                     remote_bytes += range.slots.len() as u64 * 4;
@@ -1074,7 +1091,9 @@ fn prepare_buffers(
         for range in frame.rotation.ranges.iter() {
             queue.write_buffer(
                 &buffers.piece_metadata,
-                metadata.rotation_slot_offset(range.start),
+                metadata
+                    .rotation_range_offset(range.start, range.slots.len())
+                    .expect("rotation slot range exceeds piece capacity"),
                 bytemuck::cast_slice(&range.slots),
             );
             rotation_bytes += range.slots.len() as u64 * 4;

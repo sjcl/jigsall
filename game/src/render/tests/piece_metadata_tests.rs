@@ -10,12 +10,12 @@ use bevy::ecs::system::RunSystemOnce;
 fn piece_metadata_region_offsets_and_size_use_u64_capacity() {
     let layout = PieceMetadataLayout { capacity: 5 };
     assert_eq!(layout.size(), 60);
-    assert_eq!(layout.root_offset(0), 0);
-    assert_eq!(layout.root_offset(4), 16);
-    assert_eq!(layout.remote_slot_offset(0), 20);
-    assert_eq!(layout.remote_slot_offset(4), 36);
-    assert_eq!(layout.rotation_slot_offset(0), 40);
-    assert_eq!(layout.rotation_slot_offset(4), 56);
+    assert_eq!(layout.root_range_offset(0, 1), Some(0));
+    assert_eq!(layout.root_range_offset(4, 1), Some(16));
+    assert_eq!(layout.remote_range_offset(0, 1), Some(20));
+    assert_eq!(layout.remote_range_offset(4, 1), Some(36));
+    assert_eq!(layout.rotation_range_offset(0, 1), Some(40));
+    assert_eq!(layout.rotation_range_offset(4, 1), Some(56));
     assert_eq!(
         PieceMetadataLayout {
             capacity: 1_000_000
@@ -25,8 +25,40 @@ fn piece_metadata_region_offsets_and_size_use_u64_capacity() {
     );
     let large = PieceMetadataLayout { capacity: u32::MAX };
     assert_eq!(large.size(), 51_539_607_540);
-    assert_eq!(large.remote_slot_offset(u32::MAX - 1), 34_359_738_356);
-    assert_eq!(large.rotation_slot_offset(u32::MAX - 1), large.size() - 4);
+    assert_eq!(
+        large.remote_range_offset(u32::MAX - 1, 1),
+        Some(34_359_738_356)
+    );
+    assert_eq!(
+        large.rotation_range_offset(u32::MAX - 1, 1),
+        Some(large.size() - 4)
+    );
+}
+
+#[test]
+fn piece_metadata_ranges_cannot_cross_region_boundaries() {
+    let layout = PieceMetadataLayout { capacity: 5 };
+    for (start, len, root_offset) in [
+        (0, 5, Some(0)),
+        (0, 6, None),
+        (4, 1, Some(16)),
+        (4, 2, None),
+        (5, 0, Some(20)),
+        (5, 1, None),
+        (6, 0, None),
+        (u32::MAX, 0, None),
+        (1, usize::MAX, None),
+    ] {
+        assert_eq!(layout.root_range_offset(start, len), root_offset);
+        assert_eq!(
+            layout.remote_range_offset(start, len),
+            root_offset.map(|offset| offset + 20)
+        );
+        assert_eq!(
+            layout.rotation_range_offset(start, len),
+            root_offset.map(|offset| offset + 40)
+        );
+    }
 }
 
 fn storage_count(layout: &BindGroupLayoutDescriptor, stage: ShaderStages) -> usize {
@@ -117,18 +149,32 @@ fn piece_metadata_shader_and_layout_bindings_fit_eight_storage_buffers_per_stage
         }
         assert!(declarations[metadata_binding].contains("piece_metadata"));
     }
-    // The previous vertex layout had 9, and both compute layouts had 10.
-    assert_eq!(storage_count(&gpu.draw_layout, ShaderStages::VERTEX), 7);
+    // Check exact visibility as well as totals: selected is fragment-only.
+    let visibility = [
+        ShaderStages::VERTEX_FRAGMENT,
+        ShaderStages::VERTEX,
+        ShaderStages::VERTEX,
+        ShaderStages::VERTEX,
+        ShaderStages::VERTEX,
+        ShaderStages::FRAGMENT,
+        ShaderStages::VERTEX,
+        ShaderStages::VERTEX,
+        ShaderStages::VERTEX,
+    ];
+    for (entry, expected) in gpu.draw_layout.entries.iter().zip(visibility) {
+        assert_eq!(entry.visibility, expected, "binding {}", entry.binding);
+    }
+    assert_eq!(storage_count(&gpu.draw_layout, ShaderStages::VERTEX), 6);
     assert_eq!(storage_count(&gpu.compute_layout, ShaderStages::COMPUTE), 8);
     assert_eq!(
         storage_count(&gpu.pick_compute_layout, ShaderStages::COMPUTE),
         8
     );
-    assert_eq!(storage_count(&gpu.draw_layout, ShaderStages::FRAGMENT), 6);
+    assert_eq!(storage_count(&gpu.draw_layout, ShaderStages::FRAGMENT), 1);
     assert_eq!(
         storage_count(&gpu.draw_layout, ShaderStages::FRAGMENT)
             + storage_count(&gpu.selection_layout, ShaderStages::FRAGMENT),
-        8
+        3
     );
     assert_eq!(storage_count(&gpu.preview_layout, ShaderStages::COMPUTE), 3);
     let preview = include_str!("../component_preview.wgsl");

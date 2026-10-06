@@ -219,8 +219,11 @@ shared per-piece GPU metadata buffer (3N × u32)
 ```
 
 byte base は root = 0、remote = 4N、rotation = 8N です。
-Rust の `PieceMetadataLayout` が u64 で size / range offset を計算し、WGSL は
-`config.capacity` に基づく `component_root` / `remote_slot` / `rotation_slot` で参照します。
+Rust の `PieceMetadataLayout` が u64 で size / range offset を計算します。
+全 metadata write（root / remote の初期 snapshot を含む）は checked range helper を使い、
+`start <= capacity` と `len <= capacity - start` を満たさない場合は GPU write 前に拒否します。
+検証は release build でも有効で、隣接領域への侵入を防ぎます。領域末尾の空 range は許可します。
+WGSL は `config.capacity` に基づく `component_root` / `remote_slot` / `rotation_slot` で参照します。
 新 epoch では `initial_roots` を先頭領域へ upload し、残りは wgpu の zero initialization
 を利用します。remote の既存初期 snapshot は remote 領域だけへ適用します。
 `root_revision` / `remote_revision` / `rotation_revision` と dirty range は独立しており、
@@ -228,13 +231,16 @@ Rust の `PieceMetadataLayout` が u64 で size / range offset を計算し、WG
 100万 pieces では3領域合計12,000,000 bytes（約12 MB / 11.44 MiB）で、旧3本の合計と同じです。
 512-byte remote delta uniform と可変長32-byte rotation record buffer は別に保持します。
 
-storage binding 数は main / pick visibility compute がそれぞれ10→8、draw / point /
-rectangle の vertex が9→7です。fragment は draw layout の6本と selection layout の2本を
-全 render pipeline で共有し、合計8本のままです。component preview compute は3本です。各 stage は8本以内ですが、
+storage binding 数は main / pick visibility compute がそれぞれ10→8です。draw / point /
+rectangle の vertex は統合で9→7、さらに visibility を絞って6本です。
+states / visible / drag_members / preview / piece_metadata / rotation_animations は vertex 限定、
+selected は fragment 限定です。fragment は draw layout の selected 1本と selection layout の
+selection / selectable 2本を全 render pipeline で共有し、合計3本です。
+component preview compute は3本です。各 stage は8本以内ですが、
 4本以下の downlevel limit や storage を使えない backend まで対応する変更ではありません。
 通常 / far / picking の形状・presentation・画像 alpha の判定は共通のままです。
 
-2026-10-06 の Windows / RTX 5090 / Vulkan（driver 610.88）の release 検証では、
+初回統合時（2026-10-06）の Windows / RTX 5090 / Vulkan（driver 610.88）の release 検証では、
 device の storage binding 上限を8本に制限し、metadata の領域分離・sparse update・
 epoch 再初期化、100万 pieces、normal / far / point / rectangle、continuous rotation の
 DSU root history と通常 frame の upload 0、remote smoothing の mapping upload 0 を確認しました。
@@ -244,6 +250,10 @@ DSU root history と通常 frame の upload 0、remote smoothing の mapping upl
 component preview の2 fixture は10,000座標の snapshot capture が `OutsidePlayArea(PieceId(0))`
 となり、connected outline と rotated connected outline の2件は白を期待する色比較が
 `[255, 250, 227, 255]` でした。これらの既存失敗は今回の検証では修正していません。
+
+境界検証・visibility 変更後も同じ環境で、release の metadata 関連4件（うち実 GPU 1件）と
+残る実 GPU 21件が成功しました。上記の既存失敗4件は除外しています。
+通常 `jigsall-game` テスト725件と doctest 1件、workspace の Clippy、fmt も成功しました。
 
 ### Continuous rotation presentation
 

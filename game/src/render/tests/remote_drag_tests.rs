@@ -96,7 +96,9 @@ fn gpu_remote_presentation_normal_far_culling_picking_and_scalar_uploads() {
             read_buffer_range(
                 &app,
                 &gpu.buffers.as_ref().unwrap().piece_metadata,
-                PieceMetadataLayout { capacity: 4 }.remote_slot_offset(0),
+                PieceMetadataLayout { capacity: 4 }
+                    .remote_range_offset(0, 4)
+                    .unwrap(),
                 16,
             ),
             bytemuck::cast_slice::<u32, u8>(&[slots[0], slots[1], 0, 0])
