@@ -66,7 +66,7 @@ cargo run --locked --release --features gns
 
 Room Code 方式は `cargo run --locked --release --features rendezvous` で有効になります。運用側で WSS endpoint と ICE を設定すると「マルチプレイ → インターネット」から Host/Join を選べます。設定方法は [rendezvous v1](docs/RENDEZVOUS_V1.md#deployment-configuration)を参照してください。
 
-Direct IP の参加先は `192.168.1.10:27015` のような IP アドレス、または `example.com:27015` のようなホスト名とポート番号で指定します。ホストの待受けには IP アドレスを使用します。インターネット経由ではルーターのポート開放が必要な場合があります。詳しくはゲーム内の「接続について」、または [接続の案内](docs/PLAYING.md#マルチプレイ)を参照してください。
+Direct IP の参加先は `192.168.1.10:43576` のような IP アドレス、または `example.com:43576` のようなホスト名とポート番号で指定します。ホストの待受けには IP アドレスを使用します。インターネット経由ではルーターのポート開放が必要な場合があります。詳しくはゲーム内の「接続について」、または [接続の案内](docs/PLAYING.md#マルチプレイ)を参照してください。
 
 ## 基本の操作
 

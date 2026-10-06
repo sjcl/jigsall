@@ -52,7 +52,7 @@ fn internet_host_failure_returns_to_settings_and_retries_generated_or_loaded_puz
         let text = labels(&output).join(" ");
         assert!(text.contains("Room Settings"), "{text}");
         assert!(text.contains("Your puzzle is ready"), "{text}");
-        assert!(!text.contains("0.0.0.0:27015"));
+        assert!(!text.contains("0.0.0.0:43576"));
         output.drop_without_applying_deltas();
         let state = app.world().resource::<MultiplayerUi>();
         assert!(state.editing_host_retry && state.prepared_host);
@@ -121,7 +121,7 @@ fn internet_failure_status_does_not_replace_a_direct_listen_retry() {
     state.error = Some(UiError::ConnectionFailed);
     state.retry_host = Some(HostStartRequest::new(HostOptions {
         display_name: None,
-        address: "0.0.0.0:27015".parse().unwrap(),
+        address: "0.0.0.0:43576".parse().unwrap(),
         session: jigsall_core::session::SessionDefinition {
             id: jigsall_core::session::SessionId(42),
             image_hash: jigsall_core::session::ImageHash([0; 32]),
@@ -182,7 +182,7 @@ fn internet_forms_show_room_fields_and_hide_direct_address_and_network_details()
             RuntimeConnectionMethod::Internet,
             RuntimeConnectionMethod::DirectIp,
         ] {
-            let mut draft = ConnectionDraft::new("127.0.0.1:27015");
+            let mut draft = ConnectionDraft::new("127.0.0.1:43576");
             draft.method = method;
             draft.room_code = "abcdefghjk".into();
             *draft.password = "private password".into();
@@ -192,7 +192,7 @@ fn internet_forms_show_room_fields_and_hide_direct_address_and_network_details()
             let text = labels(&output).join(" ");
             assert!(!text.contains("private password"));
             if method == RuntimeConnectionMethod::Internet {
-                assert!(!text.contains("127.0.0.1:27015"));
+                assert!(!text.contains("127.0.0.1:43576"));
                 assert!(!text.contains("Network details"));
                 if host {
                     assert!(text.contains("room code will be created"));
@@ -201,7 +201,7 @@ fn internet_forms_show_room_fields_and_hide_direct_address_and_network_details()
                     assert_eq!(draft.room_code, "ABCDEFGHJK");
                 }
             } else {
-                assert!(text.contains("127.0.0.1:27015"));
+                assert!(text.contains("127.0.0.1:43576"));
             }
             output.drop_without_applying_deltas();
         }
@@ -407,11 +407,11 @@ fn internet_scheduled_host_setup_has_no_bind_fields_and_direct_keeps_them() {
     let output = render_schedule(&mut app, &ctx, vec![]);
     let text = labels(&output).join(" ");
     assert!(text.contains("room code will be created"));
-    assert!(!text.contains("0.0.0.0:27015"));
+    assert!(!text.contains("0.0.0.0:43576"));
     output.drop_without_applying_deltas();
     click_label(&mut app, &ctx, "Direct IP / LAN");
     let output = render_schedule(&mut app, &ctx, vec![]);
-    assert!(labels(&output).contains(&"0.0.0.0:27015"));
+    assert!(labels(&output).contains(&"0.0.0.0:43576"));
     output.drop_without_applying_deltas();
 }
 #[test]

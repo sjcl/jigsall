@@ -427,7 +427,7 @@ fn host_failure_back_edits_port_without_reentering_setup_or_retaining_a_password
     ui.connecting = true;
     ui.error = Some(UiError::ConnectionFailed);
     ui.retry_host = Some(HostStartRequest::new(HostOptions {
-        address: "0.0.0.0:27015".parse().unwrap(),
+        address: "0.0.0.0:43576".parse().unwrap(),
         password: SessionPassword::new("test password".into()).unwrap(),
         display_name: None,
         host: jigsall_core::PlayerId(0),
@@ -507,7 +507,7 @@ fn registered_screens_exclude_hud_roster_performance_pause_completion_and_save_d
             ui.error = error;
             ui.pending_host = error.is_none().then(|| {
                 PendingHost::Direct(PendingDirectHost {
-                    address: "127.0.0.1:27015".parse().unwrap(),
+                    address: "127.0.0.1:43576".parse().unwrap(),
                     password: SessionPassword::new("test password".into()).unwrap(),
                 })
             });
@@ -820,28 +820,28 @@ fn starting_a_new_host_opens_puzzle_settings_even_after_a_previous_network_tab()
 #[test]
 fn addresses_accept_dns_for_join_and_keep_bind_addresses_literal() {
     for address in [
-        "192.168.1.10:27015",
-        "[2001:db8::1]:27015",
-        " [::1]:27015 ",
-        "example.com:27015",
-        "localhost:27015",
+        "192.168.1.10:43576",
+        "[2001:db8::1]:43576",
+        " [::1]:43576 ",
+        "example.com:43576",
+        "localhost:43576",
     ] {
         assert!(valid_address(address, false), "{address}");
     }
     for address in [
         "example.com",
-        "2001:db8::1:27015",
+        "2001:db8::1:43576",
         "127.0.0.1",
         "127.0.0.1:0",
-        "0.0.0.0:27015",
-        "[::]:27015",
+        "0.0.0.0:43576",
+        "[::]:43576",
     ] {
         assert!(!valid_address(address, false), "{address}");
     }
-    assert!(valid_address("0.0.0.0:27015", true));
-    assert!(valid_address("[::]:27015", true));
-    assert!(!valid_address("example.com:27015", true));
-    let mut draft = ConnectionDraft::new("example.com:27015");
+    assert!(valid_address("0.0.0.0:43576", true));
+    assert!(valid_address("[::]:43576", true));
+    assert!(!valid_address("example.com:43576", true));
+    let mut draft = ConnectionDraft::new("example.com:43576");
     *draft.password = "test password".into();
     assert!(draft.valid(false));
     assert!(!draft.valid(true));
@@ -852,7 +852,7 @@ fn join_moves_password_once_and_uses_the_committed_profile() {
     let mut profile = PlayerSettingsState::load(None);
     profile.commit("Alice");
     let mut state = MultiplayerUi::default();
-    state.join.address = "127.0.0.1:27015".into();
+    state.join.address = "127.0.0.1:43576".into();
     *state.join.password = "test password".into();
     state.submit_join(&profile);
     assert!(state.submitted);
@@ -871,7 +871,7 @@ fn join_moves_password_once_and_uses_the_committed_profile() {
 fn submit_hostname(world: &mut World) {
     let profile = PlayerSettingsState::load(None);
     let mut state = world.resource_mut::<MultiplayerUi>();
-    state.join.address = "localhost:27015".into();
+    state.join.address = "localhost:43576".into();
     *state.join.password = "test password".into();
     state.submit_join(&profile);
     assert!(state.join.password.is_empty());
@@ -882,7 +882,7 @@ fn submit_hostname(world: &mut World) {
     // Feed a controlled queued reply through the real poll API; UI lifecycle
     // tests must not depend on the scheduling of OS resolver workers.
     state.pending_join = Some(PendingJoin {
-        resolution: "127.0.0.1:27015"
+        resolution: "127.0.0.1:43576"
             .parse::<ServerAddress>()
             .unwrap()
             .resolve()
@@ -1046,7 +1046,7 @@ fn password_cannot_be_restored_from_egui_undo_history_after_the_form_closes() {
     let ctx = egui::Context::default();
     let mut profile = PlayerSettingsState::load(None);
     let i18n = crate::localization::tests::english();
-    let mut draft = ConnectionDraft::new("127.0.0.1:27015");
+    let mut draft = ConnectionDraft::new("127.0.0.1:43576");
     let id = egui::Id::new("multiplayer-join-password");
     let mut paint = |time, events| {
         ctx.run_ui(
@@ -1256,7 +1256,7 @@ fn forms_show_name_editor_address_contract_and_secret_field_in_both_languages() 
         i18n.set_preference(LanguagePreference::Locale(locale));
         for host in [true, false] {
             let mut draft =
-                ConnectionDraft::new(if host { "0.0.0.0:27015" } else { "[::1]:27015" });
+                ConnectionDraft::new(if host { "0.0.0.0:43576" } else { "[::1]:43576" });
             *draft.password = "secret-password".into();
             let ctx = egui::Context::default();
             let output = ctx.run_ui(
@@ -1314,7 +1314,7 @@ fn wildcard_listen_address_is_never_presented_as_an_invitation() {
     let output = ctx.run_ui(default(), |ui| {
         let status = NetworkStatus {
             role: Some(RuntimeRole::Host),
-            address: Some("0.0.0.0:27015".parse().unwrap()),
+            address: Some("0.0.0.0:43576".parse().unwrap()),
             ..default()
         };
         paint_host_status(ui, &status, &i18n);
@@ -1329,7 +1329,7 @@ fn wildcard_listen_address_is_never_presented_as_an_invitation() {
         .collect();
     assert!(labels.contains(
         &i18n
-            .format("multiplayer-invite-port", &[("port", 27015u32.into())])
+            .format("multiplayer-invite-port", &[("port", 43576u32.into())])
             .as_str()
     ));
     assert!(!labels.iter().any(|text| text.contains("0.0.0.0")));

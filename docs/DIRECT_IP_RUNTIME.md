@@ -171,8 +171,8 @@ bytes from the persistence worker. Offline imports/saves/loads still release
 them. Menu cleanup resets retention and drops the original image.
 
 Join asks for a hostname or IP literal with an explicit nonzero port and a session
-password. Input supports ASCII DNS names (e.g. example.com:27015, localhost:27015),
-IPv4 and bracketed IPv6 (e.g. [2001:db8::1]:27015). Bind input remains an IP literal.
+password. Input supports ASCII DNS names (e.g. example.com:43576, localhost:43576),
+IPv4 and bracketed IPv6 (e.g. [2001:db8::1]:43576). Bind input remains an IP literal.
 `network::address::ServerAddress` validates syntax without resolving during UI
 painting. On submission, an OS resolver worker returns one usable endpoint,
 preferring IPv4 in resolver order to match the default IPv4 listener, or the

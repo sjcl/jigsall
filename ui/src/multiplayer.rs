@@ -230,7 +230,7 @@ impl Default for MultiplayerUi {
             screen: MenuScreen::Title,
             host_setup: false,
             host_settings_tab: false,
-            host: ConnectionDraft::new("0.0.0.0:27015"),
+            host: ConnectionDraft::new("0.0.0.0:43576"),
             join: ConnectionDraft::new(""),
             selected_save: None,
             submitted: false,
@@ -890,9 +890,9 @@ pub(crate) fn paint_connection_fields(
             ui.add(
                 egui::TextEdit::singleline(&mut draft.address)
                     .hint_text(if host {
-                        "0.0.0.0:27015"
+                        "0.0.0.0:43576"
                     } else {
-                        "example.com:27015"
+                        "example.com:43576"
                     })
                     .desired_width(f32::INFINITY),
             );
