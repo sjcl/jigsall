@@ -56,6 +56,82 @@ fn close(a: f32, b: f32) {
 }
 
 #[test]
+fn elevation_envelope_scales_with_residual_and_stays_normalized() {
+    for (residual, start_elevation, peak) in [
+        (-QUARTER, 0.0, 1.0),
+        (QUARTER * 0.5, 0.0, 0.5),
+        (QUARTER / 9.0, 0.0, 1.0 / 9.0),
+        (QUARTER * 2.0, 0.0, 1.0),
+        (QUARTER * 0.1, 0.8, 0.8),
+        (0.0, 0.8, 0.8),
+    ] {
+        let a = RotationAnimation {
+            pivot: Vec2::ZERO,
+            offset: Vec2::ZERO,
+            residual,
+            target_angle: 0.0,
+            start: 2.0,
+            duration: 1.0,
+            start_elevation,
+        };
+        assert_eq!(a.elevation(1.0), start_elevation);
+        assert_eq!(a.elevation(a.start), start_elevation);
+        assert_eq!(a.elevation(a.start + a.duration * 0.5), peak);
+        for now in [3.0, 3.1, 10.0] {
+            assert_eq!(a.elevation(now), 0.0);
+        }
+        for i in 0..=1000 {
+            let p = i as f64 / 1000.0;
+            let elevation = a.elevation(a.start + a.duration * p);
+            let range = if p < 0.5 {
+                start_elevation..=peak
+            } else {
+                0.0..=peak
+            };
+            assert!(range.contains(&elevation), "{p}: {elevation}");
+        }
+        // Both half-curves have zero slope at the start, peak and settle.
+        let step = 0.0001;
+        for p in [0.0, 0.5, 1.0] {
+            let now = a.start + a.duration * p;
+            let slope = (a.elevation(now + step) - a.elevation(now - step)) / (2.0 * step as f32);
+            assert!(slope.abs() < 0.003, "slope at {p}: {slope}");
+        }
+    }
+}
+
+#[test]
+fn gpu_rotation_record_keeps_32_bytes_and_publishes_inherited_elevation() {
+    assert_eq!(std::mem::size_of::<GpuRotationAnimation>(), 32);
+    assert_eq!(
+        std::mem::offset_of!(GpuRotationAnimation, start_elevation),
+        28
+    );
+    let (mut store, def) = fixture();
+    turn(&mut store, &def, 1);
+    store.rotation_visual.clock = 0.050;
+    let elevation = store
+        .rotation_visual
+        .animation(PieceId(0))
+        .unwrap()
+        .elevation(0.050);
+    turn(&mut store, &def, -1);
+    assert_eq!(store.rotation_visual.records.len(), 1);
+    assert_eq!(store.rotation_visual.records[0].start_elevation, elevation);
+    let a = store.rotation_visual.animation(PieceId(0)).unwrap();
+    assert_eq!(a.start_elevation, elevation);
+    store.rotation_visual.clock = a.start + a.duration;
+    assert!(!store
+        .capture_rotation_boundary()
+        .items
+        .contains_key(&PieceId(0)));
+    // Expired records are collected at the next existing control boundary.
+    turn(&mut store, &def, 1);
+    assert_eq!(store.rotation_visual.records.len(), 1);
+    assert_eq!(store.rotation_visual.records[0].start_elevation, 0.0);
+}
+
+#[test]
 fn continuous_rotation_start_midpoint_end_and_identity_preserve_rigid_body() {
     let (mut store, def) = fixture();
     let old = [store.states[0].position, store.states[1].position];
@@ -71,6 +147,9 @@ fn continuous_rotation_start_midpoint_end_and_identity_preserve_rigid_body() {
     store.rotation_visual.clock = 0.120;
     let animation = store.rotation_visual.animation(PieceId(0)).unwrap();
     assert_eq!(animation.angle(0.120), 0.0);
+    assert_eq!(animation.elevation(0.0), 0.0);
+    assert_eq!(animation.elevation(0.060), 1.0);
+    assert_eq!(animation.elevation(0.120), 0.0);
     assert_eq!(
         animation.position(store.states[0].position, 0.120),
         store.states[0].position
@@ -80,15 +159,26 @@ fn continuous_rotation_start_midpoint_end_and_identity_preserve_rigid_body() {
 
 #[test]
 fn repeated_q_e_retarget_from_displayed_angle_including_reversal_and_wrap() {
-    for (first, second) in [(1, 1), (-1, -1), (1, -1)] {
+    for (first, second) in [(1, 1), (-1, -1), (1, -1), (-1, 1)] {
         let (mut store, def) = fixture();
         turn(&mut store, &def, first);
         store.rotation_visual.clock = 0.050;
         let before = displayed(&store, PieceId(0));
+        let elevation = store
+            .rotation_visual
+            .animation(PieceId(0))
+            .unwrap()
+            .elevation(0.050);
+        assert!(elevation > 0.0);
         turn(&mut store, &def, second);
         let after = displayed(&store, PieceId(0));
         close(before.1, after.1);
         assert!(before.0.distance(after.0) < 0.0001);
+        let a = store.rotation_visual.animation(PieceId(0)).unwrap();
+        assert_eq!(a.start_elevation, elevation);
+        assert_eq!(a.elevation(0.050), elevation);
+        assert!(a.elevation(a.start + a.duration * 0.1) >= elevation);
+        assert_eq!(a.elevation(a.start + a.duration), 0.0);
         store.rotation_visual.clock += 0.020;
         let next = displayed(&store, PieceId(0)).1;
         assert!((next - after.1) * f32::from(second) > 0.0);
@@ -132,9 +222,16 @@ fn prediction_ack_retires_override_without_finishing_or_restarting_animation() {
     assert!(displayed(&store, PieceId(0)).0.distance(before.0) < 0.0001);
     let after = store.rotation_visual.animation(PieceId(0)).unwrap();
     assert_eq!(
-        (after.start, after.duration),
-        (animation.start, animation.duration)
+        (after.start, after.duration, after.start_elevation),
+        (
+            animation.start,
+            animation.duration,
+            animation.start_elevation
+        )
     );
+    for now in [0.030, 0.060, 0.100, 0.120] {
+        assert_eq!(after.elevation(now), animation.elevation(now));
+    }
     store.rotation_visual.clock = 0.060;
     close(displayed(&store, PieceId(0)).1, QUARTER * 0.5);
 }
@@ -157,9 +254,18 @@ fn rejection_rebases_continuously_to_canonical_and_reset_discards_visuals() {
     store.finish_rotation_boundary(boundary);
     store.rotation_visual.clock = 0.060;
     let before = displayed(&store, PieceId(0));
+    let elevation = store
+        .rotation_visual
+        .animation(PieceId(0))
+        .unwrap()
+        .elevation(0.060);
     store.clear_local_rotation();
     close(displayed(&store, PieceId(0)).1, before.1);
     assert!(displayed(&store, PieceId(0)).0.distance(before.0) < 0.0001);
+    let a = store.rotation_visual.animation(PieceId(0)).unwrap();
+    assert_eq!(a.start_elevation, elevation);
+    assert_eq!(a.elevation(0.060), elevation);
+    assert_eq!(a.elevation(a.start + a.duration), 0.0);
     store.rotation_visual.clock = 0.190;
     assert_eq!(displayed(&store, PieceId(0)).0, store.states[0].position);
     close(displayed(&store, PieceId(0)).1, 0.0);
@@ -200,6 +306,20 @@ fn drag_pointer_and_ack_basis_rebase_use_rigid_visual_without_changing_delta() {
     store.finish_rotation_boundary(boundary);
     assert_eq!(store.drag.delta, Vec2::ZERO);
     assert!(displayed(&store, PieceId(0)).0.distance(old) < 0.0001);
+    // Give the ACK basis rebase a nonzero inherited start elevation.
+    store.rotation_visual.clock = 0.020;
+    let retarget = PieceCommand::RotateDrag {
+        members: members.clone(),
+        delta: Vec2::ZERO,
+        quarter_turns: 1,
+    };
+    let boundary = store.capture_rotation_command(&retarget, Some(&def));
+    assert!(
+        store
+            .apply_command(LOCAL_PLAYER, &retarget, Some(&def), LOCAL_PLAYER)
+            .drag_rebased
+    );
+    store.finish_rotation_boundary(boundary);
     store.rotation_visual.clock = 0.030;
     let before = displayed(&store, PieceId(0));
     store.drag.delta = Vec2::new(4.0, 6.0);
@@ -210,6 +330,8 @@ fn drag_pointer_and_ack_basis_rebase_use_rigid_visual_without_changing_delta() {
             < 0.0001
     );
     let before = displayed(&store, PieceId(0));
+    let animation = store.rotation_visual.animation(PieceId(0)).unwrap();
+    assert!(animation.start_elevation > 0.0);
     let boundary = store.capture_rotation_boundary();
     let consumed = store.drag.delta;
     for id in members.iter() {
@@ -219,6 +341,18 @@ fn drag_pointer_and_ack_basis_rebase_use_rigid_visual_without_changing_delta() {
     store.finish_rotation_boundary(boundary);
     assert!(displayed(&store, PieceId(0)).0.distance(before.0) < 0.0001);
     close(displayed(&store, PieceId(0)).1, before.1);
+    let after = store.rotation_visual.animation(PieceId(0)).unwrap();
+    assert_eq!(
+        (after.start, after.duration, after.start_elevation),
+        (
+            animation.start,
+            animation.duration,
+            animation.start_elevation
+        )
+    );
+    for now in [0.030, 0.060, 0.120, 0.240] {
+        assert_eq!(after.elevation(now), animation.elevation(now));
+    }
     assert_eq!(store.states[0].flags & HELD, HELD);
 }
 
@@ -235,6 +369,7 @@ fn million_piece_animation_frames_only_share_records_and_advance_clock() {
             target_angle: QUARTER,
             start: 0.0,
             duration: ROTATION_SECONDS_PER_QUARTER,
+            start_elevation: 0.0,
         },
     );
     store.rotation_visual.publish(&store.connectivity);
@@ -420,6 +555,11 @@ fn authority_cancel_restores_logical_pose_and_settles_visual_without_leaking_del
     store.finish_rotation_boundary(boundary);
     store.rotation_visual.clock = 0.050;
     let before = displayed(&store, PieceId(0));
+    let elevation = store
+        .rotation_visual
+        .animation(PieceId(0))
+        .unwrap()
+        .elevation(0.050);
     let boundary = store.capture_rotation_boundary();
     let target = ActiveDragTarget::Sparse(vec![ComponentRef::from_member(
         &store.connectivity,
@@ -438,6 +578,10 @@ fn authority_cancel_restores_logical_pose_and_settles_visual_without_leaking_del
     store.finish_rotation_boundary(boundary);
     assert!(displayed(&store, PieceId(0)).0.distance(before.0) < 0.0001);
     close(displayed(&store, PieceId(0)).1, before.1);
+    let a = store.rotation_visual.animation(PieceId(0)).unwrap();
+    assert_eq!(a.start_elevation, elevation);
+    assert_eq!(a.elevation(0.050), elevation);
+    assert_eq!(a.elevation(a.start + a.duration), 0.0);
     store.rotation_visual.clock = 1.0;
     assert_eq!(displayed(&store, PieceId(0)).0, canonical[0].position);
     assert!(store.local_rotation.poses.is_empty());

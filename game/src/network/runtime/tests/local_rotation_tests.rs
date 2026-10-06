@@ -197,9 +197,18 @@ fn visual_rotation_early_ack_is_independent_of_prediction_retirement() {
     assert!(store.local_rotation.poses.is_empty());
     let ack = store.rotation_visual.animation(PieceId(0)).unwrap();
     assert_eq!(
-        (ack.start, ack.duration),
-        (animation.start, animation.duration)
+        (ack.start, ack.duration, ack.start_elevation),
+        (
+            animation.start,
+            animation.duration,
+            animation.start_elevation
+        )
     );
+    for now in [0.030, 0.060, 0.100, 0.120] {
+        assert_eq!(ack.elevation(now), animation.elevation(now));
+    }
+    assert_eq!(ack.elevation(0.060), 1.0);
+    assert_eq!(ack.elevation(0.120), 0.0);
     assert!(ack.angle(0.030).abs() > 1.0);
     assert_eq!(ack.angle(0.120), 0.0);
 }
@@ -222,6 +231,13 @@ fn visual_drag_rotation_early_ack_preserves_current_pointer_and_protocol_basis()
     pointer(&mut pair.client, b, true, false);
     pair.client.update();
     let before = visual_pose(&pair.client, PieceId(0));
+    let animation = pair
+        .client
+        .world()
+        .resource::<PieceDataStore>()
+        .rotation_visual
+        .animation(PieceId(0))
+        .unwrap();
     pair.host.update();
     deliver_one(&mut pair);
     pair.client.update();
@@ -237,14 +253,20 @@ fn visual_drag_rotation_early_ack_preserves_current_pointer_and_protocol_basis()
     );
     let store = pair.client.world().resource::<PieceDataStore>();
     assert!(store.local_rotation.poses.is_empty());
+    let ack = store.rotation_visual.animation(PieceId(0)).unwrap();
     assert_eq!(
-        store
-            .rotation_visual
-            .animation(PieceId(0))
-            .unwrap()
-            .angle(0.120),
-        0.0
+        (ack.start, ack.duration, ack.start_elevation),
+        (
+            animation.start,
+            animation.duration,
+            animation.start_elevation
+        )
     );
+    for now in [0.030, 0.060, 0.100, 0.120] {
+        assert_eq!(ack.elevation(now), animation.elevation(now));
+    }
+    assert_eq!(ack.angle(0.120), 0.0);
+    assert_eq!(ack.elevation(0.120), 0.0);
 }
 
 #[test]

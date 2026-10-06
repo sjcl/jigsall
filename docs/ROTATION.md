@@ -157,7 +157,11 @@ schedule順・GPU restore・4層の責務は[ARCHITECTURE.md](ARCHITECTURE.md#lo
 ## Continuous visual rotation
 
 ```text
-canonical quarter-turn → prediction final pose → continuous visual presentation → render + picking
+canonical quarter-turn → prediction final pose
+  → continuous rotation record
+      ├─ rigid residual transform
+      └─ normalized elevation envelope (0..1)
+  → GPU presentation → render + picking
 ```
 
 Q/E のゲーム上の90°回転はこれまでどおり即時確定します。画面上だけ、最終 pose に対する
@@ -168,18 +172,33 @@ smoothstep の ease-in-out を使います。連打時は現在の表示角か�
 270°→0°で逆方向へ270°回転しません。個別 piece の position lerp は使いません。
 authority と prediction が共有する `rotation_plan_with` の pivot に対する剛体回転です。
 
+rotation record は presentation-only の elevation も保持します。0は通常の平面状態、
+1は回転中の最大 lift を表す normalized value であり、ゲーム上の高さではありません。
+CPU `RotationAnimation::elevation(now)` と WGSL `PresentationPose.elevation` で取得でき、
+位置・回転・elevation は GPU continuous helper の1回の progress 計算から導出します。
+前半は start_elevation→peak、後半は peak→0 を `s(t) = t²(3 - 2t)` で補間し、
+開始・中間・終了の速度は0です。通常90°は開始0・中間1・終了0です。
+peak は `max(start_elevation, clamp(abs(residual) / QUARTER_TURN, 0, 1))` から導出します。
+45°補正の angular peak は0.5で、既に高い場合は現在値以上を保ちます。
+新 animation は既存の Before capture で得た表示中の elevation を start_elevation に引き継ぎ、
+Q/Q・E/E・Q/E、拒否・cancel・rebase で突然0へ落としません。追加の member scan はありません。
+
 `store.local_rotation` は未 ACK 回転の最終 pose override のままです。
 `store.rotation_visual` が別の animation lifetime を持ち、30ms の ACK で override が
 消えても animation は終了しません。ACK による basis 変更は同じ time curve を維持して
+start / duration / start_elevation を含む elevation envelope も reset / restart せず、
 残差を rebase します。拒否・partial acceptance は現在の表示から新しい final pose へ戻し、
-終了時は追加 transform が identity になります。通常の Rotate と RotateDrag は同じ record
+終了時は追加 transform が identity になり、progress >= 1 では elevation は厳密に0です。
+elevation のために寿命を延ばさず、
+期限切れ record は既存の変更境界で回収します。通常の Rotate と RotateDrag は同じ record
 と shader を使い、pointer の translation は残差の後に加算します。
 release / cancel の logical pose 変更も操作境界で rebase し、snap による topology 変更や
 placement は残差を破棄します。session teardown / scope 変更、Puzzle 変更、snapshot /
 baseline install では全 animation を破棄します。
 
-GPU root buffer を使う root→slot lookup は4 bytes / piece、record は32 bytes / component
-です。slot 数は可変で、RotateDrag の独立 component は別々の pivot を持ちます。
+GPU root buffer を使う root→slot lookup は4 bytes / piece、`GpuRotationAnimation = 32 bytes/component`
+です。末尾 padding を start_elevation に置き換え、buffer / binding や per-piece memory は増やしません。
+slot 数は可変で、RotateDrag の独立 component は別々の pivot を持ちます。
 CPU は操作境界でだけ member planner / table 準備を行い、animation frame は clock / uniform
 を更新するだけです。CPU position の全 member 再計算と `GpuPieceState` 再 upload はありません。
 main / pick visibility、normal / far draw、point / rectangle は quarter-turn と continuous の
@@ -187,12 +206,18 @@ main / pick visibility、normal / far draw、point / rectangle は quarter-turn 
 でも slot が0の piece は quarter-turn 経路です。符号反転・xy交換で頂点と AABB を求め、
 far splat の最小寸法も pixel scale のxy交換とmaxで計算し、sin / cos / length / sqrt を使いません。
 slot が非ゼロの場合だけ `presentation_pose` と連続回転の footprint を評価します。
+非 animation piece は elevation が暗黙に0で、slot==0 の経路では elevation curve・progress・
+animation record load を追加しません。
 UV / shape / alpha は canonical local の共通判定を保ちます。
 
 continuous angle / progress は save、snapshot、protocol、authority、snap、connectivity、
 gameplay validation に含めません。remote player の新規回転 animation は未対応です。
-height、shadow、side、bevel、graphics quality、screen-space LOD はこの段階では追加していません。
-CPU / GPU の progress を後続 effect の入口に使えます。GPU layout と lifetime の詳細は
+elevation は canonical / network / save / snapshot に存在せず、PieceCommand・authority・
+connectivity・snap・physical / logical play area・Z-order にも加えません。world / clip position・
+AABB・picking geometry・SDF・UV・depth は elevation をまだ使用しません。fragment varying も増やしません。
+shadow、side / thickness、bevel、lighting、pixel offset 変換、graphics quality、screen-space LOD、
+drag / selection の通常 lift は後続です。同じ elevation を次の effect の入口に使えます。
+GPU layout と lifetime の詳細は
 [アーキテクチャ](ARCHITECTURE.md#continuous-rotation-presentation)を参照してください。
 
 追加 CPU 回帰は開始 / 途中 / 終了、剛体性、identity、Q/Q・E/E・Q/E、wraparound、
@@ -202,10 +227,27 @@ network runtime 回帰は実際の ACK route / suffix replay を通して通常�
 実 GPU fixture は normal / far の45°途中に main draw / point / rectangle が一致し、
 animation frame の state / root / animation table upload が0であることを検査します。
 
+elevation の CPU 回帰は0→1→0、45° / 10° / translation-only residual、0..1の範囲、
+開始・中間・終了の速度、Q/Q・E/E・Q/Eの値の連続性、非ゼロ start_elevation を持つ ACK basis
+rebase、拒否・cancel の引き継ぎと exact settle、32-byte layout と期限切れ回収を検査します。
+network runtime の early ACK 回帰でも envelope を比較します。shader source 回帰は progress の
+共有、binding 数、varying なし、slot==0 の fast path を検査します。
+実 GPU の `gpu_rotation_elevation_matches_cpu_envelope_and_record_layout` は残差角・開始 elevation・
+時刻の460 sampleで CPU/GPU を比較します。既存 normal / far fixture は同じ時刻で elevation
+だけを変え、全 pixel・可視 ID・point / rectangle の結果が不変であることも検査します。
+
 ```powershell
 cargo test --workspace --locked
 cargo test --locked -p jigsall-game --release gpu_continuous_rotation -- --ignored --nocapture --test-threads=1
+cargo test --locked -p jigsall-game --release rotation_visual_tests -- --ignored --nocapture --test-threads=1
 ```
+
+2026-10-06、elevation 追加の基準 `54835ea` に対して、この Windows ホストで workspace 通常テスト
+898件（doctest込み）、全 target / 全 feature の Clippy（`-D warnings`）、fmt が通過しました。
+release の rotation visual 実 GPU テスト4件が通過し、460 sample の CPU/GPU elevation 比較と
+progress >= 1 の exact zero、normal / far の全 pixel・可視 ID・point / rectangle の不変性、
+別 component の animation 中の quarter-turn fast path、animation frame の upload 0を確認しました。
+速度 benchmark と他 OS / GPU の検証は今回再実施していません。
 
 2026-10-06、Windows / NVIDIA GeForce RTX 5090 / Vulkan（NVIDIA 610.88）で確認しました。
 workspace 通常テストは doctest 込み869件が通過し、全 target / 全 feature の Clippy

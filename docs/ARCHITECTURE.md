@@ -274,11 +274,13 @@ normal / far、四方向、非等方 pixel scale で idle 時と画像・point /
 ```text
 canonical quarter-turn (PieceDataStore.states; authority が即時 commit)
   → prediction final pose (store.local_rotation; 未 ACK suffix)
-  → continuous visual presentation (store.rotation_visual; 時刻付き残差)
+  → continuous rotation record (store.rotation_visual)
+      ├─ rigid residual transform
+      └─ normalized elevation envelope (0..1)
   → render + GPU picking (presentation.wgsl の quarter-turn / presentation_pose)
 ```
 
-`resources/rotation_visual.rs` は連続角度・pivot・補正 translation・開始時刻・duration を
+`resources/rotation_visual.rs` は連続角度・pivot・補正 translation・開始時刻・duration・start_elevation を
 component 単位で保持します。canonical rotation は 0 / 1 / 2 / 3 のままです。
 90°あたりの初期値は `ROTATION_SECONDS_PER_QUARTER = 0.120` 秒で、`Time<Real>` を
 First の time 更新後に取得します。virtual pause / simulation tick と独立した時刻です。
@@ -286,22 +288,37 @@ GPU と CPU 参照は同じ smoothstep easing を使い、final pose に対す�
 戻します。個別 position の lerp は行わず、component 全体へ同じ剛体変換を適用します。
 pivot は authority / prediction の `rotation_plan_with` が計算した AABB 中心を使います。
 
+elevation は presentation-only の normalized scalar です。0は平面、1は回転中の最大 lift を
+意味し、ゲーム上の高さや pixel offset ではありません。CPU `RotationAnimation::elevation(now)` と
+WGSL `PresentationPose.elevation` が同じ cheap polynomial `s(t) = t²(3 - 2t)` を使います。
+前半は start_elevation→peak、後半は peak→0 と補間し、開始・中間・終了の速度は0です。
+peak は `max(start_elevation, clamp(abs(residual) / QUARTER_TURN, 0, 1))` から導出し、
+保存しません。通常90°は0→1→0、小さい補正は残差角に応じた lift になります。
+continuous helper は1回だけ求めた progress を位置・回転・elevation で共有します。
+
 Q/E は現在の表示角度から signed / unwrapped な新 target へ retarget します。
 animation queue は持ちません。prediction override の寿命と animation の寿命は独立です。
 ACK で final world pose が変わらなければ残差の時間曲線を維持し、drag basis が変われば
 pivot の base 座標を変換します。拒否・partial acceptance などで final pose が変わる場合は
 現在の表示 pose から canonical / replay 後の pose へ剛体の残差を rebase します。
+新 record の start_elevation は既存の Before capture で取得した現在の表示 elevation です。
+Q/Q・E/E・Q/E、拒否・cancel・correction の境界でも値を引き継ぎ、終了時は厳密に0へ戻ります。
+同じ final world pose の ACK は start / duration / start_elevation を含む envelope 全体を維持し、
+elevation を reset / restart しません。追加 member scan や期限延長はありません。
 local pointer delta は残差を適用した後に加算し、continuous angle を protocol basis や
 drag delta に戻しません。release の final delta を反映してから残差を handoff します。
 snap による component 結合・placement では対象の残差を破棄します。
 
+`GpuRotationAnimation = 32 bytes/component` を維持し、末尾の padding を start_elevation に置換します。
+新しい buffer / binding、per-piece memory は追加しません。
 GPU は metadata の component root 領域 → `rotation_slot(root)` → 可変長 32-byte animation record
 を参照します。stable minimum と DSU root が異なる union history にも対応します。
 draw / main visibility / pick visibility は `rotation_active == 0` なら回転用の root / slot
 を読みません。active frame でも `rotation_slot == 0` の piece は quarter-turn 専用経路を使います。
 この経路の頂点変換は符号反転と xy 交換、AABB は偶奇による xy 交換です。
 far splat の最小寸法は world-per-pixel の xy 交換と max で求め、sin / cos / length / sqrt
-や animation progress を評価しません。非等方な pixel scale でも draw と picking の footprint
+や animation progress / elevation curve / animation record load を評価しません。
+非 animation piece の elevation は暗黙に0です。非等方な pixel scale でも draw と picking の footprint
 を共有します。slot が非ゼロの piece だけが continuous pose / 回転 AABB / splat 計算を行います。
 selection preview が active の場合の root 参照は、回転処理と独立して維持します。
 固定 slot 上限はなく、独立 component はそれぞれ自身の pivot を持ちます。
@@ -321,8 +338,12 @@ wire、save、snapshot、16-byte `GpuPieceState`、authority validation、snap /
 catch-up / migration は continuous presentation を参照しません。session scope 変更・終了、
 Puzzle 初期化、snapshot / baseline install、Menu cleanup は animation を破棄します。
 remote player の新規回転 animation はこの段階では開始せず、共通 transform と network から
-独立した record を今後の入口として残します。height / shadow / side / bevel と新たな quality /
-LOD は今回は追加していません。record の progress は後続の presentation effect に使えます。
+独立した record を今後の入口として残します。elevation も同じ record で利用できます。
+elevation は canonical / network / save / snapshot に存在せず、命令・authority・connectivity・
+snap・physical / logical play area・Z-order にも含めません。world / clip position、AABB、
+picking geometry、SDF、UV、depth は elevation をまだ使用しません。fragment varying も増やしません。
+shadow / side / thickness / bevel / lighting、pixel offset 変換、graphics quality / LOD、
+drag / selection による通常 lift は後続実装です。
 
 2026-10-06、上記 RTX 5090 / Vulkan 環境で `procedural_gpu_benchmark` を直前の検証済み
 `48f55f8` release build と比較しました。4096²画像・1024² offscreen・非 continuous rotation

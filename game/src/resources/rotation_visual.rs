@@ -22,6 +22,7 @@ pub(crate) struct RotationAnimation {
     pub target_angle: f32,
     pub start: f64,
     pub duration: f64,
+    pub start_elevation: f32,
 }
 impl RotationAnimation {
     pub fn progress(self, now: f64) -> f32 {
@@ -33,6 +34,25 @@ impl RotationAnimation {
     }
     pub fn angle(self, now: f64) -> f32 {
         self.residual * self.remaining(now)
+    }
+    /// Normalized visual lift only. Keep this polynomial in sync with
+    /// rotation_elevation in presentation.wgsl; no gameplay height is implied.
+    pub fn elevation(self, now: f64) -> f32 {
+        let p = self.progress(now);
+        if p >= 1.0 {
+            return 0.0;
+        }
+        let peak = self
+            .start_elevation
+            .max((self.residual.abs() / QUARTER).clamp(0.0, 1.0));
+        if p < 0.5 {
+            let t = p * 2.0;
+            let eased = t * t * (3.0 - 2.0 * t);
+            self.start_elevation + (peak - self.start_elevation) * eased
+        } else {
+            let t = p * 2.0 - 1.0;
+            peak * (1.0 - t * t * (3.0 - 2.0 * t))
+        }
     }
     pub fn position(self, base: Vec2, now: f64) -> Vec2 {
         let remaining = self.remaining(now);
@@ -52,7 +72,7 @@ pub(crate) struct GpuRotationAnimation {
     pub residual: f32,
     pub start: f32,
     pub duration: f32,
-    pub padding: f32,
+    pub start_elevation: f32,
 }
 const _: () = assert!(std::mem::size_of::<GpuRotationAnimation>() == 32);
 
@@ -80,6 +100,7 @@ struct Before {
     delta: Vec2,
     displayed: Vec2,
     angle: f32,
+    elevation: f32,
     size: usize,
     animation: Option<RotationAnimation>,
     intent: Option<(i32, Vec2)>,
@@ -125,6 +146,7 @@ impl PieceDataStore {
             angle: animation.map_or(pose.rotation as f32 * QUARTER, |a| {
                 a.target_angle + a.angle(self.rotation_visual.clock)
             }),
+            elevation: animation.map_or(0.0, |a| a.elevation(self.rotation_visual.clock)),
             size: self.connectivity.component_size(root),
             animation,
             intent: None,
@@ -268,6 +290,7 @@ impl PieceDataStore {
                         } else {
                             1.0 // Translation-only correction at a logical boundary.
                         },
+                    start_elevation: before.elevation,
                 }
             };
             self.rotation_visual.animations.insert(root, animation);
@@ -307,7 +330,7 @@ impl RotationVisual {
                 residual: a.residual,
                 start: (a.start - self.origin) as f32,
                 duration: a.duration as f32,
-                padding: 0.0,
+                start_elevation: a.start_elevation,
             });
         }
         for &root in self.slots.keys().chain(slots.keys()) {
