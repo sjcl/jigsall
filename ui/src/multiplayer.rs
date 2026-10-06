@@ -867,7 +867,17 @@ pub(crate) fn paint_connection_fields(
             "multiplayer-join"
         }),
     );
-    crate::settings::paint_player_settings(ui, &mut draft.player_name_draft, profile, i18n);
+    crate::settings::paint_player_settings(
+        ui,
+        &mut draft.player_name_draft,
+        profile,
+        i18n,
+        &i18n.text(if host {
+            "multiplayer-your-player-name"
+        } else {
+            "settings-player-name"
+        }),
+    );
     match draft.method {
         RuntimeConnectionMethod::DirectIp => {
             ui.label(i18n.text(if host {

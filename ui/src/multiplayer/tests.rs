@@ -806,7 +806,7 @@ fn starting_a_new_host_opens_puzzle_settings_even_after_a_previous_network_tab()
     assert!(!labels(&output).contains(&"Accept connections at"));
     assert!(!labels(&output).contains(&"Open Room & Play"));
     output.drop_without_applying_deltas();
-    click_label(&mut app, &ctx, "Multiplayer Settings");
+    click_label(&mut app, &ctx, "Go to Room Settings");
     let state = app.world().resource::<MultiplayerUi>();
     assert!(state.host_settings_tab);
     assert!(!state.submitted);
@@ -1282,7 +1282,15 @@ fn forms_show_name_editor_address_contract_and_secret_field_in_both_languages() 
                 })
                 .collect();
             assert!(labels.contains(&"Alice"));
-            assert!(labels.contains(&i18n.text("settings-player-name").as_str()));
+            assert!(labels.contains(
+                &i18n
+                    .text(if host {
+                        "multiplayer-your-player-name"
+                    } else {
+                        "settings-player-name"
+                    })
+                    .as_str()
+            ));
             assert!(labels.contains(&i18n.text("settings-player-name-save").as_str()));
             assert!(labels.contains(
                 &i18n

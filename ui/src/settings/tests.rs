@@ -77,7 +77,13 @@ fn player_name_draft_does_not_save_until_commit_and_errors_are_visible() {
                 ..default()
             },
             |ui| {
-                paint_player_settings(ui, draft, state, &english());
+                paint_player_settings(
+                    ui,
+                    draft,
+                    state,
+                    &english(),
+                    &english().text("settings-player-name"),
+                );
             },
         )
     };

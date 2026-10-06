@@ -128,6 +128,7 @@ pub(crate) fn paint_player_settings(
     draft: &mut Option<String>,
     state: &mut PlayerSettingsState,
     i18n: &Localization,
+    label: &str,
 ) {
     let input = draft.get_or_insert_with(|| {
         state
@@ -138,7 +139,7 @@ pub(crate) fn paint_player_settings(
             .unwrap_or_default()
     });
     ui.set_width(ui.available_width());
-    ui.label(i18n.text("settings-player-name"));
+    ui.label(label);
     let (response, save_clicked) = ui
         .horizontal(|ui| {
             let response = ui.add(
@@ -332,7 +333,13 @@ fn paint_settings(
                             }
                         });
                         theme::card().show(ui, |ui| {
-                            paint_player_settings(ui, &mut dialog.profile_draft, profile, i18n);
+                            paint_player_settings(
+                                ui,
+                                &mut dialog.profile_draft,
+                                profile,
+                                i18n,
+                                &i18n.text("settings-player-name"),
+                            );
                             theme::hint(ui, i18n.text("settings-player-name-help"));
                         });
                         ui.add_enabled_ui(seconds.is_none(), |ui| {
