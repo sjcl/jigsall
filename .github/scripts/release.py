@@ -84,7 +84,7 @@ def build():
             raise subprocess.CalledProcessError(process.returncode, arguments)
     if not native or not binary:
         raise RuntimeError("Missing application or native build artifact")
-    (DIST / "build.json").write_text(json.dumps({"binary": binary, "native": native}), encoding="utf-8")
+    (DIST / "build.json").write_text(json.dumps({"binary": binary, "native": native, "features": "gns,rendezvous"}), encoding="utf-8")
 
 
 def native_notices(native, system):
@@ -155,8 +155,9 @@ def archive_payload(binary):
         if path.is_file():
             files[path.name] = path.read_bytes()
     version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+    build_info = json.loads((DIST / "build.json").read_text(encoding="utf-8"))
     files["BUILD_INFO.txt"] = (f"Jigsall {version}\ncommit={command('git', 'rev-parse', 'HEAD')}\n"
-                               "features=gns,rendezvous\n").encode()
+                               f"features={build_info['features']}\n").encode()
     files["SHA256SUMS"] = "".join(f"{hashlib.sha256(data).hexdigest()}  {name}\n"
                                   for name, data in sorted(files.items())).encode()
     return files

@@ -157,3 +157,15 @@ jobs:
       - name: Windows build and runtime tests (rendezvous / GNS)
         if: runner.os == 'Windows'
         run: python .github/scripts/ci.py
+
+      - name: Install pinned license generator
+        run: python .github/scripts/install_cargo_about.py
+      - name: Smoke-test license collection and release packaging
+        shell: python
+        run: |
+          import platform, subprocess
+          windows = platform.system() == "Windows"
+          target = "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu"
+          archive = "jigsall-windows-x86_64.zip" if windows else "jigsall-linux-x86_64.tar.gz"
+          subprocess.run(["python", ".github/scripts/release.py", "licenses", "--target", target], check=True)
+          subprocess.run(["python", ".github/scripts/release.py", "package", archive], check=True)
