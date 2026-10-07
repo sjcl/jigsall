@@ -114,6 +114,8 @@ pub enum GnsError {
     SocketPair,
     #[error("receive failed: invalid connection or poll group handle")]
     Receive,
+    #[error("invalid native message payload")]
+    InvalidMessagePayload,
     #[error("accept failed: could not set connection poll group")]
     Accept,
     #[error("close failed: invalid connection handle")]
@@ -168,6 +170,8 @@ pub struct GnsGlobal {
 static GNS_GLOBAL: OnceLock<GnsGlobal> = OnceLock::new();
 #[cfg(test)]
 mod initialization_tests;
+#[cfg(test)]
+mod payload_tests;
 #[cfg(test)]
 static INIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -748,6 +752,33 @@ unsafe impl Payload for &'static str {
 #[repr(transparent)]
 pub struct GnsNetworkMessage<T>(*mut ISteamNetworkingMessage, PhantomData<T>);
 
+/// Borrows a native payload after validating its slice representation.
+///
+/// A zero-size message may have a null data pointer. Application size limits,
+/// framing and authentication must be checked separately by the caller.
+///
+/// # Safety
+/// For a positive size and a non-null data pointer, `message.m_pData` must
+/// point to at least `message.m_cbSize` initialized bytes in one allocation.
+/// That allocation must remain valid and immutable for the borrow of `message`.
+/// Null pointers and nonpositive sizes are handled without accessing the data.
+#[inline]
+pub unsafe fn try_message_payload(message: &ISteamNetworkingMessage) -> GnsResult<&[u8]> {
+    let len = usize::try_from(message.m_cbSize).map_err(|_| GnsError::InvalidMessagePayload)?;
+    if len > isize::MAX as usize {
+        return Err(GnsError::InvalidMessagePayload);
+    }
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if message.m_pData.is_null() {
+        return Err(GnsError::InvalidMessagePayload);
+    }
+    // SAFETY: the caller guarantees the allocation and lifetime; the checks
+    // above establish a non-null pointer and a representable slice length.
+    Ok(unsafe { core::slice::from_raw_parts(message.m_pData.cast(), len) })
+}
+
 impl<T> Drop for GnsNetworkMessage<T> {
     #[inline]
     fn drop(&mut self) {
@@ -775,11 +806,22 @@ impl<T> GnsNetworkMessage<T> {
         core::mem::ManuallyDrop::new(self).0
     }
 
+    /// Returns the payload, including an empty slice for a zero-size message.
+    ///
+    /// # Panics
+    /// Panics on invalid native payload metadata. Receive paths that need to
+    /// reject malformed messages should use [`Self::try_payload`] instead.
     #[inline]
     pub fn payload(&self) -> &[u8] {
-        unsafe {
-            core::slice::from_raw_parts((*self.0).m_pData as *const u8, (*self.0).m_cbSize as _)
-        }
+        self.try_payload().expect("invalid native message payload")
+    }
+
+    /// Returns the payload or rejects invalid native size/pointer metadata.
+    #[inline]
+    pub fn try_payload(&self) -> GnsResult<&[u8]> {
+        // SAFETY: this wrapper owns a live native message reference and its
+        // payload allocation; the returned slice cannot outlive that ownership.
+        unsafe { try_message_payload(&*self.0) }
     }
 
     #[inline]

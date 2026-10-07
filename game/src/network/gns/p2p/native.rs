@@ -705,22 +705,15 @@ impl Message {
         unsafe { (*self.0).m_idxLane }
     }
     pub(super) fn payload(&self) -> Result<&[u8], TransportError> {
-        // SAFETY: live native message; validate size before constructing slice.
+        // SAFETY: live native message, uniquely owned by this guard.
         let message = unsafe { &*self.0 };
-        if message.m_cbSize < 0 || message.m_cbSize > k_cbMaxSteamNetworkingSocketsMessageSizeSend {
+        // Retain this adapter's size policy outside the shared slice validation.
+        if message.m_cbSize > k_cbMaxSteamNetworkingSocketsMessageSizeSend {
             return Err(failure());
         }
-        if message.m_cbSize == 0 {
-            return Ok(&[]);
-        }
-        if message.m_pData.is_null() {
-            return Err(failure());
-        }
-        Ok(
-            unsafe {
-                std::slice::from_raw_parts(message.m_pData.cast(), message.m_cbSize as usize)
-            },
-        )
+        // SAFETY: native GNS owns the payload allocation until this guard is
+        // dropped, and the slice cannot outlive the guard's shared borrow.
+        unsafe { ::gns::try_message_payload(message) }.map_err(|_| failure())
     }
 }
 impl Drop for Message {

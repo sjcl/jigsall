@@ -500,7 +500,13 @@ impl Transport for GnsDirectIp {
                     self.terminate(id, DisconnectReason::InvalidMessage, events);
                     continue;
                 };
-                let payload = message.payload();
+                let payload = match message.try_payload() {
+                    Ok(payload) => payload,
+                    Err(_) => {
+                        self.terminate(id, DisconnectReason::InvalidMessage, events);
+                        continue;
+                    }
+                };
                 if payload.len() > record_limit(class)
                     || (!connection.authenticated
                         && !matches!(wire::is_session_control_for_class(payload, class), Ok(true)))
@@ -1090,6 +1096,88 @@ mod tests {
         },
         ..DEFAULT_INBOUND_POLICY
     };
+
+    #[test]
+    fn gns_localhost_empty_reliable_messages_are_rejected_before_and_after_authentication() {
+        use crate::network::{
+            auth::AuthenticatedSecret,
+            secure::{ChannelRole, SecureTransport},
+        };
+        struct EmptyPayload;
+        // SAFETY: a zero-sized value owns no allocation or other resources.
+        // GNS may adjust reliable message sizes before release, so this fixture
+        // uses native null storage instead of a Rust buffer/free callback.
+        unsafe impl ::gns::Payload for EmptyPayload {
+            fn into_raw(self) -> (*mut u8, usize) {
+                (std::ptr::null_mut(), 0)
+            }
+            unsafe fn from_raw(_ptr: *mut u8, _len: usize) -> Self {
+                Self
+            }
+        }
+        for authenticated in [false, true] {
+            for outgoing_receive in [false, true] {
+                for class in [
+                    MessageClass::Control,
+                    MessageClass::Bulk,
+                    MessageClass::Transient,
+                ] {
+                    let mut host = GnsDirectIp::new().unwrap();
+                    let mut client = GnsDirectIp::new().unwrap();
+                    let (_, incoming, outgoing) =
+                        connect_pair_unauthenticated(&mut host, &mut client);
+                    let (receiver, receiver_id, receiver_role, sender, sender_id) =
+                        if outgoing_receive {
+                            (client, outgoing, ChannelRole::Client, host, incoming)
+                        } else {
+                            (host, incoming, ChannelRole::Host, client, outgoing)
+                        };
+                    let mut receiver = SecureTransport::new(receiver);
+                    receiver.start_connection(receiver_id);
+                    if authenticated {
+                        receiver
+                            .install(
+                                receiver_id,
+                                AuthenticatedSecret::fixture(&[7; 16]),
+                                receiver_role,
+                            )
+                            .unwrap();
+                    }
+                    // Send raw reliable data even on Transient so every recognized
+                    // lane exercises native zero-size delivery without UDP loss.
+                    let connection = &sender.connections[&sender_id];
+                    let message = sender
+                        .global
+                        .utils()
+                        .allocate_message(connection.native, SendFlags::RELIABLE, EmptyPayload)
+                        .set_lane(lane(class));
+                    sender.sockets[&connection.endpoint].send(message).unwrap();
+                    flush_and_wait_for_reliable_ack(&sender, sender_id);
+                    let mut events = Vec::new();
+                    receiver.poll(&mut events).unwrap();
+                    assert_eq!(
+                        events,
+                        vec![TransportEvent::Disconnected {
+                            connection: receiver_id,
+                            reason: if authenticated {
+                                DisconnectReason::ProtocolViolation
+                            } else {
+                                DisconnectReason::InvalidMessage
+                            },
+                        }],
+                        "authenticated={authenticated}, outgoing={outgoing_receive}, class={class:?}"
+                    );
+                    events.clear();
+                    receiver.poll(&mut events).unwrap();
+                    assert!(events.is_empty(), "disconnect must be emitted only once");
+                    assert!(!receiver
+                        .backend_mut()
+                        .connections
+                        .contains_key(&receiver_id));
+                }
+            }
+        }
+    }
 
     #[test]
     fn gns_localhost_preauth_oversize_is_rejected_before_copy() {
