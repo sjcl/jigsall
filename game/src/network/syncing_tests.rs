@@ -1048,6 +1048,9 @@ fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
         h.host_to_client().unwrap().pop(),
         Some(ClientSyncOutcome::Finalized)
     ));
+    // This update is absent from the Finalize snapshot and was never retained.
+    let commit_delta = Vec2::new(20.0, 40.0);
+    authoritative_update(&mut h, 1, commit_delta);
     h.client_to_host().unwrap();
     assert_eq!(h.p.host.state(HA), Some(ConnectionState::Ready));
     assert_eq!(h.p.host_connections.player(HA), Some(player));
@@ -1065,7 +1068,7 @@ fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
     ));
     let cursor = h.s.peers[0].session.cursor();
     let states = h.s.peers[0].store.states.clone();
-    for tick in [1, 2] {
+    for tick in [2, 3] {
         let delta = Vec2::splat(tick as f32 * 5.0);
         let mut cmd = update();
         cmd.player = B;
@@ -1123,7 +1126,7 @@ fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
                 .unwrap();
         assert_eq!(h.p.client.failure(), None);
         assert!(h.p.ct.has_channel(CLIENT_HOST));
-        if tick == 1 {
+        if tick == 2 {
             assert_eq!(routed, BootstrapOutcome::Consumed);
             assert_eq!(h.p.client.state(), Some(ConnectionState::Syncing));
             assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
@@ -1144,6 +1147,13 @@ fn encrypted_transient_overtaking_ready_commit_drops_then_gameplay_resumes() {
             ));
             assert_eq!(h.p.client.state(), Some(ConnectionState::Ready));
             assert_eq!(h.p.client_connections.player(CLIENT_HOST), Some(HOST));
+            let peer = &h.s.peers[0];
+            let drag = peer
+                .replica
+                .remote_drag(&peer.session, &peer.store, B)
+                .unwrap();
+            assert_eq!(drag.last_tick, Some(1));
+            assert_eq!(drag.delta, commit_delta);
         } else {
             assert_eq!(routed, BootstrapOutcome::Gameplay);
             let peer = &mut h.s.peers[0];
@@ -1235,48 +1245,151 @@ fn final_drags_reconcile_scalar_rollback_and_multiple_players_without_replaying_
 }
 
 #[test]
-fn transient_race_retries_fresh_revision_without_reliable_replay_or_hook() {
+fn continuous_transient_races_commit_latest_scalars_without_retry_or_hook() {
     let mut h = Harness::new(true, CatchUpLimits::default());
     h.apply_grab();
+    authoritative_update(&mut h, 0, Vec2::ONE);
     h.reach(SyncPhase::Finalizing);
-    let old = final_token(&h, 1);
-    h.host_to_client().unwrap();
-    authoritative_update(&mut h, 7, Vec2::splat(15.0));
-    h.client_to_host().unwrap();
-    assert_eq!(h.p.host.state(HA), Some(ConnectionState::Syncing));
-    assert_eq!(h.host.phase(HA), Some(SyncPhase::Finalizing));
-    assert_eq!(h.s.host.session.cursor(), old.cursor);
-    h.host
-        .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
-        .unwrap();
-    h.send_client(Control::FinalizeAck { token: old }).unwrap();
-    assert_eq!(h.p.host_connections.player(HA), None);
-    h.reach(SyncPhase::Ready);
+    let cursor = h.s.host.session.cursor();
+    let epoch = h.s.host.store.epoch;
+    let states = h.s.host.store.states.clone();
+    let structure =
+        FinalDragSet::capture(&h.s.contexts, &h.s.host.session, &h.s.host.store).unwrap();
+    let mut ready_round = None;
+    // Keep racing every ACK, including any retry the implementation attempts.
+    // The previous full scalar comparison exhausts this bounded loop.
+    for round in 0..8 {
+        assert!(matches!(
+            h.host_to_client().unwrap().pop(),
+            Some(ClientSyncOutcome::Finalized)
+        ));
+        for offset in 1..=8 {
+            let tick = round * 8 + offset;
+            authoritative_update(&mut h, tick, Vec2::new(tick as f32, -(tick as f32)));
+        }
+        let latest =
+            FinalDragSet::capture(&h.s.contexts, &h.s.host.session, &h.s.host.store).unwrap();
+        assert!(latest.same_reliable_structure(&structure));
+        assert_eq!(h.s.host.session.cursor(), cursor);
+        assert_eq!(h.s.host.store.epoch, epoch);
+        assert_eq!(h.s.host.store.states, states);
+        h.client_to_host().unwrap();
+        if h.p.host.state(HA) == Some(ConnectionState::Ready) {
+            assert!(matches!(
+                h.host_to_client().unwrap().pop(),
+                Some(ClientSyncOutcome::Ready)
+            ));
+            ready_round = Some(round + 1);
+            break;
+        }
+        h.host
+            .pump(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+            .unwrap();
+    }
+    assert_eq!(ready_round, Some(1));
+    assert_eq!(h.client.phase(), SyncPhase::Ready);
     let peer = &h.s.peers[0];
     let drag = peer
         .replica
         .remote_drag(&peer.session, &peer.store, B)
         .unwrap();
-    assert_eq!(drag.last_tick, Some(7));
-    assert_eq!(drag.delta, Vec2::splat(15.0));
+    let latest =
+        h.s.contexts
+            .active_drag(&h.s.host.session, &h.s.host.store, B)
+            .unwrap();
+    assert_eq!(drag.last_tick, latest.last_tick);
+    assert_eq!(drag.delta, latest.delta);
+    assert_eq!(drag.last_tick, Some(8));
+    assert_ne!(drag.delta, structure.entries[0].delta);
+    assert_eq!(peer.session.cursor(), cursor);
+    assert_eq!(peer.store.states, states);
+
+    // A delayed pre-Finalize Transient cannot roll the Ready context back.
+    let stale = RemoteDragUpdate {
+        session: peer.session.session_id(),
+        authority_epoch: cursor.epoch,
+        player: B,
+        grab_sequence: 0,
+        basis_sequence: 0,
+        tick: 0,
+        delta: Vec2::ONE,
+    };
+    let peer = &mut h.s.peers[0];
+    let mut router = ClientRouter {
+        roster: &mut peer.roster,
+        local_player: h.p.client.assigned_player().unwrap(),
+        host_connection: CLIENT_HOST,
+        connections: &h.p.client_connections,
+        replica: &mut peer.replica,
+        session: &mut peer.session,
+        store: &mut peer.store,
+        definition: Some(&h.s.definition),
+    };
+    assert!(matches!(
+        router
+            .route(&message_event(CLIENT_HOST, &WireMessage::DragUpdate(stale)))
+            .unwrap(),
+        ClientRouteOutcome::DroppedTransient(_)
+    ));
+    let drag = peer
+        .replica
+        .remote_drag(&peer.session, &peer.store, B)
+        .unwrap();
+    assert_eq!(drag.last_tick, latest.last_tick);
+    assert_eq!(drag.delta, latest.delta);
 }
 
 #[test]
 fn reliable_race_obsoletes_ack_then_catches_up_and_finalizes_again() {
-    let mut h = Harness::new(true, CatchUpLimits::default());
-    h.reach(SyncPhase::Finalizing);
-    let old = final_token(&h, 1);
-    h.host_to_client().unwrap();
-    h.apply_grab();
-    assert_eq!(h.host.phase(HA), Some(SyncPhase::CatchingUp));
-    h.client_to_host().unwrap();
-    assert_eq!(h.p.host_connections.player(HA), None);
-    h.reach(SyncPhase::CatchingUp);
-    h.reach(SyncPhase::Finalizing);
-    h.send_client(Control::FinalizeAck { token: old }).unwrap();
-    assert_eq!(h.p.host.state(HA), Some(ConnectionState::Syncing));
-    h.reach(SyncPhase::Ready);
-    assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
+    for change in 0..3 {
+        let mut h = Harness::new(true, CatchUpLimits::default());
+        if change != 0 {
+            h.apply_grab();
+            authoritative_update(&mut h, 0, Vec2::ONE);
+        }
+        h.reach(SyncPhase::Finalizing);
+        let old = final_token(&h, 1);
+        h.host_to_client().unwrap();
+        if change == 0 {
+            h.apply_grab();
+        } else {
+            let mut cmd = release();
+            cmd.player = B;
+            if change == 2 {
+                cmd.command = ProtocolPieceCommand::RotateDrag {
+                    grab_sequence: 0,
+                    final_delta: Vec2::ONE,
+                    through_tick: Some(0),
+                    quarter_turns: 1,
+                };
+            }
+            let routed =
+                h.s.host_router()
+                    .route_with_sync(
+                        &message_event(HB, &WireMessage::ClientCommand(cmd)),
+                        &mut h.host,
+                    )
+                    .unwrap();
+            assert!(routed.retention.is_ok());
+            assert!(matches!(routed.gameplay, HostRouteOutcome::Applied(_)));
+        }
+        assert_eq!(h.host.phase(HA), Some(SyncPhase::CatchingUp));
+        h.client_to_host().unwrap();
+        assert_eq!(h.p.host_connections.player(HA), None);
+        h.reach(SyncPhase::CatchingUp);
+        h.reach(SyncPhase::Finalizing);
+        h.send_client(Control::FinalizeAck { token: old }).unwrap();
+        assert_eq!(h.p.host.state(HA), Some(ConnectionState::Syncing));
+        h.reach(SyncPhase::Ready);
+        assert_eq!(h.s.peers[0].session.cursor(), h.s.host.session.cursor());
+        let peer = &h.s.peers[0];
+        assert_eq!(peer.store.states, h.s.host.store.states);
+        let host_drag =
+            h.s.contexts
+                .active_drag(&h.s.host.session, &h.s.host.store, B);
+        let peer_drag = peer.replica.remote_drag(&peer.session, &peer.store, B);
+        assert_eq!(host_drag, peer_drag);
+    }
 }
 
 #[test]
@@ -1328,6 +1441,70 @@ fn final_full_set_mismatch_never_acks_or_promotes_and_is_transactional() {
                 .delta,
             before
         );
+        assert_eq!(h.p.host_connections.player(HA), None);
+    }
+}
+
+#[test]
+fn ready_commit_drag_mismatch_is_transactional_and_never_promotes() {
+    for fault in 0..7 {
+        let mut h = Harness::new(true, Default::default());
+        h.apply_grab();
+        h.reach(SyncPhase::Finalizing);
+        h.host_to_client().unwrap();
+        let token = final_token(&h, 1);
+        let snapshot =
+            h.p.host_roster
+                .prepare_join(crate::players::RosterPlayer {
+                    player: h.p.client.assigned_player().unwrap(),
+                    display_name: None,
+                })
+                .unwrap()
+                .snapshot();
+        let mut drags =
+            FinalDragSet::capture(&h.s.contexts, &h.s.host.session, &h.s.host.store).unwrap();
+        drags.entries[0].delta = Vec2::splat(222.0);
+        match fault {
+            0 => drags.entries.clear(),
+            1 => {
+                let mut extra = drags.entries[0];
+                extra.player = PlayerId(99);
+                drags.entries.push(extra);
+            }
+            2 => {
+                drags.entries[0].grab_sequence += 1;
+                drags.entries[0].basis_sequence += 1;
+            }
+            3 => drags.entries[0].basis_sequence += 1,
+            4 => drags.entries.push(drags.entries[0]),
+            5 => drags.entries[0].delta.x = f32::NAN,
+            _ => drags.entries[0].player = HOST,
+        }
+        let peer = &h.s.peers[0];
+        let before = peer
+            .replica
+            .remote_drag(&peer.session, &peer.store, B)
+            .unwrap()
+            .clone();
+        let roster_before = peer.roster.snapshot();
+        let states_before = peer.store.states.clone();
+        assert!(matches!(
+            h.send_host(WireMessage::SyncControl(Control::ReadyCommit {
+                token,
+                roster: snapshot,
+                drags
+            })),
+            Err(SyncError::FinalDrag(_))
+        ));
+        let peer = &h.s.peers[0];
+        assert_eq!(
+            peer.replica.remote_drag(&peer.session, &peer.store, B),
+            Some(&before)
+        );
+        assert_eq!(peer.roster.snapshot(), roster_before);
+        assert_eq!(peer.store.states, states_before);
+        assert_eq!(h.p.client_connections.player(CLIENT_HOST), None);
+        assert_eq!(h.client.phase(), SyncPhase::RestartRequired);
         assert_eq!(h.p.host_connections.player(HA), None);
     }
 }
@@ -1581,16 +1758,18 @@ fn ready_snapshot_is_validated_before_client_registration_and_transactional_repl
         let mut events = Vec::new();
         h.p.ct.poll(&mut events).unwrap();
         // Use the actual accepted finalization token, independent of pump revisions.
-        let (token, mut snapshot) = events
+        let (token, mut snapshot, drags) = events
             .into_iter()
             .find_map(|event| {
                 let TransportEvent::Message { class, payload, .. } = event else {
                     return None;
                 };
                 match wire::decode_for_class(&payload, class).unwrap() {
-                    WireMessage::SyncControl(Control::ReadyCommit { token, roster }) => {
-                        Some((token, roster))
-                    }
+                    WireMessage::SyncControl(Control::ReadyCommit {
+                        token,
+                        roster,
+                        drags,
+                    }) => Some((token, roster, drags)),
                     _ => None,
                 }
             })
@@ -1620,6 +1799,7 @@ fn ready_snapshot_is_validated_before_client_registration_and_transactional_repl
                 &WireMessage::SyncControl(Control::ReadyCommit {
                     token,
                     roster: snapshot,
+                    drags,
                 }),
             ),
             &mut h.p.ct,

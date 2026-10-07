@@ -112,7 +112,7 @@ smoothing frames upload **0 atlas bytes**. The view uniform changes only for
 camera/viewport/DPI changes. All cursor paths are independent of PieceDataStore,
 piece selection/membership/connectivity and piece GPU dirty revisions.
 
-Network implementation and CPU smoothing are unchanged: wire version 1,
+Network implementation and CPU smoothing are unchanged: wire version 2,
 Transient payload limit 1,280 bytes, 20 Hz heartbeat and full snapshot batching,
 Ready/reorder gating, 400 ms expiry and PlayerRoster identity remain intact.
 Cursor/atlas state does not enter authority cursors, GameSnapshot, checkpoints,

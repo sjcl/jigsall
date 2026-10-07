@@ -82,6 +82,9 @@ pub enum SyncControlMessage {
     ReadyCommit {
         token: SyncFinalization,
         roster: crate::players::RosterSnapshot,
+        /// Captured at ACK validation, under the same Reliable structure/cursor.
+        /// Syncing clients may have dropped every intervening Transient update.
+        drags: FinalDragSet,
     },
     ClientProfile {
         display_name: Option<jigsall_core::PlayerDisplayName>,

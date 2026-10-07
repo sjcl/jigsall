@@ -30,6 +30,18 @@ pub enum FinalDragError {
 }
 
 impl FinalDragSet {
+    /// Finalize compares only Reliable drag identity. Unchanged authority cursor
+    /// and scope separately guarantee the accepted targets/holds are unchanged.
+    /// Tick/delta must instead be recaptured and handed off in ReadyCommit.
+    pub(crate) fn same_reliable_structure(&self, other: &Self) -> bool {
+        self.entries.len() == other.entries.len()
+            && self.entries.iter().zip(&other.entries).all(|(a, b)| {
+                a.player == b.player
+                    && a.grab_sequence == b.grab_sequence
+                    && a.basis_sequence == b.basis_sequence
+            })
+    }
+
     pub fn validate(&self) -> Result<(), FinalDragError> {
         if self.entries.len() > MAX_BASELINE_DRAGS {
             return Err(FinalDragError::TooManyDrags);
@@ -144,25 +156,34 @@ mod tests {
             sync_control::{SyncControlMessage, SyncFinalization},
             wire::{self, WireError, WireMessage},
         };
-        let control = SyncControlMessage::Finalize {
-            token: SyncFinalization {
-                generation: 0,
-                cursor: AuthorityCursor::new(1, 0),
-                revision: 1,
-            },
-            drags: oversized,
+        let token = SyncFinalization {
+            generation: 0,
+            cursor: AuthorityCursor::new(1, 0),
+            revision: 1,
         };
-        assert_eq!(
-            wire::encode(&WireMessage::SyncControl(control.clone())),
-            Err(WireError::Oversized)
-        );
-        let payload = postcard::to_allocvec(&control).unwrap();
-        let mut frame = b"PZLA".to_vec();
-        frame.extend_from_slice(&wire::WIRE_VERSION.to_le_bytes());
-        frame.extend_from_slice(&[7, 0]);
-        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        frame.extend_from_slice(&payload);
-        assert_eq!(wire::decode(&frame), Err(WireError::MalformedPayload));
+        for control in [
+            SyncControlMessage::Finalize {
+                token,
+                drags: oversized.clone(),
+            },
+            SyncControlMessage::ReadyCommit {
+                token,
+                roster: crate::players::PlayerRoster::host_only(PlayerId(1), None).snapshot(),
+                drags: oversized,
+            },
+        ] {
+            assert_eq!(
+                wire::encode(&WireMessage::SyncControl(control.clone())),
+                Err(WireError::Oversized)
+            );
+            let payload = postcard::to_allocvec(&control).unwrap();
+            let mut frame = b"PZLA".to_vec();
+            frame.extend_from_slice(&wire::WIRE_VERSION.to_le_bytes());
+            frame.extend_from_slice(&[7, 0]);
+            frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            frame.extend_from_slice(&payload);
+            assert_eq!(wire::decode(&frame), Err(WireError::MalformedPayload));
+        }
         struct HugeHint;
         impl<'de> serde::de::SeqAccess<'de> for HugeHint {
             type Error = serde::de::value::Error;

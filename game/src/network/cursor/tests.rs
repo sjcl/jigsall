@@ -55,13 +55,13 @@ fn target(s: &CursorPresence, id: u64) -> Option<Vec2> {
 fn cursor_wire_roundtrip_class_version_and_golden() {
     let msg = WireMessage::CursorUpdate(update(10, Some(Vec2::new(1.0, -2.0))));
     let expected = vec![
-        0x50, 0x5a, 0x4c, 0x41, 1, 0, 9, 0, 12, 0, 0, 0, 1, 2, 10, 1, 0, 0, 0x80, 0x3f, 0, 0, 0,
+        0x50, 0x5a, 0x4c, 0x41, 2, 0, 9, 0, 12, 0, 0, 0, 1, 2, 10, 1, 0, 0, 0x80, 0x3f, 0, 0, 0,
         0xc0,
     ];
     assert_eq!(wire::encode(&msg).unwrap(), expected);
     let snap = WireMessage::CursorSnapshot(snapshot(20, &[1]));
     let golden = vec![
-        0x50, 0x5a, 0x4c, 0x41, 1, 0, 10, 0, 13, 0, 0, 0, 1, 2, 20, 1, 1, 0, 0, 0x80, 0x3f, 0, 0,
+        0x50, 0x5a, 0x4c, 0x41, 2, 0, 10, 0, 13, 0, 0, 0, 1, 2, 20, 1, 1, 0, 0, 0x80, 0x3f, 0, 0,
         0x80, 0x3f,
     ];
     assert_eq!(wire::encode(&snap).unwrap(), golden);
@@ -80,7 +80,7 @@ fn cursor_wire_roundtrip_class_version_and_golden() {
             wire::decode_for_class(&bytes, MessageClass::Bulk),
             Err(wire::WireError::WrongClass)
         );
-        for version in [9, 10, 11] {
+        for version in [1, 9, 10, 11] {
             let mut old = bytes.clone();
             old[4] = version;
             assert_eq!(

@@ -124,7 +124,7 @@ rebase後は成功したRotateDragのcontrol番号です。grab_sequenceはgestu
 誤適用せず拒否します。次の最新Transientまたはreliable操作のfinal_deltaで補えます。
 拒否されたRotateDragはcontrol番号だけを消費し、前のbasis / tick / deltaは保持します。
 fingerprintは対象state・rotation・hold・connectivityに加えcontextのGrab / basis / tick /
-zero deltaも検証します。transportは現行のwire version 1のみをdecodeし、互換decoderはありません。
+zero deltaも検証します。transportは現行のwire version 2のみをdecodeし、互換decoderはありません。
 
 ## Cost and verification
 

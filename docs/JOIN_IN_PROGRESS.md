@@ -163,8 +163,8 @@ targets.
 It does not use ConnectionId, GNS handles or Steam identities, change HostRouter
 parameters, install Bevy systems, call bootstrap `begin_sync`/`promote_ready`, or
 add wire messages. JOIN_BASELINE_SCHEMA_VERSION **1** and SNAPSHOT_SCHEMA_VERSION
-**1** remain unchanged. The application Syncing protocol uses WIRE_VERSION **1**
-and fixed v1 frames; catch-up semantics and generic Bulk fields are unchanged.
+**1** remain unchanged. The application Syncing protocol uses WIRE_VERSION **2**
+and fixed v2 frames; catch-up semantics and generic Bulk fields are unchanged.
 
 Only after image preparation and verified `ImageReady`, call
 `begin_join(player, session, store, contexts, definition)` between complete
@@ -292,7 +292,7 @@ It detects unrecorded authority gameplay and is **not** a Ready decision.
 `latest_drag_updates` returns latest presentation in ascending PlayerId order;
 the caller must deliver it after the corresponding reliable basis.
 
-Runtime lifecycle (`network::syncing`, wire v1):
+Runtime lifecycle (`network::syncing`, wire v2):
 
 ```text
 Authenticated
@@ -310,7 +310,7 @@ Authenticated
 → Finalize(generation, cursor, revision, full authoritative active-drag scalar set)
 → client full-set reconciliation, FinalizeAck(generation, cursor, revision)
 → host rechecks scope, Reliable currency and current authoritative scalar set
-→ host Ready registration, then ReadyCommit(generation, cursor, revision, roster snapshot)
+→ host Ready registration, then ReadyCommit(generation, cursor, revision, roster snapshot, latest drag scalars)
 → client Ready registration, then Ready gameplay
 ```
 
@@ -454,13 +454,17 @@ at 1, increases with checked arithmetic for every candidate, survives baseline
 restarts and never wraps or reuses a token. Client reconciliation sends FinalizeAck
 but leaves the connection Syncing. On that exact ACK, the host rechecks generation,
 session/host/authority epoch, active authority, store generation, Reliable currency
-and cursor, then recaptures and compares the full scalar set to the candidate.
+and cursor, then recaptures and compares the Reliable drag structure (player set,
+grab sequence and basis sequence) to the candidate. The unchanged Reliable cursor
+and scope preserve accepted targets and ownership. Tick/delta equality is not a
+readiness condition: these Transient scalars may keep changing throughout the join.
 Only a still-current candidate can construct the private `SyncReadyPermit`.
 
 New Reliable events invalidate the candidate and return to CatchingUp; after
-ReliableComplete a fresh finalization follows. Transient-only differences leave
-the peer Finalizing and clear the candidate so the next pump sends a new revision,
-without replaying Reliable history. Superseded revisions, old generations and
+ReliableComplete a fresh finalization follows. A structural mismatch also retires
+the candidate and requires a fresh revision. Transient-only differences instead
+complete the same revision with the latest scalars in ReadyCommit, so continuous
+dragging cannot starve finalization. Superseded revisions, old generations and
 ACKs arriving during restart/fallback are harmless obsolete drops. Future or
 inconsistent tokens reject. Scope changes/freeze/migration/missed Reliable hooks
 invalidate candidates through the existing catch-up scope boundary.
@@ -469,9 +473,15 @@ Host ACK routing calls `promote_ready` before queuing Reliable Control ReadyComm
 The SessionConnections mapping therefore exists before the client can receive
 commit and submit gameplay on either lane. The client requires the matching
 reconciled candidate and unchanged scope/cursor before its own `promote_ready`.
+ReadyCommit includes the full bounded FinalDragSet captured at ACK validation.
+The client verifies that its Reliable structure matches the candidate, validates
+the whole set against current replica contexts, then applies its latest tick/delta
+transactionally before promotion. It never reapplies the older candidate scalars.
 Live Transient broadcasts can reach that client before Control ReadyCommit; the
 client drops them while Syncing and accepts subsequent updates after commit.
-FinalDragSet supplies the reconciled presentation state at the final barrier.
+ReadyCommit's FinalDragSet supplies the reconciled presentation state at that
+commit boundary, even if every pre-Ready Transient was dropped. Updates generated
+after that boundary use normal gameplay delivery after Ready.
 Its mapping identifies the host; local PlayerId remains independently assigned.
 The synchronous route borrow covers validation, registration and commit sending,
 so authority commands cannot interleave that boundary. No host freeze is needed;
@@ -506,13 +516,14 @@ independent slow-peer overflow, byte/count/zero limits, restart recovery, failed
 capture/exhausted counters, stale generations, missing reliable/transient hooks,
 ACK validation, scope/freeze invalidation, capacity and the no-join fast path.
 Secure routing tests additionally cover empty/multiple final sets, scalar rollback,
-missing/extra/wrong/duplicate contexts, unrecorded Transient retries, Reliable
+missing/extra/wrong/duplicate contexts, continuous unrecorded Transient updates
+completing in one revision, latest-scalar Ready handoff, Reliable
 fallback, stale revision/generation ACKs, scope changes and failed ACK/commit/
 registration cleanup. The actual localhost GNS join test runs SPAKE2, missing-image
 negotiation/verification, baseline, catch-up, reconciliation, final ACK and production
 Ready promotion, then sends and replicates a normal Grab over encrypted Control.
 
-## Bounded Bulk substrate (wire v1, framing retained from pre-release v6)
+## Bounded Bulk substrate (wire v2, framing retained from pre-release v6)
 
 `network::bulk` provides `BulkTransferKind::{JoinBaseline, PuzzleImage}`,
 monotonic `TransferId(u64)` and typed Start/Chunk/Finish/Abort under outer wire
@@ -552,4 +563,4 @@ streaming, compression or Steamworks is added. Bevy scheduling, worker image dec
 World installation and disconnect ownership now live in the
 [game runtime](DIRECT_IP_RUNTIME.md).
 See [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md#bounded-bulk-transfer-foundation)
-for the generic framing, receiver error semantics and fixed v1 golden contract.
+for the generic framing, receiver error semantics and fixed v2 golden contract.

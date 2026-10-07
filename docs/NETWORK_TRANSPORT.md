@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 offline authority path. The game runtime and UI provide Direct IP and optional
 Internet Room Code entrypoints; migration orchestration remains separate.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v1 and snapshot schema 1. `core` has no transport/native dependency.
+wire v2 and snapshot schema 1. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
@@ -584,7 +584,7 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 1 |
+| 4..6 | u16 wire version, little-endian, currently 2 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl, 8 Presence, 9 CursorUpdate, 10 CursorSnapshot |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -597,7 +597,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v1 Postcard field order and enum representation are part of the wire contract.
+The v2 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -625,11 +625,14 @@ then Option<PlayerDisplayName>. Existing gameplay payloads remain unchanged.
 Pre-release version 11 added CursorUpdate kind 9 and CursorSnapshot kind 10 on
 Transient. Gameplay and checkpoint payloads remained unchanged.
 For the first release, the existing pre-release v11 schema is numbered v1.
-Only version 1 is decoded; other version numbers are rejected. Pre-release builds,
-including the earlier v1 prototype, are not supported; no compatibility decoder
+Version 2 appends a bounded FinalDragSet after the roster in ReadyCommit, carrying
+the latest authoritative tick/delta at FinalizeAck validation. Reliable drag
+structure must match the candidate; Transient movement alone needs no retry.
+Only version 2 is decoded; other version numbers are rejected. Earlier builds,
+including wire v1, are not supported; no compatibility decoder
 is provided. WIRE_VERSION also binds PAKE context, HKDF application keys and secure
-record AAD to v1. Payload layouts and the cryptographic design are unchanged.
-Fixed v1 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+record AAD to v2. Gameplay payload layouts and the cryptographic design are unchanged.
+Fixed v2 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
 RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
 AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl, including

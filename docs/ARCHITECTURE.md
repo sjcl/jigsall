@@ -76,7 +76,7 @@ cursorの通常処理は最大64 remote playersのsmoothing / instance描画で�
 component・piece GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
 snapshot / checkpoint / JoinBaseline / catch-up / save / autosaveから完全に分離します。
 disconnect / PlayerLeftは即削除、session / epoch / baseline / Ready replacementとteardownは
-全resetです。wire v1の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
+全resetです。wire v2の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
 詳細は[runtime](DIRECT_IP_RUNTIME.md#remote-cursor-presence)と
 [transport](NETWORK_TRANSPORT.md#world-space-remote-cursors)を参照してください。
 
@@ -481,7 +481,7 @@ target / displayed / smoothing ageと64-bit active maskはmappingから独立し
 
 client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipを構築し、displayed == target == reconciled deltaへ即時初期化します。初回Transientを待たず、過去のdragをzeroからanimationさせず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、join baseline / new session、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・両delta・smoothing stateをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
 
-`presentation.wgsl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v1、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
+`presentation.wgsl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v2、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 

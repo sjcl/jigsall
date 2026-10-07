@@ -5,7 +5,7 @@ layout, and generator v1 preserves the pre-release v5 algorithm. References belo
 to snapshot schemas 3/4 describe development history; pre-release compatibility is
 not provided. See [ARCHITECTURE.md](ARCHITECTURE.md) for the current format.
 
-## Display metadata and session roster (wire v1)
+## Display metadata and session roster (wire v2)
 
 PlayerId is the protocol/ownership identity. PlayerDisplayName is a validated,
 optional display string; duplicate names are valid. Platform account identity is
@@ -636,7 +636,7 @@ control number while leaving states, holds and the previous basis intact.
 
 Pre-release wire version 5 introduced golden frames for all rotation commands/events,
 signed turns, optional floors, field order and enum indices, plus DragCancelled.
-The current release wire version is 1; pre-release compatibility is not provided.
+The current release wire version is 2; pre-release compatibility is not provided.
 Snapshot schema 4 and its 16-byte records were unchanged by those commands.
 
 ## Reliable lifecycle cancellation

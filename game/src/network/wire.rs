@@ -8,7 +8,7 @@ use jigsall_core::protocol::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 
-pub const WIRE_VERSION: u16 = 1;
+pub const WIRE_VERSION: u16 = 2;
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_CONTROL_PAYLOAD: usize = 256 * 1024;
 pub const MAX_SESSION_CONTROL_PAYLOAD: usize = 4096;
@@ -107,7 +107,7 @@ pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
             binary(v)?
         }
         WireMessage::SyncControl(v) => {
-            if matches!(v, SyncControlMessage::Finalize { drags, .. } if drags.entries.len() > crate::multiplayer::MAX_BASELINE_DRAGS)
+            if matches!(v, SyncControlMessage::Finalize { drags, .. } | SyncControlMessage::ReadyCommit { drags, .. } if drags.entries.len() > crate::multiplayer::MAX_BASELINE_DRAGS)
             {
                 return Err(WireError::Oversized);
             }

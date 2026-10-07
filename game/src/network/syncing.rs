@@ -988,7 +988,7 @@ impl HostSyncCoordinator {
                 if obsolete_ack(peer, token.generation)? {
                     return Ok(());
                 }
-                // ACKs can outlive a Reliable fallback or a Transient retry.
+                // ACKs can outlive a Reliable fallback or a retired candidate.
                 if token.revision < peer.final_revision
                     || (token.revision == peer.final_revision && peer.candidate.is_none())
                 {
@@ -1024,9 +1024,10 @@ impl HostSyncCoordinator {
                 let drags =
                     FinalDragSet::capture(authority.contexts, authority.session, authority.store)
                         .map_err(SyncError::HostFinalDrag)?;
-                if drags != candidate.drags {
+                if !drags.same_reliable_structure(&candidate.drags) {
                     peer.candidate = None;
-                    // No Reliable replay is needed. The next pump sends a fresh revision.
+                    // Retire this token; the next pump rechecks Reliable currency
+                    // before sending a fresh revision.
                     return Ok(());
                 }
                 let next_roster = roster
@@ -1052,6 +1053,7 @@ impl HostSyncCoordinator {
                     Control::ReadyCommit {
                         token,
                         roster: snapshot,
+                        drags,
                     },
                 )?;
                 transport
@@ -1794,6 +1796,7 @@ impl ClientSyncRouter {
                 Control::ReadyCommit {
                     token,
                     roster: snapshot,
+                    drags,
                 } => {
                     if self.stale_generation(token.generation)?
                         || token.revision < self.final_revision
@@ -1812,14 +1815,19 @@ impl ClientSyncRouter {
                     {
                         return Err(SyncError::WrongFinalization);
                     }
+                    if !drags.same_reliable_structure(&candidate.drags) {
+                        return Err(SyncError::FinalDrag(FinalDragError::ContextMismatch));
+                    }
                     let next_roster = PlayerRoster::validated_snapshot(
                         snapshot,
                         self.authenticated.host,
                         self.player,
                     )
                     .map_err(SyncError::Roster)?;
+                    // Syncing may have dropped intervening Transient updates.
+                    // Reapply the fresh commit scalars, never the old candidate.
                     replica
-                        .reconcile_final_drags(session, store, &candidate.drags)
+                        .reconcile_final_drags(session, store, &drags)
                         .map_err(SyncError::FinalDrag)?;
                     let permit = SyncReadyPermit {
                         connection,

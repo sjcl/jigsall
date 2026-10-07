@@ -84,12 +84,15 @@ and binds it to bootstrap's reserved PlayerId for the connection. Pending profil
 survive baseline restarts but are discarded on sync failure/disconnect.
 
 Final ACK validation prepares a complete next roster before Ready registration.
-Host promotes the connection, enqueues ReadyCommit(token, roster), then commits
+Host promotes the connection, enqueues ReadyCommit(token, roster, latest drag scalars), then commits
 its roster and discards sync/catch-up state. Immediate send failure rolls back
 registration and leaves roster/revision unchanged. Existing Ready peers receive
 PlayerJoined; the joiner gets its own entry in ReadyCommit only. Client validates
 count, ascending unique IDs, authenticated host, assigned self and revision before
 transactional install; later events require exactly revision + 1.
+The commit scalars are captured at ACK validation and applied only after checking
+the candidate's Reliable drag structure and unchanged scope/cursor. Continuous
+Transient movement does not require another Finalize revision.
 
 Presence uses wire kind 8, Reliable Control, FrameRoute::Gameplay, Host→Client only.
 The same lane guarantees ReadyCommit(R) precedes PlayerJoined/PlayerLeft(R+1),
@@ -121,7 +124,7 @@ cascading publication failure and immediate join/leave after queued ReadyCommit.
 one secured transport, bootstrap, sync coordinator/router, Ready connections,
 authority session, host drag contexts or client replica, and local command sender.
 It borrows the existing World `PieceDataStore`; there is no second store or
-per-piece network Entity. The wire version is 1, snapshot schema 1, and join
+per-piece network Entity. The wire version is 2, snapshot schema 1, and join
 baseline schema 1.
 
 ## Programmatic entrypoints
