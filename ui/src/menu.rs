@@ -249,7 +249,7 @@ pub fn draw_menu_ui(
     painter.text(
         egui::pos2(screen.right() - 32.0, screen.bottom() - 22.0),
         egui::Align2::RIGHT_CENTER,
-        concat!("v", env!("CARGO_PKG_VERSION")),
+        jigsall_game::build_info::version_label(),
         egui::FontId::proportional(10.0),
         theme::MUTED,
     );

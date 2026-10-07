@@ -290,6 +290,15 @@ impl Listener {
         // values() removes only the Relay bit, preserving private/public/STUN settings.
         self.apply_options()
     }
+    #[cfg(all(test, feature = "rendezvous"))]
+    pub(super) fn set_relay_only_for_test(
+        &mut self,
+        relay_only: bool,
+    ) -> Result<(), TransportError> {
+        // Change future incoming candidates without changing existing handles.
+        self.options.relay_only = relay_only;
+        self.apply_options()
+    }
     fn apply_options(&self) -> Result<(), TransportError> {
         // GNS copies these into the listener; future incoming connections inherit them.
         for value in self.options.values() {

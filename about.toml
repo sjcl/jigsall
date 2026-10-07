@@ -1,0 +1,12 @@
+# This selects dependency license alternatives; it does not license Jigsall.
+accepted = [
+    "MIT", "MIT-0", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
+    "CC0-1.0", "Unicode-3.0", "Unicode-DFS-2016", "OFL-1.1",
+    "BSL-1.0", "MPL-2.0", "Unlicense", "OpenSSL", "Ubuntu-font-1.0", "CDLA-Permissive-2.0",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = false
+filter-noassertion = false
+
+[private]
+ignore = true

@@ -84,7 +84,9 @@ Direct IP の参加先は `192.168.1.10:43576` のような IP アドレス、�
 
 ## リリース
 
-master の履歴に含まれるコミットへのタグ push で、Windows / Linux の x86_64 向けに `gns` 有効のリリースビルドを作成し、GitHub Release の Draft に添付します。タグの作成・再実行・公開の手順は [開発ガイド](docs/DEVELOPMENT.md#リリース)を参照してください。
+master の履歴に含まれるコミットへの version tag push で、Windows / Linux の x86_64 向けに `rendezvous`（GNS を含む）有効のビルドを作成し、GitHub Release の Draft に添付します。最初の配布は `0.1.0-alpha.1` の pre-release です。Alpha 間では保存・通信の互換性が変更される可能性があります。タグの作成・再実行・公開の手順は [開発ガイド](docs/DEVELOPMENT.md#リリース)、配布前の確認は [pre-release checklist](docs/PRE_RELEASE_CHECKLIST.md)を参照してください。
+
+配布版はアーカイブ全体を展開して起動します。Windows 版には Microsoft Visual C++ v14 Redistributable（x64）が必要です。入手先と起動時の確認は [遊び方ガイド](docs/PLAYING.md#配布版の起動)を参照してください。
 
 ## ドキュメント
 

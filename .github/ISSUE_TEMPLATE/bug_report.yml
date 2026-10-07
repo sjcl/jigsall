@@ -1,0 +1,62 @@
+name: Pre-release bug report
+description: Report a crash, rendering, input, save or multiplayer problem
+title: "[Alpha] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not post passwords, Room Codes, credentials, authentication tokens,
+        signaling payloads, or private images/saves. Review and redact logs before
+        uploading them. This is a public issue tracker.
+  - type: input
+    id: version
+    attributes:
+      label: Jigsall version and commit SHA
+      description: Copy the title-screen version or BUILD_INFO.txt / diagnostics log.
+      placeholder: Jigsall 0.1.0-alpha.1 (commit)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: Windows 11 / Ubuntu 24.04, display scaling 150%
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU, driver and wgpu backend
+      description: Copy from the local diagnostics log if available.
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Multiplayer connection
+      options:
+        - Single-player
+        - Direct IP
+        - Room Code
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include piece count, rotation, image type, graphics quality and host/client role where relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: Attach the latest diagnostic log (see docs/PLAYING.md). Redact private details first. If no log was created, say so.

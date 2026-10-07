@@ -667,9 +667,13 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
     mailbox: SignalingEndpoint,
     mut control: impl FnMut(&str, &str) -> u64,
 ) {
-    let mut fixture = Fixture::start();
+    // Both endpoints must use allocations for A/C: a one-sided TURN path or a
+    // signaled host candidate can let native ICE select a peer-reflexive route.
+    // The direct-only peer connects outside the fixture while TURN is disabled.
+    let mut fixture = Fixture::start_with_relay_pairs(true);
     let mut host =
         GnsP2p::with_signaling(P2P_VIRTUAL_PORT, IceConfig::default(), mailbox.clone()).unwrap();
+    host.listener.set_relay_only_for_test(true).unwrap();
     let host_peer = host.peer_id().to_bytes();
     control(&fixture.address, "A");
     host.apply_turn_update().unwrap();
@@ -716,7 +720,11 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
                 ActorFrame::Connected(peer, relay) => {
                     assert_eq!(peer, host_peer);
                     assert!(connected.insert(index), "existing ICE handle was replaced");
-                    assert_eq!(relay, index != 1);
+                    assert_eq!(
+                        relay,
+                        index != 1,
+                        "actor {index} at expiry stage {stage} selected an unexpected ICE route"
+                    );
                 }
                 ActorFrame::Received(peer) => {
                     assert_eq!(peer, host_peer);
@@ -781,6 +789,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
             .unwrap()
             .as_secs();
         if stage == 1 && now >= expiry && host_received.len() == 1 {
+            host.listener.set_relay_only_for_test(false).unwrap();
             control(&fixture.address, "Disable");
             host.apply_turn_update().unwrap();
             assert_eq!(host.turn_addresses, [fixture.address.clone()]);
@@ -814,6 +823,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
                 "direct-only peer2 must not send even an unauthenticated TURN Allocate"
             );
             assert_eq!(stats["allocate_b"].as_u64().unwrap(), 0);
+            host.listener.set_relay_only_for_test(true).unwrap();
             control(&fixture.address, "C");
             host.apply_turn_update().unwrap();
             assert_eq!(host.turn_addresses, [fixture.address.clone()]);

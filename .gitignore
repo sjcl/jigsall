@@ -1,4 +1,6 @@
 /target
+/dist
+__pycache__/
 /internet-defaults.env
 /assets/*
 !/assets/icon.svg

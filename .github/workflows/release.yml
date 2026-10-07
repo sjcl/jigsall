@@ -61,6 +61,14 @@ jobs:
           version += ".0" * (2 - version.count("."))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"toolchain={version}\n")
+      - name: Verify release tag and workspace versions
+        if: steps.master.outputs.on-master == 'true'
+        shell: python
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          import os, subprocess
+          subprocess.run(["python", ".github/scripts/release.py", "verify-version", os.environ["RELEASE_TAG"]], check=True)
 
   build:
     name: Release build (${{ matrix.platform }})
@@ -74,10 +82,12 @@ jobs:
         include:
           - os: ubuntu-24.04
             platform: linux-x86_64
+            target: x86_64-unknown-linux-gnu
             binary: jigsall
             archive: jigsall-linux-x86_64.tar.gz
           - os: windows-2022
             platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
             binary: jigsall.exe
             archive: jigsall-windows-x86_64.zip
     env:
@@ -139,8 +149,28 @@ jobs:
           env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
           cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
 
-      - name: Build application with multiplayer support
-        run: cargo build --locked --release -p jigsall --bin jigsall --features gns
+      # Public repository Variables only. TURN credentials are issued by the
+      # server at runtime; provider secrets must never enter this build job.
+      - name: Configure public Room Code defaults
+        env:
+          JIGSALL_RENDEZVOUS_WSS_URL: ${{ vars.JIGSALL_RENDEZVOUS_WSS_URL }}
+          JIGSALL_ICE_STUN_SERVERS: ${{ vars.JIGSALL_ICE_STUN_SERVERS }}
+          JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES: ${{ vars.JIGSALL_ICE_ALLOW_PUBLIC_CANDIDATES || 'true' }}
+        run: python .github/scripts/release.py configure-defaults
+
+      - name: Build application with Direct IP and Room Code support
+        run: python .github/scripts/release.py build
+
+      - name: Install pinned license generator
+        run: python .github/scripts/install_cargo_about.py
+
+      - name: Generate Rust, native and font license notices
+        env:
+          RELEASE_TARGET: ${{ matrix.target }}
+        shell: python
+        run: |
+          import os, subprocess
+          subprocess.run(["python", ".github/scripts/release.py", "licenses", "--target", os.environ["RELEASE_TARGET"]], check=True)
 
       - name: Package release
         shell: python
@@ -148,31 +178,8 @@ jobs:
           BINARY_NAME: ${{ matrix.binary }}
           ARCHIVE_NAME: ${{ matrix.archive }}
         run: |
-          import json, os, subprocess, tarfile, zipfile
-          from pathlib import Path
-          metadata = json.loads(subprocess.check_output([
-              "cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"
-          ], text=True))
-          binary = Path(metadata["target_directory"]) / "release" / os.environ["BINARY_NAME"]
-          files = [
-              (binary, f"jigsall/{binary.name}"),
-              (Path("README.md"), "jigsall/README.md"),
-              (Path("ui/fonts/OFL.txt"), "jigsall/licenses/MPLUS1p/OFL.txt"),
-              (Path("ui/fonts/README.md"), "jigsall/licenses/MPLUS1p/README.md"),
-          ]
-          for source, _ in files:
-              if not source.is_file():
-                  raise FileNotFoundError(source)
-          Path("dist").mkdir(exist_ok=True)
-          archive = Path("dist") / os.environ["ARCHIVE_NAME"]
-          if archive.name.endswith(".zip"):
-              with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as output:
-                  for source, name in files:
-                      output.write(source, name)
-          else:
-              with tarfile.open(archive, "w:gz") as output:
-                  for source, name in files:
-                      output.add(source, arcname=name)
+          import os, subprocess
+          subprocess.run(["python", ".github/scripts/release.py", "package", os.environ["ARCHIVE_NAME"]], check=True)
 
       - name: Upload packaged build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -226,6 +233,8 @@ jobs:
           if existing.returncode == 0:
               if not json.loads(existing.stdout)["isDraft"]:
                   raise RuntimeError("Refusing to modify an already published release")
+              if "-" in tag:
+                  subprocess.run(["gh", "release", "edit", "--prerelease", "--", tag], check=True)
               subprocess.run([
                   "gh", "release", "upload", "--clobber", "--", tag,
                   *map(str, assets)
@@ -234,5 +243,6 @@ jobs:
               subprocess.run([
                   "gh", "release", "create", "--draft", "--verify-tag",
                   "--title", tag, "--target", os.environ["RELEASE_COMMIT"],
+                  *(["--prerelease"] if "-" in tag else []),
                   "--generate-notes", "--", tag, *map(str, assets)
               ], check=True)
