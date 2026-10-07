@@ -79,5 +79,5 @@ pub fn image_is_opaque(image: &Image) -> bool {
     ) && image
         .data
         .as_ref()
-        .is_some_and(|bytes| bytes.chunks_exact(4).all(|p| p[3] == 255))
+        .is_some_and(|bytes| bytes.as_chunks::<4>().0.iter().all(|p| p[3] == 255))
 }

@@ -4,7 +4,7 @@
 
 ## ビルドと起動
 
-最低対応 Rust はルートの [Cargo.toml](../Cargo.toml) の `workspace.package.rust-version`（現在 1.95）で管理します。OS に対応する C/C++ リンカーと、Bevy の描画 backend に対応する GPU・ドライバーが必要です。共通の依存定義と lockfile を維持し、リポジトリのルートで実行してください。
+最低対応 Rust はルートの [Cargo.toml](../Cargo.toml) の `workspace.package.rust-version`（現在 1.99）で管理します。OS に対応する C/C++ リンカーと、Bevy の描画 backend に対応する GPU・ドライバーが必要です。共通の依存定義と lockfile を維持し、リポジトリのルートで実行してください。
 
 ```sh
 # 開発時の起動

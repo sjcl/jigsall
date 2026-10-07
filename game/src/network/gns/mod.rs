@@ -45,6 +45,6 @@ fn configure_authenticated_send_rate(
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 fn token() -> Result<u64, TransportError> {
     NEXT_TOKEN
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
         .map_err(|_| TransportError::Capacity)
 }

@@ -139,7 +139,7 @@ impl AddressResolution {
         // An OS lookup cannot be interrupted. Bound workers even if requests
         // are repeatedly cancelled or time out while the OS is still resolving.
         ACTIVE_RESOLVERS
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |active| {
                 (active < MAX_RESOLVERS).then_some(active + 1)
             })
             .map_err(|_| ResolutionError::Busy)?;

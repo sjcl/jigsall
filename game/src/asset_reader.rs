@@ -470,8 +470,10 @@ pub(crate) mod tests {
                 .image
                 .data
                 .unwrap()
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0x12, 0x34, 0x56, 0x80]));
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0x12, 0x34, 0x56, 0x80]));
         }
     }
 
@@ -596,7 +598,9 @@ pub(crate) mod tests {
                     .image
                     .data
                     .unwrap()
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .all(|pixel| pixel[3] == alpha));
             }
         }

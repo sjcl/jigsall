@@ -149,6 +149,6 @@ fn gpu_local_rotation_overrides_share_draw_culling_picking_and_restore_sparse_ra
             16
         );
         let pixels = rendered_pixels(&mut app, target);
-        assert!(pixels.chunks_exact(4).all(|p| p[..3] == [0; 3]));
+        assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[..3] == [0; 3]));
     }
 }

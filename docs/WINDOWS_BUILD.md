@@ -2,7 +2,7 @@
 
 ## 前提
 
-- Rust 1.95以上（MSVC toolchain）
+- Rust 1.99以上（MSVC toolchain）
 - Visual Studio 2022 Build Toolsの「C++によるデスクトップ開発」とWindows SDK
 - Bevyの描画backendに対応するGPU / driver
 

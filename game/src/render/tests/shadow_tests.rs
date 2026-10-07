@@ -149,9 +149,11 @@ fn gray_shadow(pixel: &[u8]) -> bool {
 
 pub(super) fn shadow_pixels(pixels: &[u8]) -> Vec<UVec2> {
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
-        .filter(|(_, p)| gray_shadow(p))
+        .filter(|(_, p)| gray_shadow(*p))
         .map(|(index, _)| UVec2::new((index % 128) as u32, (index / 128) as u32))
         .collect()
 }
@@ -329,7 +331,7 @@ fn gpu_shadow_static_low_flat_pixels_lod_and_top_only_picking() {
     let flat = render_frame(&mut app, target.clone());
     assert_eq!(shadow_draws(&app), 0);
     // Exact flat reference: a single all-border rectangular piece, no profiles.
-    for (index, pixel) in flat.chunks_exact(4).enumerate() {
+    for (index, pixel) in flat.as_chunks::<4>().0.iter().enumerate() {
         let x = index % 128;
         let y = index / 128;
         let expected = if (44..84).contains(&x) && (44..84).contains(&y) {
@@ -337,7 +339,7 @@ fn gpu_shadow_static_low_flat_pixels_lod_and_top_only_picking() {
         } else {
             [255; 4]
         };
-        assert_eq!(pixel, expected, "flat pixel {x},{y}");
+        assert_eq!(*pixel, expected, "flat pixel {x},{y}");
     }
     for quality in [PieceVisualQuality::Medium, PieceVisualQuality::High] {
         app.insert_resource(quality);
@@ -417,7 +419,9 @@ fn gpu_shadow_rotation_separation_and_screen_direction_survive_zoom_and_rotation
             app.insert_resource(PieceVisualQuality::Low);
             let flat = render_frame(&mut app, target.clone());
             let top: Vec<_> = flat
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .enumerate()
                 .filter(|(_, p)| p[..3] == [255, 0, 0])
                 .map(|(i, _)| UVec2::new((i % 128) as u32, (i / 128) as u32))
@@ -478,7 +482,7 @@ fn gpu_shadow_far_splat_and_alpha_share_point_rectangle_semantics() {
         let shadows = shadow_pixels(&pixels);
         if alpha == 0 {
             assert!(shadows.is_empty());
-            assert!(pixels.chunks_exact(4).all(|p| p[..3] == [255; 3]));
+            assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[..3] == [255; 3]));
         } else {
             assert_eq!(shadows, vec![UVec2::new(66, 66)]);
         }
@@ -565,7 +569,7 @@ fn gpu_shadow_culling_keeps_shadow_only_viewport_edge() {
     app.world_mut().resource_mut::<ShadowTime>().0 = 0.060;
     let flat = render_frame(&mut app, target.clone());
     assert!(visible_ids(&app).is_empty());
-    assert!(flat.chunks_exact(4).all(|p| p[..3] == [255; 3]));
+    assert!(flat.as_chunks::<4>().0.iter().all(|p| p[..3] == [255; 3]));
     app.insert_resource(PieceVisualQuality::High);
     // Keep this clipping fixture's separation beyond the conservative quad
     // padding. Production size rules are covered by scaled_visuals_tests.
@@ -604,7 +608,12 @@ fn gpu_shadow_overlap_blends_once_for_opaque_translucent_and_equal_ranks() {
                 }
             }
             let pixels = render_frame(&mut app, target.clone());
-            let shadows: Vec<_> = pixels.chunks_exact(4).filter(|p| gray_shadow(p)).collect();
+            let shadows: Vec<_> = pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| gray_shadow(p.as_slice()))
+                .collect();
             assert!(!shadows.is_empty());
             let expected = if alpha == 255 { 225 } else { 240 };
             for pixel in shadows {

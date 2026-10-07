@@ -256,7 +256,11 @@ fn gpu_remote_cursor_same_frame_pan_zoom_marker_label_hidpi_and_offscreen() {
             .previous
             .is_empty());
         let paused = frame_pixels(&app, &target, resolution);
-        assert!(!paused.chunks_exact(4).any(|p| p[..3] == [101, 190, 255]));
+        assert!(!paused
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] == [101, 190, 255]));
         app.world_mut()
             .insert_resource(State::new(GameSubState::Playing));
         // Left-offscreen center: the right/down label would otherwise enter view.
@@ -428,7 +432,11 @@ fn gpu_remote_cursor_million_pieces_smoothing_settle_camera_upload_isolation() {
     no_piece_uploads(&app);
     let pixels = frame_pixels(&app, &target, 128);
     assert!(
-        pixels.chunks_exact(4).any(|p| p[..3] == [255, 116, 113]),
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[..3] == [255, 116, 113]),
         "markers remain visible while the replacement label image is unavailable"
     );
 }

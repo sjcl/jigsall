@@ -508,7 +508,12 @@ fn gpu_rotated_nonsquare_visibility_and_far_splats_include_viewport_edges() {
         }
         wait_ready(&mut app);
         let pixels = rendered_pixels(&mut app, target.clone());
-        let drawn = pixels.chunks_exact(4).filter(|p| p[0] > 0).count();
+        let drawn = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[0] > 0)
+            .count();
         assert_eq!(drawn, if rotation % 2 == 1 { 1 } else { 0 });
         let point = Rect::new(64.0, 0.0, 65.0, 1.0);
         for mode in [SelectionMode::Point, SelectionMode::Rectangle] {

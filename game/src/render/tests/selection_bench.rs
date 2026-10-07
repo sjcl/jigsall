@@ -108,8 +108,10 @@ fn gpu_million_selection_benchmark() {
         assert_eq!(gpu.selection_upload_bytes, 125_000);
         assert!(
             read_buffer(&app, &gpu.buffers.as_ref().unwrap().selected, 125_000)
-                .chunks_exact(4)
-                .all(|word| u32::from_le_bytes(word.try_into().unwrap()) == u32::MAX)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|word| u32::from_le_bytes(*word) == u32::MAX)
         );
         let (members, grab_cpu) = {
             let mut store = app.world_mut().resource_mut::<PieceDataStore>();

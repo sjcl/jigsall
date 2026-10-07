@@ -183,7 +183,12 @@ fn is_side(pixel: &[u8]) -> bool {
     pixel[0] > 0 && pixel[0] < 150 && pixel[0] == pixel[1] && pixel[1] == pixel[2]
 }
 fn mask(pixels: &[u8], predicate: fn(&[u8]) -> bool) -> Vec<bool> {
-    pixels.chunks_exact(4).map(predicate).collect()
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| predicate(p))
+        .collect()
 }
 pub(super) fn preview_if_requested(name: &str, pixels: &[u8]) {
     if let Some(directory) = std::env::var_os("JIGSALL_VISUAL_PREVIEW_DIR") {
@@ -243,9 +248,11 @@ fn gpu_side_static_quality_lod_ordering_flat_output_and_top_only_picking() {
         preview_if_requested(&format!("side-{quality:?}-idle.png"), &pixels);
         assert_eq!(config(&app).rotation_active, 0);
         let sides: Vec<_> = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .enumerate()
-            .filter(|(_, p)| is_side(p))
+            .filter(|(_, p)| is_side(*p))
             .map(|(i, _)| Vec2::new((i % 128) as f32, (i / 128) as f32))
             .collect();
         assert!(
@@ -265,7 +272,12 @@ fn gpu_side_static_quality_lod_ordering_flat_output_and_top_only_picking() {
             pixels[(85 * 128 + 85) * 4] > 200 && pixels[(85 * 128 + 85) * 4] < 250,
             "shadow must remain beyond side"
         );
-        for (top, actual) in flat.chunks_exact(4).zip(pixels.chunks_exact(4)) {
+        for (top, actual) in flat
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pixels.as_chunks::<4>().0.iter())
+        {
             if is_top(top) {
                 assert_eq!(actual, top);
             }
@@ -309,7 +321,7 @@ fn gpu_side_scaled_screen_thickness_tracks_continuous_pose_zoom_and_camera_rotat
             }
             let actual_side = mask(&pixels, is_side);
             let mut side_count = 0;
-            for (i, pixel) in pixels.chunks_exact(4).enumerate() {
+            for (i, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
                 assert_eq!(
                     actual_side[i],
                     side[i] && !top[i],
@@ -373,7 +385,7 @@ fn gpu_side_connected_union_has_no_internal_seams_during_rotation() {
             preview_if_requested("side-connected-midpoint.png", &pixels);
         }
         let mut outer = 0;
-        for (i, pixel) in pixels.chunks_exact(4).enumerate() {
+        for (i, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
             if top[i] {
                 assert_eq!(
                     pixel,
@@ -489,8 +501,10 @@ fn gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation()
                     // SDF interpolation can leave isolated brighter seam samples;
                     // this regression targets excess dark side accumulation.
                     for (i, (actual, expected)) in pixels
-                        .chunks_exact(4)
-                        .zip(reference[phase].chunks_exact(4))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .zip(reference[phase].as_chunks::<4>().0.iter())
                         .enumerate()
                     {
                         assert!(
@@ -622,7 +636,7 @@ fn gpu_side_visual_culling_keeps_side_only_viewport_edge_without_shadow() {
     app.world_mut().resource_mut::<ShadowTime>().0 = 0.060;
     let flat = render_frame(&mut app, target.clone());
     assert!(visible_ids(&app).is_empty());
-    assert!(flat.chunks_exact(4).all(|p| p == [255; 4]));
+    assert!(flat.as_chunks::<4>().0.iter().all(|p| *p == [255; 4]));
     let mut visuals = PieceVisualQuality::High.resolve();
     visuals.shadow_enabled = false;
     visuals.side_min_piece_px = 0.25;
@@ -765,8 +779,10 @@ fn gpu_side_lod_compilation_keeps_shadow_top_and_ready_epoch_visible() {
         }
         assert_eq!(side_draws(&app), 1);
         assert!(frame_pixels(&app, &target, 128)
-            .chunks_exact(4)
-            .any(is_side));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| is_side(p)));
         assert_no_uploads(&app);
     }
 }
@@ -835,7 +851,9 @@ fn gpu_side_initial_high_epoch_waits_for_all_requested_optional_pipelines() {
         wait_ready(&mut app);
         assert_eq!((shadow_draws(&app), side_draws(&app)), (2, 1));
         assert!(rendered_pixels(&mut app, target)
-            .chunks_exact(4)
-            .any(is_side));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| is_side(p)));
     }
 }

@@ -372,7 +372,9 @@ fn gpu_continuous_rotation_normal_far_draw_point_rectangle_and_zero_piece_upload
         let whole = Rect::new(0.0, 0.0, 256.0, 256.0);
         let rectangle = pick(&mut app, whole, SelectionMode::Rectangle);
         let drawn = before
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .position(|p| p[..3] == [255, 255, 255])
             .unwrap();
         let point = Rect::new(

@@ -349,7 +349,7 @@ register/stack copies, OS memory, or every dependency's internal KDF temporary.
 Standard RustCrypto `chacha20poly1305` 0.11.0 provides the RFC 8439 algorithm and
 16-byte tag. `hkdf` 0.13.0 and `sha2` 0.11.0 are direct dependencies (the latter is
 aliased for this layer, keeping existing SHA-256 callers on their current version).
-Their Rust 1.85 minimum is compatible with the workspace's Rust 1.95. No cipher or
+Their Rust 1.85 minimum is compatible with the workspace's Rust 1.99. No cipher or
 MAC primitive is implemented here. RustCrypto describes an audit of an earlier
 ChaCha20Poly1305 implementation; that does not certify these versions, pakery,
 this integration, or the complete application. See the
@@ -870,7 +870,7 @@ The Rust wrapper builds the bundled open-source GNS sources; no Steamworks SDK,
 
 Windows MSVC prerequisites:
 
-- Rust 1.95+, Visual Studio 2022 C++ tools and Windows SDK (existing prerequisites).
+- Rust 1.99+, Visual Studio 2022 C++ tools and Windows SDK (existing prerequisites).
 - CMake, Git, LLVM/libclang 18.1.8 for the locked bindgen 0.70.1
   (`LIBCLANG_PATH` if not auto-discovered). LLVM 23.1.2 produces an incomplete
   callback struct with this bindgen; see the Windows setup's compatibility note.

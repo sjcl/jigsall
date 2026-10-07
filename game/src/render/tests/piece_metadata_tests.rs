@@ -304,7 +304,11 @@ fn gpu_piece_metadata_invalid_ranges_report_error_stop_rendering_and_recover_nex
         // Extraction replaces the bad payload, but this epoch must stay stopped.
         let pixels = rendered_pixels(&mut app, target.clone());
         assert!(
-            pixels.chunks_exact(4).all(|p| p[..3] == [0, 0, 0]),
+            pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|p| p[..3] == [0, 0, 0]),
             "{region}"
         );
         assert!(!app.world().resource::<RenderReady>().is_ready(epoch));
@@ -324,7 +328,9 @@ fn gpu_piece_metadata_invalid_ranges_report_error_stop_rendering_and_recover_nex
     let epoch = app.world().resource::<PieceDataStore>().epoch;
     assert!(app.world().resource::<RenderReady>().error(epoch).is_none());
     assert!(rendered_pixels(&mut app, target)
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .any(|p| p[0] != 0));
 }
 

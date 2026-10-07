@@ -64,7 +64,9 @@ fn pixel_rect(pixel: UVec2) -> Rect {
 
 fn drawn_mask(pixels: &[u8]) -> Vec<bool> {
     pixels
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|p| p[..3] != [0, 0, 0])
         .collect()
 }

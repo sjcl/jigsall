@@ -468,7 +468,7 @@ fn gpu_bevel_linear_color_preserves_source_alpha_and_both_pick_results() {
             }
         }
         if alpha == 0 {
-            assert!(actual.chunks_exact(4).all(|p| p == [255; 4]));
+            assert!(actual.as_chunks::<4>().0.iter().all(|p| *p == [255; 4]));
         }
         assert_no_uploads(&app);
     }

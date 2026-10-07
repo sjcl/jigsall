@@ -1208,7 +1208,15 @@ fn gpu_transparency_and_visibility() {
     {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
         let mut image = images.get_mut(&handle).unwrap();
-        for (i, p) in image.data.as_mut().unwrap().chunks_exact_mut(4).enumerate() {
+        for (i, p) in image
+            .data
+            .as_mut()
+            .unwrap()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             if i % 128 < 64 {
                 p[3] = 0;
             }
@@ -1237,7 +1245,14 @@ fn gpu_transparency_and_visibility() {
     {
         let mut images = app.world_mut().resource_mut::<Assets<Image>>();
         let mut image = images.get_mut(&handle).unwrap();
-        for p in image.data.as_mut().unwrap().chunks_exact_mut(4) {
+        for p in image
+            .data
+            .as_mut()
+            .unwrap()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+        {
             p[3] = 128;
         }
     }
@@ -1458,7 +1473,14 @@ fn procedural_gpu_benchmark() {
             let handle = app.world().resource::<PuzzleImage>().handle.clone();
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
             let mut image = images.get_mut(&handle).unwrap();
-            for pixel in image.data.as_mut().unwrap().chunks_exact_mut(4) {
+            for pixel in image
+                .data
+                .as_mut()
+                .unwrap()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+            {
                 pixel[3] = 255;
             }
         }
@@ -1546,7 +1568,14 @@ fn procedural_gpu_benchmark() {
                 let handle = app.world().resource::<PuzzleImage>().handle.clone();
                 let mut images = app.world_mut().resource_mut::<Assets<Image>>();
                 let mut image = images.get_mut(&handle).unwrap();
-                for pixel in image.data.as_mut().unwrap().chunks_exact_mut(4) {
+                for pixel in image
+                    .data
+                    .as_mut()
+                    .unwrap()
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                {
                     pixel[3] = if translucent { 128 } else { 255 };
                 }
             }
