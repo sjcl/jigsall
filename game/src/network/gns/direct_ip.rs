@@ -1103,18 +1103,6 @@ mod tests {
             auth::AuthenticatedSecret,
             secure::{ChannelRole, SecureTransport},
         };
-        struct EmptyPayload;
-        // SAFETY: a zero-sized value owns no allocation or other resources.
-        // GNS may adjust reliable message sizes before release, so this fixture
-        // uses native null storage instead of a Rust buffer/free callback.
-        unsafe impl ::gns::Payload for EmptyPayload {
-            fn into_raw(self) -> (*mut u8, usize) {
-                (std::ptr::null_mut(), 0)
-            }
-            unsafe fn from_raw(_ptr: *mut u8, _len: usize) -> Self {
-                Self
-            }
-        }
         for authenticated in [false, true] {
             for outgoing_receive in [false, true] {
                 for class in [
@@ -1149,7 +1137,7 @@ mod tests {
                     let message = sender
                         .global
                         .utils()
-                        .allocate_message(connection.native, SendFlags::RELIABLE, EmptyPayload)
+                        .allocate_message(connection.native, SendFlags::RELIABLE, Vec::<u8>::new())
                         .set_lane(lane(class));
                     sender.sockets[&connection.endpoint].send(message).unwrap();
                     flush_and_wait_for_reliable_ack(&sender, sender_id);
@@ -1177,6 +1165,115 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn gns_localhost_reliable_release_preserves_original_payload_metadata() {
+        use std::sync::{Arc, Mutex};
+
+        #[repr(C)]
+        struct ProbePayload {
+            bytes: [u8; 1024],
+            len: usize,
+            released: Arc<Mutex<Vec<usize>>>,
+        }
+        // SAFETY: repr(C) puts the byte array at offset zero, so the data
+        // pointer also identifies the owned Box. Reconstruct the allocation
+        // independently of len, recording the callback argument for assertions.
+        unsafe impl ::gns::Payload for ProbePayload {
+            fn into_raw(self) -> (*mut u8, usize) {
+                let len = self.len;
+                (Box::into_raw(Box::new(self)).cast(), len)
+            }
+            unsafe fn from_raw(ptr: *mut u8, len: usize) -> Self {
+                let payload = *unsafe { Box::from_raw(ptr.cast::<Self>()) };
+                payload.released.lock().unwrap().push(len);
+                payload
+            }
+        }
+        fn released_lengths(released: &Arc<Mutex<Vec<usize>>>) -> Vec<usize> {
+            // Native ACK counters can reach zero before deferred release runs.
+            // Wait for the payload's Arc to drop, without holding its mutex.
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while Arc::strong_count(released) != 1 {
+                assert!(
+                    Instant::now() < deadline,
+                    "timeout waiting for payload release"
+                );
+                std::thread::park_timeout(Duration::from_millis(1));
+            }
+            released.lock().unwrap().clone()
+        }
+
+        for outgoing_receive in [false, true] {
+            let mut host = GnsDirectIp::new().unwrap();
+            let mut client = GnsDirectIp::new().unwrap();
+            let (_, incoming, outgoing) = connect_pair(&mut host, &mut client);
+            let (sender, sender_id, receiver, receiver_id) = if outgoing_receive {
+                (&host, incoming, &mut client, outgoing)
+            } else {
+                (&client, outgoing, &mut host, incoming)
+            };
+            for size in [0, 1, 31, 32, 255, 1024] {
+                let released = Arc::new(Mutex::new(Vec::new()));
+                let payload = ProbePayload {
+                    bytes: [0x42; 1024],
+                    len: size,
+                    released: Arc::clone(&released),
+                };
+                let connection = &sender.connections[&sender_id];
+                let message = sender
+                    .global
+                    .utils()
+                    .allocate_message(connection.native, SendFlags::RELIABLE, payload)
+                    .set_lane(lane(MessageClass::Control))
+                    .set_user_data(0xDEAD_BEEF);
+                assert_eq!(message.payload(), vec![0x42; size]);
+                assert_eq!(message.user_data(), 0xDEAD_BEEF);
+                sender.sockets[&connection.endpoint].send(message).unwrap();
+                flush_and_wait_for_reliable_ack(sender, sender_id);
+                assert_eq!(
+                    released_lengths(&released),
+                    vec![size],
+                    "release must receive the original length exactly once"
+                );
+                assert_eq!(Arc::strong_count(&released), 1);
+                assert_eq!(
+                    poll(receiver),
+                    vec![TransportEvent::Message {
+                        connection: receiver_id,
+                        class: MessageClass::Control,
+                        payload: vec![0x42; size],
+                    }]
+                );
+            }
+        }
+
+        // The local pipe transfers the original message to the receiver without
+        // adding an SNP header, even though the reliable flag is set.
+        let backend = GnsDirectIp::new().unwrap();
+        let (sender, receiver) = GnsSocket::new(backend.global).socket_pair(false).unwrap();
+        let released = Arc::new(Mutex::new(Vec::new()));
+        for size in [0, 32] {
+            let message = backend.global.utils().allocate_message(
+                sender.connection(),
+                SendFlags::RELIABLE,
+                ProbePayload {
+                    bytes: [0x42; 1024],
+                    len: size,
+                    released: Arc::clone(&released),
+                },
+            );
+            sender.send_message(message).unwrap();
+        }
+        let received: Vec<_> = receiver
+            .receive_messages::<2>()
+            .unwrap()
+            .map(|message| message.payload().to_vec())
+            .collect();
+        assert_eq!(received, vec![vec![], vec![0x42; 32]]);
+        assert_eq!(released_lengths(&released), vec![0, 32]);
+        assert_eq!(Arc::strong_count(&released), 1);
     }
 
     #[test]

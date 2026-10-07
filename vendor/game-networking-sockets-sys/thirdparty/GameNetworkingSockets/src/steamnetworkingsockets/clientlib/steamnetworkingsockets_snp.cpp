@@ -386,7 +386,7 @@ int64 CSteamNetworkConnectionBase::SNP_SendMessage( CSteamNetworkingMessage *pSe
 		reliableInfo.m_nSentReliableSegRefCount = 1; // Initialize reference count to 1.
 
 		// Grow the total size of the message by the header
-		pSendMessage->m_cbSize += reliableInfo.m_cbHdr;
+		pSendMessage->SNPSend_AddReliableHeaderSize( reliableInfo.m_cbHdr );
 
 		// Advance stream pointer
 		lane.m_nReliableStreamNextSendPos += pSendMessage->m_cbSize;

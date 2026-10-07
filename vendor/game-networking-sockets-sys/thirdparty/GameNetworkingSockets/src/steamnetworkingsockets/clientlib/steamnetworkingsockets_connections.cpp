@@ -89,6 +89,10 @@ void CSteamNetworkingMessage::ReleaseFunc( SteamNetworkingMessage_t *pIMsg )
 {
 	CSteamNetworkingMessage *pMsg = static_cast<CSteamNetworkingMessage *>( pIMsg );
 
+	// All queue accounting is finished. Application free callbacks must see the
+	// original payload size, not the size of the internal reliable stream record.
+	pMsg->m_cbSize -= pMsg->m_cbSNPSendReliableHeader;
+
 	// Free up the buffer, if we have one
 	if ( pMsg->m_pData && pMsg->m_pfnFreeData )
 		(*pMsg->m_pfnFreeData)( pMsg );

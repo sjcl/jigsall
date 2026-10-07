@@ -1,4 +1,4 @@
-# Jigsall native ICE patch
+# Jigsall native ICE and payload release patches
 
 Base: crates.io `game-networking-sockets-sys` 0.3.0, archive SHA256
 `8b9d11200371f3b60115e9b4a9078cb649b4c9fbc46fa8fa356f725974b28172`.
@@ -7,6 +7,16 @@ The root Cargo patch and lockfile select this source for the existing wrapper.
 No registry cache or system GNS installation is modified.
 
 Modified upstream files:
+
+- `src/steamnetworkingsockets/clientlib/steamnetworkingsockets_snp.h/.cpp`
+  and `steamnetworkingsockets_connections.cpp`: retain the reliable header size
+  in a private message field and remove it from `m_cbSize` only at final release,
+  after queue accounting, before invoking the application free callback. Rust
+  `Payload::from_raw` therefore receives its original allocation length for
+  empty and nonempty buffers. Unsent, failed, received and local-pipe messages
+  retain a zero header adjustment. Public message ABI, payload pointers and
+  user data are unchanged. Direct-IP localhost tests cover empty `Vec` sends and
+  exact-once callback lengths across reliable header size boundaries.
 
 - `src/steamnetworkingsockets/clientlib/steamnetworkingsockets_p2p_ice.cpp`:
   snapshot and lock TURN server/user/password configuration when ICE initializes,

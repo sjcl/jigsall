@@ -120,6 +120,15 @@ public:
 	inline int64 SNPSend_ReliableStreamPos() const { Assert( m_nFlags & k_nSteamNetworkingSend_Reliable ); return ReliableSendInfo().m_nStreamPos; }
 	inline void SNPSend_SetReliableStreamPos( int64 x ) { Assert( m_nFlags & k_nSteamNetworkingSend_Reliable ); ReliableSendInfo().m_nStreamPos = x; }
 
+	// Keep the payload size recoverable for application free callbacks. Queue
+	// accounting continues to use the size including the reliable header.
+	inline void SNPSend_AddReliableHeaderSize( int cbHdr )
+	{
+		Assert( m_cbSNPSendReliableHeader == 0 );
+		m_cbSNPSendReliableHeader = cbHdr;
+		m_cbSize += cbHdr;
+	}
+
 	// Working data for reliable messages.
 	struct ReliableSendInfo_t
 	{
@@ -170,6 +179,9 @@ public:
 	void UnlinkFromQueue( Links CSteamNetworkingMessage::*pMbrLinks );
 
 private:
+	// Zero for unsent, received and local-pipe messages, which have no SNP header.
+	int m_cbSNPSendReliableHeader = 0;
+
 	// Use New and Release()!!
 	inline CSteamNetworkingMessage() {}
 	inline ~CSteamNetworkingMessage() {}
