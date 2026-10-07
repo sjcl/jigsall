@@ -94,3 +94,8 @@ master の履歴に含まれるコミットへの version tag push で、Windows
 - [開発ガイド](docs/DEVELOPMENT.md) — ビルド、検証、プロファイリング、技術資料への入口
 - [アーキテクチャ](docs/ARCHITECTURE.md) — ゲーム状態・入力・GPU 描画の構成と責務
 - [リポジトリの作業方針](AGENTS.md) — 開発時に守る設計上のルール
+
+## ライセンス
+
+本プロジェクトは [PolyForm Perimeter License 1.0.1](LICENSE) を採用しています。
+第三者のコード・依存ライブラリ・同梱フォントには、それぞれのライセンスが適用されます。

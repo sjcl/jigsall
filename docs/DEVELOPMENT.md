@@ -33,7 +33,7 @@ Windows の MSVC toolchain・Visual Studio Build Tools・SDK と GNS のセッ�
 master の履歴に含まれるコミットへタグを付けて push すると、[Draft release workflow](../.github/workflows/release.yml) が動きます。
 Windows / Linux の x86_64 向けに `--locked --release --features rendezvous`（GNS を含む）でビルドし、
 両方が成功すると ZIP / tar.gz と `SHA256SUMS` を添付した GitHub Release の Draft を作成します。
-アーカイブには実行ファイル、README、操作ガイド、build identity、Rust / native / font
+アーカイブには実行ファイル、README、本プロジェクトの [LICENSE](../LICENSE)、操作ガイド、build identity、Rust / native / font
 の第三者ライセンス・通知、内部 `SHA256SUMS` を含めます。公開 Room Code 設定を
 GitHub Variables に準備してください。未設定の endpoint で配布物を作りません。
 互換性番号の監査、ライセンス再生成、実機 smoke test と公開前の手順は

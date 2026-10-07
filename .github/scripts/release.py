@@ -177,16 +177,12 @@ def licenses(target, cargo_about):
 
 def archive_payload(binary):
     files = {binary.name: binary.read_bytes()}
-    for path in ["README.md", "assets/menu-icon.png", "ui/fonts/OFL.txt", "ui/fonts/README.md", "docs/PLAYING.md",
+    for path in ["LICENSE", "README.md", "assets/menu-icon.png", "ui/fonts/OFL.txt", "ui/fonts/README.md", "docs/PLAYING.md",
                  "docs/PRE_RELEASE_CHECKLIST.md", "docs/RELEASE_NOTES_TEMPLATE.md"]:
         name = path.replace("ui/fonts/", "licenses/MPLUS1p/")
         files[name] = (ROOT / path).read_bytes()
     for name in ["THIRD_PARTY_LICENSES.txt", "THIRD_PARTY_NOTICES.txt"]:
         files[name] = (DIST / name).read_bytes()
-    # Include a project license only if the owner has supplied one.
-    for path in sorted(ROOT.glob("LICENSE*")):
-        if path.is_file():
-            files[path.name] = path.read_bytes()
     version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
     build_info = json.loads((DIST / "build.json").read_text(encoding="utf-8"))
     if build_info["commit"] != command("git", "rev-parse", "HEAD"):

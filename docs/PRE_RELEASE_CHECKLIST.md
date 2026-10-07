@@ -25,8 +25,7 @@ crash、data loss、接続不能、入力不能、著しい描画破綻は公開
   Secrets / deployment 設定で管理する。client binary / GitHub Variables /
   `internet-defaults.env` へ入れない。client は runtime に短期 TURN credential
   を受け取る。配布 ZIP にローカル設定ファイルを入れない。
-- [ ] プロジェクト本体の LICENSE を所有者が確認する。現時点でルートに LICENSE
-  はなく、この作業では本体の license を決定していない。
+- [ ] プロジェクト本体の [LICENSE](../LICENSE)（PolyForm Perimeter License 1.0.1）を確認する。
 
 ## 互換性の境界
 
@@ -120,7 +119,7 @@ load 失敗を保存成功として扱わない。settings は write worker で�
   package の copyright / version を収集する。
 - [ ] `jigsall-windows-x86_64.zip` / `jigsall-linux-x86_64.tar.gz` を展開する。
   `jigsall/` 内に executable、README、PLAYING、checklist、release notes template、
-  `BUILD_INFO.txt`、font license、`THIRD_PARTY_LICENSES.txt`、
+  `LICENSE`、`BUILD_INFO.txt`、font license、`THIRD_PARTY_LICENSES.txt`、
   `THIRD_PARTY_NOTICES.txt`、`SHA256SUMS` がある。
 - [ ] archive 内の SHA256SUMS が各 payload と一致し、Release 添付 SHA256SUMS が
   両 archive と一致する。Linux executable の実行 permission がある。
