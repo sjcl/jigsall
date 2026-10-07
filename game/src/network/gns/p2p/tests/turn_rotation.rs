@@ -789,9 +789,9 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
             .unwrap()
             .as_secs();
         if stage == 1 && now >= expiry && host_received.len() == 1 {
+            host.listener.set_relay_only_for_test(false).unwrap();
             control(&fixture.address, "Disable");
             host.apply_turn_update().unwrap();
-            host.listener.set_relay_only_for_test(false).unwrap();
             assert_eq!(host.turn_addresses, [fixture.address.clone()]);
             fixture.send("stats");
             allocation_requests = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -823,9 +823,9 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
                 "direct-only peer2 must not send even an unauthenticated TURN Allocate"
             );
             assert_eq!(stats["allocate_b"].as_u64().unwrap(), 0);
+            host.listener.set_relay_only_for_test(true).unwrap();
             control(&fixture.address, "C");
             host.apply_turn_update().unwrap();
-            host.listener.set_relay_only_for_test(true).unwrap();
             assert_eq!(host.turn_addresses, [fixture.address.clone()]);
             actors.push(Actor::spawn(
                 2,
