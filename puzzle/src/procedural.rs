@@ -3,6 +3,7 @@ use bevy_math::{UVec2, Vec2};
 
 pub const MAX_TAB_DEPTH: f32 = 0.22;
 // Keep these constants identical to puzzle_shape.wgsl.
+pub const TAB_WIDTH_SCALE: f32 = 0.70;
 pub const ROOT_WIDTH_FACTOR: f32 = 0.60;
 pub const ROOT_HEIGHT_FACTOR: f32 = 0.25;
 pub const ROOT_BLEND_FACTOR: f32 = 0.04;
@@ -122,6 +123,10 @@ pub fn decode_profile(raw: [u32; 2]) -> EdgeProfile {
     let span = 0.08_f32.min((0.5 - 0.185 - profile_envelope(profile)) / 1.05);
     let (cc, cm) = class_sample(raw[0], 4, 7);
     profile.center = 0.5 + span * (-1.0 + cc as f32 / 3.0 + cm * 0.05);
+    // Scale lateral dimensions together, preserving ratios, depth and center classes.
+    profile.width *= TAB_WIDTH_SCALE;
+    profile.head_width *= TAB_WIDTH_SCALE;
+    profile.neck_width *= TAB_WIDTH_SCALE;
     profile
 }
 pub fn piece_profiles(seed: u64, grid: UVec2, cell: UVec2) -> [[u32; 2]; 4] {
@@ -174,8 +179,9 @@ pub fn sd_tab(q: Vec2, p: EdgeProfile, length: f32, short: f32) -> f32 {
     let depth = p.depth * short;
     let x = q.x - p.center * length;
     let neck = p.neck_width * length;
-    let radii = Vec2::new(p.head_width * length * 0.5, depth * 0.36);
-    let head = ((Vec2::new(x - p.asymmetry * p.head_width * length, q.y - depth * 0.62) / radii)
+    // Lengthen the head toward the neck while keeping the tip at 0.98 * depth.
+    let radii = Vec2::new(p.head_width * length * 0.5, depth * 0.42);
+    let head = ((Vec2::new(x - p.asymmetry * p.head_width * length, q.y - depth * 0.56) / radii)
         .length()
         - 1.0)
         * radii.min_element();
@@ -290,7 +296,7 @@ mod tests {
                             < short * 1e-5
                     );
                     // Even the first, steepest width sample is bounded and continuous.
-                    // The unchanged head/stem union can start widening at the neck.
+                    // The head/stem union can start widening at the neck.
                     assert!((previous - width).abs() < (root_half - neck_half) * 0.15);
                     previous = width;
                     previous_root = root_width;
@@ -335,6 +341,79 @@ mod tests {
         }
     }
     #[test]
+    fn taller_heads_widen_toward_neck_without_changing_width_or_tip() {
+        let mut profiles = crate::fingerprint::worst_case_profiles();
+        profiles.extend((1..=6).map(|style| crate::fingerprint::sample_profile(style, [128; 6])));
+        for raw in profiles {
+            let p = decode_profile(raw);
+            for (length, short) in [(100.0, 100.0), (200.0, 50.0), (50.0, 50.0)] {
+                let depth = p.depth * short;
+                let center = (p.center + p.asymmetry * p.head_width) * length;
+                let radius = p.head_width * length * 0.5;
+                // The old flattened head excluded these lower shoulder points.
+                for sign in [-1.0, 1.0] {
+                    assert!(
+                        sd_tab(
+                            Vec2::new(center + sign * radius * 0.86, depth * 0.40),
+                            p,
+                            length,
+                            short
+                        ) < 0.0,
+                        "lower head {raw:?}, {length}/{short}, side {sign}"
+                    );
+                    for (scale, inside) in [(0.999, true), (1.001, false)] {
+                        let d = sd_tab(
+                            Vec2::new(center + sign * radius * scale, depth * 0.56),
+                            p,
+                            length,
+                            short,
+                        );
+                        assert_eq!(d < 0.0, inside, "head width {raw:?}");
+                    }
+                }
+                let tip = Vec2::new(center, depth * 0.98);
+                assert!(sd_tab(tip, p, length, short).abs() < short * 1e-5);
+                assert!(sd_tab(tip - Vec2::Y * depth * 0.001, p, length, short) < 0.0);
+                assert!(sd_tab(tip + Vec2::Y * depth * 0.001, p, length, short) > 0.0);
+            }
+        }
+    }
+    #[test]
+    fn width_scale_changes_only_lateral_profile_dimensions() {
+        // Captured before scaling: width, head, neck, depth and center, with
+        // extreme center/width/head/skew classes and the narrowest neck class.
+        let fixtures = [
+            (1, [0.5295206, 0.3710291, 0.1285616, 0.2069517, 0.4222683]),
+            (2, [0.5985884, 0.4505354, 0.1652935, 0.1954544, 0.4731115]),
+            (3, [0.4604527, 0.3047739, 0.1101956, 0.2069517, 0.416]),
+            (4, [0.5295206, 0.3577782, 0.1285616, 0.2149499, 0.416]),
+            (5, [0.5295206, 0.3710291, 0.1469275, 0.1609624, 0.4222683]),
+            (6, [0.5525432, 0.4240333, 0.1101956, 0.2149499, 0.4561637]),
+        ];
+        for (style, [width, head, neck, depth, center]) in fixtures {
+            let p = decode_profile(crate::fingerprint::sample_profile(
+                style,
+                [0, 255, 255, 0, 255, 255],
+            ));
+            let expected = [
+                width * TAB_WIDTH_SCALE,
+                head * TAB_WIDTH_SCALE,
+                neck * TAB_WIDTH_SCALE,
+                depth,
+                center,
+            ];
+            for (actual, expected) in [p.width, p.head_width, p.neck_width, p.depth, p.center]
+                .into_iter()
+                .zip(expected)
+            {
+                assert!(
+                    (actual - expected).abs() < 1e-6,
+                    "style {style}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+    #[test]
     fn profiles_are_safe_and_cover_styles_and_all_hash_inputs() {
         let e = EdgeId {
             orientation: EdgeOrientation::Horizontal,
@@ -373,7 +452,6 @@ mod tests {
     }
     #[test]
     fn shared_edges_complement_and_outer_edges_are_straight() {
-        let size = Vec2::splat(100.0);
         let grid = UVec2::splat(2);
         for seed in 0..30 {
             let a = piece_profiles(seed, grid, UVec2::ZERO);
@@ -391,19 +469,41 @@ mod tests {
             );
             assert_eq!(a[0], [0, 0]);
             assert_eq!(a[3], [0, 0]);
-            for x in -25..26 {
-                for y in -25..26 {
-                    let da = piece_signed_distance(Vec2::new(50.0 + x as f32, y as f32), size, a);
-                    let db = piece_signed_distance(Vec2::new(-50.0 + x as f32, y as f32), size, b);
-                    assert!(da * db <= 0.0, "{seed} {x} {y}: {da} {db}");
-                    let q = Vec2::new(50.0 - y as f32, x as f32);
-                    assert_eq!(
-                        edge_distance(q, a[1], 100.0, 100.0),
-                        edge_distance(q, b[3], 100.0, 100.0)
-                    );
+            for size in [
+                Vec2::splat(100.0),
+                Vec2::new(200.0, 50.0),
+                Vec2::new(50.0, 200.0),
+            ] {
+                let half = size * 0.5;
+                let short = size.min_element();
+                for x in -25..26 {
+                    for y in -25..26 {
+                        let offset = Vec2::new(x as f32, y as f32) * size * 0.01;
+                        let da = piece_signed_distance(Vec2::new(half.x, 0.0) + offset, size, a);
+                        let db = piece_signed_distance(Vec2::new(-half.x, 0.0) + offset, size, b);
+                        assert!(da * db <= 0.0, "vertical {seed} {size} {offset}: {da} {db}");
+                        let da = piece_signed_distance(Vec2::new(0.0, -half.y) + offset, size, a);
+                        let dc = piece_signed_distance(Vec2::new(0.0, half.y) + offset, size, c);
+                        assert!(
+                            da * dc <= 0.0,
+                            "horizontal {seed} {size} {offset}: {da} {dc}"
+                        );
+                        for (q, left, right, length) in [
+                            (Vec2::new(half.y - offset.y, offset.x), a[1], b[3], size.y),
+                            (Vec2::new(half.x + offset.x, offset.y), a[2], c[0], size.x),
+                        ] {
+                            assert_eq!(
+                                edge_distance(q, left, length, short),
+                                edge_distance(q, right, length, short)
+                            );
+                        }
+                    }
                 }
+                assert_eq!(
+                    piece_signed_distance(Vec2::new(0.0, half.y + 1.0), size, a),
+                    1.0
+                );
             }
-            assert_eq!(piece_signed_distance(Vec2::new(0.0, 51.0), size, a), 1.0);
         }
     }
     #[test]

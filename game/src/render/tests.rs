@@ -41,6 +41,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+// CPU pixel centers and interpolated raster coordinates can differ by a
+// subpixel. Keep this separate from compute SDF parity and exact GPU pick checks.
+const RASTER_BOUNDARY_TOLERANCE: f32 = 1.0 / 256.0;
+
 fn gpu_app(resolution: u32) -> (App, Entity, Handle<Image>) {
     gpu_app_with_pipeline_compilation(resolution, true)
 }
@@ -286,9 +290,11 @@ fn shape_parity(app: &App) {
                 let root_half =
                     (p.neck_width + (p.width - p.neck_width) * ROOT_WIDTH_FACTOR) * length * 0.5;
                 let height = p.depth * short * ROOT_HEIGHT_FACTOR;
+                // Include the lower head (0.40d), center (0.56d), upper head
+                // (0.85d) and tip (0.98d), expressed in root-height units.
                 for t in [
                     -1.0, -0.01, 0.0, 0.0001, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 0.95, 1.0, 1.05,
-                    1.5, 2.0, 3.0, 4.0,
+                    1.5, 1.6, 2.0, 2.24, 3.0, 3.4, 3.92, 4.0,
                 ] {
                     for offset in [
                         -1.1, -1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0, 1.1,
@@ -316,6 +322,27 @@ fn shape_parity(app: &App) {
             }
         }
     }
+    // This pixel fell just inside the CPU contour after narrowing the tab.
+    // Compare its exact coordinates without raster interpolation as well.
+    let raw = piece_profiles(42, UVec2::splat(2), UVec2::ZERO)[1];
+    let q = Vec2::new(28.5, 11.5);
+    inputs.push([
+        raw[0],
+        raw[1],
+        64.0_f32.to_bits(),
+        64.0_f32.to_bits(),
+        q.x.to_bits(),
+        q.y.to_bits(),
+        0,
+        0,
+    ]);
+    expected.push((
+        [
+            sd_tab(q, decode_profile(raw), 64.0, 64.0),
+            edge_distance(q, raw, 64.0, 64.0),
+        ],
+        64.0,
+    ));
     let source = include_str!("puzzle_shape.wgsl")
         .lines()
         .skip(1)
@@ -850,19 +877,22 @@ fn gpu_raster_selection() {
     for y in 15..113 {
         for x in 15..113 {
             let local = Vec2::new(x as f32 - 63.5, 63.5 - y as f32);
-            let inside = piece_signed_distance(local, Vec2::splat(64.0), profiles) <= 0.0;
+            let d = piece_signed_distance(local, Vec2::splat(64.0), profiles);
+            let inside = d <= 0.0;
             let drawn = pixels[(y * 128 + x) * 4] > 0;
-            assert_eq!(drawn, inside, "render coverage {x},{y} {local}");
-            if inside {
+            if d.abs() > RASTER_BOUNDARY_TOLERANCE {
+                assert_eq!(drawn, inside, "render coverage {x},{y} {local}, d={d}");
+            }
+            if drawn {
                 assert_eq!(
                     &pixels[(y * 128 + x) * 4..(y * 128 + x) * 4 + 4],
                     &[255, 255, 255, 255],
                     "normal piece must preserve image color at {x},{y}"
                 );
             }
-            let d = piece_signed_distance(local, Vec2::splat(64.0), profiles);
-            if d.abs() < 0.8 && (x + y) % 13 == 0 {
-                samples.push((x, y, inside));
+            if (d.abs() < 0.8 && (x + y) % 13 == 0) || drawn != inside {
+                // Every ambiguous raster pixel must still match both pick paths.
+                samples.push((x, y, drawn));
             }
         }
     }

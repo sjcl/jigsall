@@ -123,6 +123,11 @@ fn gpu_connected_selection_outlines_preserve_coverage_picking_and_uploads() {
                     })
                     .fold(-1e20_f32, f32::max);
                 let full = edges.into_iter().fold(-1e20_f32, f32::max);
+                // Coverage above is compared exactly between normal/highlighted
+                // frames; CPU ownership at a subpixel contour is ambiguous.
+                if full.abs() <= RASTER_BOUNDARY_TOLERANCE {
+                    continue;
+                }
                 let aa = sdf_aa_bound(x, y, |px, py| {
                     let world = Vec2::new(px as f32 - 127.5, 127.5 - py as f32);
                     piece_signed_distance(world - def.correct_position(PieceId(id)), size, profiles)

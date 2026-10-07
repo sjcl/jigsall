@@ -1,6 +1,7 @@
 #define_import_path jigsall::shape
 
 // Mirror puzzle/src/procedural.rs; changing shape constants changes generator compatibility.
+const TAB_WIDTH_SCALE:f32=0.70;
 const ROOT_WIDTH_FACTOR:f32=0.60;
 const ROOT_HEIGHT_FACTOR:f32=0.25;
 const ROOT_BLEND_FACTOR:f32=0.04;
@@ -60,7 +61,8 @@ fn edge_profile(raw: vec2<u32>) -> EdgeProfile {
     let span=min(0.08,(0.5-0.185-envelope)/1.05);
     let c=class_sample(raw.x,4u,7u);
     let center=0.5+span*(-1.0+c.x/3.0+c.y*0.05);
-    return EdgeProfile(select(1.0,-1.0,(raw.x&8u)!=0u),center,width,depth,neck,head,skew);
+    // Scale lateral dimensions together, preserving ratios, depth and center classes.
+    return EdgeProfile(select(1.0,-1.0,(raw.x&8u)!=0u),center,width*TAB_WIDTH_SCALE,depth,neck*TAB_WIDTH_SCALE,head*TAB_WIDTH_SCALE,skew);
 }
 fn piece_profiles(seed: vec2<u32>,grid: vec2<u32>,cell: vec2<u32>) -> array<vec2<u32>,4> {
     var edges: array<vec2<u32>,4>;
@@ -84,8 +86,9 @@ fn sd_root(q:vec2<f32>,neck_half:f32,root_half:f32,height:f32)->f32 {
 }
 fn sd_tab(q:vec2<f32>,p:EdgeProfile,len:f32,short:f32) -> f32 {
     let depth=p.depth*short; let x=q.x-p.center*len; let neck=p.neck*len;
-    let radii=vec2(p.head*len*0.5,depth*0.36);
-    let head=(length(vec2(x-p.asymmetry*p.head*len,q.y-depth*0.62)/radii)-1.0)*min(radii.x,radii.y);
+    // Lengthen the head toward the neck while keeping the tip at 0.98 * depth.
+    let radii=vec2(p.head*len*0.5,depth*0.42);
+    let head=(length(vec2(x-p.asymmetry*p.head*len,q.y-depth*0.56)/radii)-1.0)*min(radii.x,radii.y);
     let stem=sd_box(vec2(x,q.y-depth*0.23),vec2(neck*0.5,depth*0.28),min(neck,depth)*0.18);
     let neck_half=neck*0.5;
     let root_half=neck_half+(p.width*len*0.5-neck_half)*ROOT_WIDTH_FACTOR;
