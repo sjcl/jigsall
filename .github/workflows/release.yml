@@ -143,11 +143,50 @@ jobs:
           New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Prepare native cache identity and source timestamps
+        id: native-cache
+        env:
+          # Hash before any restore can add manifests under target/.
+          CARGO_CACHE_INPUTS: ${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/.cargo/config.toml', '**/rust-toolchain*') }}
+        run: python .github/scripts/build_cache.py prepare --profile release
+
+      - name: Restore Windows vcpkg binary cache (shared with CI)
+        if: runner.os == 'Windows'
+        id: vcpkg-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          key: release-${{ matrix.os }}-llvm18
-          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
-          cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-cache.outputs.triplet }}-${{ steps.native-cache.outputs.vcpkg-environment }}-${{ hashFiles('vendor/game-networking-sockets-sys/thirdparty/GameNetworkingSockets/vcpkg.json') }}
+
+      - name: Restore Cargo cache
+        id: rust-cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Keep release artifacts separate from CI's dev/test profile.
+          add-rust-environment-hash-key: false
+          key: release-v1-${{ matrix.os }}-${{ runner.arch }}-rust${{ needs.verify-tag.outputs.toolchain }}-llvm18-${{ steps.native-cache.outputs.native-environment }}-${{ steps.native-cache.outputs.cargo-inputs }}
+
+      # Save in a normal step, before rust-cache removes excluded path crates
+      # during its post-job cleanup. Cache only the sys crate, not all of target.
+      - name: Restore GNS native cache (release)
+        id: gns-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/gns-native-cache/release.tar
+          key: gns-v1-${{ matrix.os }}-${{ runner.arch }}-release-rust${{ needs.verify-tag.outputs.toolchain }}-llvm18-${{ steps.native-cache.outputs.gns-tree }}-${{ steps.native-cache.outputs.native-environment }}-${{ steps.native-cache.outputs.cargo-inputs }}-${{ hashFiles('.github/scripts/build_cache.py') }}
+
+      - name: Unpack GNS native cache (release)
+        if: steps.gns-cache.outputs.cache-hit == 'true'
+        env:
+          GNS_CACHE_ARCHIVE: ${{ runner.temp }}/gns-native-cache/release.tar
+        run: python .github/scripts/build_cache.py unpack
+
+      - name: Report cache restores
+        env:
+          RUST_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          VCPKG_CACHE_HIT: ${{ steps.vcpkg-cache.outputs.cache-hit }}
+          GNS_CACHE_HIT: ${{ steps.gns-cache.outputs.cache-hit }}
+        run: python .github/scripts/build_cache.py summary
 
       # Public repository Variables only. TURN credentials are issued by the
       # server at runtime; provider secrets must never enter this build job.
@@ -160,6 +199,18 @@ jobs:
 
       - name: Build application with Direct IP and Room Code support
         run: python .github/scripts/release.py build
+
+      - name: Snapshot GNS native cache contents
+        if: steps.gns-cache.outputs.cache-hit != 'true'
+        env:
+          GNS_CACHE_ARCHIVE: ${{ runner.temp }}/gns-native-cache/release.tar
+        run: python .github/scripts/build_cache.py pack --profile release
+      - name: Save GNS native cache before Cargo cleanup (release)
+        if: steps.gns-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/gns-native-cache/release.tar
+          key: ${{ steps.gns-cache.outputs.cache-primary-key }}
 
       - name: Install pinned license generator
         run: python .github/scripts/install_cargo_about.py

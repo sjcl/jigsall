@@ -49,6 +49,8 @@ jobs:
       - run: cargo fmt --all --check
       - name: Release configuration and packaging regressions
         run: python3 .github/scripts/test_release.py
+      - name: Build cache regressions
+        run: python3 .github/scripts/test_build_cache.py
 
   test:
     name: Build, lint and test (${{ matrix.os }})
@@ -125,11 +127,51 @@ jobs:
           New-Item -ItemType Directory -Path $binaryCache -Force | Out-Null
           "VCPKG_DEFAULT_BINARY_CACHE=$binaryCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Prepare native cache identity and source timestamps
+        id: native-cache
+        env:
+          # Hash before any restore can add manifests under target/.
+          CARGO_CACHE_INPUTS: ${{ hashFiles('Cargo.lock', '**/Cargo.toml', '**/.cargo/config.toml', '**/rust-toolchain*') }}
+        run: python .github/scripts/build_cache.py prepare --profile dev
+
+      - name: Restore Windows vcpkg binary cache (shared with release)
+        if: runner.os == 'Windows'
+        id: vcpkg-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
-          key: ${{ matrix.os }}-llvm18
-          env-vars: "CARGO CC CFLAGS CXX CMAKE RUST LIBCLANG GNS_VCPKG"
-          cache-directories: ${{ runner.os == 'Windows' && format('{0}/vcpkg-binary-cache', runner.temp) || '' }}
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: vcpkg-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.native-cache.outputs.triplet }}-${{ steps.native-cache.outputs.vcpkg-environment }}-${{ hashFiles('vendor/game-networking-sockets-sys/thirdparty/GameNetworkingSockets/vcpkg.json') }}
+
+      - name: Restore Cargo cache
+        id: rust-cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # Include dependency definitions explicitly: disabling the automatic
+          # environment hash also disables rust-cache's manifest/lockfile hash.
+          add-rust-environment-hash-key: false
+          key: ci-dev-v1-${{ matrix.os }}-${{ runner.arch }}-rust${{ steps.rust-version.outputs.toolchain }}-llvm18-${{ steps.native-cache.outputs.native-environment }}-${{ steps.native-cache.outputs.cargo-inputs }}
+
+      # Restore AFTER rust-cache and save BEFORE its post-job target cleanup.
+      # No prefix fallback: native outputs require this exact source/environment.
+      - name: Restore GNS native cache (dev)
+        id: gns-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/gns-native-cache/dev.tar
+          key: gns-v1-${{ matrix.os }}-${{ runner.arch }}-dev-rust${{ steps.rust-version.outputs.toolchain }}-llvm18-${{ steps.native-cache.outputs.gns-tree }}-${{ steps.native-cache.outputs.native-environment }}-${{ steps.native-cache.outputs.cargo-inputs }}-${{ hashFiles('.github/scripts/build_cache.py') }}
+
+      - name: Unpack GNS native cache (dev)
+        if: steps.gns-cache.outputs.cache-hit == 'true'
+        env:
+          GNS_CACHE_ARCHIVE: ${{ runner.temp }}/gns-native-cache/dev.tar
+        run: python .github/scripts/build_cache.py unpack
+
+      - name: Report cache restores
+        env:
+          RUST_CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
+          VCPKG_CACHE_HIT: ${{ steps.vcpkg-cache.outputs.cache-hit }}
+          GNS_CACHE_HIT: ${{ steps.gns-cache.outputs.cache-hit }}
+        run: python .github/scripts/build_cache.py summary
 
       # Keep default-feature type/lint coverage without a second runtime build.
       # Both platforms build their application and tests in one feature graph.
@@ -157,6 +199,18 @@ jobs:
       - name: Windows build and runtime tests (rendezvous / GNS)
         if: runner.os == 'Windows'
         run: python .github/scripts/ci.py
+
+      - name: Snapshot GNS native cache contents
+        if: steps.gns-cache.outputs.cache-hit != 'true'
+        env:
+          GNS_CACHE_ARCHIVE: ${{ runner.temp }}/gns-native-cache/dev.tar
+        run: python .github/scripts/build_cache.py pack --profile dev
+      - name: Save GNS native cache before Cargo cleanup (dev)
+        if: steps.gns-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ${{ runner.temp }}/gns-native-cache/dev.tar
+          key: ${{ steps.gns-cache.outputs.cache-primary-key }}
 
       - name: Install pinned license generator
         run: python .github/scripts/install_cargo_about.py

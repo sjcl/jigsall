@@ -128,6 +128,38 @@ cargo build --workspace --locked --all-features
 
 実 GPU / ネイティブウィンドウを必要とする ignored テスト、実機 UI の確認、release での性能計測は、変更内容に応じてローカルで行います。通常の CI の結果だけで、実機の描画・入力・速度を検証したことにはなりません。
 
+### GitHub Actions のビルドキャッシュ
+
+CI / release の Cargo target cache は別 key です。`rust-cache` の自動 Rust environment hash を無効にし、
+OS / architecture、選択した Rust version、LLVM 18、native tool / 設定の hash、`Cargo.lock` と全 `Cargo.toml`
+（および Cargo / toolchain 設定）を明示 key に含めています。runner のプリインストール toolchain 一覧や
+image version は key に含めません。CMake / Ninja / compiler、Linux の native package version、
+Windows の MSVC / SDK が変わる場合は native 環境の hash が変わります。
+
+Windows の `$RUNNER_TEMP/vcpkg-binary-cache` は独立した `actions/cache` で CI / release が共有します。
+key は Windows / architecture、`x64-windows-static-md-release` triplet、MSVC / SDK、
+GameNetworkingSockets の `vcpkg.json`（builtin-baseline を含む）から求め、Rust version / Cargo profile には依存しません。
+
+vendored GNS sys は root workspace の構造を維持し、dev / release ごとの専用 cache に保存します。
+key は OS / architecture、profile、Rust version、LLVM 18、sys と bundled source の Git tree SHA、
+native 環境、Cargo の依存・設定と cache helper の hash を含みます。保存対象は次の範囲です。
+
+- `target/{debug,release}/build/game-networking-sockets-sys*`：build script executable、実行記録、`out/`（CMake、static library、bindings、Windows の installed vcpkg package / notice）
+- `target/{debug,release}/.fingerprint/game-networking-sockets-sys*`：Cargo の build script / library fingerprint と dep-info
+- `target/{debug,release}/deps/{gns_sys-*,libgns_sys-*}`：sys library の `.rlib` / `.rmeta` / `.d` など
+
+vcpkg clone 内の `.git` / `packages` / `downloads` / `buildtrees` は除外し、installed package と
+CMake の出力・tooling を保持します。更新時刻と hardlink を保つ tar にまとめ、外側は cache action が圧縮します。
+Cargo cache の後で GNS cache を restore / 展開し、ビルド後の通常 step で tar を作成・save してから、job 終了時の
+`rust-cache` cleanup / save を実行します。Bevy を含む target 全体を重ねて保存しません。
+checkout 時刻だけによる GNS 再ビルドを避けるため、内容を tree SHA で key に含めた sys の tracked source と
+その directory の更新時刻を固定します。異なる source / native 環境へ prefix fallback は行いません。
+
+`Report cache restores` のログと step summary に Cargo / vcpkg / GNS の exact hit / miss が出ます。
+`Snapshot GNS native cache contents` には保存対象の file 数・容量・native library path が出ます。
+初回 run は新しい key を作るため miss となり、次回の同条件 run で hit とビルド時間を確認します。
+回帰テストは `python .github/scripts/test_build_cache.py` で実行できます。
+
 ## GPU 検証・形状評価・計測
 
 性能は release モードで測定します。F3 で FPS のみ・詳細・非表示を切り替えられます。
