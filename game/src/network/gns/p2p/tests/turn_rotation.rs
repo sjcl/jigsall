@@ -667,12 +667,13 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
     mailbox: SignalingEndpoint,
     mut control: impl FnMut(&str, &str) -> u64,
 ) {
-    // Both endpoints must use allocations for A/C: a one-sided TURN path can
-    // let native ICE discover and select a direct peer-reflexive route. The
-    // direct-only peer still connects outside the fixture while TURN is disabled.
+    // Both endpoints must use allocations for A/C: a one-sided TURN path or a
+    // signaled host candidate can let native ICE select a peer-reflexive route.
+    // The direct-only peer connects outside the fixture while TURN is disabled.
     let mut fixture = Fixture::start_with_relay_pairs(true);
     let mut host =
         GnsP2p::with_signaling(P2P_VIRTUAL_PORT, IceConfig::default(), mailbox.clone()).unwrap();
+    host.listener.set_relay_only_for_test(true).unwrap();
     let host_peer = host.peer_id().to_bytes();
     control(&fixture.address, "A");
     host.apply_turn_update().unwrap();
@@ -790,6 +791,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
         if stage == 1 && now >= expiry && host_received.len() == 1 {
             control(&fixture.address, "Disable");
             host.apply_turn_update().unwrap();
+            host.listener.set_relay_only_for_test(false).unwrap();
             assert_eq!(host.turn_addresses, [fixture.address.clone()]);
             fixture.send("stats");
             allocation_requests = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap()
@@ -823,6 +825,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
             assert_eq!(stats["allocate_b"].as_u64().unwrap(), 0);
             control(&fixture.address, "C");
             host.apply_turn_update().unwrap();
+            host.listener.set_relay_only_for_test(true).unwrap();
             assert_eq!(host.turn_addresses, [fixture.address.clone()]);
             actors.push(Actor::spawn(
                 2,
