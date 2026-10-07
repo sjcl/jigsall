@@ -667,7 +667,10 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
     mailbox: SignalingEndpoint,
     mut control: impl FnMut(&str, &str) -> u64,
 ) {
-    let mut fixture = Fixture::start();
+    // Both endpoints must use allocations for A/C: a one-sided TURN path can
+    // let native ICE discover and select a direct peer-reflexive route. The
+    // direct-only peer still connects outside the fixture while TURN is disabled.
+    let mut fixture = Fixture::start_with_relay_pairs(true);
     let mut host =
         GnsP2p::with_signaling(P2P_VIRTUAL_PORT, IceConfig::default(), mailbox.clone()).unwrap();
     let host_peer = host.peer_id().to_bytes();
@@ -716,7 +719,11 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
                 ActorFrame::Connected(peer, relay) => {
                     assert_eq!(peer, host_peer);
                     assert!(connected.insert(index), "existing ICE handle was replaced");
-                    assert_eq!(relay, index != 1);
+                    assert_eq!(
+                        relay,
+                        index != 1,
+                        "actor {index} at expiry stage {stage} selected an unexpected ICE route"
+                    );
                 }
                 ActorFrame::Received(peer) => {
                     assert_eq!(peer, host_peer);
