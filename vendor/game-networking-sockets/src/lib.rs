@@ -663,8 +663,9 @@ pub unsafe trait Payload: Send + 'static {
 extern "C" fn free_payload<P: Payload>(msg: *mut ISteamNetworkingMessage) {
     let ptr = unsafe { (*msg).m_pData } as *mut u8;
     let len = unsafe { (*msg).m_cbSize } as usize;
-    // Safety: `GnsNetworkMessage::<ToSend>::new` wrote `ptr` and `len` from
-    // `P::into_raw`, and GameNetworkingSockets releases each message once.
+    // Safety: `GnsNetworkMessage::<ToSend>::new` checked that `len` fits i32
+    // and wrote the unchanged pair from `P::into_raw`. GameNetworkingSockets
+    // releases each message once.
     drop(unsafe { P::from_raw(ptr, len) });
 }
 
@@ -874,15 +875,21 @@ impl GnsNetworkMessage<ToSend> {
         flags: SendFlags,
         payload: P,
     ) -> Self {
+        // Own the native allocation before a payload conversion can panic.
+        let message = GnsNetworkMessage(ptr, PhantomData);
         let (data_ptr, len) = payload.into_raw();
+        let size = i32::try_from(len).unwrap_or_else(|_| {
+            // SAFETY: ownership has not passed to the native message yet, so
+            // reclaim the exact pair returned by P::into_raw before panicking.
+            drop(unsafe { P::from_raw(data_ptr, len) });
+            panic!("message payload length exceeds i32::MAX");
+        });
         unsafe {
             (*ptr).m_pData = data_ptr as *mut c_void;
-            (*ptr).m_cbSize = len as i32;
+            (*ptr).m_cbSize = size;
             (*ptr).m_pfnFreeData = Some(free_payload::<P>);
         }
-        GnsNetworkMessage(ptr, PhantomData)
-            .set_flags(flags)
-            .set_connection(conn)
+        message.set_flags(flags).set_connection(conn)
     }
 
     #[inline]
@@ -1791,6 +1798,10 @@ impl GnsUtils {
     /// The buffer stays alive until GameNetworkingSockets releases the message.
     /// At that point the wrapper rebuilds `P` with [`Payload::from_raw`] and
     /// drops it. Nothing is copied when the payload already owns heap memory.
+    ///
+    /// # Panics
+    /// Panics if the payload length exceeds `i32::MAX`. The payload and native
+    /// message allocation are released before unwinding completes.
     #[inline]
     pub fn allocate_message<P: Payload>(
         &self,

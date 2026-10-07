@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicUsize;
 use std::{mem::ManuallyDrop, ptr};
 
 fn with_message(data: *mut c_void, size: i32, check: impl FnOnce(&GnsNetworkMessage<ToReceive>)) {
@@ -76,4 +77,103 @@ fn payload_infallible_accessor_panics_safely_on_invalid_metadata() {
     with_message(ptr::null_mut(), 1, |message| {
         message.payload();
     });
+}
+
+#[derive(Default)]
+struct PayloadObservations {
+    drops: AtomicUsize,
+    reclaimed_len: AtomicUsize,
+}
+
+// Metadata-only fixture: the synthetic length is never used to read bytes or
+// send a message. This exercises large lengths without a multi-GiB allocation.
+struct LengthProbe {
+    len: usize,
+    observations: Arc<PayloadObservations>,
+}
+
+impl Drop for LengthProbe {
+    fn drop(&mut self) {
+        self.observations.drops.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+// SAFETY: from_raw reconstructs exactly the boxed probe that into_raw owns.
+unsafe impl Payload for LengthProbe {
+    fn into_raw(self) -> (*mut u8, usize) {
+        let len = self.len;
+        (Box::into_raw(Box::new(self)).cast(), len)
+    }
+
+    unsafe fn from_raw(ptr: *mut u8, len: usize) -> Self {
+        // SAFETY: only into_raw creates the pointer used by this fixture.
+        let probe = *unsafe { Box::from_raw(ptr.cast::<Self>()) };
+        probe
+            .observations
+            .reclaimed_len
+            .store(len, Ordering::Relaxed);
+        probe
+    }
+}
+
+extern "C" fn release_probe_message(message: *mut ISteamNetworkingMessage) {
+    // SAFETY: the stack message and counter outlive the wrapper's release.
+    let message = unsafe { &mut *message };
+    let releases = unsafe { &*(message.m_nUserData as usize as *const AtomicUsize) };
+    releases.fetch_add(1, Ordering::Relaxed);
+    if let Some(free_data) = message.m_pfnFreeData {
+        // SAFETY: the constructor installs this callback with its owned probe.
+        unsafe { free_data(message) };
+    }
+}
+
+fn check_outbound_length(len: usize, rejected: bool) {
+    let observations = Arc::new(PayloadObservations::default());
+    let releases = AtomicUsize::new(0);
+    let mut native = ISteamNetworkingMessage {
+        m_nUserData: &releases as *const AtomicUsize as usize as i64,
+        m_pfnRelease: Some(release_probe_message),
+        ..Default::default()
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(GnsNetworkMessage::new(
+            &mut native,
+            GnsConnection::default(),
+            SendFlags::RELIABLE,
+            LengthProbe {
+                len,
+                observations: Arc::clone(&observations),
+            },
+        ));
+    }));
+
+    assert_eq!(result.is_err(), rejected, "length {len}");
+    assert_eq!(observations.reclaimed_len.load(Ordering::Relaxed), len);
+    assert_eq!(observations.drops.load(Ordering::Relaxed), 1);
+    assert_eq!(releases.load(Ordering::Relaxed), 1);
+    if rejected {
+        assert!(native.m_pData.is_null());
+        assert_eq!(native.m_cbSize, 0);
+        assert!(native.m_pfnFreeData.is_none());
+    } else {
+        assert_eq!(native.m_cbSize, i32::try_from(len).unwrap());
+    }
+}
+
+#[test]
+fn outbound_payload_preserves_representable_lengths_and_releases_once() {
+    for len in [0, 1, i32::MAX as usize] {
+        check_outbound_length(len, false);
+    }
+}
+
+#[test]
+fn outbound_payload_rejects_oversized_lengths_and_reclaims_original_ownership() {
+    for len in [i32::MAX as usize + 1, u32::MAX as usize, usize::MAX] {
+        check_outbound_length(len, true);
+    }
+    if let Some(len) = 1usize.checked_shl(32) {
+        // A narrowing cast wraps this length to zero on 64-bit hosts.
+        check_outbound_length(len, true);
+    }
 }

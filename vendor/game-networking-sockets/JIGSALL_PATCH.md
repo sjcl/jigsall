@@ -22,6 +22,13 @@ valid owned payloads above the native default send limit remain inspectable.
 Synthetic unit tests cover these representations; Direct-IP localhost tests
 cover empty reliable messages on all lanes before and after authentication.
 
+Outbound allocation also checks that the payload length fits the native `i32`
+size field. Larger payloads are reclaimed with their original pointer and
+`usize` length before `allocate_message` panics; the native message allocation
+is released as well. The safe API and its return type remain unchanged.
+Metadata-only tests cover the signed limit and wrapping lengths, including
+exactly-once payload and message cleanup, without allocating multi-GiB buffers.
+
 The root crates.io patch replaces only this high-level wrapper; sys 0.3.0 and
 its bundled native GNS remain registry dependencies under the root lockfile.
 Default builds still do not compile GNS. When upgrading gns-rs, remove this patch
