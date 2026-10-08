@@ -425,6 +425,15 @@ fresh OS randomness remain security assumptions; this is not an independent audi
 
 The **pinned native header** specifies lower numeric priority as higher priority.
 Transient and Control share priority with a 1:4 weight; Bulk has lower priority.
+`gns/policy.rs` defines the class-to-lane mapping, priorities, weights, send flags,
+local close codes and termination events for both Direct IP and P2P. Direct IP
+uses the safe wrapper values; P2P derives its FFI arrays and flag bits from them.
+`gns/outbound.rs` shares record-size validation, reliable queue limits (including
+the 64-byte reservation) and monotonic conservative Bulk delivery accounting.
+Size validation precedes connection lookup; Transient skips the native queue
+query, and only successful native Bulk sends increase the enqueued count.
+Native queue queries, sends, establishment, receive loops, close ownership,
+connection mapping removal and abuse penalties remain backend responsibilities.
 Each reliable lane has its own ordered stream. Bulk does not occupy Control's
 ordered queue, so missing Bulk fragments cannot head-of-line block Control.
 Bandwidth congestion still affects latency; this does not promise zero delay.

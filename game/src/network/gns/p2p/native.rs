@@ -6,8 +6,9 @@ use super::{
     IceConfig, TurnServer,
 };
 use crate::network::{
+    gns::policy::{close_code, flags, LANES},
     lifecycle::{Admission, Bucket},
-    transport::{MessageClass, Origin, TransportError},
+    transport::{DisconnectReason, MessageClass, Origin, TransportError},
 };
 use ::gns::{sys::*, GnsGlobal};
 use std::{
@@ -452,9 +453,9 @@ impl Connection {
             SteamAPI_ISteamNetworkingSockets_ConfigureConnectionLanes(
                 interface(),
                 self.handle(),
-                3,
-                [0, 0, 1].as_ptr(),
-                [1u16, 4, 1].as_ptr(),
+                LANES.len() as i32,
+                LANES.map(|lane| lane.priority).as_ptr(),
+                LANES.map(|lane| lane.weight).as_ptr(),
             )
         })
     }
@@ -525,13 +526,7 @@ impl Connection {
             }
             (*message).m_conn = self.handle();
             (*message).m_idxLane = lane;
-            (*message).m_nFlags = if class == MessageClass::Transient {
-                k_nSteamNetworkingSend_Unreliable
-                    | k_nSteamNetworkingSend_NoNagle
-                    | k_nSteamNetworkingSend_NoDelay
-            } else {
-                k_nSteamNetworkingSend_Reliable
-            };
+            (*message).m_nFlags = flags(class).bits();
             let mut messages = [message];
             let mut result = 0;
             SteamAPI_ISteamNetworkingSockets_SendMessages(
@@ -716,7 +711,7 @@ impl Connection {
 }
 impl Drop for Connection {
     fn drop(&mut self) {
-        self.close(1000);
+        self.close(close_code(DisconnectReason::Requested) as i32);
     }
 }
 pub(super) struct Message(*mut SteamNetworkingMessage_t);

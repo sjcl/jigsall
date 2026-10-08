@@ -8,7 +8,9 @@ pub const P2P_VIRTUAL_PORT: u16 = 0;
 mod direct_ip;
 pub use direct_ip::GnsDirectIp;
 mod inbound;
+mod outbound;
 mod p2p;
+mod policy;
 pub use p2p::{GnsP2p, IceConfig};
 #[cfg(feature = "rendezvous")]
 pub mod rendezvous;

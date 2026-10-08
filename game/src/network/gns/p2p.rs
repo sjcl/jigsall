@@ -3,21 +3,20 @@
 pub(super) mod native;
 use super::{
     inbound::{check_message, class, InboundDecision},
+    outbound::{self, BulkDelivery},
+    policy::{close_code, lane, termination_event},
     signaling::{self, PeerId, SignalingEndpoint, TurnUpdate},
     token,
 };
 use crate::network::{
     lifecycle::{
         self, Admission, Bucket, CONNECTING_TIMEOUT, CONNECTION_START_BURST,
-        CONNECTION_START_INTERVAL, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING, MAX_CONNECTIONS,
-        MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
+        CONNECTION_START_INTERVAL, MAX_CONNECTING, MAX_CONNECTIONS, MAX_PENDING_CONNECTIONS,
     },
     rate_limit::{InboundRateLimiter, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY},
-    secure::record_limit,
     transport::*,
 };
 use std::{
-    cell::Cell,
     collections::BTreeMap,
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
@@ -53,8 +52,7 @@ struct Connection {
     authenticated: bool,
     ready: bool,
     limiter: InboundRateLimiter,
-    bulk_enqueued: u64,
-    bulk_delivered: Cell<u64>,
+    bulk_delivery: BulkDelivery,
 }
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 struct Lease;
@@ -266,8 +264,7 @@ impl GnsP2p {
                 authenticated: false,
                 ready: false,
                 limiter: InboundRateLimiter::with_policy(&PREAUTH_INBOUND_POLICY, now),
-                bulk_enqueued: 0,
-                bulk_delivered: Cell::new(0),
+                bulk_delivery: BulkDelivery::default(),
             },
         );
     }
@@ -286,24 +283,8 @@ impl GnsP2p {
             if lifecycle::is_abuse(reason) {
                 self.admission.penalize(c.origin, now);
             }
-            let code = match reason {
-                DisconnectReason::Requested => 1000,
-                DisconnectReason::InvalidMessage => 1001,
-                DisconnectReason::RateLimited => 1003,
-                _ => 1002,
-            };
-            c.native.close(code);
-            events.push(if c.connected {
-                TransportEvent::Disconnected {
-                    connection: id,
-                    reason,
-                }
-            } else {
-                TransportEvent::ConnectionFailed {
-                    connection: id,
-                    reason,
-                }
-            });
+            c.native.close(close_code(reason) as i32);
+            events.push(termination_event(id, c.connected, reason));
         }
     }
     fn maintain(&mut self, now: Instant, events: &mut Vec<TransportEvent>) {
@@ -336,13 +317,6 @@ impl GnsP2p {
         }
     }
 }
-fn lane(class: MessageClass) -> u16 {
-    match class {
-        MessageClass::Transient => 0,
-        MessageClass::Control => 1,
-        MessageClass::Bulk => 2,
-    }
-}
 impl Transport for GnsP2p {
     fn origin(&self, id: ConnectionId) -> Option<Origin> {
         self.connections.get(&id).and_then(|c| c.origin)
@@ -353,16 +327,7 @@ impl Transport for GnsP2p {
             .get(&id)
             .ok_or(TransportError::UnknownConnection)?;
         let (queued_bytes, bulk_queued_bytes) = c.native.egress()?;
-        let delivered = c
-            .bulk_delivered
-            .get()
-            .max(c.bulk_enqueued.saturating_sub(bulk_queued_bytes));
-        c.bulk_delivered.set(delivered);
-        Ok(ReliableEgress {
-            queued_bytes,
-            bulk_queued_bytes,
-            bulk_delivered_bytes: delivered,
-        })
+        Ok(c.bulk_delivery.egress(queued_bytes, bulk_queued_bytes))
     }
     fn activate_secure_channel(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         let c = self
@@ -499,9 +464,7 @@ impl Transport for GnsP2p {
         class: MessageClass,
         payload: &[u8],
     ) -> Result<(), TransportError> {
-        if payload.len() > record_limit(class) {
-            return Err(TransportError::PayloadTooLarge);
-        }
+        outbound::check_payload_size(class, payload.len())?;
         let c = self
             .connections
             .get_mut(&id)
@@ -509,24 +472,12 @@ impl Transport for GnsP2p {
         if !c.connected {
             return Err(TransportError::NotConnected);
         }
-        if class != MessageClass::Transient {
-            let limit = if class == MessageClass::Bulk {
-                MAX_BULK_QUEUE_BYTES
-            } else {
-                MAX_RELIABLE_QUEUE_BYTES
-            };
-            if c.native
-                .egress()?
-                .0
-                .saturating_add(payload.len() as u64 + 64)
-                > limit
-            {
-                return Err(TransportError::Backpressure);
-            }
+        if let Some(limit) = outbound::queue_limit(class) {
+            outbound::check_queue(c.native.egress()?.0, payload.len(), limit)?;
         }
         c.native.send(lane(class), class, payload)?;
         if class == MessageClass::Bulk {
-            c.bulk_enqueued = c.bulk_enqueued.saturating_add(payload.len() as u64);
+            c.bulk_delivery.record_sent(payload.len());
         }
         Ok(())
     }

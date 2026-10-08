@@ -1,16 +1,14 @@
 use super::{
     inbound::{check_message, class, InboundDecision},
+    outbound::{self, BulkDelivery},
+    policy::{close_code, flags, lane, termination_event, LANES},
     token,
 };
 use crate::network::{
-    lifecycle::{
-        self, Admission, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING,
-        MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
-    },
+    lifecycle::{self, Admission, CONNECTING_TIMEOUT, MAX_CONNECTING, MAX_PENDING_CONNECTIONS},
     rate_limit::{
         InboundRateLimiter, InboundRatePolicy, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY,
     },
-    secure::record_limit,
     transport::{
         ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Origin,
         ReliableEgress, Transport, TransportError, TransportEvent,
@@ -18,11 +16,10 @@ use crate::network::{
 };
 use ::gns::{
     sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
-    GnsLane, GnsNetworkMessage, GnsSocket, IsClient, IsCreated, IsServer, MessageSlot,
-    ReceivedMessagesInto, SendFlags, ToSend,
+    GnsNetworkMessage, GnsSocket, IsClient, IsCreated, IsServer, MessageSlot, ReceivedMessagesInto,
+    ToSend,
 };
 use std::{
-    cell::Cell,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     net::{SocketAddr, UdpSocket},
     time::Instant,
@@ -33,38 +30,9 @@ pub const MAX_LISTENERS: usize = 8;
 const RECEIVE_CHUNK: usize = 32;
 const MAX_RECEIVE_PER_POLL: usize = 512;
 const CALLBACK_BATCH: usize = 128;
-// The pinned native header specifies lower numbers as higher priority.
-const LANES: [GnsLane; 3] = [GnsLane::new(0, 1), GnsLane::new(0, 4), GnsLane::new(1, 1)];
 fn backend(error: ::gns::GnsError) -> TransportError {
     TransportError::Backend(error.to_string())
 }
-fn lane(class: MessageClass) -> u16 {
-    match class {
-        MessageClass::Transient => 0,
-        MessageClass::Control => 1,
-        MessageClass::Bulk => 2,
-    }
-}
-fn flags(class: MessageClass) -> SendFlags {
-    match class {
-        MessageClass::Transient => {
-            SendFlags::UNRELIABLE | SendFlags::NO_NAGLE | SendFlags::NO_DELAY
-        }
-        MessageClass::Control | MessageClass::Bulk => SendFlags::RELIABLE,
-    }
-}
-
-// Local application close codes share one mapping. Outgoing socket Drop uses
-// the wrapper's generic code, while its local event retains the precise reason.
-fn close_code(reason: DisconnectReason) -> u32 {
-    match reason {
-        DisconnectReason::Requested => 1000,
-        DisconnectReason::InvalidMessage => 1001,
-        DisconnectReason::RateLimited => 1003,
-        _ => 1002,
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Endpoint {
     Listener(ListenerId),
@@ -160,8 +128,7 @@ struct Connection {
     ready: bool,
     created: Instant,
     origin: Origin,
-    bulk_enqueued: u64,
-    bulk_delivered: Cell<u64>,
+    bulk_delivery: BulkDelivery,
     rate_limit: InboundRateLimiter,
 }
 
@@ -226,17 +193,7 @@ impl GnsDirectIp {
             if lifecycle::is_abuse(reason) {
                 self.admission.penalize(Some(connection.origin), now);
             }
-            events.push(if connection.connected {
-                TransportEvent::Disconnected {
-                    connection: id,
-                    reason,
-                }
-            } else {
-                TransportEvent::ConnectionFailed {
-                    connection: id,
-                    reason,
-                }
-            });
+            events.push(termination_event(id, connection.connected, reason));
             if let Some(socket) = self.sockets.get(&connection.endpoint) {
                 let _ = socket.close_before_removal(connection.native, reason);
             }
@@ -292,8 +249,7 @@ impl GnsDirectIp {
                         ready: false,
                         created: now,
                         origin,
-                        bulk_enqueued: 0,
-                        bulk_delivered: Cell::new(0),
+                        bulk_delivery: BulkDelivery::default(),
                         rate_limit: InboundRateLimiter::with_policy(
                             &PREAUTH_INBOUND_POLICY,
                             Instant::now(),
@@ -388,18 +344,7 @@ impl Transport for GnsDirectIp {
             .get(&id)
             .ok_or(TransportError::UnknownConnection)?;
         let (queued_bytes, bulk_queued_bytes) = self.sockets[&c.endpoint].egress(c.native)?;
-        // Native backlog includes framing: subtraction underestimates delivery.
-        // A high-water mark makes this conservative estimate monotonic.
-        let delivered = c
-            .bulk_delivered
-            .get()
-            .max(c.bulk_enqueued.saturating_sub(bulk_queued_bytes));
-        c.bulk_delivered.set(delivered);
-        Ok(ReliableEgress {
-            queued_bytes,
-            bulk_queued_bytes,
-            bulk_delivered_bytes: delivered,
-        })
+        Ok(c.bulk_delivery.egress(queued_bytes, bulk_queued_bytes))
     }
     fn mark_ready(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         self.connections
@@ -537,9 +482,7 @@ impl Transport for GnsDirectIp {
         class: MessageClass,
         payload: &[u8],
     ) -> Result<(), TransportError> {
-        if payload.len() > record_limit(class) {
-            return Err(TransportError::PayloadTooLarge);
-        }
+        outbound::check_payload_size(class, payload.len())?;
         let connection = self
             .connections
             .get(&id)
@@ -551,16 +494,9 @@ impl Transport for GnsDirectIp {
             .sockets
             .get(&connection.endpoint)
             .ok_or(TransportError::UnknownConnection)?;
-        if class != MessageClass::Transient {
+        if let Some(limit) = outbound::queue_limit(class) {
             let queued = socket.queued_reliable(connection.native)?;
-            let limit = if class == MessageClass::Bulk {
-                MAX_BULK_QUEUE_BYTES
-            } else {
-                MAX_RELIABLE_QUEUE_BYTES
-            };
-            if queued.saturating_add(payload.len() as u64 + 64) > limit {
-                return Err(TransportError::Backpressure);
-            }
+            outbound::check_queue(queued, payload.len(), limit)?;
         }
         let message = self
             .global
@@ -570,7 +506,7 @@ impl Transport for GnsDirectIp {
         socket.send(message)?;
         if class == MessageClass::Bulk {
             let c = self.connections.get_mut(&id).expect("sent connection");
-            c.bulk_enqueued = c.bulk_enqueued.saturating_add(payload.len() as u64);
+            c.bulk_delivery.record_sent(payload.len());
         }
         Ok(())
     }
@@ -589,17 +525,7 @@ impl Transport for GnsDirectIp {
             .close_before_removal(connection.native, reason);
         let connected = connection.connected;
         self.forget(id);
-        self.pending.push(if connected {
-            TransportEvent::Disconnected {
-                connection: id,
-                reason,
-            }
-        } else {
-            TransportEvent::ConnectionFailed {
-                connection: id,
-                reason,
-            }
-        });
+        self.pending.push(termination_event(id, connected, reason));
         close_result
     }
 }
@@ -702,8 +628,7 @@ impl DirectIpTransport for GnsDirectIp {
                 ready: false,
                 created: Instant::now(),
                 origin: Origin::Ip(address.ip().to_canonical()),
-                bulk_enqueued: 0,
-                bulk_delivered: Cell::new(0),
+                bulk_delivery: BulkDelivery::default(),
                 rate_limit: InboundRateLimiter::with_policy(
                     &PREAUTH_INBOUND_POLICY,
                     Instant::now(),
@@ -730,7 +655,8 @@ impl Drop for GnsDirectIp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::wire;
+    use crate::network::{secure::record_limit, wire};
+    use ::gns::SendFlags;
     use std::{
         net::Ipv4Addr,
         time::{Duration, Instant},
