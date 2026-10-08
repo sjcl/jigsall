@@ -1,6 +1,8 @@
 use super::*;
 #[path = "replication_cancellation_tests.rs"]
 mod cancellation;
+#[path = "dense_conflict_tests.rs"]
+mod dense_conflict_tests;
 #[path = "drag_rotation_tests.rs"]
 mod drag_rotation_tests;
 use crate::{
@@ -1714,7 +1716,6 @@ fn replica_rotation_preflights_whole_event_and_detects_rotation_divergence() {
 
 #[test]
 fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
-    use jigsall_core::protocol::TargetError;
     let mut s = Simulation::new(&[Vec2::splat(100.0); 40], &[]);
     let mut members = PieceBitSet::new(40);
     members.fill();
@@ -1746,17 +1747,22 @@ fn reliable_dense_rotation_preserves_topology_and_rejects_stale_targets() {
             quarter_turns: 1,
         },
     };
-    assert!(matches!(
-        s.contexts.apply_replicated(
+    let outcome = s
+        .contexts
+        .apply_replicated(
             &mut s.session,
             &mut s.store,
             A,
             &envelope,
             Some(&s.definition),
-            jigsall_core::LOCAL_PLAYER
-        ),
-        Err(ProtocolCommandError::Target(TargetError::StaleTopology))
-    ));
+            jigsall_core::LOCAL_PLAYER,
+        )
+        .unwrap();
+    let ProtocolAuthorityEvent::RotationCommitted(commit) = outcome.authority_event.unwrap().event
+    else {
+        panic!()
+    };
+    assert_eq!(commit.accepted, PieceTarget::Components(vec![]));
     assert_eq!(&*s.store.states, &before);
 }
 

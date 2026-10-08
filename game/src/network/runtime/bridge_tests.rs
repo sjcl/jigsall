@@ -276,6 +276,133 @@ fn pending_release_without_an_accepted_context_is_a_noop() {
 }
 
 #[test]
+fn empty_grab_ack_discards_only_its_gesture_and_preserves_new_selection_and_release() {
+    let player = PlayerId(37);
+    let mut store = PieceDataStore::default();
+    store.initialize(vec![Vec2::splat(100.0); 40]);
+    let mut interaction = PieceInteraction::default();
+    let old_token = interaction.network_gesture_token();
+    let mut bridge = CommandBridge::default();
+    let mut requested = PieceBitSet::new(40);
+    requested.extend((0..33).map(PieceId));
+    bridge
+        .enqueue(
+            PieceCommand::GrabGroup {
+                members: requested.clone(),
+            },
+            None,
+            old_token.clone(),
+        )
+        .unwrap();
+    let grab = bridge.next(&session(), player, &store).unwrap().unwrap();
+    assert!(matches!(
+        grab.command,
+        ProtocolPieceCommand::Grab {
+            target: PieceTarget::Dense(_)
+        }
+    ));
+    bridge
+        .enqueue(
+            PieceCommand::RotateDrag {
+                members: requested.clone(),
+                delta: Vec2::ONE,
+                quarter_turns: 1,
+            },
+            None,
+            old_token.clone(),
+        )
+        .unwrap();
+
+    // Replace the local gesture before its delayed empty ACK arrives. Model
+    // both a new selection alone and a newer drag with a queued Release.
+    for releasing in [false, true] {
+        interaction = PieceInteraction::default();
+        // Use the identical mask: only the gesture token distinguishes this
+        // real pointer drag from the superseded Grab.
+        let members = requested.clone();
+        store.selected_pieces = members.clone();
+        let mut selection = PuzzleSelection::default();
+        let frame = |pressed, just_pressed| PointerFrame {
+            position: Some(Vec2::ZERO),
+            screen_position: Some(Vec2::ZERO),
+            pressed,
+            just_pressed,
+            ctrl: false,
+            over_ui: false,
+            focused: true,
+        };
+        interaction.update(frame(true, true), &mut store, &mut selection, player);
+        selection.completed = Some(crate::selection::SelectionResult {
+            request_id: selection.latest.unwrap().request_id,
+            mode: crate::selection::SelectionMode::Point,
+            payload: crate::selection::SelectionPayload::Point(Some(PieceId(0))),
+            error: None,
+        });
+        interaction.update(frame(true, false), &mut store, &mut selection, player);
+        assert!(interaction.is_dragging());
+        let token = interaction.network_gesture_token();
+        store.highlights_dirty = false;
+        store.drag.members = members.words().clone();
+        store.drag.delta = Vec2::new(7.0, 9.0);
+        bridge
+            .enqueue(
+                PieceCommand::GrabGroup {
+                    members: members.clone(),
+                },
+                None,
+                token.clone(),
+            )
+            .unwrap();
+        if releasing {
+            interaction.update(frame(false, false), &mut store, &mut selection, player);
+            store.drag.members = members.words().clone();
+            store.drag.delta = Vec2::new(7.0, 9.0);
+            bridge
+                .enqueue(
+                    PieceCommand::ReleaseGroup {
+                        members: members.clone(),
+                        delta: store.drag.delta,
+                    },
+                    None,
+                    token.clone(),
+                )
+                .unwrap();
+            bridge.present_release(&mut interaction, &mut store);
+        }
+        bridge
+            .reconcile(
+                player,
+                &ProtocolAuthorityEvent::GrabAccepted(GrabAccepted {
+                    player,
+                    grab_sequence: if releasing { 1 } else { 0 },
+                    accepted: PieceTarget::Components(vec![]),
+                    rejected: vec![],
+                }),
+                &mut interaction,
+                &mut store,
+            )
+            .unwrap();
+        assert_eq!(store.selected_pieces, members);
+        assert!(!store.highlights_dirty);
+        assert_eq!(store.drag.members, *members.words());
+        assert_eq!(store.drag.delta, Vec2::new(7.0, 9.0));
+        assert!(bridge.pending.is_none());
+        assert!(bridge.active.is_none());
+        assert_eq!(bridge.queue.len(), if releasing { 2 } else { 1 });
+        assert_eq!(bridge.release.is_some(), releasing);
+        assert_eq!(interaction.is_dragging(), !releasing);
+        assert!(Arc::ptr_eq(&interaction.network_gesture_token(), &token));
+        let next = bridge.next(&session(), player, &store).unwrap().unwrap();
+        assert_eq!(
+            next.sequence,
+            ClientCommandSequence::Control(if releasing { 2 } else { 1 })
+        );
+        assert!(matches!(next.command, ProtocolPieceCommand::Grab { .. }));
+        // The next loop simulates another superseded in-flight Grab.
+    }
+}
+
+#[test]
 fn pending_release_reliable_cancellation_and_late_transient_keep_canonical_position() {
     use crate::multiplayer::{protocol::ProtocolDragContexts, replication::PeerReplicationState};
     let player = PlayerId(37);

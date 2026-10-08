@@ -280,12 +280,18 @@ impl PieceInteraction {
         if self.pending_network_release {
             store.selected_pieces = accepted.clone();
             store.highlights_dirty = true;
+            if accepted.is_empty() {
+                self.pending_network_release = false;
+                store.drag = default();
+            }
         }
         if let Gesture::Dragging { members, .. } = &mut self.gesture {
             if members == requested {
                 if accepted.is_empty() {
                     self.gesture = Gesture::Idle;
                     store.drag = default();
+                    store.selected_pieces.clear();
+                    store.highlights_dirty = true;
                 } else {
                     store.drag.members = accepted.words().clone();
                     store.selected_pieces = accepted.clone();

@@ -348,6 +348,10 @@ existing local renderer path, which keeps its priority over remote slots. The
 original Grab request is never restored as pending membership, including partial
 acceptance. A release queued before GrabAccepted waits for accepted membership;
 empty acceptance removes the pending presentation and makes Release a no-op.
+It also clears that gesture's selection highlight and drops its queued rotation
+and release controls. Gesture tokens keep a delayed empty ACK from clearing a
+newer selection, drag or pending release. The next Reliable Control proceeds with
+its normal sequence number.
 
 Pointer/camera movement cannot recompute a submitted Release delta. If Release
 waits behind RotateDrag, its queued delta and pending presentation are adjusted

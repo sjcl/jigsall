@@ -4,9 +4,10 @@ use crate::resources::{pieces::AppliedCommand, PieceDataStore};
 use jigsall_core::{
     protocol::{
         ActiveDrag, ActiveDragTarget, DragCancelled, DragRotationCommitted, GrabAccepted,
-        ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope,
-        ProtocolPieceCommand, RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint,
-        RemoteDragUpdate, ResolvedPieceTarget, RotationCommitted, TargetError,
+        PieceTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope,
+        ProtocolCommandEnvelope, ProtocolPieceCommand, RejectedComponentRef, ReleaseCommitted,
+        ReleaseResultFingerprint, RemoteDragUpdate, ResolvedPieceTarget, RotationCommitted,
+        TargetError,
     },
     session::{
         AuthorityEpoch, AuthoritySession, ClientCommandSequence, CommandSequenceStatus,
@@ -379,6 +380,16 @@ impl ProtocolDragContexts {
                 let turns = jigsall_core::add_quarter_turns(0, *quarter_turns) as i8;
                 let rotation = store
                     .rotate_target(target, turns, definition)
+                    .or_else(|error| match (target, error) {
+                        // A concurrent snap invalidates the whole Dense intent.
+                        // Reuse the empty outcome, including its result fingerprint.
+                        (PieceTarget::Dense(_), TargetError::StaleTopology) => store.rotate_target(
+                            &PieceTarget::Components(Vec::new()),
+                            turns,
+                            definition,
+                        ),
+                        (_, error) => Err(error),
+                    })
                     .map_err(ProtocolCommandError::Target)?;
                 let result = super::release::result_fingerprint(
                     store,
@@ -408,6 +419,14 @@ impl ProtocolDragContexts {
                     .map_err(|_| ProtocolCommandError::InvalidDefinition)?;
                 let resolved = target
                     .resolve(&store.connectivity)
+                    .or_else(|error| match (target, error) {
+                        // Do not expand an obsolete intent into newly joined pieces.
+                        // Only this conflict is a normal empty ACK; malformed targets fail.
+                        (PieceTarget::Dense(_), TargetError::StaleTopology) => {
+                            PieceTarget::Components(Vec::new()).resolve(&store.connectivity)
+                        }
+                        (_, error) => Err(error),
+                    })
                     .map_err(ProtocolCommandError::Target)?;
                 let (applied, target, pivots) = match resolved.target {
                     ResolvedPieceTarget::Sparse(mut refs) => {

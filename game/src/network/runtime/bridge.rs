@@ -565,10 +565,20 @@ impl CommandBridge {
                     members: accepted,
                     last_delta: None,
                     scalar_delta: Vec2::ZERO,
-                    token: pending.token,
+                    token: pending.token.clone(),
                 });
                 if self.active.is_none() {
-                    self.clear_release(interaction, store);
+                    // Discard only the rejected gesture's unsent controls. A late
+                    // ACK must preserve a newer gesture and its pending release.
+                    self.queue
+                        .retain(|(_, _, token)| !Arc::ptr_eq(token, &pending.token));
+                    if self
+                        .release
+                        .as_ref()
+                        .is_some_and(|r| Arc::ptr_eq(&r.token, &pending.token))
+                    {
+                        self.clear_release(interaction, store);
+                    }
                 }
             }
             (

@@ -204,6 +204,14 @@ Any mismatch rejects the **entire Dense target** as `StaleTopology` before any
 gameplay mutation or context creation. This detects both merging two selected
 components and adding an unselected component to a selected one, even when the
 count is unchanged. A merge among unrelated components does not invalidate it.
+For initial `Grab` and idle `Rotate`, this conflict is a normal empty result:
+`GrabAccepted` or `RotationCommitted` carries `Components([])`. Gameplay, ownership
+and drag contexts stay unchanged; Reliable Control is consumed and one authority
+cursor is published/retained for every peer and catch-up. Empty rotation uses the
+existing result fingerprint calculation with no affected roots. Invalid dimensions
+and envelope validation still fail, and Release/RotateDrag consistency errors
+retain their existing handling. An obsolete Dense intent is never accepted by
+expanding it into the new connectivity.
 On a match, partial components are expanded from authority connectivity and receive
 the same full-member gameplay validation. No component-reference list is built.
 
@@ -287,8 +295,8 @@ pub struct GrabAccepted {
 
 `accepted` contains exact canonical membership in the same adaptive wire forms,
 with a fingerprint derived only from accepted components for Dense. It is also
-returned for empty/all-rejected, topology-valid grabs as `Components([])`; only
-nonempty acceptance creates an active context. `rejected` describes invalid/stale
+returned for empty/all-rejected grabs, including Dense topology conflicts, as
+`Components([])`; only nonempty acceptance creates an active context. `rejected` describes invalid/stale
 sparse entries, not a large list of every gameplay-ineligible dense component.
 Clients use `accepted` as the definitive membership, rather than reconstructing it
 from piece counts or assuming every requested component was accepted.
@@ -581,7 +589,9 @@ reliable control. Signed turns normalize modulo four. The authority resolves the
 existing sparse/dense topology, rejects complete placed, disabled, held or
 inconsistent bodies, and rotates each accepted component about its own current
 world-space position AABB center. Active player drags use RotateDrag instead. Sparse stale
-entries are rejected individually; a stale dense fingerprint rejects the command.
+entries are rejected individually; a stale dense fingerprint produces an empty
+`RotationCommitted` without rotating any pieces. Its fingerprint is still verified
+by replicas, and the client retires the pending rotation prediction normally.
 
 `RotationCommitted` contains the exact accepted `PieceTarget`, normalized turns,
 player, and affected-state result fingerprint. Replicas preflight the whole event

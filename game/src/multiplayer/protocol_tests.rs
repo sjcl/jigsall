@@ -948,14 +948,82 @@ fn stale_dense_grab_cannot_silently_expand_and_unrelated_unions_are_allowed() {
             ClientCommandSequence::Control(0),
             ProtocolPieceCommand::Grab { target },
         );
-        assert_eq!(
-            f.apply(&grab),
-            Err(ProtocolCommandError::Target(TargetError::StaleTopology))
-        );
+        let ProtocolCommandResult::Grabbed { applied, ack } = f.apply(&grab).unwrap() else {
+            panic!()
+        };
+        assert_eq!(applied, AppliedCommand::default());
+        assert_eq!(ack.accepted, PieceTarget::Components(vec![]));
+        assert!(ack.rejected.is_empty());
         assert_eq!(&*f.store.states, before);
         assert!(f.store.held_by.is_empty());
         assert!(f.drag().is_none());
         f.grab(1, f.target(&[120])); // Rejected gameplay still consumes the control.
+    }
+}
+
+#[test]
+fn dense_grab_and_rotate_keep_malformed_target_and_envelope_errors() {
+    for rotating in [false, true] {
+        for invalid in 0..7 {
+            let mut f = Fixture::new(128);
+            let mut target = f.target(&(0..80).collect::<Vec<_>>());
+            f.store.connectivity.union(PieceId(0), PieceId(100));
+            if invalid == 0 {
+                let PieceTarget::Dense(dense) = &mut target else {
+                    panic!()
+                };
+                dense.members = PieceBitSet::new(127);
+            }
+            let command = if rotating {
+                ProtocolPieceCommand::Rotate {
+                    target,
+                    quarter_turns: 1,
+                }
+            } else {
+                ProtocolPieceCommand::Grab { target }
+            };
+            let mut envelope = Fixture::envelope(A, ClientCommandSequence::Control(0), command);
+            let expected = match invalid {
+                0 => ProtocolCommandError::Target(TargetError::InvalidMaskDimensions),
+                1 => {
+                    envelope.player = B;
+                    ProtocolCommandError::WrongPlayer
+                }
+                2 => {
+                    envelope.session = SessionId(999);
+                    ProtocolCommandError::Sequence(ProtocolError::WrongSession)
+                }
+                3 => {
+                    envelope.authority_epoch = AuthorityEpoch(4);
+                    ProtocolCommandError::Sequence(ProtocolError::WrongEpoch)
+                }
+                4 => {
+                    envelope.sequence = ClientCommandSequence::Control(1);
+                    ProtocolCommandError::Sequence(ProtocolError::ControlGap { expected: 0 })
+                }
+                5 => {
+                    f.session.accept_command(&envelope).unwrap();
+                    ProtocolCommandError::Sequence(ProtocolError::DuplicateCommand)
+                }
+                _ => {
+                    envelope.sequence = ClientCommandSequence::Move {
+                        after_control_sequence: 0,
+                        tick: 0,
+                    };
+                    ProtocolCommandError::Sequence(ProtocolError::WrongCommandStream)
+                }
+            };
+            let before = f.store.states.clone();
+            let cursor = f.session.cursor();
+            assert!(
+                matches!(f.contexts.apply_replicated(&mut f.session, &mut f.store, A,
+                &envelope, Some(&f.definition), jigsall_core::LOCAL_PLAYER), Err(error) if error == expected)
+            );
+            assert_eq!(f.store.states, before);
+            assert!(f.store.held_by.is_empty());
+            assert!(f.drag().is_none());
+            assert_eq!(f.session.cursor(), cursor);
+        }
     }
 }
 

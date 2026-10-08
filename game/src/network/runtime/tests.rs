@@ -1,4 +1,5 @@
 use super::*;
+mod dense_conflict_tests;
 mod disconnected_save_tests;
 mod local_rotation_tests;
 mod pending_release_tests;
@@ -493,9 +494,12 @@ fn pointer(app: &mut App, position: Vec2, pressed: bool, just_pressed: bool) {
     }
 }
 fn begin_gesture(app: &mut App) {
+    begin_selected_gesture(app, members());
+}
+fn begin_selected_gesture(app: &mut App, members: PieceBitSet) {
     app.world_mut()
         .resource_mut::<PieceDataStore>()
-        .selected_pieces = members();
+        .selected_pieces = members;
     pointer(app, Vec2::ZERO, true, true);
     let request = app
         .world()
@@ -525,6 +529,14 @@ impl Pair {
         Self::with_image_bytes(cap, cached_image, encoded())
     }
     fn with_image_bytes(cap: u32, cached_image: Option<Arc<[u8]>>, bytes: Arc<[u8]>) -> Self {
+        Self::with_host_setup(cap, cached_image, bytes, |_| {})
+    }
+    fn with_host_setup(
+        cap: u32,
+        cached_image: Option<Arc<[u8]>>,
+        bytes: Arc<[u8]>,
+        setup: impl FnOnce(&mut App),
+    ) -> Self {
         let bus = Arc::new(Mutex::new(Bus::default()));
         let mut host = app();
         let mut client = app();
@@ -539,6 +551,7 @@ impl Pair {
             encoded: Some(bytes),
             image_lease: None,
         });
+        setup(&mut host);
         host_with_transport(
             host.world_mut(),
             Fake {
