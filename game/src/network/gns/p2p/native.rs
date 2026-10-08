@@ -574,6 +574,13 @@ impl Connection {
         }
     }
     #[cfg(test)]
+    pub(super) fn flush_for_test(&self) -> Result<(), TransportError> {
+        // SAFETY: the live native handle remains owned by this connection.
+        check(unsafe {
+            SteamAPI_ISteamNetworkingSockets_FlushMessagesOnConnection(interface(), self.handle())
+        })
+    }
+    #[cfg(test)]
     pub(super) fn test_pair() -> [Self; 2] {
         global().unwrap();
         let (mut a, mut b) = (k_HSteamNetConnection_Invalid, k_HSteamNetConnection_Invalid);

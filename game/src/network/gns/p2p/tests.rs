@@ -673,6 +673,24 @@ fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
 
 static BACKEND_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+fn flush_and_wait_for_reliable_ack(sender: &native::Connection) {
+    sender.flush_for_test().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let (queued, _) = sender
+            .egress()
+            .expect("query native reliable delivery status");
+        if queued == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timeout waiting for P2P native reliable ACKs: {queued} bytes pending or unacked"
+        );
+        std::thread::park_timeout(Duration::from_millis(1));
+    }
+}
+
 /// Exercise P2P's actual connection receive loop with an already queued native
 /// backlog. ICE establishment is covered by the separate inter-process test.
 pub(in crate::network::gns) fn inbound_events(
@@ -699,15 +717,108 @@ pub(in crate::network::gns) fn inbound_events(
             .send(native_lane, MessageClass::Control, payload)
             .unwrap();
     }
+    // Native service threads deliver/ACK without dequeuing the receiver. Wait
+    // before poll can disconnect on invalid/reliable excess, discarding its tail.
+    flush_and_wait_for_reliable_ack(&sender);
     let mut events = Vec::new();
-    for _ in 0..=count {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "timeout draining P2P backlog: authenticated={authenticated}, lane={native_lane}, \
+             count={count}, events={events:?}"
+        );
         let start = events.len();
         backend.poll(&mut events).unwrap();
         if !authenticated {
             assert!(events.len() - start <= 1, "pre-auth handshake barrier");
         }
+        if !backend.connections.contains_key(&id) || events.len() == start {
+            break;
+        }
+    }
+    // Include a subsequent poll after termination too, so duplicate disconnect
+    // events cannot be hidden by stopping as soon as the connection is removed.
+    backend.poll(&mut events).unwrap();
+    if let Some(connection) = backend.connections.get(&id) {
+        // Transient excess is consumed without an event. An empty poll after
+        // the ACK barrier must leave no native backlog in these fixtures.
+        assert!(
+            connection.native.receive().unwrap().is_none(),
+            "undrained P2P backlog: authenticated={authenticated}, lane={native_lane}, count={count}"
+        );
     }
     events
+}
+
+#[test]
+fn gns_p2p_inbound_backlog_preserves_handshake_barrier_and_drop_budget() {
+    use crate::network::rate_limit::{BucketPolicy, InboundRatePolicy};
+    const POLICY: InboundRatePolicy = InboundRatePolicy {
+        transient: BucketPolicy {
+            bytes_per_second: 0,
+            burst_bytes: 128,
+            minimum_charge: 64,
+        },
+        ..PREAUTH_INBOUND_POLICY
+    };
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
+    let payload = test_messages()[0].1.clone();
+    for authenticated in [false, true] {
+        let mut backend = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
+        let [sender, receiver] = native::Connection::test_pair();
+        let id = ConnectionId::new(token().unwrap());
+        backend.insert(id, receiver, PeerId::from_bytes([42; 16]), None);
+        backend.connections.get_mut(&id).unwrap().connected = true;
+        if authenticated {
+            backend.activate_secure_channel(id).unwrap();
+        }
+        backend.connections.get_mut(&id).unwrap().limiter =
+            InboundRateLimiter::with_policy(&POLICY, Instant::now());
+        let class = if authenticated {
+            MessageClass::Transient
+        } else {
+            MessageClass::Control
+        };
+        for _ in 0..513 {
+            sender
+                .send(lane(class), MessageClass::Control, &payload)
+                .unwrap();
+        }
+        flush_and_wait_for_reliable_ack(&sender);
+
+        let mut events = Vec::new();
+        backend.poll(&mut events).unwrap();
+        assert_eq!(
+            events,
+            vec![
+                TransportEvent::Message {
+                    connection: id,
+                    class,
+                    payload: payload.clone(),
+                };
+                if authenticated { 2 } else { 1 }
+            ]
+        );
+        let connection = &backend.connections[&id];
+        assert!(connection.connected);
+        // Pre-auth stops after one record. Authenticated polling consumes 512,
+        // including 510 intentional Transient drops, leaving one native-owned.
+        let remaining = if authenticated { 1 } else { 512 };
+        for index in 0..remaining {
+            let message = connection.native.receive().unwrap().unwrap_or_else(|| {
+                panic!(
+                    "missing native tail record {index}/{remaining}: authenticated={authenticated}"
+                )
+            });
+            assert_eq!(message.lane(), lane(class));
+            assert_eq!(message.payload().unwrap(), payload);
+        }
+        assert!(connection.native.receive().unwrap().is_none());
+        events.clear();
+        backend.poll(&mut events).unwrap();
+        assert!(events.is_empty());
+    }
 }
 
 #[test]

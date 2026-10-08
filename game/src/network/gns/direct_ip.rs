@@ -1005,6 +1005,15 @@ mod tests {
         control: TEST_BUCKET,
         bulk: TEST_BUCKET,
     };
+    // Keep the production burst/minimum charge, but never earn extra handshake
+    // credit while native delivery or pre-auth barriers delay this fixture.
+    const TEST_PREAUTH_POLICY: InboundRatePolicy = InboundRatePolicy {
+        control: crate::network::rate_limit::BucketPolicy {
+            bytes_per_second: 0,
+            ..PREAUTH_INBOUND_POLICY.control
+        },
+        ..PREAUTH_INBOUND_POLICY
+    };
 
     // These fixtures test draining, not rate limits: keep their 513-message
     // backlog below capacity while retaining production minimum charges.
@@ -1625,6 +1634,13 @@ mod tests {
             if authenticated {
                 host.activate_secure_channel(incoming).unwrap();
             }
+            let policy = if authenticated {
+                &TEST_POLICY
+            } else {
+                &TEST_PREAUTH_POLICY
+            };
+            host.connections.get_mut(&incoming).unwrap().rate_limit =
+                InboundRateLimiter::with_policy(policy, Instant::now());
             let connection = &client.connections[&outgoing];
             for _ in 0..count {
                 let message = client
@@ -1639,11 +1655,6 @@ mod tests {
             for _ in 0..=count {
                 host.poll(&mut direct_events).unwrap();
             }
-            let policy = if authenticated {
-                &TEST_POLICY
-            } else {
-                &PREAUTH_INBOUND_POLICY
-            };
             let p2p_events = super::super::p2p::tests::inbound_events(
                 incoming,
                 authenticated,
