@@ -765,7 +765,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
                 .send(ActorFrame::Signal(host_peer, signal.payload));
         }
         // Incoming A and direct-only handles must retain their snapshots at every stage.
-        for connection in host.connections.values().filter(|c| c.connected) {
+        for connection in host.connections.values().filter(|c| c.state.connected) {
             let index = actors
                 .iter()
                 .position(|a| a.peer == connection.peer.to_bytes())
@@ -777,7 +777,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
         if stage == 0
             && connected.len() == 1
             && host.connections.len() == 1
-            && host.connections.values().all(|c| c.ready)
+            && host.connections.values().all(|c| c.state.ready)
         {
             expiry = control(&fixture.address, "B");
             host.apply_turn_update().unwrap();
@@ -813,7 +813,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
         if stage == 2
             && connected.len() == 2
             && host.connections.len() == 2
-            && host.connections.values().all(|c| c.ready)
+            && host.connections.values().all(|c| c.state.ready)
         {
             fixture.send("stats");
             let stats = fixture.stats.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -842,7 +842,7 @@ pub(in crate::network::gns) fn exercise_turn_default_expiry(
         if stage == 3
             && connected.len() == 3
             && host.connections.len() == 3
-            && host.connections.values().all(|c| c.ready)
+            && host.connections.values().all(|c| c.state.ready)
         {
             // Exchange on every stable handle after recovery, including peer1(A)/peer2(direct).
             if !exchanged {

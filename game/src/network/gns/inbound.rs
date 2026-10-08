@@ -7,20 +7,14 @@ use crate::network::{
 };
 use std::time::Instant;
 
+pub(super) use super::policy::class;
+pub(super) const MAX_RECEIVE_PER_POLL: usize = 512;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InboundDecision {
     Allow,
     Drop,
     Disconnect(DisconnectReason),
-}
-
-pub(super) fn class(lane: u16) -> Option<MessageClass> {
-    match lane {
-        0 => Some(MessageClass::Transient),
-        1 => Some(MessageClass::Control),
-        2 => Some(MessageClass::Bulk),
-        _ => None,
-    }
 }
 
 /// Inspect borrowed bytes without copying or decoding the body. Invalid records

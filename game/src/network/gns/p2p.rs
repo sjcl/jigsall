@@ -2,18 +2,18 @@
 //! admission occupancy, pre-auth barriers and secured messages use Transport.
 pub(super) mod native;
 use super::{
-    inbound::{check_message, class, InboundDecision},
-    outbound::{self, BulkDelivery},
+    inbound::{check_message, class, InboundDecision, MAX_RECEIVE_PER_POLL},
+    outbound,
     policy::{close_code, lane, termination_event},
     signaling::{self, PeerId, SignalingEndpoint, TurnUpdate},
-    token,
+    token, ConnectionState,
 };
 use crate::network::{
     lifecycle::{
         self, Admission, Bucket, CONNECTING_TIMEOUT, CONNECTION_START_BURST,
-        CONNECTION_START_INTERVAL, MAX_CONNECTING, MAX_CONNECTIONS, MAX_PENDING_CONNECTIONS,
+        CONNECTION_START_INTERVAL,
     },
-    rate_limit::{InboundRateLimiter, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY},
+    rate_limit::DEFAULT_INBOUND_POLICY,
     transport::*,
 };
 use std::{
@@ -47,12 +47,7 @@ struct Connection {
     native: native::Connection,
     peer: PeerId,
     origin: Option<Origin>,
-    created: Instant,
-    connected: bool,
-    authenticated: bool,
-    ready: bool,
-    limiter: InboundRateLimiter,
-    bulk_delivery: BulkDelivery,
+    state: ConnectionState,
 }
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 struct Lease;
@@ -157,9 +152,7 @@ impl GnsP2p {
     /// Advisory native headroom, including Connecting/not-Ready handles.
     /// This does not reserve a handle or consume native admission credits.
     pub fn has_connection_capacity(&self) -> bool {
-        self.connections.len() < MAX_CONNECTIONS
-            && self.connections.values().filter(|c| !c.connected).count() < MAX_CONNECTING
-            && self.connections.values().filter(|c| !c.ready).count() < MAX_PENDING_CONNECTIONS
+        super::has_connection_capacity(self.connections.values().map(|c| &c.state))
     }
     /// Queue an outgoing P2P connection, separate from IP address establishment.
     pub fn connect_peer(
@@ -242,7 +235,7 @@ impl GnsP2p {
     fn origin_pending(&self, origin: Option<Origin>) -> usize {
         self.connections
             .values()
-            .filter(|c| !c.ready && origin.is_some() && c.origin == origin)
+            .filter(|c| !c.state.ready && origin.is_some() && c.origin == origin)
             .count()
     }
     fn insert(
@@ -259,12 +252,7 @@ impl GnsP2p {
                 native,
                 peer,
                 origin,
-                created: now,
-                connected: false,
-                authenticated: false,
-                ready: false,
-                limiter: InboundRateLimiter::with_policy(&PREAUTH_INBOUND_POLICY, now),
-                bulk_delivery: BulkDelivery::default(),
+                state: ConnectionState::new(now),
             },
         );
     }
@@ -277,14 +265,14 @@ impl GnsP2p {
     ) {
         if let Some(mut c) = self.connections.remove(&id) {
             #[cfg(feature = "rendezvous")]
-            if self.retired_peers.len() < MAX_CONNECTIONS {
+            if self.retired_peers.len() < lifecycle::MAX_CONNECTIONS {
                 self.retired_peers.insert(c.peer);
             }
             if lifecycle::is_abuse(reason) {
                 self.admission.penalize(c.origin, now);
             }
             c.native.close(close_code(reason) as i32);
-            events.push(termination_event(id, c.connected, reason));
+            events.push(termination_event(id, c.state.connected, reason));
         }
     }
     fn maintain(&mut self, now: Instant, events: &mut Vec<TransportEvent>) {
@@ -296,11 +284,11 @@ impl GnsP2p {
                 continue;
             }
             match c.native.state() {
-                native::State::Connected if !c.connected => {
-                    c.connected = true;
-                    events.push(TransportEvent::Connected { connection: id });
+                native::State::Connected => {
+                    if c.state.mark_connected() {
+                        events.push(TransportEvent::Connected { connection: id });
+                    }
                 }
-                native::State::Connected => {}
                 native::State::Closed => {
                     self.terminate(id, DisconnectReason::RemoteClosed, events, now)
                 }
@@ -308,7 +296,7 @@ impl GnsP2p {
                     self.terminate(id, DisconnectReason::ConnectionProblem, events, now)
                 }
                 native::State::Pending
-                    if now.saturating_duration_since(c.created) >= CONNECTING_TIMEOUT =>
+                    if now.saturating_duration_since(c.state.created) >= CONNECTING_TIMEOUT =>
                 {
                     self.terminate(id, DisconnectReason::BackendConnectionTimeout, events, now)
                 }
@@ -327,29 +315,26 @@ impl Transport for GnsP2p {
             .get(&id)
             .ok_or(TransportError::UnknownConnection)?;
         let (queued_bytes, bulk_queued_bytes) = c.native.egress()?;
-        Ok(c.bulk_delivery.egress(queued_bytes, bulk_queued_bytes))
+        Ok(c.state
+            .bulk_delivery
+            .egress(queued_bytes, bulk_queued_bytes))
     }
     fn activate_secure_channel(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         let c = self
             .connections
             .get_mut(&id)
             .ok_or(TransportError::UnknownConnection)?;
-        if !c.connected {
-            return Err(TransportError::NotConnected);
-        }
-        if c.authenticated {
-            return Err(TransportError::ProtocolViolation);
-        }
-        c.native.configure_authenticated_send_rate()?;
-        c.authenticated = true;
-        c.limiter = InboundRateLimiter::with_policy(&DEFAULT_INBOUND_POLICY, Instant::now());
-        Ok(())
+        c.state
+            .activate_secure_channel(&DEFAULT_INBOUND_POLICY, || {
+                c.native.configure_authenticated_send_rate()
+            })
     }
     fn mark_ready(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         self.connections
             .get_mut(&id)
             .ok_or(TransportError::UnknownConnection)?
-            .ready = true;
+            .state
+            .mark_ready();
         Ok(())
     }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
@@ -401,7 +386,7 @@ impl Transport for GnsP2p {
             let start = ids.iter().position(|id| *id >= next).unwrap_or(0);
             ids.rotate_left(start);
         }
-        let mut remaining = 512;
+        let mut remaining = MAX_RECEIVE_PER_POLL;
         // Round robin, at most one native message per connection each pass.
         // A delivered pre-auth record stops that connection until next frame.
         let mut active = std::collections::VecDeque::from(ids);
@@ -412,7 +397,7 @@ impl Transport for GnsP2p {
             let Some(c) = self.connections.get_mut(&id) else {
                 continue;
             };
-            if !c.connected {
+            if !c.state.connected {
                 continue;
             }
             let message = match c.native.receive() {
@@ -436,9 +421,15 @@ impl Transport for GnsP2p {
                 }
             };
             let mut barrier = false;
-            match check_message(class, payload, c.authenticated, &mut c.limiter, now) {
+            match check_message(
+                class,
+                payload,
+                c.state.authenticated,
+                &mut c.state.limiter,
+                now,
+            ) {
                 InboundDecision::Allow => {
-                    barrier = !c.authenticated;
+                    barrier = !c.state.authenticated;
                     events.push(TransportEvent::Message {
                         connection: id,
                         class,
@@ -469,7 +460,7 @@ impl Transport for GnsP2p {
             .connections
             .get_mut(&id)
             .ok_or(TransportError::UnknownConnection)?;
-        if !c.connected {
+        if !c.state.connected {
             return Err(TransportError::NotConnected);
         }
         if let Some(limit) = outbound::queue_limit(class) {
@@ -477,7 +468,7 @@ impl Transport for GnsP2p {
         }
         c.native.send(lane(class), class, payload)?;
         if class == MessageClass::Bulk {
-            c.bulk_delivery.record_sent(payload.len());
+            c.state.bulk_delivery.record_sent(payload.len());
         }
         Ok(())
     }

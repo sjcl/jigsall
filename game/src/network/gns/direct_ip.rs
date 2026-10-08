@@ -1,14 +1,12 @@
 use super::{
-    inbound::{check_message, class, InboundDecision},
-    outbound::{self, BulkDelivery},
+    inbound::{check_message, class, InboundDecision, MAX_RECEIVE_PER_POLL},
+    outbound,
     policy::{close_code, flags, lane, termination_event, LANES},
-    token,
+    token, ConnectionState,
 };
 use crate::network::{
-    lifecycle::{self, Admission, CONNECTING_TIMEOUT, MAX_CONNECTING, MAX_PENDING_CONNECTIONS},
-    rate_limit::{
-        InboundRateLimiter, InboundRatePolicy, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY,
-    },
+    lifecycle::{self, Admission, CONNECTING_TIMEOUT},
+    rate_limit::{InboundRatePolicy, DEFAULT_INBOUND_POLICY},
     transport::{
         ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Origin,
         ReliableEgress, Transport, TransportError, TransportEvent,
@@ -25,10 +23,8 @@ use std::{
     time::Instant,
 };
 
-pub use crate::network::lifecycle::MAX_CONNECTIONS;
 pub const MAX_LISTENERS: usize = 8;
 const RECEIVE_CHUNK: usize = 32;
-const MAX_RECEIVE_PER_POLL: usize = 512;
 const CALLBACK_BATCH: usize = 128;
 fn backend(error: ::gns::GnsError) -> TransportError {
     TransportError::Backend(error.to_string())
@@ -123,13 +119,8 @@ impl Socket {
 struct Connection {
     native: GnsConnection,
     endpoint: Endpoint,
-    connected: bool,
-    authenticated: bool,
-    ready: bool,
-    created: Instant,
+    state: ConnectionState,
     origin: Origin,
-    bulk_delivery: BulkDelivery,
-    rate_limit: InboundRateLimiter,
 }
 
 /// Owns listeners/connections; Drop closes all of them, including pending connects.
@@ -164,6 +155,9 @@ impl GnsDirectIp {
             next_admission_log: None,
         })
     }
+    fn has_connection_capacity(&self) -> bool {
+        super::has_connection_capacity(self.connections.values().map(|c| &c.state))
+    }
     /// Remove mappings; dropping an outgoing socket performs its owned close.
     /// Incoming connection bookkeeping never calls the native close function.
     fn forget(&mut self, id: ConnectionId) {
@@ -193,7 +187,7 @@ impl GnsDirectIp {
             if lifecycle::is_abuse(reason) {
                 self.admission.penalize(Some(connection.origin), now);
             }
-            events.push(termination_event(id, connection.connected, reason));
+            events.push(termination_event(id, connection.state.connected, reason));
             if let Some(socket) = self.sockets.get(&connection.endpoint) {
                 let _ = socket.close_before_removal(connection.native, reason);
             }
@@ -213,17 +207,12 @@ impl GnsDirectIp {
             if let Some(Socket::Server(socket)) = self.sockets.get(&endpoint) {
                 let now = Instant::now();
                 let origin = Origin::Ip(info.remote_address().to_canonical());
-                let pending = self.connections.values().filter(|c| !c.ready).count();
-                let connecting = self.connections.values().filter(|c| !c.connected).count();
                 let origin_pending = self
                     .connections
                     .values()
-                    .filter(|c| !c.ready && c.origin == origin)
+                    .filter(|c| !c.state.ready && c.origin == origin)
                     .count();
-                let refusal = if self.connections.len() >= MAX_CONNECTIONS
-                    || pending >= MAX_PENDING_CONNECTIONS
-                    || connecting >= MAX_CONNECTING
-                {
+                let refusal = if !self.has_connection_capacity() {
                     Some(DisconnectReason::JoinCapacity)
                 } else {
                     self.admission
@@ -244,16 +233,8 @@ impl GnsDirectIp {
                     Connection {
                         native,
                         endpoint,
-                        connected: false,
-                        authenticated: false,
-                        ready: false,
-                        created: now,
+                        state: ConnectionState::new(now),
                         origin,
-                        bulk_delivery: BulkDelivery::default(),
-                        rate_limit: InboundRateLimiter::with_policy(
-                            &PREAUTH_INBOUND_POLICY,
-                            Instant::now(),
-                        ),
                     },
                 );
                 self.native_ids.insert(native, issued);
@@ -283,8 +264,7 @@ impl GnsDirectIp {
         match state {
             State::k_ESteamNetworkingConnectionState_Connected => {
                 if let Some(connection) = self.connections.get_mut(&id) {
-                    if !connection.connected {
-                        connection.connected = true;
+                    if connection.state.mark_connected() {
                         events.push(TransportEvent::Connected { connection: id });
                     }
                 }
@@ -303,7 +283,8 @@ impl GnsDirectIp {
             .connections
             .iter()
             .filter(|(_, c)| {
-                !c.connected && now.saturating_duration_since(c.created) >= CONNECTING_TIMEOUT
+                !c.state.connected
+                    && now.saturating_duration_since(c.state.created) >= CONNECTING_TIMEOUT
             })
             .map(|(&id, _)| id)
             .collect();
@@ -344,13 +325,16 @@ impl Transport for GnsDirectIp {
             .get(&id)
             .ok_or(TransportError::UnknownConnection)?;
         let (queued_bytes, bulk_queued_bytes) = self.sockets[&c.endpoint].egress(c.native)?;
-        Ok(c.bulk_delivery.egress(queued_bytes, bulk_queued_bytes))
+        Ok(c.state
+            .bulk_delivery
+            .egress(queued_bytes, bulk_queued_bytes))
     }
     fn mark_ready(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         self.connections
             .get_mut(&id)
             .ok_or(TransportError::UnknownConnection)?
-            .ready = true;
+            .state
+            .mark_ready();
         Ok(())
     }
     fn activate_secure_channel(&mut self, id: ConnectionId) -> Result<(), TransportError> {
@@ -358,16 +342,11 @@ impl Transport for GnsDirectIp {
             .connections
             .get_mut(&id)
             .ok_or(TransportError::UnknownConnection)?;
-        if !connection.connected {
-            return Err(TransportError::NotConnected);
-        }
-        if connection.authenticated {
-            return Err(TransportError::ProtocolViolation);
-        }
-        super::configure_authenticated_send_rate(connection.native)?;
-        connection.authenticated = true;
-        connection.rate_limit = InboundRateLimiter::with_policy(self.rate_policy, Instant::now());
-        Ok(())
+        connection
+            .state
+            .activate_secure_channel(self.rate_policy, || {
+                super::configure_authenticated_send_rate(connection.native)
+            })
     }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.pending);
@@ -403,7 +382,7 @@ impl Transport for GnsDirectIp {
         let unauthenticated_endpoints: BTreeSet<_> = self
             .connections
             .values()
-            .filter(|connection| !connection.authenticated)
+            .filter(|connection| !connection.state.authenticated)
             .map(|connection| connection.endpoint)
             .collect();
         while remaining != 0 {
@@ -431,7 +410,7 @@ impl Transport for GnsDirectIp {
                 let Some(connection) = self.connections.get_mut(&id) else {
                     continue;
                 };
-                if !connection.connected {
+                if !connection.state.connected {
                     continue;
                 }
                 let Some(class) = class(message.lane()) else {
@@ -448,12 +427,12 @@ impl Transport for GnsDirectIp {
                 match check_message(
                     class,
                     payload,
-                    connection.authenticated,
-                    &mut connection.rate_limit,
+                    connection.state.authenticated,
+                    &mut connection.state.limiter,
                     now,
                 ) {
                     InboundDecision::Allow => {
-                        handshake_barrier = !connection.authenticated;
+                        handshake_barrier = !connection.state.authenticated;
                         events.push(TransportEvent::Message {
                             connection: id,
                             class,
@@ -487,7 +466,7 @@ impl Transport for GnsDirectIp {
             .connections
             .get(&id)
             .ok_or(TransportError::UnknownConnection)?;
-        if !connection.connected {
+        if !connection.state.connected {
             return Err(TransportError::NotConnected);
         }
         let socket = self
@@ -506,7 +485,7 @@ impl Transport for GnsDirectIp {
         socket.send(message)?;
         if class == MessageClass::Bulk {
             let c = self.connections.get_mut(&id).expect("sent connection");
-            c.bulk_delivery.record_sent(payload.len());
+            c.state.bulk_delivery.record_sent(payload.len());
         }
         Ok(())
     }
@@ -523,7 +502,7 @@ impl Transport for GnsDirectIp {
             .get(&connection.endpoint)
             .ok_or(TransportError::UnknownConnection)?
             .close_before_removal(connection.native, reason);
-        let connected = connection.connected;
+        let connected = connection.state.connected;
         self.forget(id);
         self.pending.push(termination_event(id, connected, reason));
         close_result
@@ -599,10 +578,7 @@ impl DirectIpTransport for GnsDirectIp {
         Ok(())
     }
     fn connect(&mut self, address: SocketAddr) -> Result<ConnectionId, TransportError> {
-        if self.connections.len() >= MAX_CONNECTIONS
-            || self.connections.values().filter(|c| !c.ready).count() >= MAX_PENDING_CONNECTIONS
-            || self.connections.values().filter(|c| !c.connected).count() >= MAX_CONNECTING
-        {
+        if !self.has_connection_capacity() {
             return Err(TransportError::Capacity);
         }
         let id = ConnectionId::new(token()?);
@@ -623,16 +599,8 @@ impl DirectIpTransport for GnsDirectIp {
             Connection {
                 native,
                 endpoint,
-                connected: false,
-                authenticated: false,
-                ready: false,
-                created: Instant::now(),
+                state: ConnectionState::new(Instant::now()),
                 origin: Origin::Ip(address.ip().to_canonical()),
-                bulk_delivery: BulkDelivery::default(),
-                rate_limit: InboundRateLimiter::with_policy(
-                    &PREAUTH_INBOUND_POLICY,
-                    Instant::now(),
-                ),
             },
         );
         self.native_ids.insert(native, id);
@@ -653,14 +621,166 @@ impl Drop for GnsDirectIp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
-    use crate::network::{secure::record_limit, wire};
+    use crate::network::{
+        lifecycle::MAX_CONNECTING,
+        rate_limit::{InboundRateLimiter, PREAUTH_INBOUND_POLICY},
+        secure::record_limit,
+        wire,
+    };
     use ::gns::SendFlags;
     use std::{
         net::Ipv4Addr,
         time::{Duration, Instant},
     };
+
+    // Capacity fixtures have no native owners or sockets. Invalid handle zero
+    // cannot alias a live native connection, and Drop has nothing to close.
+    fn capacity_fixture(total: usize, connecting: usize, pending: usize) -> GnsDirectIp {
+        let mut backend = GnsDirectIp::new().unwrap();
+        for state in super::super::tests::states(total, connecting, pending) {
+            let id = ConnectionId::new(token().unwrap());
+            backend.connections.insert(
+                id,
+                Connection {
+                    native: GnsConnection::from_raw(0),
+                    endpoint: Endpoint::Listener(ListenerId::new(0)),
+                    state,
+                    origin: Origin::Ip(Ipv4Addr::LOCALHOST.into()),
+                },
+            );
+        }
+        backend
+    }
+
+    pub(in crate::network::gns) fn capacity_for_test(
+        total: usize,
+        connecting: usize,
+        pending: usize,
+    ) -> bool {
+        let mut backend = capacity_fixture(total, connecting, pending);
+        let capacity = backend.has_connection_capacity();
+        if !capacity {
+            assert_eq!(
+                backend.connect("127.0.0.1:9".parse().unwrap()),
+                Err(TransportError::Capacity)
+            );
+            assert_eq!(backend.connections.len(), total);
+            assert!(backend.sockets.is_empty());
+        }
+        capacity
+    }
+
+    #[test]
+    fn gns_localhost_incoming_capacity_refusals_preserve_close_reason() {
+        for (total, connecting, pending) in [
+            (lifecycle::MAX_CONNECTIONS, 0, 0),
+            (MAX_CONNECTING, MAX_CONNECTING, MAX_CONNECTING),
+            (
+                lifecycle::MAX_PENDING_CONNECTIONS,
+                0,
+                lifecycle::MAX_PENDING_CONNECTIONS,
+            ),
+        ] {
+            let mut host = capacity_fixture(total, connecting, pending);
+            let listener = host.listen("127.0.0.1:0".parse().unwrap()).unwrap();
+            let mut client = GnsDirectIp::new().unwrap();
+            let outgoing = client
+                .connect(host.listener_address(listener).unwrap())
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "timeout waiting for capacity refusal"
+                );
+                assert!(poll(&mut host).is_empty());
+                client.global.poll_callbacks();
+                let connection = &client.connections[&outgoing];
+                let Socket::Client(socket) = &client.sockets[&connection.endpoint] else {
+                    unreachable!()
+                };
+                let info = socket.get_connection_info(connection.native).unwrap();
+                if info.state() == State::k_ESteamNetworkingConnectionState_ClosedByPeer {
+                    assert_eq!(
+                        info.end_reason(),
+                        close_code(DisconnectReason::JoinCapacity)
+                    );
+                    break;
+                }
+                std::thread::park_timeout(Duration::from_millis(1));
+            }
+            assert_eq!(host.connections.len(), total);
+            assert!(host.native_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn gns_localhost_authentication_and_ready_preserve_admission_occupancy() {
+        let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
+        let mut client = GnsDirectIp::new().unwrap();
+        let (_, incoming, _) = connect_pair_unauthenticated(&mut host, &mut client);
+        let origin = host.origin(incoming).unwrap();
+        let extra_pending = lifecycle::MAX_PENDING_PER_ORIGIN - 1;
+        let mut extra = capacity_fixture(extra_pending, 0, extra_pending);
+        host.connections.append(&mut extra.connections);
+        let origin_pending = |backend: &GnsDirectIp| {
+            backend
+                .connections
+                .values()
+                .filter(|c| c.origin == origin && !c.state.ready)
+                .count()
+        };
+        let pending = origin_pending(&host);
+        assert_eq!(pending, lifecycle::MAX_PENDING_PER_ORIGIN);
+        assert_eq!(
+            host.admission.admit(Some(origin), pending, Instant::now()),
+            Err(DisconnectReason::JoinCapacity)
+        );
+        let native = host.connections[&incoming].native;
+        host.connections.get_mut(&incoming).unwrap().native = GnsConnection::from_raw(0);
+        assert!(matches!(
+            host.activate_secure_channel(incoming),
+            Err(TransportError::Backend(_))
+        ));
+        assert!(!host.connections[&incoming].state.authenticated);
+        host.connections.get_mut(&incoming).unwrap().native = native;
+        host.activate_secure_channel(incoming).unwrap();
+        assert_eq!(origin_pending(&host), pending);
+        assert_eq!(
+            host.activate_secure_channel(incoming),
+            Err(TransportError::ProtocolViolation)
+        );
+        let state = &mut host.connections.get_mut(&incoming).unwrap().state;
+        let now = Instant::now();
+        for _ in 0..2 {
+            assert_eq!(
+                state.limiter.check(MessageClass::Control, 1, now),
+                crate::network::rate_limit::RateDecision::Allow
+            );
+        }
+        assert_eq!(
+            state.limiter.check(MessageClass::Control, 1, now),
+            crate::network::rate_limit::RateDecision::Disconnect
+        );
+        host.mark_ready(incoming).unwrap();
+        host.mark_ready(incoming).unwrap();
+        let pending = origin_pending(&host);
+        assert_eq!(pending, extra_pending);
+        host.admission
+            .admit(Some(origin), pending, Instant::now())
+            .unwrap();
+        assert_eq!(
+            host.mark_ready(ConnectionId::new(0)),
+            Err(TransportError::UnknownConnection)
+        );
+        assert_eq!(
+            host.activate_secure_channel(ConnectionId::new(0)),
+            Err(TransportError::UnknownConnection)
+        );
+    }
+
     #[test]
     fn native_invalid_message_cleanup_preserves_origin_cooldown() {
         let sink = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -705,13 +825,17 @@ mod tests {
             ids.push(backend.connect(sink.local_addr().unwrap()).unwrap());
         }
         assert_eq!(
+            backend.activate_secure_channel(ids[0]),
+            Err(TransportError::NotConnected)
+        );
+        assert_eq!(
             backend.connect(sink.local_addr().unwrap()),
             Err(TransportError::Capacity)
         );
         let at = backend
             .connections
             .values()
-            .map(|c| c.created)
+            .map(|c| c.state.created)
             .max()
             .unwrap()
             + CONNECTING_TIMEOUT;
@@ -778,8 +902,8 @@ mod tests {
                 }
                 let now = Instant::now();
                 let connection = client.connections.get_mut(&outgoing).unwrap();
-                assert!(!connection.connected);
-                connection.created = now - CONNECTING_TIMEOUT - Duration::from_secs(1);
+                assert!(!connection.state.connected);
+                connection.state.created = now - CONNECTING_TIMEOUT - Duration::from_secs(1);
                 let origin = connection.origin;
                 // A false timeout would be the third failure and trigger cooldown.
                 for _ in 0..lifecycle::COOLDOWN_FAILURES - 1 {
@@ -821,9 +945,9 @@ mod tests {
                             connection: outgoing,
                         }]
                     );
-                    assert!(client.connections[&outgoing].connected);
-                    assert!(!client.connections[&outgoing].authenticated);
-                    assert!(!client.connections[&outgoing].ready);
+                    assert!(client.connections[&outgoing].state.connected);
+                    assert!(!client.connections[&outgoing].state.authenticated);
+                    assert!(!client.connections[&outgoing].state.ready);
                     assert_eq!(client.native_ids.len(), 1);
                     assert_eq!(client.sockets.len(), 1);
                     // The queued callback must not emit Connected a second time.
@@ -839,7 +963,8 @@ mod tests {
         let sink = UdpSocket::bind("127.0.0.1:0").unwrap();
         let mut backend = GnsDirectIp::new().unwrap();
         let id = backend.connect(sink.local_addr().unwrap()).unwrap();
-        backend.connections.get_mut(&id).unwrap().created = Instant::now() - CONNECTING_TIMEOUT;
+        backend.connections.get_mut(&id).unwrap().state.created =
+            Instant::now() - CONNECTING_TIMEOUT;
         assert_eq!(
             poll(&mut backend),
             vec![TransportEvent::ConnectionFailed {
@@ -1368,7 +1493,11 @@ mod tests {
                     payload: handshake,
                 }]
             );
-            assert!(!receiver.backend_mut().connections[&receiver_id].authenticated);
+            assert!(
+                !receiver.backend_mut().connections[&receiver_id]
+                    .state
+                    .authenticated
+            );
             receiver
                 .install(
                     receiver_id,
@@ -1389,7 +1518,11 @@ mod tests {
                 class: MessageClass::Bulk,
                 payload: bulk,
             }));
-            assert!(receiver.backend_mut().connections[&receiver_id].authenticated);
+            assert!(
+                receiver.backend_mut().connections[&receiver_id]
+                    .state
+                    .authenticated
+            );
         }
     }
 
@@ -1420,7 +1553,7 @@ mod tests {
                     payload: handshake,
                 }]
             );
-            assert!(!host.connections[&incoming].authenticated);
+            assert!(!host.connections[&incoming].state.authenticated);
             if close_listener {
                 host.close_listener(listener).unwrap();
             }
@@ -1459,7 +1592,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         );
-        assert!(host.connections[&incoming].connected);
+        assert!(host.connections[&incoming].state.connected);
         // 510 rejected messages consumed budget; message 513 remains native-owned.
         let connection = &host.connections[&incoming];
         let socket = &host.sockets[&connection.endpoint];
@@ -1639,7 +1772,7 @@ mod tests {
             } else {
                 &TEST_PREAUTH_POLICY
             };
-            host.connections.get_mut(&incoming).unwrap().rate_limit =
+            host.connections.get_mut(&incoming).unwrap().state.limiter =
                 InboundRateLimiter::with_policy(policy, Instant::now());
             let connection = &client.connections[&outgoing];
             for _ in 0..count {

@@ -3,6 +3,7 @@ use crate::network::gns::P2P_VIRTUAL_PORT;
 use crate::network::{
     auth::SessionPassword,
     bootstrap::{ClientBootstrap, ConnectionState, HostBootstrap},
+    rate_limit::{InboundRateLimiter, PREAUTH_INBOUND_POLICY},
     secure::SecureTransport,
     session::SessionConnections,
     session_control::{SessionControlMessage, SessionMetadata},
@@ -673,6 +674,103 @@ fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
 
 static BACKEND_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+fn gns_p2p_connection_capacity_matches_direct_ip_and_rejects_full_starts() {
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
+    for (total, connecting, pending, expected) in super::super::tests::CAPACITY_CASES {
+        let mut backend = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
+        for state in super::super::tests::states(total, connecting, pending) {
+            let [_, receiver] = native::Connection::test_pair();
+            let id = ConnectionId::new(token().unwrap());
+            backend.insert(id, receiver, PeerId::from_bytes([42; 16]), None);
+            backend.connections.get_mut(&id).unwrap().state = state;
+        }
+        assert_eq!(backend.has_connection_capacity(), expected);
+        assert_eq!(
+            backend.has_connection_capacity(),
+            super::super::direct_ip::tests::capacity_for_test(total, connecting, pending)
+        );
+        if !expected {
+            assert_eq!(
+                backend.connect_peer(PeerId::from_bytes([43; 16]), 0),
+                Err(TransportError::Capacity)
+            );
+            assert_eq!(backend.connections.len(), total);
+        }
+    }
+}
+
+#[test]
+fn gns_p2p_authentication_and_ready_preserve_admission_occupancy() {
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
+    let mut backend = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
+    let origin = Some(Origin::Route(RouteOrigin::from_authenticated_route(
+        [1; 16], [2; 16], [3; 16],
+    )));
+    let mut senders = Vec::new();
+    let mut ids = Vec::new();
+    for _ in 0..lifecycle::MAX_PENDING_PER_ORIGIN {
+        let [sender, receiver] = native::Connection::test_pair();
+        senders.push(sender);
+        let id = ConnectionId::new(token().unwrap());
+        backend.insert(id, receiver, PeerId::from_bytes([42; 16]), origin);
+        ids.push(id);
+    }
+    let id = ids[0];
+    assert_eq!(
+        backend.activate_secure_channel(id),
+        Err(TransportError::NotConnected)
+    );
+    for c in backend.connections.values_mut() {
+        c.state.connected = true;
+    }
+    let pending = backend.origin_pending(origin);
+    assert_eq!(pending, lifecycle::MAX_PENDING_PER_ORIGIN);
+    assert_eq!(
+        backend.admission.admit(origin, pending, Instant::now()),
+        Err(DisconnectReason::JoinCapacity)
+    );
+    backend.activate_secure_channel(id).unwrap();
+    backend.connections[&id]
+        .native
+        .assert_send_rate(lifecycle::BULK_BYTES_PER_SECOND as i32);
+    assert_eq!(backend.origin_pending(origin), pending);
+    assert_eq!(
+        backend.activate_secure_channel(id),
+        Err(TransportError::ProtocolViolation)
+    );
+    backend.mark_ready(id).unwrap();
+    backend.mark_ready(id).unwrap();
+    let pending = backend.origin_pending(origin);
+    assert_eq!(pending, lifecycle::MAX_PENDING_PER_ORIGIN - 1);
+    backend
+        .admission
+        .admit(origin, pending, Instant::now())
+        .unwrap();
+    let failed = ids[1];
+    backend
+        .connections
+        .get_mut(&failed)
+        .unwrap()
+        .native
+        .close(1000);
+    assert!(matches!(
+        backend.activate_secure_channel(failed),
+        Err(TransportError::Backend(_))
+    ));
+    assert!(!backend.connections[&failed].state.authenticated);
+    assert!(!backend.connections[&failed].state.ready);
+    assert_eq!(backend.origin_pending(origin), pending);
+    assert_eq!(
+        backend.activate_secure_channel(ConnectionId::new(0)),
+        Err(TransportError::UnknownConnection)
+    );
+    assert_eq!(
+        backend.mark_ready(ConnectionId::new(0)),
+        Err(TransportError::UnknownConnection)
+    );
+}
+
 fn flush_and_wait_for_reliable_ack(sender: &native::Connection) {
     sender.flush_for_test().unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -705,11 +803,11 @@ pub(in crate::network::gns) fn inbound_events(
     let mut backend = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
     let [sender, receiver] = native::Connection::test_pair();
     backend.insert(id, receiver, PeerId::from_bytes([42; 16]), None);
-    backend.connections.get_mut(&id).unwrap().connected = true;
+    backend.connections.get_mut(&id).unwrap().state.connected = true;
     if authenticated {
         backend.activate_secure_channel(id).unwrap();
     }
-    backend.connections.get_mut(&id).unwrap().limiter =
+    backend.connections.get_mut(&id).unwrap().state.limiter =
         InboundRateLimiter::with_policy(policy, Instant::now());
     for _ in 0..count {
         // Reliable even on lane 0, so the comparison is independent of UDP loss.
@@ -769,11 +867,11 @@ fn gns_p2p_inbound_backlog_preserves_handshake_barrier_and_drop_budget() {
         let [sender, receiver] = native::Connection::test_pair();
         let id = ConnectionId::new(token().unwrap());
         backend.insert(id, receiver, PeerId::from_bytes([42; 16]), None);
-        backend.connections.get_mut(&id).unwrap().connected = true;
+        backend.connections.get_mut(&id).unwrap().state.connected = true;
         if authenticated {
             backend.activate_secure_channel(id).unwrap();
         }
-        backend.connections.get_mut(&id).unwrap().limiter =
+        backend.connections.get_mut(&id).unwrap().state.limiter =
             InboundRateLimiter::with_policy(&POLICY, Instant::now());
         let class = if authenticated {
             MessageClass::Transient
@@ -801,7 +899,7 @@ fn gns_p2p_inbound_backlog_preserves_handshake_barrier_and_drop_budget() {
             ]
         );
         let connection = &backend.connections[&id];
-        assert!(connection.connected);
+        assert!(connection.state.connected);
         // Pre-auth stops after one record. Authenticated polling consumes 512,
         // including 510 intentional Transient drops, leaving one native-owned.
         let remaining = if authenticated { 1 } else { 512 };
@@ -848,7 +946,7 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
             .unwrap();
         assert_eq!(backend.origin(id), Some(Origin::Route(bad)));
         assert!(backend.has_peer(PeerId::from_bytes([n; 16])));
-        assert!(!backend.connections[&id].connected);
+        assert!(!backend.connections[&id].state.connected);
         ids.push(id);
     }
     assert_eq!(

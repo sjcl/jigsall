@@ -6,11 +6,20 @@ use ::gns::{GnsLane, SendFlags};
 // P2P derives its FFI arrays from the same safe values used by Direct IP.
 pub(super) const LANES: [GnsLane; 3] = [GnsLane::new(0, 1), GnsLane::new(0, 4), GnsLane::new(1, 1)];
 
-pub(super) fn lane(class: MessageClass) -> u16 {
+pub(super) const fn lane(class: MessageClass) -> u16 {
     match class {
         MessageClass::Transient => 0,
         MessageClass::Control => 1,
         MessageClass::Bulk => 2,
+    }
+}
+
+pub(super) fn class(index: u16) -> Option<MessageClass> {
+    match index {
+        n if n == lane(MessageClass::Transient) => Some(MessageClass::Transient),
+        n if n == lane(MessageClass::Control) => Some(MessageClass::Control),
+        n if n == lane(MessageClass::Bulk) => Some(MessageClass::Bulk),
+        _ => None,
     }
 }
 
