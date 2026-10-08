@@ -579,6 +579,27 @@ impl Connection {
         }
     }
     #[cfg(test)]
+    pub(super) fn test_pair() -> [Self; 2] {
+        global().unwrap();
+        let (mut a, mut b) = (k_HSteamNetConnection_Invalid, k_HSteamNetConnection_Invalid);
+        // SAFETY: initialized GNS, writable handles, no identities retained.
+        assert!(unsafe {
+            SteamAPI_ISteamNetworkingSockets_CreateSocketPair(
+                interface(),
+                &mut a,
+                &mut b,
+                false,
+                ptr::null(),
+                ptr::null(),
+            )
+        });
+        let pair = [Self(Some(a)), Self(Some(b))];
+        for connection in &pair {
+            connection.configure().unwrap();
+        }
+        pair
+    }
+    #[cfg(test)]
     pub(super) fn assert_send_rate(&self, expected: i32) {
         for option in [
             ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_SendRateMin,
@@ -707,7 +728,9 @@ impl Message {
     pub(super) fn payload(&self) -> Result<&[u8], TransportError> {
         // SAFETY: live native message, uniquely owned by this guard.
         let message = unsafe { &*self.0 };
-        // Retain this adapter's size policy outside the shared slice validation.
+        // Defense in depth before constructing a slice. try_message_payload()
+        // checks representation, not GNS's size cap. The shared inbound policy
+        // has stricter per-class limits, but only runs after borrowing the slice.
         if message.m_cbSize > k_cbMaxSteamNetworkingSocketsMessageSizeSend {
             return Err(failure());
         }

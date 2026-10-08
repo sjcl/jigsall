@@ -2,6 +2,7 @@
 //! admission occupancy, pre-auth barriers and secured messages use Transport.
 pub(super) mod native;
 use super::{
+    inbound::{check_message, class, InboundDecision},
     signaling::{self, PeerId, SignalingEndpoint, TurnUpdate},
     token,
 };
@@ -11,12 +12,9 @@ use crate::network::{
         CONNECTION_START_INTERVAL, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING, MAX_CONNECTIONS,
         MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
     },
-    rate_limit::{
-        InboundRateLimiter, RateDecision, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY,
-    },
+    rate_limit::{InboundRateLimiter, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY},
     secure::record_limit,
     transport::*,
-    wire,
 };
 use std::{
     cell::Cell,
@@ -345,14 +343,6 @@ fn lane(class: MessageClass) -> u16 {
         MessageClass::Bulk => 2,
     }
 }
-fn class(lane: u16) -> Option<MessageClass> {
-    match lane {
-        0 => Some(MessageClass::Transient),
-        1 => Some(MessageClass::Control),
-        2 => Some(MessageClass::Bulk),
-        _ => None,
-    }
-}
 impl Transport for GnsP2p {
     fn origin(&self, id: ConnectionId) -> Option<Origin> {
         self.connections.get(&id).and_then(|c| c.origin)
@@ -480,16 +470,9 @@ impl Transport for GnsP2p {
                     continue;
                 }
             };
-            if payload.len() > record_limit(class)
-                || (!c.authenticated
-                    && !matches!(wire::is_session_control_for_class(payload, class), Ok(true)))
-            {
-                self.terminate(id, DisconnectReason::InvalidMessage, events, now);
-                continue;
-            }
             let mut barrier = false;
-            match c.limiter.check(class, payload.len(), now) {
-                RateDecision::Allow => {
+            match check_message(class, payload, c.authenticated, &mut c.limiter, now) {
+                InboundDecision::Allow => {
                     barrier = !c.authenticated;
                     events.push(TransportEvent::Message {
                         connection: id,
@@ -497,9 +480,9 @@ impl Transport for GnsP2p {
                         payload: payload.to_vec(),
                     });
                 }
-                RateDecision::Drop => {}
-                RateDecision::Disconnect => {
-                    self.terminate(id, DisconnectReason::RateLimited, events, now);
+                InboundDecision::Drop => {}
+                InboundDecision::Disconnect(reason) => {
+                    self.terminate(id, reason, events, now);
                     continue;
                 }
             }

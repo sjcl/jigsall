@@ -6,6 +6,7 @@ use crate::network::{
     secure::SecureTransport,
     session::SessionConnections,
     session_control::{SessionControlMessage, SessionMetadata},
+    wire,
 };
 use jigsall_core::{
     session::{AuthorityCursor, ImageHash, SessionDefinition, SessionId},
@@ -671,6 +672,44 @@ fn gns_p2p_pending_timeout_duplicate_signals_and_drop_cleanup() {
 }
 
 static BACKEND_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Exercise P2P's actual connection receive loop with an already queued native
+/// backlog. ICE establishment is covered by the separate inter-process test.
+pub(in crate::network::gns) fn inbound_events(
+    id: ConnectionId,
+    authenticated: bool,
+    policy: &'static crate::network::rate_limit::InboundRatePolicy,
+    native_lane: u16,
+    payload: &[u8],
+    count: usize,
+) -> Vec<TransportEvent> {
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
+    let mut backend = GnsP2p::new_unverified_for_test(0, IceConfig::default()).unwrap();
+    let [sender, receiver] = native::Connection::test_pair();
+    backend.insert(id, receiver, PeerId::from_bytes([42; 16]), None);
+    backend.connections.get_mut(&id).unwrap().connected = true;
+    if authenticated {
+        backend.activate_secure_channel(id).unwrap();
+    }
+    backend.connections.get_mut(&id).unwrap().limiter =
+        InboundRateLimiter::with_policy(policy, Instant::now());
+    for _ in 0..count {
+        // Reliable even on lane 0, so the comparison is independent of UDP loss.
+        sender
+            .send(native_lane, MessageClass::Control, payload)
+            .unwrap();
+    }
+    let mut events = Vec::new();
+    for _ in 0..=count {
+        let start = events.len();
+        backend.poll(&mut events).unwrap();
+        if !authenticated {
+            assert!(events.len() - start <= 1, "pre-auth handshake barrier");
+        }
+    }
+    events
+}
+
 #[test]
 fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
     let _guard = BACKEND_TEST_LOCK.lock().unwrap();

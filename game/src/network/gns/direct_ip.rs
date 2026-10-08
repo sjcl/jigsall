@@ -1,19 +1,20 @@
-use super::token;
+use super::{
+    inbound::{check_message, class, InboundDecision},
+    token,
+};
 use crate::network::{
     lifecycle::{
         self, Admission, CONNECTING_TIMEOUT, MAX_BULK_QUEUE_BYTES, MAX_CONNECTING,
         MAX_PENDING_CONNECTIONS, MAX_RELIABLE_QUEUE_BYTES,
     },
     rate_limit::{
-        InboundRateLimiter, InboundRatePolicy, RateDecision, DEFAULT_INBOUND_POLICY,
-        PREAUTH_INBOUND_POLICY,
+        InboundRateLimiter, InboundRatePolicy, DEFAULT_INBOUND_POLICY, PREAUTH_INBOUND_POLICY,
     },
     secure::record_limit,
     transport::{
         ConnectionId, DirectIpTransport, DisconnectReason, ListenerId, MessageClass, Origin,
         ReliableEgress, Transport, TransportError, TransportEvent,
     },
-    wire,
 };
 use ::gns::{
     sys::ESteamNetworkingConnectionState as State, GnsConnection, GnsConnectionEvent, GnsGlobal,
@@ -42,14 +43,6 @@ fn lane(class: MessageClass) -> u16 {
         MessageClass::Transient => 0,
         MessageClass::Control => 1,
         MessageClass::Bulk => 2,
-    }
-}
-fn class(lane: u16) -> Option<MessageClass> {
-    match lane {
-        0 => Some(MessageClass::Transient),
-        1 => Some(MessageClass::Control),
-        2 => Some(MessageClass::Bulk),
-        _ => None,
     }
 }
 fn flags(class: MessageClass) -> SendFlags {
@@ -507,15 +500,14 @@ impl Transport for GnsDirectIp {
                         continue;
                     }
                 };
-                if payload.len() > record_limit(class)
-                    || (!connection.authenticated
-                        && !matches!(wire::is_session_control_for_class(payload, class), Ok(true)))
-                {
-                    self.terminate(id, DisconnectReason::InvalidMessage, events);
-                    continue;
-                }
-                match connection.rate_limit.check(class, payload.len(), now) {
-                    RateDecision::Allow => {
+                match check_message(
+                    class,
+                    payload,
+                    connection.authenticated,
+                    &mut connection.rate_limit,
+                    now,
+                ) {
+                    InboundDecision::Allow => {
                         handshake_barrier = !connection.authenticated;
                         events.push(TransportEvent::Message {
                             connection: id,
@@ -523,9 +515,9 @@ impl Transport for GnsDirectIp {
                             payload: payload.to_vec(),
                         });
                     }
-                    RateDecision::Drop => {}
-                    RateDecision::Disconnect => {
-                        self.terminate(id, DisconnectReason::RateLimited, events);
+                    InboundDecision::Drop => {}
+                    InboundDecision::Disconnect(reason) => {
+                        self.terminate(id, reason, events);
                     }
                 }
             }
@@ -738,6 +730,7 @@ impl Drop for GnsDirectIp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::wire;
     use std::{
         net::Ipv4Addr,
         time::{Duration, Instant},
@@ -1632,6 +1625,126 @@ mod tests {
                 }]
             );
             assert!(poll(&mut host).is_empty());
+        }
+    }
+
+    #[test]
+    fn gns_localhost_inbound_decisions_match_p2p_receive_loop() {
+        let handshake = plaintext_control(wire::HEADER_SIZE + 1);
+        let maximum = plaintext_control(wire::HEADER_SIZE + wire::MAX_SESSION_CONTROL_PAYLOAD);
+        let mut trailing = maximum.clone();
+        trailing.push(0);
+        let mut gameplay = handshake.clone();
+        gameplay[6] = 1;
+        // (authenticated, class, payload, count, allowed count, disconnect)
+        let mut cases = vec![
+            (false, MessageClass::Control, maximum, 1, 1, None),
+            (
+                false,
+                MessageClass::Control,
+                handshake.clone(),
+                9,
+                8,
+                Some(DisconnectReason::RateLimited),
+            ),
+        ];
+        for payload in [vec![0; 4], trailing, gameplay] {
+            cases.push((
+                false,
+                MessageClass::Control,
+                payload,
+                1,
+                0,
+                Some(DisconnectReason::InvalidMessage),
+            ));
+        }
+        for class in [
+            MessageClass::Transient,
+            MessageClass::Control,
+            MessageClass::Bulk,
+        ] {
+            if class != MessageClass::Control {
+                cases.push((
+                    false,
+                    class,
+                    handshake.clone(),
+                    1,
+                    0,
+                    Some(DisconnectReason::InvalidMessage),
+                ));
+            }
+            for authenticated in [false, true] {
+                cases.push((
+                    authenticated,
+                    class,
+                    vec![0; record_limit(class) + 1],
+                    1,
+                    0,
+                    Some(DisconnectReason::InvalidMessage),
+                ));
+            }
+            cases.push((
+                true,
+                class,
+                vec![0; 4],
+                3,
+                2,
+                (class != MessageClass::Transient).then_some(DisconnectReason::RateLimited),
+            ));
+        }
+        for (authenticated, class, payload, count, allowed, disconnect) in cases {
+            let mut host = GnsDirectIp::with_rate_policy(&TEST_POLICY).unwrap();
+            let mut client = GnsDirectIp::new().unwrap();
+            let (_, incoming, outgoing) = connect_pair_unauthenticated(&mut host, &mut client);
+            if authenticated {
+                host.activate_secure_channel(incoming).unwrap();
+            }
+            let connection = &client.connections[&outgoing];
+            for _ in 0..count {
+                let message = client
+                    .global
+                    .utils()
+                    .allocate_message(connection.native, SendFlags::RELIABLE, payload.clone())
+                    .set_lane(lane(class));
+                client.sockets[&connection.endpoint].send(message).unwrap();
+            }
+            flush_and_wait_for_reliable_ack(&client, outgoing);
+            let mut direct_events = Vec::new();
+            for _ in 0..=count {
+                host.poll(&mut direct_events).unwrap();
+            }
+            let policy = if authenticated {
+                &TEST_POLICY
+            } else {
+                &PREAUTH_INBOUND_POLICY
+            };
+            let p2p_events = super::super::p2p::tests::inbound_events(
+                incoming,
+                authenticated,
+                policy,
+                lane(class),
+                &payload,
+                count,
+            );
+            let mut expected = vec![
+                TransportEvent::Message {
+                    connection: incoming,
+                    class,
+                    payload,
+                };
+                allowed
+            ];
+            if let Some(reason) = disconnect {
+                expected.push(TransportEvent::Disconnected {
+                    connection: incoming,
+                    reason,
+                });
+            }
+            assert_eq!(
+                direct_events, expected,
+                "Direct-IP {authenticated} {class:?}"
+            );
+            assert_eq!(p2p_events, expected, "P2P {authenticated} {class:?}");
         }
     }
 
