@@ -1,4 +1,4 @@
-# Local initialization and payload safety extensions
+# Local initialization, result and payload safety extensions
 
 Source: published `game-networking-sockets` 0.3.0, upstream gns-rs commit
 `1d56f5a7c79889014e0b3a6106c95698fb235528` (`gns/`), by Hussein Ait-Lahcen and
@@ -29,9 +29,18 @@ is released as well. The safe API and its return type remain unchanged.
 Metadata-only tests cover the signed limit and wrapping lengths, including
 exactly-once payload and message cleanup, without allocating multi-GiB buffers.
 
-The root crates.io patch replaces only this high-level wrapper; sys 0.3.0 and
-its bundled native GNS remain registry dependencies under the root lockfile.
-Default builds still do not compile GNS. When upgrading gns-rs, remove this patch
-once equivalent identity initialization and payload safety are provided upstream.
+The result extension decodes negative batch-send results through the companion
+sys crate's integer `EResult` newtype, preserving unknown result codes without
+constructing an invalid Rust enum. Codes outside the native integer range fall
+back to `k_EResultFail`; even `i64::MIN` is handled without negation overflow.
+Unit tests cover known codes, gaps, unknown codes and integer boundaries.
 
-The companion `../game-networking-sockets-sys` Cargo patch adds native ICE live TURN credential updates. See its `JIGSALL_PATCH.md` for provenance and scope.
+The root crates.io patches replace this high-level wrapper and the companion
+sys 0.3.0 crate, including its bundled native GNS, under the root lockfile.
+Default builds still do not compile GNS. When upgrading gns-rs, remove this patch
+once equivalent identity initialization, result and payload safety are provided
+upstream.
+
+The companion `../game-networking-sockets-sys` Cargo patch adds native ICE,
+payload release and result binding fixes. See its `JIGSALL_PATCH.md` for
+provenance and scope.

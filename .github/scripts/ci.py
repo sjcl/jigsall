@@ -106,7 +106,8 @@ def main():
     for test in tests:
         run_test(test, ["gns_localhost", "--nocapture", "--test-threads=1"])
     print("::endgroup::", flush=True)
-    print("::group::GNS wrapper payload safety and single-shot identity initialization", flush=True)
+    print("::group::GNS wrapper result/payload safety and single-shot identity initialization", flush=True)
+    run_test(identity, ["result_tests", "--nocapture"])
     run_test(identity, ["payload_tests", "--nocapture"])
     run_test(identity, ["identity_initialization", "--nocapture"])
     print("::endgroup::", flush=True)

@@ -1,4 +1,4 @@
-# Jigsall native ICE and payload release patches
+# Jigsall native ICE, payload release and result binding patches
 
 Base: crates.io `game-networking-sockets-sys` 0.3.0, archive SHA256
 `8b9d11200371f3b60115e9b4a9078cb649b4c9fbc46fa8fa356f725974b28172`.
@@ -28,6 +28,8 @@ Modified upstream files:
   remove username logging from auth challenges.
 - `build.rs`: search CMake's installed `lib` directory. Optimized Rust dev profiles
   use MSVC `RelWithDebInfo`, whereas upstream assumes `Debug` for all dev builds.
+  Generate `EResult` as an integer newtype with associated constants, so unknown
+  native result codes remain valid Rust values while preserving the native ABI.
 - `Cargo.toml`: standalone workspace declaration for the local Cargo patch.
 
 [RFC 8656 sections 5/6](https://www.rfc-editor.org/rfc/rfc8656.html#section-5) bind

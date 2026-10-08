@@ -149,6 +149,16 @@ fn check(e: EResult) -> GnsResult<()> {
     }
 }
 
+/// Decodes a negative `SendMessages` result without overflowing or truncating.
+#[inline]
+fn send_error_result(value: i64) -> EResult {
+    value
+        .unsigned_abs()
+        .try_into()
+        .map(EResult)
+        .unwrap_or(EResult::k_EResultFail)
+}
+
 /// Owns the initialization and teardown of GameNetworkingSockets and its
 /// singletons.
 ///
@@ -172,6 +182,8 @@ static GNS_GLOBAL: OnceLock<GnsGlobal> = OnceLock::new();
 mod initialization_tests;
 #[cfg(test)]
 mod payload_tests;
+#[cfg(test)]
+mod result_tests;
 #[cfg(test)]
 static INIT_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
@@ -1396,10 +1408,9 @@ where
                 if value > 0 {
                     SendOutcome::Sent(value as _)
                 } else if value < 0 {
-                    // Sound because gns-sys pins GameNetworkingSockets as a
-                    // submodule, so the generated `EResult` covers every value
-                    // the library produces.
-                    let result = unsafe { core::mem::transmute::<u32, EResult>((-value) as u32) };
+                    // The newtype preserves unknown native codes. Malformed
+                    // codes outside its integer range become generic failures.
+                    let result = send_error_result(value);
                     SendOutcome::Failed(result, GnsNetworkMessage(ptr, PhantomData))
                 } else {
                     SendOutcome::Skipped(GnsNetworkMessage(ptr, PhantomData))

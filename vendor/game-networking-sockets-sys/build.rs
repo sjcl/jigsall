@@ -325,6 +325,9 @@ fn main() {
         .default_enum_style(bindgen::EnumVariation::Rust {
             non_exhaustive: false,
         })
+        // Native result codes may include values absent from these headers.
+        // Keep their integer representation valid at every FFI boundary.
+        .newtype_enum("EResult")
         .clang_arg("-xc++")
         .clang_arg("-std=c++20")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
