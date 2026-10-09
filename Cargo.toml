@@ -23,7 +23,7 @@ jigsall-puzzle = { path = "puzzle" }
 jigsall-game = { path = "game" }
 jigsall-ui = { path = "ui" }
 # Expand Bevy's 2d bundle to avoid common_api enabling the HDR decoder.
-bevy = { version = "0.19.1", default-features = false, features = [
+bevy = { version = "0.20.0", default-features = false, features = [
     "default_app", "default_platform", "scene", "picking",
     "bevy_animation", "bevy_camera", "bevy_color", "bevy_gizmos", "bevy_image",
     "bevy_mesh", "bevy_shader", "bevy_material", "bevy_text", "bevy_window",
