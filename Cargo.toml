@@ -32,7 +32,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "mouse", "keyboard", "bevy_state", "serialize", "png", "jpeg", "webp", "bmp", "x11", "trace",
 ] }
 bevy_ecs = "0.19.1"
-bevy_log = "0.19.1"
+bevy_log = "0.20.0"
 bevy_math = { version = "0.19.1", features = ["serialize"] }
 bevy_egui = "0.42"
 ab_glyph = "0.2"
