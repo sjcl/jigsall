@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 use jigsall_game::{
     network::{
         address::{AddressResolution, ResolutionError, ServerAddress},
-        auth::SessionPassword,
+        auth::{SessionPassword, MAX_PASSWORD_CHARS},
         runtime::{
             HostOptions, HostStartRequest, JoinOptions, NetworkFailureKind, NetworkStatus,
             RendezvousControlStatus, RuntimeConnectionMethod, RuntimePhase, RuntimeRole,
@@ -18,7 +18,9 @@ use jigsall_game::{
     resources::*,
 };
 use std::{net::SocketAddr, time::Instant};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
+
+const PASSWORD_DRAFT_CAPACITY: usize = MAX_PASSWORD_CHARS * 4;
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuScreen {
@@ -124,7 +126,7 @@ impl ConnectionDraft {
             room_code: String::new(),
             method: RuntimeConnectionMethod::DirectIp,
             player_name_draft: None,
-            password: Zeroizing::new(String::new()),
+            password: Zeroizing::new(String::with_capacity(PASSWORD_DRAFT_CAPACITY)),
         }
     }
     pub fn valid(&self, host: bool) -> bool {
@@ -134,10 +136,52 @@ impl ConnectionDraft {
         }) && SessionPassword::validate(&self.password).is_ok()
     }
     fn take_password(&mut self) -> Result<SessionPassword, UiError> {
-        SessionPassword::new(std::mem::take(&mut *self.password)).map_err(|_| UiError::Password)
+        SessionPassword::new(std::mem::replace(
+            &mut *self.password,
+            String::with_capacity(PASSWORD_DRAFT_CAPACITY),
+        ))
+        .map_err(|_| UiError::Password)
     }
     pub fn clear_password(&mut self) {
-        self.password = Zeroizing::new(String::new());
+        if self.password.capacity() == PASSWORD_DRAFT_CAPACITY {
+            self.password.zeroize();
+        } else {
+            // Release oversized raw drafts on navigation/settings changes.
+            self.password = Zeroizing::new(String::with_capacity(PASSWORD_DRAFT_CAPACITY));
+        }
+    }
+}
+
+/// Preserve full raw/IME input while wiping any allocation retired during growth.
+struct PasswordBuffer<'a>(&'a mut Zeroizing<String>);
+impl egui::TextBuffer for PasswordBuffer<'_> {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+    fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+    fn insert_text(&mut self, text: &str, char_index: egui::text::CharIndex) -> usize {
+        let required_capacity = self.0.len() + text.len();
+        if required_capacity > self.0.capacity() {
+            // Decomposed and invalid drafts can exceed the normalized limit.
+            // Never reserve on the live String: it would free unwiped storage.
+            let capacity = required_capacity.max(self.0.capacity().saturating_mul(2));
+            let mut replacement = Zeroizing::new(String::with_capacity(capacity));
+            replacement.push_str(self.0.as_str());
+            std::mem::swap(self.0, &mut replacement);
+            // replacement now owns the old allocation and zeroizes it on drop.
+        }
+        egui::TextBuffer::insert_text(&mut **self.0, text, char_index)
+    }
+    fn delete_char_range(&mut self, char_range: std::ops::Range<egui::text::CharIndex>) {
+        egui::TextBuffer::delete_char_range(&mut **self.0, char_range);
+    }
+    fn clear(&mut self) {
+        self.0.zeroize();
+    }
+    fn type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<PasswordBuffer<'static>>()
     }
 }
 
@@ -921,7 +965,7 @@ pub(crate) fn paint_connection_fields(
     ui.label(i18n.text("multiplayer-password"));
     // Keep the full draft, including decomposed input and IME composition. A raw
     // char_limit would truncate passwords before the shared NFC length check.
-    let mut password = egui::TextEdit::singleline(&mut *draft.password)
+    let mut password = egui::TextEdit::singleline(&mut PasswordBuffer(&mut draft.password))
         .id(egui::Id::new(if host {
             "multiplayer-host-password"
         } else {

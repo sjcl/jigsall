@@ -1042,6 +1042,48 @@ fn leaving_connection_forms_wipes_both_password_drafts() {
 }
 
 #[test]
+fn password_drafts_keep_reserved_capacity_across_clear_and_submit() {
+    let minimum_capacity = jigsall_game::network::auth::MAX_PASSWORD_CHARS * 4;
+    let mut state = MultiplayerUi::default();
+    for draft in [&mut state.host, &mut state.join] {
+        assert!(draft.password.capacity() >= minimum_capacity);
+        let pointer = draft.password.as_ptr();
+        draft.password.push_str("test password");
+        draft.clear_password();
+        assert!(draft.password.is_empty());
+        assert_eq!(draft.password.as_ptr(), pointer);
+        assert!(draft.password.capacity() >= minimum_capacity);
+
+        draft.password.push_str("test password");
+        assert!(draft.take_password().is_ok());
+        assert!(draft.password.is_empty());
+        assert!(draft.password.capacity() >= minimum_capacity);
+
+        draft.password.push_str("short");
+        assert!(draft.take_password().is_err());
+        assert!(draft.password.is_empty());
+        assert!(draft.password.capacity() >= minimum_capacity);
+    }
+}
+
+#[test]
+fn leaving_connection_forms_releases_oversized_password_buffers() {
+    use egui::{text::CharIndex, TextBuffer};
+
+    let mut state = MultiplayerUi::default();
+    let oversized = "x".repeat(1024 * 1024);
+    for draft in [&mut state.host, &mut state.join] {
+        PasswordBuffer(&mut draft.password).insert_text(&oversized, CharIndex(0));
+        assert!(draft.password.capacity() > PASSWORD_DRAFT_CAPACITY);
+    }
+    state.navigate(MenuScreen::Title);
+    for draft in [&state.host, &state.join] {
+        assert!(draft.password.is_empty());
+        assert_eq!(draft.password.capacity(), PASSWORD_DRAFT_CAPACITY);
+    }
+}
+
+#[test]
 fn password_policy_matches_form_validity_and_errors_in_both_languages() {
     let mut i18n = crate::localization::tests::english();
     for locale in [Locale::EN_US, Locale::JA] {
@@ -1077,6 +1119,68 @@ fn password_policy_matches_form_validity_and_errors_in_both_languages() {
 }
 
 #[test]
+fn password_buffer_preserves_unicode_edits_and_replacements_across_growth() {
+    use egui::{text::CharIndex, TextBuffer};
+
+    let mut draft = ConnectionDraft::new("127.0.0.1:43576");
+    let mut buffer = PasswordBuffer(&mut draft.password);
+    buffer.insert_text("🧩".repeat(MAX_PASSWORD_CHARS).as_str(), CharIndex(0));
+    let pointer = buffer.0.as_ptr();
+    assert_eq!(buffer.insert_text("か\u{3099}", CharIndex(1)), 2);
+    assert_ne!(buffer.0.as_ptr(), pointer);
+    assert_eq!(
+        buffer.char_range(CharIndex(0)..CharIndex(4)),
+        "🧩か\u{3099}🧩"
+    );
+    buffer.delete_char_range(CharIndex(1)..CharIndex(3));
+    assert_eq!(buffer.as_str(), "🧩".repeat(MAX_PASSWORD_CHARS));
+
+    // egui's undo/redo uses replace_with; its default must also grow safely.
+    let replacement = "か\u{3099}".repeat(buffer.0.capacity());
+    buffer.replace_with(&replacement);
+    assert_eq!(buffer.as_str(), replacement);
+    buffer.clear();
+    assert!(buffer.as_str().is_empty());
+}
+
+#[test]
+fn password_field_keeps_its_buffer_for_incremental_four_byte_input() {
+    let i18n = crate::localization::tests::english();
+    for host in [true, false] {
+        let ctx = egui::Context::default();
+        let mut profile = PlayerSettingsState::load(None);
+        let mut draft = ConnectionDraft::new("127.0.0.1:43576");
+        ctx.run_ui(default(), |ui| {
+            paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n);
+        })
+        .drop_without_applying_deltas();
+        ctx.memory_mut(|memory| {
+            memory.request_focus(egui::Id::new(if host {
+                "multiplayer-host-password"
+            } else {
+                "multiplayer-join-password"
+            }));
+        });
+        let pointer = draft.password.as_ptr();
+        let capacity = draft.password.capacity();
+        for _ in 0..MAX_PASSWORD_CHARS {
+            ctx.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::Text("🧩".into())],
+                    ..default()
+                },
+                |ui| paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n),
+            )
+            .drop_without_applying_deltas();
+            assert_eq!(draft.password.as_ptr(), pointer);
+            assert_eq!(draft.password.capacity(), capacity);
+        }
+        assert_eq!(draft.password.as_str(), "🧩".repeat(MAX_PASSWORD_CHARS));
+        assert!(draft.valid(host));
+    }
+}
+
+#[test]
 fn password_field_keeps_full_unicode_input_and_validates_after_normalization() {
     let i18n = crate::localization::tests::english();
     for host in [true, false] {
@@ -1084,8 +1188,11 @@ fn password_field_keeps_full_unicode_input_and_validates_after_normalization() {
             ("あ".repeat(3), false),
             ("あ".repeat(44), true),
             ("あ".repeat(128), true),
+            ("🧩".repeat(128), true),
             ("か\u{3099}".repeat(128), true),
             ("あ".repeat(129), false),
+            ("🧩".repeat(129), false),
+            ("x".repeat(1025), false),
         ] {
             let ctx = egui::Context::default();
             let mut profile = PlayerSettingsState::load(None);
@@ -1101,9 +1208,13 @@ fn password_field_keeps_full_unicode_input_and_validates_after_normalization() {
                     "multiplayer-join-password"
                 }));
             });
+            let split = value.char_indices().nth(8).map_or(value.len(), |(i, _)| i);
             let output = ctx.run_ui(
                 egui::RawInput {
-                    events: vec![egui::Event::Paste(value.clone())],
+                    events: vec![
+                        egui::Event::Text(value[..split].into()),
+                        egui::Event::Paste(value[split..].into()),
+                    ],
                     ..default()
                 },
                 |ui| paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n),
