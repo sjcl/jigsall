@@ -153,9 +153,19 @@ directions cap signals at 16 KiB each, 128 queued messages and 256 KiB total;
 backpressure is explicit. Each routing peer (local fixtures) or verified
 account/session route (routed mode) gets a 16-message burst, 32 messages/s,
 16 queued messages and 32 KiB queued bytes. All peer IDs bound to the same route
-share these limits. Queues retain rate history while empty, bound tracked keys
-to 256, cap authorized peer bindings at 8 per route/64 total, and service
-nonempty route queues round-robin. Backend polling consumes
+share these limits. Empty queues release message buffers immediately; their
+exact route-owned rates move into a separate 128-entry idle cache. At most 128
+nonempty queues plus 128 idle records keep the previous 256-rate ceiling.
+Spent rates are not evicted for a new key until they naturally refill (at most
+500 ms); hash fingerprints always require full route equality. MemberId routes
+remain separate even when their AbuseKeys match. Authorized peer bindings remain
+capped at 8 per route/64 total, and nonempty queues run round-robin.
+If all idle records have debt, cache misses use a separate 128-burst/128-per-second
+service budget: enqueue still uses its own 16-burst rate, and exhaustion defers
+messages in FIFO order instead of dropping them. Remembered routes bypass this
+fallback. Lost rates keep misses on this budget for 500 ms even if a restore frees
+a cache slot. This bounds repeated resets under extreme route churn, but cannot
+promise exact per-route rates for more concurrent hot keys than fit in memory. Backend polling consumes
 at most 128 signals/frame under a 128/s bucket; global exhaustion defers queued
 signals rather than dropping another peer's progress. Failed outbound native callback enqueue returns false to
 GNS, which fails the connection; abandoned routes expire normally. Malformed,
@@ -180,10 +190,11 @@ The connection snapshots this `Origin::Route` for backend and shared sync abuse
 accounting: at most 4 not-Ready connections per origin, shared start history,
 and progressive 30–240-second backoff after 3 qualifying failures. Failure
 history remains live for 120 seconds after its cooldown ends, so a quiet retry
-at the deadline cannot reset the ladder. Compressed overflow collisions may
-conservatively restrict unrelated origins; successful authentication clears
-an origin's exact history and its unambiguous compressed copy. Peer ID rotation
-and reconnects retain the same history. `revoke_peer` purges queued signals and
+at the deadline cannot reset the ladder. Retired histories retain full Origin
+ownership; a matching hash alone never transfers failures, cooldown or spent
+credit. Successful authentication clears only its owner's failure/cooldown,
+including a retired entry, and never refunds tokens. Peer ID rotation and
+reconnects retain the same recorded history. `revoke_peer` purges queued signals and
 closes affected connections on the next poll. Only a new native connect request
 spends admission credit; duplicate/continuation signaling does not. Server-side
 authentication and admission belong to the control service/adapter. Rendezvous v1
@@ -1052,7 +1063,7 @@ invariant keeps it smaller than backend connection capacity.
 | Catch-up retention | Existing bounded CPU catch-up limits, only after baseline slot | One outstanding event; matching advancing CatchUpAck within 12 s, or join removed |
 | Finalization candidate | One bounded scalar drag set per join | Matching FinalizeAck within 12 s, or join removed; host retries cannot extend outstanding wait |
 | Reliable outbound queue | 512 KiB/connection; new Bulk blocked above 240 KiB incl. reservation | Native pending + sent-unacknowledged backlog, not just enqueue success; close drops queued data |
-| Admission history | 256 origins per guard, 120 s TTL | Active histories are pinned; inactive LRU eviction preserves credit/backoff in 512 fixed, keyed overflow slots |
+| Admission history | 256 primary + 512 exact retired origins per guard, 120 s TTL | Active histories and debt/backoff are protected; a separate miss-only budget handles saturation |
 
 Session -> ImageAvailability and cached-image availability -> ImageReady also have
 12-second deadlines. Host-side AwaitingImageSlot/AwaitingBaselineSlot do not have
@@ -1069,9 +1080,21 @@ authentication does not grant expensive join admission: joins have a global burs
 of 12 with one token per 2 s, and per-origin burst 4 with one token per 5 s.
 Closing/reconnecting never replenishes these guards. Three authentication, protocol
 or sync-stall failures start a 30-second origin backoff, capped at 240 seconds.
-Each guard uses pinned active entries, inactive TTL/LRU recovery and conservative
-fixed overflow history; churn cannot erase live penalties or replenish credit.
-Overflow hash collisions may temporarily restrict unrelated sources under churn.
+Each guard uses 256 primary and 512 exact-owner retired histories within the
+previous allocation ceiling. Active entries are pinned, including waiters and
+retired origins; spent credit and failure history survive churn until normal
+refill/expiry. Only inactive entries with full credit and no failure/cooldown
+can be replaced early. Failures expire 120 s after the latest touch or cooldown
+end, whichever is later. Hash collisions never transfer another owner's state.
+When all retained entries are protected, unrecorded origins alone share a
+32-burst/four-per-second bucket. Existing pending limits, global start/crypto/join
+budgets and fair queues still apply. Recorded origins bypass that fallback;
+global join refusal does not spend either origin or fallback credit. A flood of
+more than 768 live, distinct origins can compete for the fallback and lose exact
+individual backoff tracking. We choose bounded aggregate work and new-source
+opportunities over assigning someone else's penalty or permanently refusing
+all newcomers. This is not a guarantee of availability against arbitrarily many
+sources or network/edge saturation.
 Canonical IP ignores port, uses IPv4 /32 and IPv6 /64, and normalizes mapped IPv4; it is an
 abuse-accounting key, not a PlayerId/authentication identity. Four pending users
 behind a NAT can join together; Ready peers no longer consume that pending quota.
