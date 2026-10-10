@@ -53,7 +53,7 @@ pub fn local_gameplay_enabled(
         && !matches!(
             *next,
             NextState::Pending(super::AppState::Menu)
-                | NextState::PendingIfNeq(super::AppState::Menu)
+                | NextState::PendingIfDifferent(super::AppState::Menu)
         )
 }
 

@@ -46,7 +46,7 @@ fn shadow_quality_and_lod_resolve_once_per_frame() {
 
 #[test]
 fn shadow_shares_silhouette_without_changing_top_or_pick_entrypoints() {
-    let shader = include_str!("../puzzle_render.wgsl");
+    let shader = include_str!("../puzzle_render.wesl");
     assert!(shader.contains("return piece_vertex(vi,instance,false,false);"));
     assert!(shader.contains("return piece_vertex(vi,instance,true,false);"));
     assert!(shader.contains("if shadow {elevation=pose.elevation;}"));
@@ -61,7 +61,7 @@ fn shadow_shares_silhouette_without_changing_top_or_pick_entrypoints() {
     assert!(!output.contains("shadow"));
     assert!(shader.contains("return sample_visible(in,distance(in));"));
     assert!(shader.contains("return sample_splat(in);"));
-    let pick = include_str!("../pick_visibility.wgsl")
+    let pick = include_str!("../pick_visibility.wesl")
         .split("fn cull_pick")
         .nth(1)
         .unwrap();

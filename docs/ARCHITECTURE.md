@@ -28,9 +28,9 @@ jigsall
 | `game/src/network/address.rs` | 参加先の構文検証とworkerによるDNS解決、timeout、IPv4 / IPv6 endpoint選択 |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
 | `game/src/render/mod.rs` | GPU buffers、Core2d pass、indirect draw、非同期readback |
-| `game/src/render/puzzle_shape.wgsl` | main / point / rectangle共通の形状・UV |
-| `game/src/render/puzzle_render.wgsl` | shader生成quad、画像・outline、ID / bitset出力 |
-| `game/src/render/visibility.wgsl` / `pick_visibility.wgsl` | culling、selectable bitset、可視IDの安定圧縮、選択ROI |
+| `game/src/render/puzzle_shape.wesl` | main / point / rectangle共通の形状・UV |
+| `game/src/render/puzzle_render.wesl` | shader生成quad、画像・outline、ID / bitset出力 |
+| `game/src/render/visibility.wesl` / `pick_visibility.wesl` | culling、selectable bitset、可視IDの安定圧縮、選択ROI |
 | `game/src/render/radix_sort.wgsl` | visible countからindirect dispatch、24bit Zの安定radix sort |
 | `game/src/selection/` | API、論理→物理座標、要求順序、readback復号 |
 | `ui/` | egui設定・メニュー・HUD・進捗 |
@@ -198,7 +198,7 @@ Startupで使用中のRenderDevice / RenderAdapterから`PuzzleImageLimits`を�
 
 RGBA8の元画像・出力・縮小の中間画素bufferはそれぞれ最大256 MiBです。中間bufferは`元画像の幅 × 縮小後の高さ × 4 bytes`（alignmentを除く）以内で、従来のRgba32F / 16 bytesではありません。16bit RGBAのdecode結果は最大512 MiBで、RGBA8への変換中は両bufferが存在します。縮小の画素buffer合計は最大768 MiBですが、encoded bytes、codec内部、補間係数、allocator、別workerの同時処理、GPUの使用量は含みません。process全体のメモリ上限や実測RSSを示す値ではありません。
 
-画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.19.1のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldには寸法metadataとhandle、opaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
+画像は`RenderAssetUsages::RENDER_WORLD`を使い、Bevy 0.20.0のextractがpixel Vecをrender worldへ移します。GPU upload後にCPU pixelデータは保持しません。main worldには寸法metadataとhandle、opaque判定を残し、背景Spriteとpieceが同じGPU textureを使います。4096² RGBA8画像のCPU常駐64 MiBとextract時の同サイズのcloneを削減します。
 
 永続連結の追加後もdense stateの受け取り・初回uploadはcopy不要ですが、`initialize_dense`は新しい8-byte / pieceのDSU領域をO(N)で初期化します。上記0.0024 msはDSU導入前の受け取り測定で、現在の初期化コストは[CONNECTED_SNAPPING.md](CONNECTED_SNAPPING.md)のmetadata計測を参照してください。通常idle / pointerにこの処理はありません。
 
@@ -287,7 +287,7 @@ canonical quarter-turn (PieceDataStore.states; authority が即時 commit)
   → continuous rotation record (store.rotation_visual)
       ├─ rigid residual transform
       └─ normalized elevation envelope (0..1)
-  → render + GPU picking (presentation.wgsl の quarter-turn / presentation_pose)
+  → render + GPU picking (presentation.wesl の quarter-turn / presentation_pose)
 ```
 
 `resources/rotation_visual.rs` は連続角度・pivot・補正 translation・開始時刻・duration・start_elevation を
@@ -481,7 +481,7 @@ target / displayed / smoothing ageと64-bit active maskはmappingから独立し
 
 client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipを構築し、displayed == target == reconciled deltaへ即時初期化します。初回Transientを待たず、過去のdragをzeroからanimationさせず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、join baseline / new session、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・両delta・smoothing stateをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
 
-`presentation.wgsl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v2、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
+`presentation.wesl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v2、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 

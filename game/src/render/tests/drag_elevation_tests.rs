@@ -101,16 +101,16 @@ pub(super) fn compare_reference(app: &mut App, target: &Handle<Image>, elevation
 #[test]
 fn drag_elevation_shader_is_shadow_only_and_reuses_uniform_and_storage_layouts() {
     assert_eq!(PuzzleUniform::min_size().get(), 336);
-    let source = include_str!("../puzzle_render.wgsl");
+    let source = include_str!("../puzzle_render.wesl");
     let compact: String = source.split_whitespace().collect();
     assert!(compact.contains(
         "ifshadow&&config.drag_elevation_active!=0u{elevation=max(elevation,drag_elevation(id));}"
     ));
-    for name in ["../visibility.wgsl", "../pick_visibility.wgsl"] {
+    for name in ["../visibility.wesl", "../pick_visibility.wesl"] {
         let source = if name.contains("pick_") {
-            include_str!("../pick_visibility.wgsl")
+            include_str!("../pick_visibility.wesl")
         } else {
-            include_str!("../visibility.wgsl")
+            include_str!("../visibility.wesl")
         };
         assert_eq!(source.matches("drag_elevation").count(), 2); // uniform layout only
     }

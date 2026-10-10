@@ -515,7 +515,7 @@ pub(crate) fn sync_local_gameplay_block(
         || ui.connection_screen(&status)
         || matches!(
             *next,
-            NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu)
+            NextState::Pending(AppState::Menu) | NextState::PendingIfDifferent(AppState::Menu)
         );
     if blocked.0 != value {
         blocked.0 = value;
@@ -664,7 +664,7 @@ fn start_resolved_join(
 pub(crate) fn start_prepared_host(world: &mut World) {
     let menu_pending = matches!(
         world.get_resource::<NextState<AppState>>(),
-        Some(NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu))
+        Some(NextState::Pending(AppState::Menu) | NextState::PendingIfDifferent(AppState::Menu))
     );
     if menu_pending {
         let mut ui = world.resource_mut::<MultiplayerUi>();

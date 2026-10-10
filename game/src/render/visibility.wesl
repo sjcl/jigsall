@@ -1,4 +1,4 @@
-#import jigsall::presentation::{presentation_pose, presentation_position, presentation_splat_size, presentation_half_size, decode_rotation, quarter_half_size, quarter_splat_size, RotationAnimation}
+import jigsall_game::render::presentation::{presentation_pose, presentation_position, presentation_splat_size, presentation_half_size, decode_rotation, quarter_half_size, quarter_splat_size, RotationAnimation};
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,
@@ -16,15 +16,14 @@ struct PuzzleUniform {
     bevel_highlight_strength:f32,bevel_shadow_strength:f32,
 };
 struct PieceState {position:vec2<f32>,z_order:u32,flags:u32};
-struct MainArgs {vertex_count:u32,instance_count:u32,first_vertex:u32,first_instance:u32};
-struct PickArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,first_instance:u32};
+struct DrawArgs {vertex_count:u32,instance_count:atomic<u32>,first_vertex:u32,first_instance:u32};
 @group(0) @binding(0) var<uniform> config:PuzzleUniform;
 @group(0) @binding(1) var<storage,read> states:array<PieceState>;
-@group(0) @binding(2) var<storage,read> main_ids:array<u32>;
-@group(0) @binding(3) var<storage,read> main_args:MainArgs;
-@group(0) @binding(4) var<storage,read_write> pick_ids:array<u32>;
-@group(0) @binding(5) var<storage,read_write> pick_args:PickArgs;
-@group(0) @binding(6) var<storage,read> drag_members:array<u32>;
+@group(0) @binding(2) var<storage,read_write> visible:array<u32>;
+@group(0) @binding(3) var<storage,read_write> args:DrawArgs;
+@group(0) @binding(4) var<storage,read_write> selectable:array<u32>;
+@group(0) @binding(5) var<storage,read> drag_members:array<u32>;
+@group(0) @binding(6) var<storage,read_write> group_counts:array<u32>;
 @group(0) @binding(7) var<storage,read> piece_metadata:array<u32>;
 struct RemoteDeltas { entries:array<vec4<f32>,32> };
 @group(0) @binding(8) var<uniform> remote_deltas:RemoteDeltas;
@@ -33,10 +32,15 @@ struct RemoteDeltas { entries:array<vec4<f32>,32> };
 fn component_root(id:u32)->u32 {return piece_metadata[id];}
 fn remote_slot(id:u32)->u32 {return piece_metadata[config.capacity+id];}
 fn rotation_slot(root:u32)->u32 {return piece_metadata[2u*config.capacity+root];}
-@compute @workgroup_size(256) fn cull_pick(@builtin(global_invocation_id) invocation:vec3<u32>) {
-    let index=invocation.x;if index>=main_args.instance_count {return;}
-    let id=main_ids[index];let state=states[id];
-    if (state.flags&9u)!=0u || (state.flags&16u)==0u {return;}
+fn is_visible(id:u32)->bool {
+    if id>=config.count {return false;}
+    if (id%32u)==0u {
+        var word=0u;for(var bit=0u;bit<32u && id+bit<config.count;bit++) {
+            let flags=states[id+bit].flags;
+            if (flags&9u)==0u && (flags&16u)!=0u {word|=1u<<bit;}
+        }selectable[id/32u]=word;
+    }
+    let state=states[id];
     let local_member=config.drag_active!=0u && (drag_members[id/32u]&(1u<<(id%32u)))!=0u;
     let slot=remote_slot(id);
     let packed=remote_deltas.entries[(max(slot,1u)-1u)/2u];
@@ -45,7 +49,7 @@ fn rotation_slot(root:u32)->u32 {return piece_metadata[2u*config.capacity+root];
     if config.rotation_active!=0u {
         animation_slot=rotation_slot(component_root(id));
     }
-    let local_half=config.size*0.5+min(config.size.x,config.size.y)*0.22;
+    let local_half=config.size*0.5+0.22*min(config.size.x,config.size.y);
     var position:vec2<f32>;var half:vec2<f32>;
     if animation_slot==0u {
         let quarter=decode_rotation(state.flags);
@@ -60,14 +64,43 @@ fn rotation_slot(root:u32)->u32 {return piece_metadata[2u*config.capacity+root];
         let pose=presentation_pose(state.position,state.flags,local_member,config.drag_delta,slot,remote_delta,animation,config.rotation_time);
         position=pose.position;half=presentation_half_size(local_half,pose.rotation);
         if config.far_zoom!=0u {
-            // Retained main-viewport scale, even when view_min/max describe a pick ROI.
             let splat_size=presentation_splat_size(config.size,pose.rotation,config.pixel_world_size,config.splat_min_px);
             let splat_half=presentation_half_size(splat_size*0.5,pose.rotation);
+            // Pixel-center snapping can move the splat by another half main pixel.
             half=max(half,splat_half)+config.pixel_world_size*0.5;
         }
     }
 
-    if all(position+half>=config.view_min) && all(position-half<=config.view_max) {
-        let dst=atomicAdd(&pick_args.instance_count,1u);pick_ids[dst]=id;
+    // Frame-resolved maximum shadow / side margin; pick ROI stays top-only.
+    half+=config.visual_cull_extent;
+    return (state.flags&16u)!=0u && all(position+half>=config.view_min) && all(position-half<=config.view_max);
+}
+@compute @workgroup_size(256) fn cull(@builtin(global_invocation_id) invocation:vec3<u32>) {
+    let id=invocation.x;
+    if is_visible(id) {
+        let dst=atomicAdd(&args.instance_count,1u);visible[dst]=id;
+    }
+}
+// Stable local compaction supplies ID order to the stable 24-bit radix sort.
+// Each group initially owns its original 256-ID range; no capacity padding.
+var<workgroup> visible_scan:array<u32,256>;
+@compute @workgroup_size(256) fn cull_ordered(
+    @builtin(global_invocation_id) invocation:vec3<u32>,
+    @builtin(local_invocation_index) lane:u32,
+    @builtin(workgroup_id) group:vec3<u32>,
+) {
+    let alive=is_visible(invocation.x);
+    visible_scan[lane]=u32(alive);
+    workgroupBarrier();
+    for(var step=1u;step<256u;step*=2u) {
+        var add=0u;if lane>=step {add=visible_scan[lane-step];}
+        workgroupBarrier();
+        visible_scan[lane]+=add;
+        workgroupBarrier();
+    }
+    if alive {visible[group.x*256u+visible_scan[lane]-1u]=invocation.x;}
+    if lane==255u {
+        let count=visible_scan[255];group_counts[group.x]=count;
+        atomicAdd(&args.instance_count,count);
     }
 }

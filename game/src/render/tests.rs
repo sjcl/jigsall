@@ -26,7 +26,6 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::RenderTarget,
     render::{
-        diagnostic::RenderDiagnosticsPlugin,
         gpu_readback::{Readback, ReadbackComplete},
         settings::{RenderCreation, WgpuSettings},
         RenderPlugin,
@@ -89,7 +88,6 @@ fn gpu_app_with_setup(
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<bevy::render::pipelined_rendering::PipelinedRenderingPlugin>(),
     )
-    .add_plugins(RenderDiagnosticsPlugin)
     .init_resource::<PieceDataStore>()
     .init_resource::<crate::resources::LocalPlayerId>()
     .init_resource::<PieceUpload>()
@@ -223,7 +221,7 @@ fn read_buffer_range(app: &App, source: &Buffer, offset: u64, size: u64) -> Vec<
         })
         .unwrap();
     rx.recv().unwrap().unwrap();
-    let bytes = staging.slice(..).get_mapped_range().to_vec();
+    let bytes = staging.slice(..).get_mapped_range().unwrap().to_vec();
     staging.unmap();
     bytes
 }
@@ -244,7 +242,7 @@ fn hash_parity(app: &App) {
             }
         }
     }
-    let source = include_str!("puzzle_shape.wgsl")
+    let source = include_str!("puzzle_shape.wesl")
         .lines()
         .skip(1)
         .collect::<Vec<_>>()
@@ -343,7 +341,7 @@ fn shape_parity(app: &App) {
         ],
         64.0,
     ));
-    let source = include_str!("puzzle_shape.wgsl")
+    let source = include_str!("puzzle_shape.wesl")
         .lines()
         .skip(1)
         .collect::<Vec<_>>()
@@ -394,7 +392,7 @@ fn decode_parity(app: &App) {
             }
         }
     }
-    let source=include_str!("puzzle_shape.wgsl").lines().skip(1).collect::<Vec<_>>().join("\n")+"
+    let source=include_str!("puzzle_shape.wesl").lines().skip(1).collect::<Vec<_>>().join("\n")+"
 struct DecodeOutput {a:vec4<u32>,b:vec4<u32>,c:vec4<f32>,d:vec4<f32>};
 @group(0) @binding(0) var<storage,read> inputs:array<vec2<u32>>;
 @group(0) @binding(1) var<storage,read_write> outputs:array<DecodeOutput>;
@@ -553,6 +551,7 @@ fn frame_pixels(app: &App, target: &Handle<Image>, resolution: u32) -> Vec<u8> {
     let pixels = staging
         .slice(..)
         .get_mapped_range()
+        .unwrap()
         .chunks(bytes_per_row as usize)
         .flat_map(|row| row[..resolution as usize * 4].iter().copied())
         .collect();

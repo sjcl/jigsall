@@ -54,7 +54,7 @@ Alpha など prerelease suffix のある version は GitHub pre-release の Draf
 
 ## 構成と責務
 
-Bevy 0.19.1 / bevy_egui 0.42 を使用します。依存バージョンはルートの `Cargo.toml` に集約しています。Windows 向けの wgpu-hal は 29.0.3 に固定しています。29.0.4 と gpu-allocator 0.28 の Windows COM 型の不一致を避けるためで、更新時には Windows での再ビルド確認が必要です。
+Bevy 0.20.0 / bevy_egui 0.43.1 / wgpu 30 を使用します。依存バージョンはルートの `Cargo.toml` に集約しています。独自 renderer の import を持つ shader と共有 library は WESL、import のない shader は WGSL です。Bevy 0.20 の render schedule は weak ordering を使うため、独自 GPU buffer の準備を描画より前、readback mapping を描画の submit より後に明示的に順序付けています。
 
 | package / ディレクトリ | 責務 |
 | --- | --- |
@@ -127,6 +127,19 @@ cargo build --workspace --locked --all-features
 ```
 
 実 GPU / ネイティブウィンドウを必要とする ignored テスト、実機 UI の確認、release での性能計測は、変更内容に応じてローカルで行います。通常の CI の結果だけで、実機の描画・入力・速度を検証したことにはなりません。
+
+### Bevy 0.20 移行時のローカル検証
+
+2026-10-10、Windows / NVIDIA GeForce RTX 5090 / Vulkan（driver 610.88）で検証しました。
+[公式の 0.19 → 0.20 移行ガイド](https://bevy.org/learn/migration-guides/0-19-to-0-20/)に沿って、
+WESL の import、状態遷移の名前変更、ホイール単位変換の resource、wgpu 30 の readback の Result に対応しています。
+
+- default / all-features の全 target Clippy（`-D warnings`）、整形、all-features の release アプリ・テストのビルド、workspace の通常テスト・doctestが成功しました。
+- GNS localhost は直列実行で31件成功。実 rendezvous server を必要とする2件とGPU image joinの1件は別枠です。GPU image joinは次のGPUテスト実行で成功しました。
+- release の GPU テストは benchmark を除いた69件中66件成功。render-only画像のupload/readbackとnative multiplayer UI probeも別途成功しました。
+- `gpu_transparency_and_visibility`、`gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden`、`gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation` の3件は失敗しています。既存のBevy 0.19.1のdebugテスト実行ファイルでも同じassertionと結果を再現しました（その実行ファイルのbuild commitは未確認）。今回の移行では判定条件や許容誤差を変更していません。
+
+この検証は上記Windowsホストの結果です。Linux / macOSのruntime互換性や性能の保証ではありません。
 
 ### GitHub Actions のビルドキャッシュ
 

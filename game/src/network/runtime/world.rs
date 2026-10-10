@@ -69,7 +69,7 @@ fn menu_pending(world: &World) -> bool {
         .is_some_and(|next| {
             matches!(
                 next,
-                NextState::Pending(AppState::Menu) | NextState::PendingIfNeq(AppState::Menu)
+                NextState::Pending(AppState::Menu) | NextState::PendingIfDifferent(AppState::Menu)
             )
         })
 }

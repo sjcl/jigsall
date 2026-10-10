@@ -1,6 +1,8 @@
 use crate::components::*;
 use crate::resources::*;
-use bevy::input::mouse::{AccumulatedMouseMotion, MouseScrollUnit, MouseWheel};
+use bevy::input::mouse::{
+    AccumulatedMouseMotion, MouseScrollPixelsPerLine, MouseScrollUnit, MouseWheel,
+};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use bevy_egui::EguiContexts;
@@ -144,6 +146,7 @@ pub fn auto_adjust_camera_zoom(
 #[allow(clippy::too_many_arguments)] // Explicit camera, puzzle and UI system resources.
 pub fn handle_camera_zoom(
     mut scroll_evr: MessageReader<MouseWheel>,
+    pixels_per_line: Res<MouseScrollPixelsPerLine>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut contexts: EguiContexts,
     ui_capture: Res<GameUiPointerCapture>,
@@ -179,7 +182,7 @@ pub fn handle_camera_zoom(
         };
         let scroll_lines = match ev.unit {
             MouseScrollUnit::Line => ev.y,
-            MouseScrollUnit::Pixel => ev.y / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR,
+            MouseScrollUnit::Pixel => ev.y / *pixels_per_line,
         };
         // Preserve the 10% zoom-in step per line, with reciprocal zoom-out.
         // Exponentiation makes the result depend on distance, not event count.
@@ -355,6 +358,7 @@ mod tests {
         app.add_plugins(MinimalPlugins)
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<PerformanceMonitor>()
+            .init_resource::<MouseScrollPixelsPerLine>()
             .init_resource::<bevy_egui::EguiUserTextures>()
             .add_message::<MouseWheel>()
             .add_systems(Update, handle_camera_zoom);
@@ -499,9 +503,7 @@ mod tests {
                     let initial = *app.world().get::<Transform>(camera).unwrap();
                     let lines = match unit {
                         MouseScrollUnit::Line => delta,
-                        MouseScrollUnit::Pixel => {
-                            delta / MouseScrollUnit::SCROLL_UNIT_CONVERSION_FACTOR
-                        }
+                        MouseScrollUnit::Pixel => delta / MouseScrollPixelsPerLine::default(),
                     };
                     let factor = 0.9_f32.powf(lines);
                     scroll(&mut app, window, unit, &[delta]);
@@ -647,7 +649,7 @@ mod tests {
             .spawn((
                 Camera {
                     computed: ComputedCameraValues {
-                        clip_from_view: Mat4::orthographic_rh(
+                        clip_from_view: bevy::math::proj::orthographic(
                             -500.0, 500.0, -400.0, 400.0, 0.0, 1000.0,
                         ),
                         target_info: Some(RenderTargetInfo {

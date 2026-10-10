@@ -96,7 +96,7 @@ fn bevel_lod_far_gate_and_uniform_padding_do_not_expand_visual_bounds() {
 
 #[test]
 fn bevel_is_fragment_only_without_new_bindings_or_elevation_work() {
-    let shader = include_str!("../puzzle_render.wgsl");
+    let shader = include_str!("../puzzle_render.wesl");
     assert_eq!(shader.matches("@binding(").count(), 13);
     let vertex = shader
         .split("fn piece_vertex(")

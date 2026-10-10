@@ -77,7 +77,7 @@ python .github/scripts/ci.py
 
 ## 依存関係の注意点
 
-Bevy 0.19.1 / bevy_egui 0.42を使用します。Windows向けのwgpu-halはCargo.tomlで29.0.3へ固定しています。29.0.4はgpu-allocator 0.28とWindows COM型が一致しないためです。固定を外す際は、Windowsで再ビルドして互換性を確認してください。
+Bevy 0.20.0 / bevy_egui 0.43.1 / wgpu 30を使用します。wgpu-halとwgpu-typesの直接依存もBevyのwgpuと同じmajorへ揃えています。旧wgpu-hal 29.0.3の固定は削除しました。更新時はWindowsで再ビルドして互換性を確認してください。
 
 旧Renet試作は削除済みです。Renet importの変更や、gpu-allocatorの古いpatchを追加する必要はありません。
 

@@ -936,7 +936,7 @@ pub(crate) mod tests {
             })
             .unwrap();
         rx.recv_timeout(Duration::from_secs(20)).unwrap().unwrap();
-        let bytes = staging.slice(..).get_mapped_range();
+        let bytes = staging.slice(..).get_mapped_range().unwrap();
         assert_eq!(&bytes[..8], &pixels[..8]);
         assert_eq!(&bytes[256..264], &pixels[8..]);
         drop(bytes);

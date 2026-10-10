@@ -10,9 +10,9 @@ use jigsall_core::{
 #[test]
 fn continuous_presentation_is_shared_by_draw_and_both_visibility_paths() {
     for source in [
-        include_str!("../puzzle_render.wgsl"),
-        include_str!("../visibility.wgsl"),
-        include_str!("../pick_visibility.wgsl"),
+        include_str!("../puzzle_render.wesl"),
+        include_str!("../visibility.wesl"),
+        include_str!("../pick_visibility.wesl"),
     ] {
         assert_eq!(
             source.matches("presentation_pose(state.position,").count(),
@@ -22,7 +22,7 @@ fn continuous_presentation_is_shared_by_draw_and_both_visibility_paths() {
         assert!(source.contains("rotation_animations[animation_slot-1u]"));
         assert!(source.contains("presentation_splat_size("));
     }
-    let draw = include_str!("../puzzle_render.wgsl");
+    let draw = include_str!("../puzzle_render.wesl");
     assert!(draw.contains("presentation_rotate(local,rotation)"));
     assert!(draw.contains("presentation_rotate(corners[vi]*splat_size*0.5,rotation)"));
     assert!(draw.contains("rotation=pose.rotation"));
@@ -33,9 +33,9 @@ fn continuous_presentation_is_shared_by_draw_and_both_visibility_paths() {
 #[test]
 fn quarter_turn_path_gates_rotation_metadata_and_continuous_math() {
     for source in [
-        include_str!("../puzzle_render.wgsl"),
-        include_str!("../visibility.wgsl"),
-        include_str!("../pick_visibility.wgsl"),
+        include_str!("../puzzle_render.wesl"),
+        include_str!("../visibility.wesl"),
+        include_str!("../pick_visibility.wesl"),
     ] {
         // Metadata is loaded only inside the uniform gate, and pose/trig only
         // after a nonzero slot. Keep these performance guards explicit in WGSL.
@@ -81,7 +81,7 @@ fn quarter_turn_path_gates_rotation_metadata_and_continuous_math() {
             }
         }
     }
-    let shared = include_str!("../presentation.wgsl");
+    let shared = include_str!("../presentation.wesl");
     let quarter_functions = shared.split("// Shared by normal/far draw").next().unwrap();
     for expensive in [
         "sin(",
@@ -97,7 +97,7 @@ fn quarter_turn_path_gates_rotation_metadata_and_continuous_math() {
 
 #[test]
 fn elevation_uses_one_progress_sample_without_new_bindings_or_varyings() {
-    let shared = include_str!("../presentation.wgsl");
+    let shared = include_str!("../presentation.wesl");
     let pose = shared.split("fn presentation_pose(").nth(1).unwrap();
     assert_eq!(pose.matches("rotation_progress(").count(), 1);
     assert_eq!(
@@ -109,9 +109,9 @@ fn elevation_uses_one_progress_sample_without_new_bindings_or_varyings() {
     assert!(shared.contains("rotation:vec2<f32>,elevation:f32"));
     assert!(!shared.contains("@binding"));
     for (source, bindings) in [
-        (include_str!("../puzzle_render.wgsl"), 13),
-        (include_str!("../visibility.wgsl"), 10),
-        (include_str!("../pick_visibility.wgsl"), 10),
+        (include_str!("../puzzle_render.wesl"), 13),
+        (include_str!("../visibility.wesl"), 10),
+        (include_str!("../pick_visibility.wesl"), 10),
     ] {
         assert_eq!(source.matches("@binding(").count(), bindings);
         if !source.contains("fn shadow_vertex") {
@@ -159,7 +159,7 @@ fn gpu_rotation_elevation_matches_cpu_envelope_and_record_layout() {
             }
         }
     }
-    let mut source = include_str!("../presentation.wgsl")
+    let mut source = include_str!("../presentation.wesl")
         .lines()
         .skip(1)
         .collect::<Vec<_>>()

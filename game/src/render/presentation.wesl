@@ -1,4 +1,4 @@
-#define_import_path jigsall::presentation
+// Shared piece presentation for rendering and GPU picking.
 struct RotationAnimation {
     pivot:vec2<f32>,offset:vec2<f32>,residual:f32,start:f32,duration:f32,start_elevation:f32,
 };

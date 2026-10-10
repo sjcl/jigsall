@@ -1,6 +1,6 @@
 # Procedural GPU picking
 
-通常描画とpoint / rectangle pickingは、同じdense state、visible ID、画像texture、vertex関数を使います。通常zoomでは共通puzzle_shape.wgslのSDF / UV、far zoomではpixel中心へsnapしたsplatと代表色sampleを共有します。RenderMesh、Mesh attribute、ピースEntity、ATTRIBUTE_PIECE_IDは不要です。ゲーム状態の正本はCPUです。
+通常描画とpoint / rectangle pickingは、同じdense state、visible ID、画像texture、vertex関数を使います。通常zoomでは共通puzzle_shape.weslのSDF / UV、far zoomではpixel中心へsnapしたsplatと代表色sampleを共有します。RenderMesh、Mesh attribute、ピースEntity、ATTRIBUTE_PIECE_IDは不要です。ゲーム状態の正本はCPUです。
 
 ## Coverageと候補
 
@@ -61,7 +61,7 @@ far / main visibility / pick visibility / point / rectangleが読むため、予
 CPU正本・selection ownership・snapshotはpredictionを参照しません。通常pointer / camera /
 pending ACK frameにはstate overrideの再計算/追加uploadがありません。
 
-Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wgsl::presentation_pose`の内部で`presentation_position`がtranslationを合成します。main / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
+Direct-IPのremote dragもcanonical positionを変更せず、最大64 slotのpresentation deltaを適用します。`presentation.wesl::presentation_pose`の内部で`presentation_position`がtranslationを合成します。main / pick visibilityと共通vertexが使用し、normal / far zoom / point / rectangleの位置計算を揃えます。remote-heldの選択除外は従来のcanonical HELDのままです。slot mappingのReliable境界、join / final reconciliation、GPU uploadとメモリは[ARCHITECTURE.md](ARCHITECTURE.md#remote-drag-presentation)を参照してください。
 
 local Rotate / RotateDrag の continuous presentation も同じ `presentation_pose` に載せます。
 共有`piece_metadata`のroot領域 → rotation slot領域（DSU rootで参照）から可変長 animation record を参照し、final pose に pivot 周りの残差を適用します。

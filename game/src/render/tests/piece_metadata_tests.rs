@@ -92,19 +92,19 @@ fn piece_metadata_shader_and_layout_bindings_fit_eight_storage_buffers_per_stage
     );
     for (source, layout, metadata_binding, storage_bindings) in [
         (
-            include_str!("../puzzle_render.wgsl"),
+            include_str!("../puzzle_render.wesl"),
             &gpu.draw_layout,
             6,
             7,
         ),
         (
-            include_str!("../visibility.wgsl"),
+            include_str!("../visibility.wesl"),
             &gpu.compute_layout,
             7,
             8,
         ),
         (
-            include_str!("../pick_visibility.wgsl"),
+            include_str!("../pick_visibility.wesl"),
             &gpu.pick_compute_layout,
             7,
             8,

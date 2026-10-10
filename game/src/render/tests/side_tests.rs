@@ -68,7 +68,7 @@ fn side_lod_is_independent_and_visual_bounds_include_side_without_shadow() {
 
 #[test]
 fn side_entrypoint_keeps_static_thickness_fast_paths_and_existing_bindings() {
-    let shader = include_str!("../puzzle_render.wgsl");
+    let shader = include_str!("../puzzle_render.wesl");
     assert!(shader.contains("return piece_vertex(vi,instance,false,false);"));
     assert!(shader.contains("return piece_vertex(vi,instance,false,true);"));
     assert!(shader.contains("if config.rotation_active!=0u {"));
@@ -114,7 +114,7 @@ fn side_entrypoint_keeps_static_thickness_fast_paths_and_existing_bindings() {
         .next()
         .unwrap();
     assert!(!varying.contains("side"));
-    let pick = include_str!("../pick_visibility.wgsl")
+    let pick = include_str!("../pick_visibility.wesl")
         .split("fn cull_pick")
         .nth(1)
         .unwrap();

@@ -111,8 +111,8 @@ fn extract_cursors(
     {
         return;
     }
-    if next.as_ref().is_some_and(|n| matches!(**n, NextState::Pending(s) | NextState::PendingIfNeq(s) if s != GameSubState::Playing))
-        || app_next.as_ref().is_some_and(|n| matches!(**n, NextState::Pending(s) | NextState::PendingIfNeq(s) if s != AppState::InGame)) {
+    if next.as_ref().is_some_and(|n| matches!(**n, NextState::Pending(s) | NextState::PendingIfDifferent(s) if s != GameSubState::Playing))
+        || app_next.as_ref().is_some_and(|n| matches!(**n, NextState::Pending(s) | NextState::PendingIfDifferent(s) if s != AppState::InGame)) {
         return;
     }
     let (Some(presentation), Some(local)) = (presentation.as_ref(), local.as_ref()) else {
@@ -195,7 +195,9 @@ pub(super) fn install(app: &mut App) {
         .add_systems(ExtractSchedule, extract_cursors)
         .add_systems(
             Render,
-            prepare_cursors.in_set(RenderSystems::PrepareResources),
+            prepare_cursors
+                .in_set(RenderSystems::PrepareResources)
+                .before(RenderSystems::Render),
         )
         .add_systems(
             Core2d,

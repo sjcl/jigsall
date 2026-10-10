@@ -1,4 +1,4 @@
-#define_import_path jigsall::shape
+// Shared piece shape and UV evaluation for rendering and GPU picking.
 
 // Mirror puzzle/src/procedural.rs; changing shape constants changes generator compatibility.
 const TAB_WIDTH_SCALE:f32=0.70;

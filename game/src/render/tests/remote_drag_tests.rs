@@ -5,11 +5,11 @@ use jigsall_core::PieceBitSet;
 #[test]
 fn remote_presentation_shader_paths_share_the_position_function() {
     for source in [
-        include_str!("../puzzle_render.wgsl"),
-        include_str!("../visibility.wgsl"),
-        include_str!("../pick_visibility.wgsl"),
+        include_str!("../puzzle_render.wesl"),
+        include_str!("../visibility.wesl"),
+        include_str!("../pick_visibility.wesl"),
     ] {
-        assert!(source.contains("#import jigsall::presentation::{presentation_pose"));
+        assert!(source.contains("import jigsall_game::render::presentation::{presentation_pose"));
         assert_eq!(
             source.matches("presentation_pose(state.position,").count(),
             1

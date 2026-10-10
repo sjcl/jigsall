@@ -117,25 +117,25 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
         return;
     }
     let mut shaders = app.world_mut().resource_mut::<Assets<Shader>>();
-    let shape = shaders.add(Shader::from_wgsl(
-        include_str!("puzzle_shape.wgsl"),
-        "puzzle_shape.wgsl",
+    let shape = shaders.add(Shader::from_wesl(
+        include_str!("puzzle_shape.wesl"),
+        "embedded://jigsall_game/render/puzzle_shape.wesl",
     ));
-    let presentation = shaders.add(Shader::from_wgsl(
-        include_str!("presentation.wgsl"),
-        "presentation.wgsl",
+    let presentation = shaders.add(Shader::from_wesl(
+        include_str!("presentation.wesl"),
+        "embedded://jigsall_game/render/presentation.wesl",
     ));
-    let draw = shaders.add(Shader::from_wgsl(
-        include_str!("puzzle_render.wgsl"),
-        "puzzle_render.wgsl",
+    let draw = shaders.add(Shader::from_wesl(
+        include_str!("puzzle_render.wesl"),
+        "embedded://jigsall_game/render/puzzle_render.wesl",
     ));
-    let visibility = shaders.add(Shader::from_wgsl(
-        include_str!("visibility.wgsl"),
-        "visibility.wgsl",
+    let visibility = shaders.add(Shader::from_wesl(
+        include_str!("visibility.wesl"),
+        "embedded://jigsall_game/render/visibility.wesl",
     ));
-    let pick_visibility = shaders.add(Shader::from_wgsl(
-        include_str!("pick_visibility.wgsl"),
-        "pick_visibility.wgsl",
+    let pick_visibility = shaders.add(Shader::from_wesl(
+        include_str!("pick_visibility.wesl"),
+        "embedded://jigsall_game/render/pick_visibility.wesl",
     ));
     let radix_sort = shaders.add(Shader::from_wgsl(
         include_str!("radix_sort.wgsl"),
@@ -161,7 +161,9 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
         .add_systems(ExtractSchedule, extract_puzzle)
         .add_systems(
             Render,
-            prepare_buffers.in_set(RenderSystems::PrepareResources),
+            prepare_buffers
+                .in_set(RenderSystems::PrepareResources)
+                .before(RenderSystems::Render),
         )
         .add_systems(
             Core2d,
@@ -169,7 +171,13 @@ pub(crate) fn install(app: &mut App, tx: Sender<RawResult>) {
                 .after(main_transparent_pass_2d)
                 .in_set(Core2dSystems::MainPass),
         )
-        .add_systems(Render, map_results.in_set(RenderSystems::Cleanup));
+        .add_systems(
+            Render,
+            // Readback mapping must start after the frame has been submitted.
+            map_results
+                .in_set(RenderSystems::Cleanup)
+                .after(RenderSystems::Render),
+        );
 }
 
 // Physical pixels in the main camera viewport, also retained for cropped picks.
@@ -2200,9 +2208,15 @@ fn map_results(mut gpu: ResMut<GpuRenderer>) {
             .map_async(MapMode::Read, move |status| {
                 let (bytes, error) = match status {
                     Ok(()) => {
-                        let bytes = buffer.slice(0..map.size).get_mapped_range().to_vec();
+                        let result = buffer
+                            .slice(0..map.size)
+                            .get_mapped_range()
+                            .map(|view| view.to_vec());
                         buffer.unmap();
-                        (bytes, None)
+                        match result {
+                            Ok(bytes) => (bytes, None),
+                            Err(e) => (vec![], Some(e.to_string())),
+                        }
                     }
                     Err(e) => (vec![], Some(e.to_string())),
                 };

@@ -1,5 +1,5 @@
-#import jigsall::presentation::{presentation_pose, presentation_position, presentation_rotate, presentation_splat_size, decode_rotation, rotate_quarter, quarter_splat_size, RotationAnimation}
-#import jigsall::shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv}
+import jigsall_game::render::presentation::{presentation_pose, presentation_position, presentation_rotate, presentation_splat_size, decode_rotation, rotate_quarter, quarter_splat_size, RotationAnimation};
+import jigsall_game::render::puzzle_shape::{piece_profiles, piece_signed_distance, piece_edge_distances, max_edge_distance, inside_piece, piece_uv};
 struct PuzzleUniform {
     clip_from_world:mat4x4<f32>,seed:vec2<u32>,grid:vec2<u32>,image_size:vec2<f32>,size:vec2<f32>,
     view_min:vec2<f32>,view_max:vec2<f32>,count:u32,capacity:u32,opaque:u32,reserved:u32,

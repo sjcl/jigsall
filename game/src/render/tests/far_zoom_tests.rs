@@ -543,7 +543,7 @@ fn gpu_far_zoom_placed_depth_is_independent_of_visible_order() {
     fn extract_order(mut frame: ResMut<ExtractedPuzzle>, order: Extract<Res<ForcedOrder>>) {
         frame.config.reserved = order.0;
     }
-    let original = include_str!("../visibility.wgsl");
+    let original = include_str!("../visibility.wesl");
     let append = "let dst=atomicAdd(&args.instance_count,1u);visible[dst]=id;";
     assert!(original.contains(append));
     let forced = original.replace(
@@ -557,7 +557,10 @@ fn gpu_far_zoom_placed_depth_is_independent_of_visible_order() {
     let shader = app
         .world_mut()
         .resource_mut::<Assets<Shader>>()
-        .add(Shader::from_wgsl(forced, "placed_test_visibility.wgsl"));
+        .add(Shader::from_wesl(
+            forced,
+            "embedded://jigsall_game/render/placed_test_visibility.wesl",
+        ));
     app.insert_resource(ForcedOrder::default());
     app.sub_app_mut(RenderApp)
         .world_mut()

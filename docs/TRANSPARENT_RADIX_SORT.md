@@ -12,7 +12,7 @@
 
 atomic appendだけでは同じZの入力ID順が不定になります。透明経路ではcull workgroup内でID順に圧縮し、workgroup countsのexclusive scanと再圧縮で全可視IDをID順に並べます。radixのscatterはbucket membership bitsetの先行lane数から局所順位を求め、group offsetsとbucket offsetsを加えます。3 pass全てが安定なので同じZは旧経路と同じID昇順になります。subgroup機能や浮動小数点キーに依存しません。
 
-主な実装は`game/src/render/visibility.wgsl`、`radix_sort.wgsl`、`mod.rs`です。3 passのping-pongをscratch → visible → scratch → visibleとし、main drawとpickingが使うvisible bufferへ結果を戻します。描画・選択のshape、alpha discard、depth設定は従来と同じです。不透明経路はatomic appendを使い、radix scratchを確保しません。透明から不透明へ切り替えた場合のscratchはセッション終了まで保持します。
+主な実装は`game/src/render/visibility.wesl`、`radix_sort.wgsl`、`mod.rs`です。3 passのping-pongをscratch → visible → scratch → visibleとし、main drawとpickingが使うvisible bufferへ結果を戻します。描画・選択のshape、alpha discard、depth設定は従来と同じです。不透明経路はatomic appendを使い、radix scratchを確保しません。透明から不透明へ切り替えた場合のscratchはセッション終了まで保持します。
 
 ## 計算量とメモリ
 

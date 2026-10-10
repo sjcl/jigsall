@@ -104,9 +104,9 @@ pub(super) fn local_cursor(world: &mut World) -> Option<Vec2> {
         return None;
     }
     if world.get_resource::<NextState<GameSubState>>().is_some_and(|next| {
-        matches!(next, NextState::Pending(state) | NextState::PendingIfNeq(state) if *state != GameSubState::Playing)
+        matches!(next, NextState::Pending(state) | NextState::PendingIfDifferent(state) if *state != GameSubState::Playing)
     }) || world.get_resource::<NextState<AppState>>().is_some_and(|next| {
-        matches!(next, NextState::Pending(state) | NextState::PendingIfNeq(state) if *state != AppState::InGame)
+        matches!(next, NextState::Pending(state) | NextState::PendingIfDifferent(state) if *state != AppState::InGame)
     }) { return None; }
     if world
         .query_filtered::<&Window, With<bevy::window::PrimaryWindow>>()
