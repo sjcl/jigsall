@@ -1230,15 +1230,13 @@ fn gpu_transparency_and_visibility() {
     // Conservative visibility includes a tab extending into the viewport.
     let seed = (0..100)
         .find(|&seed| {
-            raw_profile(
-                seed,
-                EdgeId {
-                    orientation: EdgeOrientation::Vertical,
-                    x: 1,
-                    y: 0,
-                },
-            )[0] & 8
-                != 0
+            // Polarity alone does not guarantee coverage at this pixel: the
+            // tab's center, width and depth also vary with the seed.
+            piece_signed_distance(
+                Vec2::new(-39.5, -0.5),
+                Vec2::splat(64.0),
+                piece_profiles(seed, UVec2::new(2, 1), UVec2::new(1, 0)),
+            ) < -0.5
         })
         .unwrap();
     {

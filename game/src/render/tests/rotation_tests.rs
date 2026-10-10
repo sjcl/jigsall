@@ -389,7 +389,32 @@ fn gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden() {
         })
         .collect();
     for rotation in 0..4 {
+        let selected = std::mem::take(
+            &mut app
+                .world_mut()
+                .resource_mut::<PieceDataStore>()
+                .selected_pieces,
+        );
+        let normal = rendered_pixels(&mut app, target.clone());
+        app.world_mut()
+            .resource_mut::<PieceDataStore>()
+            .selected_pieces = selected;
         let pixels = rendered_pixels(&mut app, target.clone());
+        for (i, (highlighted, normal)) in pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(normal.as_chunks::<4>().0)
+            .enumerate()
+        {
+            assert_eq!(
+                highlighted[0] > 0,
+                normal[0] > 0,
+                "highlight coverage r={rotation}, pixel={},{}",
+                i % 256,
+                i / 256
+            );
+        }
         let store = app.world().resource::<PieceDataStore>();
         let mut seams = 0;
         let mut outer = 0;
@@ -423,6 +448,12 @@ fn gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden() {
                     .fold(-1e20_f32, f32::max);
                 let pixel = (y * 256 + x) * 4;
                 let full = edges.into_iter().fold(-1e20_f32, f32::max);
+                // As in the non-rotating outline fixture, compare coverage
+                // exactly above, but avoid assigning CPU ownership at a
+                // subpixel contour when checking the highlight color.
+                if full.abs() <= RASTER_BOUNDARY_TOLERANCE {
+                    continue;
+                }
                 let aa = super::outline_tests::sdf_aa_bound(x, y, |px, py| {
                     let world = translation + Vec2::new(px as f32 - 127.5, 127.5 - py as f32);
                     let local = rotate_quarter(
@@ -433,7 +464,11 @@ fn gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden() {
                 });
                 let width = 64.0 * 0.16 * 0.5;
                 if boundary.abs() > width + aa + 0.01 {
-                    assert_eq!(&pixels[pixel..pixel + 4], &[255, 255, 255, 255]);
+                    assert_eq!(
+                        &pixels[pixel..pixel + 4],
+                        &[255, 255, 255, 255],
+                        "r={rotation}, pixel={x},{y}, id={id}, local={local:?}, full={full}, boundary={boundary}, aa={aa}"
+                    );
                     seams += usize::from(full.abs() < 1.5);
                 } else if boundary.abs() < width - aa - 0.01 {
                     assert!(pixels[pixel + 2] < 40);

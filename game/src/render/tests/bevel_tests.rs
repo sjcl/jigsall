@@ -126,9 +126,7 @@ fn bevel_is_fragment_only_without_new_bindings_or_elevation_work() {
         .next()
         .unwrap();
     for derivative in ["dpdx(bevel_boundary)", "dpdx(in.local)", "dpdy(in.local)"] {
-        assert!(
-            fragment.find(derivative).unwrap() < fragment.find("sample_visible(in,d)").unwrap()
-        );
+        assert!(fragment.find(derivative).unwrap() < fragment.find("sample_visible(").unwrap());
     }
     assert!(
         fragment.find("bevel_color(").unwrap()

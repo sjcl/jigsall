@@ -150,7 +150,20 @@ fn piece_vertex(vi:u32,instance:u32,shadow:bool,side:bool)->VertexOutput {
 @vertex fn side_vertex(@builtin(vertex_index) vi:u32,@builtin(instance_index) instance:u32)->VertexOutput {
     return piece_vertex(vi,instance,false,true);
 }
-fn distance(in:VertexOutput)->f32 {return piece_signed_distance(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left));}
+fn coverage_distance(edges:vec4<f32>,flags:u32)->f32 {
+    // Rasterized quad vertices have subpixel precision. Complementary curves
+    // can consequently overlap at a join even though their analytic SDFs are
+    // exact complements. Give connected top/right edges the closed half and
+    // bottom/left edges the open half of a 1/256-pixel uncertainty band. The
+    // size term covers floating-point evaluation at very close zoom. External
+    // edges retain their original SDF; all color and pick paths share this rule.
+    let error=max(fwidth(edges)*(1.0/256.0),vec4(max(config.size.x,config.size.y)*1e-6));
+    let connected=(vec4(flags)&vec4(32u,64u,128u,256u))!=vec4(0u);
+    return max_edge_distance(edges+select(vec4(0.0),error*vec4(-1.0,-1.0,1.0,1.0),connected));
+}
+fn distance(in:VertexOutput)->f32 {
+    return coverage_distance(piece_edge_distances(in.local,config.size,array<vec2<u32>,4>(in.top,in.right,in.bottom,in.left)),in.flags);
+}
 fn outer_boundary_distance(edges:vec4<f32>,flags:u32)->f32 {
     // Bits 5..8: canonical top/right/bottom/left (resources/pieces.rs). An enclosed
     // piece has no outline candidates. Coverage/picking still use every edge.
@@ -227,7 +240,7 @@ struct ShadowOutput { @location(0) color:vec4<f32>, @builtin(frag_depth) depth:f
         bevel_gradient=vec2(dpdx(bevel_boundary),dpdy(bevel_boundary));
         local_dx=dpdx(in.local);local_dy=dpdy(in.local);
     }
-    var color=sample_visible(in,d);
+    var color=sample_visible(in,coverage_distance(edges,in.flags));
     if config.bevel_enabled!=0u {
         if (in.flags&480u)!=480u {
             let gradient_len=max(length(bevel_gradient),1e-6);

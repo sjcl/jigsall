@@ -132,6 +132,7 @@ depth test / write、translucent side は既存の sorted IDs と alpha blendで
 top と同じ source alpha の重なりとして合成し、neutral color に近づきます。
 side / top の開始時に depth を別々に clear するため、top の depth semantics は変わりません。
 結合部は元位置の top union で覆い、side 専用の connectivity scan / cache は追加しません。
+連結辺のsubpixel誤差による二重blendは、top / pickingと共有する[coverage補正](GPU_PICKING.md#coverageと候補)で抑えます。独立したcomponent同士の半透明の重なりは従来どおり合成します。
 
 初回 epoch は要求された全 optional pipeline を待ってから `RenderReady` を進めます。表示済み epoch
 では準備中の feature だけを skip し、shadow / top / picking を継続します。失敗は renderer error として

@@ -137,9 +137,23 @@ WESL の import、状態遷移の名前変更、ホイール単位変換の reso
 - default / all-features の全 target Clippy（`-D warnings`）、整形、all-features の release アプリ・テストのビルド、workspace の通常テスト・doctestが成功しました。
 - GNS localhost は直列実行で31件成功。実 rendezvous server を必要とする2件とGPU image joinの1件は別枠です。GPU image joinは次のGPUテスト実行で成功しました。
 - release の GPU テストは benchmark を除いた69件中66件成功。render-only画像のupload/readbackとnative multiplayer UI probeも別途成功しました。
-- `gpu_transparency_and_visibility`、`gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden`、`gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation` の3件は失敗しています。既存のBevy 0.19.1のdebugテスト実行ファイルでも同じassertionと結果を再現しました（その実行ファイルのbuild commitは未確認）。今回の移行では判定条件や許容誤差を変更していません。
+- `gpu_transparency_and_visibility`、`gpu_rotated_connected_outline_keeps_canonical_internal_edges_hidden`、`gpu_side_translucent_connected_union_has_no_extra_dark_band_during_rotation` の3件は、この時点では失敗しました。既存のBevy 0.19.1のdebugテスト実行ファイルでも同じassertionと結果を再現しました（その実行ファイルのbuild commitは未確認）。移行コミットでは判定条件や許容誤差を変更していません。続く調査・修正は次節に記録しています。
 
 この検証は上記Windowsホストの結果です。Linux / macOSのruntime互換性や性能の保証ではありません。
+
+### GPU境界の回帰修正
+
+2026-10-11、同じWindows / RTX 5090 / Vulkan環境で上記3件を調査しました。
+
+- viewport端の選択fixtureはタブのpolarityだけでseedを選んでいましたが、対象画素のCPU SDFは`+0.7147579`で形状の外側でした。中心・幅・深さを含むCPU SDFで、画素がタブ内部にあるseedを選ぶよう修正しています。
+- 回転したoutline fixtureはCPU SDFが`-0.0012836456`の画素に白を要求していました。既存の非回転fixtureと同じ`1/256` world unitの境界許容範囲ではCPUのmember判定を色の正解に使わず、通常表示と選択表示の全画素coverageを別途一致検証します。外周の色と内部辺の非表示の検証は維持しています。
+- 半透明の結合部は、解析SDFが相補でもquadのrasterization / 補間誤差により側面が二重blendされていました。[共通coverage補正](GPU_PICKING.md#coverageと候補)で連結辺の画素を片側へ割り当てています。単一矩形との全画素の明るさ比較は元の許容誤差を維持しています。
+
+修正後のrelease GPUテストはbenchmarkを除いた69件すべて成功しました。半透明fixtureは画素中心 / fractional pan、2x1 / 2x2結合、回転の開始・途中・終了、shadowの有無を検証し、連結辺付近でpoint / rectangleが同じ1枚を返すことも確認しています。最新masterの通信変更と統合した状態でも、同じGPU 69件、GNS localhost 31件、workspaceの通常テスト、all-featuresのreleaseアプリ・テストビルド、default / all-featuresの全target Clippy（`-D warnings`）、整形が成功しています。bevelのshaderソース検査は旧SDF引数の文字列への依存を外し、微分計算がdiscardより前であることの確認を維持しています。
+
+```sh
+cargo test --release --locked -p jigsall-game --all-features gpu_ -- --ignored --skip benchmark --nocapture --test-threads=1
+```
 
 ### GitHub Actions のビルドキャッシュ
 

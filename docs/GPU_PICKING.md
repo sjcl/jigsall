@@ -8,6 +8,8 @@
 
 selectable bitsetはvisibility computeでflagsから生成し、placed・held・disabledを両選択から除きます。CPUで毎frame全件のbitsetを作りません。pointは最大Zの選択可能なピース、rectangleは範囲にfragmentを持つ全選択可能ピースを返します。後者は奥に隠れたピースも含む仕様です。
 
+連結辺には`puzzle_render.wesl::coverage_distance`で画素の担当を割り当てます。解析SDFが相補でも、quadのsubpixel rasterizationと補間により両memberが同じ画素を覆うことがあり、半透明では余分な暗い線になります。既存のconnected flagsを使い、top / rightは境界を含み、bottom / leftは境界を除く側へ補正します。補正幅は各辺の`fwidth / 256`とpiece長辺の`1e-6`倍の大きい方です。main / point / rectangle / shadow / sideが同じ処理を使い、外周のSDF、UV、画像alpha、far splat、seedによる形状生成は変更しません。追加のCPU走査・buffer・binding・drawはありません。
+
 main visibleを候補源とし、選択時だけ追加computeでpoint画素または矩形のworld AABBへ絞り込みます。両方ともtabを含む保守的なquad boundsです。全100万ピースがvisibleでもクリック描画へ直接100万instanceを送りません。組み立てた100万ピースで候補16以下をassertしています。全件を同じ位置へ重ねる場合、この上限は成り立ちません。computeはGPUでO(N)、CPUは全件候補検索をしません。
 
 ## Far zoomのcoverage
