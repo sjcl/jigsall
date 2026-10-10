@@ -52,6 +52,7 @@ url = "2"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 webpki-roots = "1"
 zeroize = "1.9"
+unicode-normalization = "0.1.25"
 instant = "0.1"
 winresource = "0.1.31"
 winit = { version = "0.30.13", default-features = false }

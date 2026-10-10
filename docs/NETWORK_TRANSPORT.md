@@ -197,11 +197,20 @@ UDP TURN fallback and live credentials are supplied by Rendezvous; TCP/TLS TURN 
 
 ## Mandatory session password authentication
 
-Direct-IP sessions require a memory-only UTF-8 password of 8..=128 encoded bytes.
+Sessions require a memory-only UTF-8 password of 8..=128 Unicode scalar values
+after NFC normalization (at most 512 normalized UTF-8 bytes). `SessionPassword::validate`
+is shared by Host/Join form validity, inline errors and secret construction.
+`SessionPassword::new` normalizes before PAKE scalar derivation and zeroizes both
+the supplied and normalized buffers on drop. Canonically equivalent composed and
+decomposed inputs authenticate identically; whitespace, case and compatibility
+differences such as character width remain significant. The masked field keeps
+the complete draft instead of truncating raw characters before normalization.
+Older builds hashed unnormalized UTF-8; both peers must use the NFC policy when
+using decomposed passwords. The wire payload layout is unchanged.
 `SessionPassword` owns a `Zeroizing<String>`, redacts Debug, and provides no
 serialization, Display or persistent-settings path. Neither plaintext passwords
 nor password hashes/scalars are sent on the wire or saved. Password provisioning
-is out of band; Host/Join/password-entry UI is still outside this change.
+is out of band through the Host/Join UI described in [Direct-IP runtime](DIRECT_IP_RUNTIME.md).
 
 GNS transport security, SPAKE2 password authentication, and PAKE-derived application
 AEAD are separate layers. `HostBootstrap` and `ClientBootstrap` require
@@ -950,7 +959,8 @@ A separate actual-socket wrong-password
 test verifies rejection, close, no channel installation, no registration and no
 gameplay mutation. An actual-socket ciphertext-tampered Grab test verifies
 ProtocolViolation close, destroyed keys and unchanged host pieces/cursor.
-Socket-free bootstrap tests cover byte-length password validation/redaction,
+Socket-free bootstrap tests cover normalized character-length password validation/redaction,
+canonical-equivalence authentication,
 both confirmations, altered metadata/identity, nonce/session/image replay,
 malformed points/control, pre-decode size limits, timeouts, pending capacity,
 independent global start/failure buckets, pre-Ready routing/broadcast exclusion,

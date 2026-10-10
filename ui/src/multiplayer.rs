@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 use jigsall_game::{
     network::{
         address::{AddressResolution, ResolutionError, ServerAddress},
-        auth::{SessionPassword, MAX_PASSWORD_BYTES, MIN_PASSWORD_BYTES},
+        auth::SessionPassword,
         runtime::{
             HostOptions, HostStartRequest, JoinOptions, NetworkFailureKind, NetworkStatus,
             RendezvousControlStatus, RuntimeConnectionMethod, RuntimePhase, RuntimeRole,
@@ -131,7 +131,7 @@ impl ConnectionDraft {
         (match self.method {
             RuntimeConnectionMethod::DirectIp => valid_address(&self.address, host),
             RuntimeConnectionMethod::Internet => host || valid_room_code(&self.room_code),
-        }) && (MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&self.password.len())
+        }) && SessionPassword::validate(&self.password).is_ok()
     }
     fn take_password(&mut self) -> Result<SessionPassword, UiError> {
         SessionPassword::new(std::mem::take(&mut *self.password)).map_err(|_| UiError::Password)
@@ -919,6 +919,8 @@ pub(crate) fn paint_connection_fields(
         }
     }
     ui.label(i18n.text("multiplayer-password"));
+    // Keep the full draft, including decomposed input and IME composition. A raw
+    // char_limit would truncate passwords before the shared NFC length check.
     let mut password = egui::TextEdit::singleline(&mut *draft.password)
         .id(egui::Id::new(if host {
             "multiplayer-host-password"
@@ -926,7 +928,6 @@ pub(crate) fn paint_connection_fields(
             "multiplayer-join-password"
         }))
         .password(true)
-        .char_limit(MAX_PASSWORD_BYTES)
         .desired_width(f32::INFINITY)
         .show(ui);
     // egui records plain text in its undo state even for masked fields. Discard
@@ -972,9 +973,7 @@ fn paint_invalid_fields(
     if let Some(key) = target_error {
         ui.colored_label(theme::DANGER, i18n.text(key));
     }
-    if !draft.password.is_empty()
-        && !(MIN_PASSWORD_BYTES..=MAX_PASSWORD_BYTES).contains(&draft.password.len())
-    {
+    if !draft.password.is_empty() && SessionPassword::validate(&draft.password).is_err() {
         ui.colored_label(theme::DANGER, i18n.text("multiplayer-error-password"));
     }
 }

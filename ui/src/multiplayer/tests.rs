@@ -1042,6 +1042,84 @@ fn leaving_connection_forms_wipes_both_password_drafts() {
 }
 
 #[test]
+fn password_policy_matches_form_validity_and_errors_in_both_languages() {
+    let mut i18n = crate::localization::tests::english();
+    for locale in [Locale::EN_US, Locale::JA] {
+        i18n.set_preference(LanguagePreference::Locale(locale));
+        for host in [true, false] {
+            for (value, valid) in [
+                ("あ".repeat(3), false),
+                ("か\u{3099}".repeat(7), false),
+                ("か\u{3099}".repeat(8), true),
+                ("あ".repeat(44), true),
+                ("🧩".repeat(128), true),
+                ("か\u{3099}".repeat(128), true),
+                ("か\u{3099}".repeat(129), false),
+                ("x".repeat(129), false),
+            ] {
+                let mut draft = ConnectionDraft::new("127.0.0.1:43576");
+                *draft.password = value;
+                assert_eq!(draft.valid(host), valid);
+                let ctx = egui::Context::default();
+                let output = ctx.run_ui(default(), |ui| {
+                    paint_invalid_fields(ui, &draft, host, &i18n);
+                });
+                assert_eq!(
+                    labels(&output).contains(&i18n.text("multiplayer-error-password").as_str()),
+                    !valid
+                );
+                output.drop_without_applying_deltas();
+                assert_eq!(draft.take_password().is_ok(), valid);
+                assert!(draft.password.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn password_field_keeps_full_unicode_input_and_validates_after_normalization() {
+    let i18n = crate::localization::tests::english();
+    for host in [true, false] {
+        for (value, valid) in [
+            ("あ".repeat(3), false),
+            ("あ".repeat(44), true),
+            ("あ".repeat(128), true),
+            ("か\u{3099}".repeat(128), true),
+            ("あ".repeat(129), false),
+        ] {
+            let ctx = egui::Context::default();
+            let mut profile = PlayerSettingsState::load(None);
+            let mut draft = ConnectionDraft::new("127.0.0.1:43576");
+            ctx.run_ui(default(), |ui| {
+                paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n);
+            })
+            .drop_without_applying_deltas();
+            ctx.memory_mut(|memory| {
+                memory.request_focus(egui::Id::new(if host {
+                    "multiplayer-host-password"
+                } else {
+                    "multiplayer-join-password"
+                }));
+            });
+            let output = ctx.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::Paste(value.clone())],
+                    ..default()
+                },
+                |ui| paint_connection_fields(ui, &mut draft, host, &mut profile, &i18n),
+            );
+            assert_eq!(draft.password.as_str(), value);
+            assert_eq!(draft.valid(host), valid);
+            assert_eq!(
+                labels(&output).contains(&i18n.text("multiplayer-error-password").as_str()),
+                !valid
+            );
+            output.drop_without_applying_deltas();
+        }
+    }
+}
+
+#[test]
 fn password_cannot_be_restored_from_egui_undo_history_after_the_form_closes() {
     let ctx = egui::Context::default();
     let mut profile = PlayerSettingsState::load(None);

@@ -233,23 +233,85 @@ impl Pair {
 }
 
 #[test]
-fn password_validates_utf8_bytes_and_redacts_debug() {
-    for value in ["", "1234567", "ああ"] {
+fn password_validates_nfc_character_count_and_redacts_debug() {
+    for value in ["", "1234567", "あああ", "e\u{301}e\u{301}e\u{301}e\u{301}"] {
         assert_eq!(
             SessionPassword::new(value.to_owned()).unwrap_err(),
             PasswordError::TooShort
         );
     }
-    assert!(SessionPassword::new("あああ".to_owned()).is_ok());
-    assert!(SessionPassword::new("x".repeat(128)).is_ok());
+    for character in [
+        "x",
+        "あ",
+        "🧩",
+        "e\u{301}",
+        "か\u{3099}",
+        "\u{1100}\u{1161}",
+    ] {
+        assert_eq!(
+            SessionPassword::new(character.repeat(7)).unwrap_err(),
+            PasswordError::TooShort
+        );
+        for count in [8, 43, 44, 128] {
+            assert!(SessionPassword::new(character.repeat(count)).is_ok());
+        }
+        assert_eq!(
+            SessionPassword::new(character.repeat(129)).unwrap_err(),
+            PasswordError::TooLong
+        );
+    }
+    // NFC can expand a scalar too: COMBINING GREEK DIALYTIKA TONOS becomes
+    // two combining marks, so four input scalars satisfy the eight-scalar minimum.
+    assert!(SessionPassword::new("\u{344}".repeat(4)).is_ok());
     assert_eq!(
-        SessionPassword::new("x".repeat(129)).unwrap_err(),
+        SessionPassword::new("\u{344}".repeat(65)).unwrap_err(),
         PasswordError::TooLong
     );
     assert_eq!(
         format!("{:?}", password("secret-password")),
         "SessionPassword([REDACTED])"
     );
+}
+
+#[test]
+fn canonically_equivalent_passwords_complete_mutual_authentication() {
+    for (composed, decomposed) in [
+        ("é".repeat(8), "e\u{301}".repeat(8)),
+        ("が".repeat(128), "か\u{3099}".repeat(128)),
+        ("가".repeat(8), "\u{1100}\u{1161}".repeat(8)),
+    ] {
+        for (host_password, client_password) in [(&composed, &decomposed), (&decomposed, &composed)]
+        {
+            let (host, hello) =
+                ServerHandshake::start(&password(host_password), metadata(), A).unwrap();
+            let (client, proof) =
+                ClientHandshake::start(&password(client_password), &hello).unwrap();
+            let (confirmation, host_secret) = host.finish(proof).unwrap();
+            let (player, client_secret) = client
+                .finish(AuthAccepted {
+                    player: A,
+                    confirmation,
+                })
+                .unwrap();
+            assert_eq!(player, A);
+            assert!(host_secret.as_bytes() == client_secret.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn password_normalization_preserves_whitespace_case_and_character_width() {
+    for (host_password, client_password) in [
+        (" password", "password"),
+        ("password ", "password"),
+        ("Password", "password"),
+        ("ｐａｓｓｗｏｒｄ", "password"),
+    ] {
+        let (host, hello) =
+            ServerHandshake::start(&password(host_password), metadata(), A).unwrap();
+        let (_, proof) = ClientHandshake::start(&password(client_password), &hello).unwrap();
+        assert!(host.finish(proof).is_err());
+    }
 }
 #[test]
 fn correct_password_mutual_confirmation_and_explicit_ready_registration() {

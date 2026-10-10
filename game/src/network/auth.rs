@@ -5,12 +5,14 @@ use pakery_core::crypto::{CpaceGroup, Hash};
 use pakery_crypto::{P256Group, Sha512Hash, Spake2P256};
 use pakery_spake2::{PartyA, PartyAState, PartyB, Spake2Output};
 use std::fmt;
+use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroizing;
 
-pub const MIN_PASSWORD_BYTES: usize = 8;
-pub const MAX_PASSWORD_BYTES: usize = 128;
+/// Length limits count Unicode scalar values after NFC normalization.
+pub const MIN_PASSWORD_CHARS: usize = 8;
+pub const MAX_PASSWORD_CHARS: usize = 128;
 
-/// Memory-only UTF-8 secret. Intentionally neither Serialize nor Clone nor Display.
+/// Memory-only NFC UTF-8 secret. Intentionally neither Serialize nor Clone nor Display.
 pub struct SessionPassword(Zeroizing<String>);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasswordError {
@@ -18,14 +20,24 @@ pub enum PasswordError {
     TooLong,
 }
 impl SessionPassword {
+    /// Shared policy for form validation and authentication; does not alter the draft.
+    pub fn validate(value: &str) -> Result<(), PasswordError> {
+        match value.nfc().take(MAX_PASSWORD_CHARS + 1).count() {
+            0..MIN_PASSWORD_CHARS => Err(PasswordError::TooShort),
+            n if n > MAX_PASSWORD_CHARS => Err(PasswordError::TooLong),
+            _ => Ok(()),
+        }
+    }
+
     /// Takes ownership so the input buffer is also zeroized, including invalid input.
     pub fn new(value: String) -> Result<Self, PasswordError> {
         let value = Zeroizing::new(value);
-        match value.len() {
-            0..MIN_PASSWORD_BYTES => Err(PasswordError::TooShort),
-            n if n > MAX_PASSWORD_BYTES => Err(PasswordError::TooLong),
-            _ => Ok(Self(value)),
-        }
+        Self::validate(&value)?;
+        // Every accepted scalar takes at most four UTF-8 bytes. Reserve the full
+        // bound so building the normalized secret never reallocates its buffer.
+        let mut normalized = Zeroizing::new(String::with_capacity(MAX_PASSWORD_CHARS * 4));
+        normalized.extend(value.nfc());
+        Ok(Self(normalized))
     }
 }
 impl fmt::Debug for SessionPassword {
