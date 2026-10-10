@@ -96,7 +96,8 @@ keeps pending-sender rejection as a check of this authenticated-server contract;
 an early Signal never implicitly activates a route.
 
 Joiner: Welcome → Idle → join_room → Joining → RoomJoined. It installs the host
-route from the server's authority/room/host MemberId, then emits HostReady.
+route from the server's authority/room/host MemberId and required host AbuseKey,
+then emits HostReady.
 Neither flow creates ClientBootstrap or starts SPAKE2/Sync/Ready. Membership and
 native Transport::Connected confer no game authentication. Existing password
 bootstrap remains the only secure-channel installer.
@@ -104,10 +105,17 @@ bootstrap remains the only secure-channel installer.
 For every poll, `pop_outbound()` becomes Signal(to_peer_id, Base64 opaque bytes).
 Server Signal.from_peer_id is checked against an active, available binding before
 `SignalingEndpoint::receive` receives the opaque bytes. PeerId remains a routing
-label. `RouteOrigin.account` is a **server-issued anonymous MemberId**, not a
-Steam account, account authentication, or complete Sybil resistance. Future
-account authentication must replace this field through a versioned trusted
-server contract; the server also guards IP/admission/room/rate resources.
+label. `RouteOrigin.account` keeps the server-issued anonymous MemberId for
+routing incarnation, queue fairness and stale-envelope rejection. A separate,
+required server-issued AbuseKey identifies authentication/connection admission.
+The server derives it as HMAC-SHA256(domain || RoomId || verified source prefix),
+truncated to 128 bits, with an OS-random, memory-only startup secret. Rejoining a
+room or changing IPv6 addresses inside its /64 preserves this key; another room
+or prefix has another key. IPv4-mapped addresses share the IPv4 /32 key. The host
+receives no raw IP/prefix, and the server receives no game password/PAKE secret.
+Missing server-issued key fields fail closed. This unreleased v1 schema requires
+updating both repositories and their golden fixtures together. NAT/shared-prefix
+users share abuse accounting, but their MemberId signaling queues remain separate.
 
 PeerUnavailable disables future control routing; RoomClosed/Disconnected disables
 all further adapter routing. Active bindings remain installed, so GNS maintain

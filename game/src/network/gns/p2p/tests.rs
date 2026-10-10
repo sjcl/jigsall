@@ -984,3 +984,28 @@ fn gns_p2p_verified_route_pending_limits_cooldown_and_revocation() {
         Err(TransportError::ProtocolViolation)
     );
 }
+
+#[test]
+fn gns_p2p_deferred_admission_retains_route_ownership_and_reclaims_revoked_signals() {
+    let _guard = BACKEND_TEST_LOCK.lock().unwrap();
+    let mut backend = GnsP2p::new_routed(0, IceConfig::default()).unwrap();
+    let now = Instant::now();
+    backend.starts = Bucket::new(0, Duration::from_secs(1), now);
+    let peer = PeerId::from_bytes([45; 16]);
+    let origin =
+        RouteOrigin::from_authenticated_route([1; 16], [2; 16], [3; 16]).with_abuse_key([7; 16]);
+    let mailbox = backend.signaling();
+    mailbox.authorize_peer(peer, origin).unwrap();
+    mailbox.receive(peer, &[1, 2, 3]).unwrap();
+    assert!(mailbox.has_pending_inbound(peer));
+    backend.poll(&mut Vec::new()).unwrap();
+    assert!(!mailbox.has_pending_inbound(peer));
+    assert!(backend.has_peer(peer));
+    assert!(!backend.has_native_peer(peer));
+    assert_eq!(backend.waiting_bytes, 3);
+    mailbox.revoke_peer(peer);
+    backend.poll(&mut Vec::new()).unwrap();
+    assert!(!backend.has_peer(peer));
+    assert_eq!(backend.waiting_bytes, 0);
+    assert_eq!(backend.waiting_signals.len(), 0);
+}

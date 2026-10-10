@@ -33,6 +33,7 @@ fn authorize() -> ServerMessage {
         join_id: JoinId(id(4)),
         peer_id: protocol::PeerId(id(5)),
         member_id: MemberId(id(6)),
+        abuse_key: AbuseKey(id(6)),
     }
 }
 async fn emit(socket: &mut Socket, message: ServerMessage) {
@@ -92,8 +93,14 @@ async fn retained_peer_and_full_route_table_reject_without_protocol_failure() {
         };
         a.phase = Phase::Host(room);
         for n in 10..if full { 74 } else { 11 } {
-            a.bind(PeerId::from_bytes(id(n)), MemberId(id(n + 80)), room, None)
-                .unwrap();
+            a.bind(
+                PeerId::from_bytes(id(n)),
+                MemberId(id(n + 80)),
+                room,
+                None,
+                AbuseKey(id(n + 80)),
+            )
+            .unwrap();
             a.routes
                 .get_mut(&PeerId::from_bytes(id(n)))
                 .unwrap()
@@ -105,7 +112,8 @@ async fn retained_peer_and_full_route_table_reject_without_protocol_failure() {
                 ServerMessage::AuthorizePeer {
                     join_id: JoinId(id(160)),
                     peer_id: protocol::PeerId(id(target)),
-                    member_id: MemberId(id(180))
+                    member_id: MemberId(id(180)),
+                    abuse_key: AbuseKey(id(180)),
                 },
                 &mut Vec::new()
             )
@@ -131,7 +139,8 @@ async fn lifecycle_backpressure_retains_revoke_and_discards_inflight_signal() {
     };
     a.phase = Phase::Host(room);
     let peer = PeerId::from_bytes(id(5));
-    a.bind(peer, MemberId(id(6)), room, None).unwrap();
+    a.bind(peer, MemberId(id(6)), room, None, AbuseKey(id(6)))
+        .unwrap();
     a.confirm_peer(peer);
     a.flush_lifecycle().unwrap();
     assert!(matches!(
@@ -408,6 +417,7 @@ async fn join_host_ready_requires_route_binding_and_does_not_bootstrap() {
                 self_member_id: MemberId(id(3)),
                 host_peer_id: protocol::PeerId(id(5)),
                 host_member_id: MemberId(id(6)),
+                host_abuse_key: AbuseKey(id(6)),
             },
         )
         .await;
@@ -577,6 +587,7 @@ async fn simultaneous_auth_expiry_preserves_control_and_accepts_next_join() {
                 join_id: JoinId(id(160)),
                 peer_id: protocol::PeerId(id(80)),
                 member_id: MemberId(id(180)),
+                abuse_key: AbuseKey(id(180)),
             },
         )
         .await;
@@ -605,8 +616,14 @@ async fn simultaneous_auth_expiry_preserves_control_and_accepts_next_join() {
     };
     a.phase = Phase::Host(room);
     for n in 10..74 {
-        a.bind(PeerId::from_bytes(id(n)), MemberId(id(n + 80)), room, None)
-            .unwrap();
+        a.bind(
+            PeerId::from_bytes(id(n)),
+            MemberId(id(n + 80)),
+            room,
+            None,
+            AbuseKey(id(n + 80)),
+        )
+        .unwrap();
     }
     timeout(Duration::from_secs(3), async {
         while a.io.queued_events() < CHANNEL_CAPACITY {
@@ -730,8 +747,14 @@ async fn per_route_mailbox_backpressure_preserves_other_peers_and_control() {
         room: RoomId(id(2)),
         member: MemberId(id(3)),
     };
-    a.bind(PeerId::from_bytes(id(7)), MemberId(id(8)), room, None)
-        .unwrap();
+    a.bind(
+        PeerId::from_bytes(id(7)),
+        MemberId(id(8)),
+        room,
+        None,
+        AbuseKey(id(8)),
+    )
+    .unwrap();
     let mut events = Vec::new();
     for _ in 0..super::super::signaling::MAX_SIGNALS_PER_ROUTE + 1 {
         a.handle(
@@ -784,10 +807,17 @@ async fn adapter_drop_cleans_pending_authorization_and_preserves_active_binding(
         MemberId(id(6)),
         room,
         Some(JoinId(id(4))),
+        AbuseKey(id(6)),
     )
     .unwrap();
-    a.bind(PeerId::from_bytes(id(7)), MemberId(id(8)), room, None)
-        .unwrap();
+    a.bind(
+        PeerId::from_bytes(id(7)),
+        MemberId(id(8)),
+        room,
+        None,
+        AbuseKey(id(8)),
+    )
+    .unwrap();
     let mailbox = a.signaling.clone();
     drop(a);
     assert!(mailbox.origin(PeerId::from_bytes(id(5))).is_err());
@@ -805,6 +835,7 @@ async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
                     join_id: JoinId(id(n + 100)),
                     peer_id: protocol::PeerId(id(n)),
                     member_id: MemberId(id(n + 70)),
+                    abuse_key: AbuseKey(id(n + 70)),
                 },
             )
             .await;
@@ -844,8 +875,14 @@ async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
     };
     a.phase = Phase::Host(room);
     for n in 10..70 {
-        a.bind(PeerId::from_bytes(id(n)), MemberId(id(n)), room, None)
-            .unwrap();
+        a.bind(
+            PeerId::from_bytes(id(n)),
+            MemberId(id(n)),
+            room,
+            None,
+            AbuseKey(id(n)),
+        )
+        .unwrap();
     }
     timeout(Duration::from_secs(3), async {
         while a.io.queued_events() != 18 {
@@ -860,8 +897,14 @@ async fn owner_reclaims_join_churn_within_a_nearly_full_control_batch() {
         .iter()
         .any(|e| matches!(e, RendezvousEvent::Disconnected(_))));
     assert_eq!(a.routes.len(), 60);
-    a.bind(PeerId::from_bytes(id(90)), MemberId(id(160)), room, None)
-        .unwrap();
+    a.bind(
+        PeerId::from_bytes(id(90)),
+        MemberId(id(160)),
+        room,
+        None,
+        AbuseKey(id(160)),
+    )
+    .unwrap();
     assert!(a.signaling.origin(PeerId::from_bytes(id(90))).is_ok());
     timeout(Duration::from_secs(3), acks_rx)
         .await
@@ -885,8 +928,14 @@ async fn owner_reconciliation_preserves_native_and_queued_inbound_until_they_are
     };
     a.phase = Phase::Host(room);
     for n in 5..8 {
-        a.bind(PeerId::from_bytes(id(n)), MemberId(id(n + 10)), room, None)
-            .unwrap();
+        a.bind(
+            PeerId::from_bytes(id(n)),
+            MemberId(id(n + 10)),
+            room,
+            None,
+            AbuseKey(id(n + 10)),
+        )
+        .unwrap();
     }
     let queued = PeerId::from_bytes(id(6));
     let native = PeerId::from_bytes(id(7));
@@ -915,6 +964,7 @@ async fn host_ready_route_survives_control_loss_in_its_delivery_batch() {
                 self_member_id: MemberId(id(3)),
                 host_peer_id: protocol::PeerId(id(5)),
                 host_member_id: MemberId(id(6)),
+                host_abuse_key: AbuseKey(id(6)),
             },
         )
         .await;

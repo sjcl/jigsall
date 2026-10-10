@@ -1,13 +1,13 @@
 //! Caller-owned, bounded, fair opaque signaling mailboxes. Trusted route binding
 //! belongs to the local rendezvous adapter, never to untrusted signaling bytes.
 use crate::network::{
-    lifecycle::{Bucket, MAX_CONNECTIONS, MAX_ORIGINS, ORIGIN_TTL},
+    lifecycle::{Bucket, HistoryCache, MAX_CONNECTIONS, MAX_ORIGINS, ORIGIN_TTL},
     transport::{Origin, RouteOrigin, TransportError},
 };
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 pub const MAX_SIGNAL_BYTES: usize = 16 * 1024;
@@ -42,32 +42,54 @@ pub(super) struct InboundSignal {
     pub payload: Vec<u8>,
     pub origin: Option<Origin>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SignalKey {
     Unverified(PeerId),
     Route(RouteOrigin),
 }
+// At most 128 nonempty route queues + 128 retired rates: the previous
+// 256-route ceiling also bounds the number of per-route token buckets.
+const MAX_RETIRED_RATES: usize = MAX_ORIGINS - MAX_QUEUED_SIGNALS;
+const RATE_REFILL: Duration = Duration::from_millis(500); // 16 / 32 seconds
+struct RateHistory {
+    bucket: Bucket,
+    touched: Instant,
+}
+impl RateHistory {
+    fn reclaimable(&mut self, now: Instant) -> Option<Instant> {
+        self.bucket
+            .available(MAX_SIGNALS_PER_ROUTE as u64, now)
+            .then_some(self.touched)
+    }
+}
 struct RouteQueue {
     messages: VecDeque<OutboundSignal>,
     bytes: usize,
-    rate: Bucket,
-    touched: Instant,
+    rate: RateHistory,
+    untracked: bool,
 }
 struct Queue {
     routes: BTreeMap<SignalKey, RouteQueue>,
+    retired: HistoryCache<SignalKey, RateHistory>,
     active: VecDeque<SignalKey>,
     count: usize,
     bytes: usize,
     global: Bucket,
+    untracked: Bucket,
+    untracked_until: Option<Instant>,
 }
 impl Default for Queue {
     fn default() -> Self {
+        let now = Instant::now();
         Self {
             routes: BTreeMap::new(),
+            retired: HistoryCache::new(MAX_RETIRED_RATES),
             active: VecDeque::new(),
             count: 0,
             bytes: 0,
-            global: Bucket::per_second(128, 128, Instant::now()),
+            global: Bucket::per_second(128, 128, now),
+            untracked: Bucket::per_second(128, 128, now),
+            untracked_until: None,
         }
     }
 }
@@ -85,33 +107,50 @@ impl Queue {
         if self.count >= MAX_QUEUED_SIGNALS || self.bytes + payload.len() > MAX_SIGNAL_QUEUE_BYTES {
             return Err(TransportError::Backpressure);
         }
-        // Retain empty queues' rate history, and never evict live queues.
-        self.routes.retain(|_, q| {
-            !q.messages.is_empty() || now.saturating_duration_since(q.touched) < ORIGIN_TTL
-        });
-        if !self.routes.contains_key(&key) && self.routes.len() >= MAX_ORIGINS {
-            return Err(TransportError::Backpressure);
-        }
-        let q = self.routes.entry(key).or_insert_with(|| RouteQueue {
-            messages: VecDeque::new(),
-            bytes: 0,
-            rate: Bucket::per_second(
-                MAX_SIGNALS_PER_ROUTE as u64,
-                SIGNALS_PER_ROUTE_PER_SECOND,
-                now,
-            ),
-            touched: now,
-        });
-        q.touched = now;
-        if q.messages.len() >= MAX_SIGNALS_PER_ROUTE
-            || q.bytes + payload.len() > MAX_SIGNAL_BYTES_PER_ROUTE
-            || !q.rate.take(1, now)
-        {
-            return Err(TransportError::Backpressure);
-        }
-        if q.messages.is_empty() {
+        if !self.routes.contains_key(&key) {
+            self.retired
+                .prune(|_, r| now.saturating_duration_since(r.touched) < ORIGIN_TTL);
+            let inherited = self.retired.take(key);
+            let untracked = inherited.is_none()
+                && (self.untracked_until.is_some_and(|until| now < until)
+                    || !self.retired.has_room(|_, r| r.reclaimable(now)));
+            let rate = inherited.unwrap_or_else(|| RateHistory {
+                bucket: Bucket::per_second(
+                    MAX_SIGNALS_PER_ROUTE as u64,
+                    SIGNALS_PER_ROUTE_PER_SECOND,
+                    now,
+                ),
+                touched: now,
+            });
+            // A restored, exhausted rate must stay retired when enqueue fails.
+            // Do not create an empty queue that can consume an unbounded key slot.
+            let mut rate = rate;
+            if !rate.bucket.take(1, now) {
+                self.retire(key, rate, now);
+                return Err(TransportError::Backpressure);
+            }
+            rate.touched = now;
+            self.routes.insert(
+                key,
+                RouteQueue {
+                    messages: VecDeque::new(),
+                    bytes: 0,
+                    rate,
+                    untracked,
+                },
+            );
             self.active.push_back(key);
+        } else {
+            let q = self.routes.get_mut(&key).unwrap();
+            if q.messages.len() >= MAX_SIGNALS_PER_ROUTE
+                || q.bytes + payload.len() > MAX_SIGNAL_BYTES_PER_ROUTE
+                || !q.rate.bucket.take(1, now)
+            {
+                return Err(TransportError::Backpressure);
+            }
+            q.rate.touched = now;
         }
+        let q = self.routes.get_mut(&key).unwrap();
         q.bytes += payload.len();
         q.messages.push_back(OutboundSignal {
             peer,
@@ -121,28 +160,65 @@ impl Queue {
         self.bytes += payload.len();
         Ok(())
     }
+    fn retire(&mut self, key: SignalKey, rate: RateHistory, now: Instant) {
+        if self
+            .retired
+            .remember(key, rate, |_, r| r.reclaimable(now))
+            .is_err()
+        {
+            // A lost bucket would naturally refill within 500 ms. Keep all
+            // cache misses on the fallback even if an intervening restore frees
+            // a slot, so they cannot immediately turn lost debt into new credit.
+            self.untracked_until = Some(self.untracked_until.unwrap_or(now).max(now + RATE_REFILL));
+        }
+    }
     fn pop(&mut self, now: Instant, limited: bool) -> Option<(SignalKey, OutboundSignal)> {
-        if self.active.is_empty() || (limited && !self.global.take(1, now)) {
+        if self.active.is_empty() || (limited && !self.global.available(1, now)) {
             return None;
         }
-        let key = self.active.pop_front()?;
-        let q = self.routes.get_mut(&key)?;
-        let signal = q.messages.pop_front()?;
-        q.bytes -= signal.payload.len();
-        if !q.messages.is_empty() {
-            self.active.push_back(key);
+        // An exhausted fallback defers messages; remembered routes can still
+        // run. Rotate at most the bounded number of nonempty queues once.
+        for _ in 0..self.active.len() {
+            let key = self.active.pop_front()?;
+            let q = self.routes.get_mut(&key)?;
+            if q.untracked && !self.untracked.take(1, now) {
+                self.active.push_back(key);
+                continue;
+            }
+            if limited {
+                self.global.take(1, now);
+            }
+            let signal = q.messages.pop_front()?;
+            q.bytes -= signal.payload.len();
+            if q.messages.is_empty() {
+                let q = self.routes.remove(&key).unwrap();
+                self.retire(key, q.rate, now);
+            } else {
+                self.active.push_back(key);
+            }
+            self.count -= 1;
+            self.bytes -= signal.payload.len();
+            return Some((key, signal));
         }
-        self.count -= 1;
-        self.bytes -= signal.payload.len();
-        Some((key, signal))
+        None
     }
-    fn revoke(&mut self, peer: PeerId) {
+    fn revoke(&mut self, peer: PeerId, now: Instant) {
         for q in self.routes.values_mut() {
             q.messages.retain(|s| s.peer != peer);
             q.bytes = q.messages.iter().map(|s| s.payload.len()).sum();
         }
         self.active
             .retain(|key| self.routes.get(key).is_some_and(|q| !q.messages.is_empty()));
+        let empty: Vec<_> = self
+            .routes
+            .iter()
+            .filter(|(_, q)| q.messages.is_empty())
+            .map(|(&k, _)| k)
+            .collect();
+        for key in empty {
+            let q = self.routes.remove(&key).unwrap();
+            self.retire(key, q.rate, now);
+        }
         self.count = self.routes.values().map(|q| q.messages.len()).sum();
         self.bytes = self.routes.values().map(|q| q.bytes).sum();
     }
@@ -230,8 +306,9 @@ impl SignalingEndpoint {
     pub fn revoke_peer(&self, peer: PeerId) {
         if let Ok(mut q) = self.0.lock() {
             q.bindings.remove(&peer);
-            q.inbound.revoke(peer);
-            q.outbound.revoke(peer);
+            let now = Instant::now();
+            q.inbound.revoke(peer, now);
+            q.outbound.revoke(peer, now);
         }
     }
     pub(super) fn origin(&self, peer: PeerId) -> Result<Option<Origin>, TransportError> {

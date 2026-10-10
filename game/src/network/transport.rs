@@ -4,26 +4,45 @@ use std::{
 };
 
 /// Abuse-accounting key; independent of password/player authentication.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Origin {
     Ip(IpAddr),
     Route(RouteOrigin),
 }
+impl Origin {
+    /// Accounting only: never use this prefix as a communication address.
+    pub fn ip(ip: IpAddr) -> Self {
+        Self::Ip(ip_prefix(ip))
+    }
+    pub(crate) fn normalized(self) -> Self {
+        match self {
+            Self::Ip(ip) => Self::ip(ip),
+            Self::Route(route) => route.abuse_origin(),
+        }
+    }
+}
+pub(crate) fn ip_prefix(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(ip) => IpAddr::V6(std::net::Ipv6Addr::from(u128::from(ip) & (u128::MAX << 64))),
+        ip => ip,
+    }
+}
 
 /// Abuse key supplied by a trusted local adapter after verifying the rendezvous
-/// authority, session and account. Never construct this from a peer's envelope
+/// authority, session, membership and abuse key. Never construct this from a peer's envelope
 /// claims. It does not authenticate a game player or replace password bootstrap.
-/// Rendezvous v1 uses a server-issued anonymous MemberId in `account`; it is
-/// not a Steam account and provides no account authentication/Sybil resistance.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// MemberId identifies a route; the server's room-scoped AbuseKey accounts for
+/// abuse independently of reconnects. Neither authenticates a game player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RouteOrigin {
     authority: [u8; 16],
     session: [u8; 16],
     account: [u8; 16],
+    abuse: [u8; 16],
 }
 impl RouteOrigin {
-    /// Verify these values against the trusted server session. All peer IDs
-    /// controlled by that account/session must share this key.
+    /// Routing incarnation only. Production adapters must also supply the
+    /// server-issued AbuseKey with with_abuse_key before installing a binding.
     pub const fn from_authenticated_route(
         authority: [u8; 16],
         session: [u8; 16],
@@ -33,7 +52,18 @@ impl RouteOrigin {
             authority,
             session,
             account,
+            abuse: account,
         }
+    }
+    pub const fn with_abuse_key(mut self, abuse: [u8; 16]) -> Self {
+        self.abuse = abuse;
+        self
+    }
+    pub(crate) const fn abuse_origin(self) -> Origin {
+        Origin::Route(Self {
+            account: self.abuse,
+            ..self
+        })
     }
 }
 

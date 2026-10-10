@@ -33,6 +33,7 @@ pub(crate) fn draw_game_ui(
     mut capture: ResMut<GameUiPointerCapture>,
     persistence: Res<PersistenceState>,
     network: Res<jigsall_game::network::runtime::NetworkStatus>,
+    mut multiplayer: Option<ResMut<crate::multiplayer::MultiplayerUi>>,
     sub_state: Res<State<GameSubState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
 ) {
@@ -72,6 +73,9 @@ pub(crate) fn draw_game_ui(
                         ui.label(i18n.text(key));
                     }
                     crate::multiplayer::paint_room_code(ui, &network, &i18n);
+                    if let Some(state) = multiplayer.as_mut() {
+                        state.paint_invite_button(ui, &i18n);
+                    }
                 }
                 Some(jigsall_game::network::runtime::RuntimeRole::Client)
                     if network.phase == jigsall_game::network::runtime::RuntimePhase::Ready =>

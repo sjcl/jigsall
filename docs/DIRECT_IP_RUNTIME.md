@@ -568,7 +568,10 @@ the 300 s sync start-clock limit; restarting never renews it. ACK waits start af
 native drain, not Finish-enqueue. Duplicate/obsolete messages and host sends do not
 renew deadlines. Join admission has global (12 burst, one/2 s) and origin (4 burst,
 one/5 s) guards independent of authentication. Three abusive failures trigger a
-30 s cooldown; histories have 256-entry capacity and 120 s TTL. Host-capacity expiry
+30–240 s progressive backoff; histories have 256 exact entries, active pinning,
+120 s inactive TTL (live cooldowns survive), inactive LRU recovery and 512
+conservative keyed overflow slots. IPv4 /32 and IPv6 /64 accounting normalizes
+mapped IPv4 without changing communication addresses. Host-capacity expiry
 is distinguished and does not penalize the peer.
 
 Sync expiration releases channels/bootstrap/mappings, live/joining state, transfer

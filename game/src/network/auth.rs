@@ -18,8 +18,25 @@ pub struct SessionPassword(Zeroizing<String>);
 pub enum PasswordError {
     TooShort,
     TooLong,
+    RandomSource,
 }
 impl SessionPassword {
+    /// 128 independent OS-random bits, encoded without reducing entropy.
+    pub fn generate() -> Result<Self, PasswordError> {
+        let mut bytes = Zeroizing::new([0; 16]);
+        getrandom::fill(&mut *bytes).map_err(|_| PasswordError::RandomSource)?;
+        let mut text = Zeroizing::new(String::with_capacity(32));
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for &byte in bytes.iter() {
+            text.push(HEX[(byte >> 4) as usize] as char);
+            text.push(HEX[(byte & 15) as usize] as char);
+        }
+        Ok(Self(text))
+    }
+    /// Explicit memory-only copy for host invitation UI; never serialize or log.
+    pub fn invitation_secret(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.0.to_string())
+    }
     /// Shared policy for form validation and authentication; does not alter the draft.
     pub fn validate(value: &str) -> Result<(), PasswordError> {
         match value.nfc().take(MAX_PASSWORD_CHARS + 1).count() {

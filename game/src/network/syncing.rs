@@ -647,6 +647,8 @@ impl HostSyncCoordinator {
         let origin = transport.origin(connection);
         let pending = self.peers.values().filter(|p| p.origin == origin).count();
         self.admission
+            .protect(self.peers.values().map(|p| p.origin));
+        self.admission
             .admit(origin, pending, now)
             .map_err(SyncError::Admission)?;
         bootstrap
@@ -800,7 +802,7 @@ impl HostSyncCoordinator {
         if result.is_err() {
             if let TransportEvent::Message { connection, .. } = event {
                 let reason = result.as_ref().err().unwrap().disconnect_reason();
-                if super::lifecycle::is_abuse(reason) {
+                if super::lifecycle::is_abuse(reason) && self.peers.contains_key(connection) {
                     self.penalize(transport.origin(*connection), now);
                 }
                 self.disconnect(*connection);

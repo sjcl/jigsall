@@ -59,16 +59,7 @@ fn internet_host_failure_returns_to_settings_and_retries_generated_or_loaded_puz
         assert_eq!(state.error, Some(UiError::ConnectionFailed));
         assert!(state.host.password.is_empty());
         assert!(app.world().resource::<LocalGameplayBlocked>().0);
-        click_label(&mut app, &ctx, "Open Room & Play");
-        assert!(app
-            .world()
-            .resource::<MultiplayerUi>()
-            .pending_host
-            .is_none());
-        *app.world_mut()
-            .resource_mut::<MultiplayerUi>()
-            .host
-            .password = "retry password".into();
+        // Empty host password now creates a fresh random invitation secret.
         click_label(&mut app, &ctx, "Open Room & Play");
         let state = app.world().resource::<MultiplayerUi>();
         assert!(state.pending_host.is_some() && state.submitted);

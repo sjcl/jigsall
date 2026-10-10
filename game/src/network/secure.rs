@@ -157,7 +157,7 @@ impl Channel {
 enum ConnectionChannel {
     Plaintext,
     Secure(Box<Channel>),
-    Closed,
+    Closed(Option<DisconnectReason>),
 }
 pub struct SecureTransport<T> {
     inner: T,
@@ -191,9 +191,20 @@ impl<T: Transport> SecureTransport<T> {
         // lifecycle event. Keep this suppression marker until that event arrives.
         if !matches!(
             self.connections.get(&connection),
-            Some(ConnectionChannel::Closed)
+            Some(ConnectionChannel::Closed(_))
         ) {
             self.connections.remove(&connection);
+        }
+    }
+    /// Distinguish this wrapper's rejection from a native failure that the
+    /// backend already accounted. The synthetic event can be consumed once.
+    pub(crate) fn take_local_failure(
+        &mut self,
+        connection: ConnectionId,
+    ) -> Option<DisconnectReason> {
+        match self.connections.get_mut(&connection) {
+            Some(ConnectionChannel::Closed(reason)) => reason.take(),
+            _ => None,
         }
     }
     pub(crate) fn install(
@@ -213,7 +224,7 @@ impl<T: Transport> SecureTransport<T> {
     fn fail(&mut self, connection: ConnectionId, reason: DisconnectReason) -> TransportEvent {
         // Key destruction and local rejection do not depend on backend close success.
         self.connections
-            .insert(connection, ConnectionChannel::Closed);
+            .insert(connection, ConnectionChannel::Closed(Some(reason)));
         let _ = self.inner.close(connection, reason);
         TransportEvent::Disconnected { connection, reason }
     }
@@ -281,7 +292,7 @@ impl<T: Transport> Transport for SecureTransport<T> {
                 let live: Vec<_> = self
                     .connections
                     .iter()
-                    .filter(|(_, state)| !matches!(state, ConnectionChannel::Closed))
+                    .filter(|(_, state)| !matches!(state, ConnectionChannel::Closed(_)))
                     .map(|(&id, _)| id)
                     .collect();
                 for id in live {
@@ -308,7 +319,7 @@ impl<T: Transport> Transport for SecureTransport<T> {
                 TransportEvent::Connected { .. } => {
                     if matches!(
                         self.connections.get(&connection),
-                        Some(ConnectionChannel::Closed)
+                        Some(ConnectionChannel::Closed(_))
                     ) {
                         continue;
                     }
@@ -319,7 +330,7 @@ impl<T: Transport> Transport for SecureTransport<T> {
                 TransportEvent::Disconnected { .. } | TransportEvent::ConnectionFailed { .. } => {
                     if !matches!(
                         self.connections.remove(&connection),
-                        Some(ConnectionChannel::Closed)
+                        Some(ConnectionChannel::Closed(_))
                     ) {
                         events.push(event);
                     }
@@ -340,7 +351,7 @@ impl<T: Transport> Transport for SecureTransport<T> {
                                 Err(())
                             }
                         }
-                        Some(ConnectionChannel::Closed) => continue,
+                        Some(ConnectionChannel::Closed(_)) => continue,
                         None => Err(()),
                     };
                     match result {
@@ -383,7 +394,7 @@ impl<T: Transport> Transport for SecureTransport<T> {
                     return Err(TransportError::ProtocolViolation);
                 }
             },
-            Some(ConnectionChannel::Closed) => return Err(TransportError::NotConnected),
+            Some(ConnectionChannel::Closed(_)) => return Err(TransportError::NotConnected),
             Some(ConnectionChannel::Plaintext) => {
                 if !matches!(wire::is_session_control_for_class(payload, class), Ok(true)) {
                     let event = self.fail(connection, DisconnectReason::ProtocolViolation);
@@ -410,14 +421,14 @@ impl<T: Transport> Transport for SecureTransport<T> {
     ) -> Result<(), TransportError> {
         if matches!(
             self.connections.get(&connection),
-            Some(ConnectionChannel::Closed)
+            Some(ConnectionChannel::Closed(_))
         ) {
             return Ok(());
         }
         if let std::collections::btree_map::Entry::Occupied(mut entry) =
             self.connections.entry(connection)
         {
-            entry.insert(ConnectionChannel::Closed);
+            entry.insert(ConnectionChannel::Closed(None));
             self.pending
                 .push(TransportEvent::Disconnected { connection, reason });
         }
@@ -450,7 +461,7 @@ impl<T: DirectIpTransport> DirectIpTransport for SecureTransport<T> {
                     });
                     if !matches!(
                         self.connections.remove(&connection),
-                        Some(ConnectionChannel::Closed)
+                        Some(ConnectionChannel::Closed(_))
                     ) {
                         self.pending.push(event);
                     }
@@ -462,7 +473,7 @@ impl<T: DirectIpTransport> DirectIpTransport for SecureTransport<T> {
             let live: Vec<_> = self
                 .connections
                 .iter()
-                .filter(|(_, state)| !matches!(state, ConnectionChannel::Closed))
+                .filter(|(_, state)| !matches!(state, ConnectionChannel::Closed(_)))
                 .map(|(&id, _)| id)
                 .collect();
             for id in live {

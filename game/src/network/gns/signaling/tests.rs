@@ -117,10 +117,9 @@ fn byte_count_size_and_history_bounds_hold_under_many_identities() {
         q.pop(now, false).unwrap();
     }
     let extra = SignalKey::Route(route(42));
-    assert_eq!(
-        q.push(peer(42), extra, &[1], now),
-        Err(TransportError::Backpressure)
-    );
+    q.push(peer(42), extra, &[1], now).unwrap();
+    assert!(q.routes.len() <= MAX_QUEUED_SIGNALS);
+    assert!(q.retired.len() <= MAX_RETIRED_RATES);
     q.push(peer(42), extra, &[1], now + ORIGIN_TTL).unwrap();
 }
 #[test]
@@ -192,4 +191,182 @@ fn one_account_cannot_fill_the_authorized_peer_table() {
     q.authorize_peer(peer(100), route(2)).unwrap();
     q.revoke_peer(peer(0));
     q.authorize_peer(peer(99), route(1)).unwrap();
+}
+
+#[test]
+fn history_reclamation_preserves_queued_signals_and_shared_abuse_keys_keep_separate_routes() {
+    let now = Instant::now();
+    let mut q = Queue::default();
+    for n in 0..MAX_ORIGINS {
+        q.push(peer(n as u8), key(n as u8), &[1], now).unwrap();
+        q.pop(now, false).unwrap();
+    }
+    let now = now + Duration::from_secs(1);
+    q.push(peer(7), key(7), &[77], now).unwrap();
+    let a = route(1).with_abuse_key([9; 16]);
+    let b = route(2).with_abuse_key([9; 16]);
+    q.push(peer(10), SignalKey::Route(a), &[10], now).unwrap();
+    q.push(peer(11), SignalKey::Route(b), &[11], now).unwrap();
+    assert!(q.routes.len() <= MAX_QUEUED_SIGNALS);
+    assert!(q.retired.len() <= MAX_RETIRED_RATES);
+    assert!(q.routes.contains_key(&key(7)));
+    assert_eq!(q.pop(now, false).unwrap().1.payload, vec![77]);
+    assert_eq!(q.pop(now, false).unwrap().1.peer, peer(10));
+    assert_eq!(q.pop(now, false).unwrap().1.peer, peer(11));
+}
+
+fn numbered(n: u32) -> (PeerId, SignalKey) {
+    let mut bytes = [0; 16];
+    bytes[..4].copy_from_slice(&n.to_le_bytes());
+    let peer = PeerId::from_bytes(bytes);
+    (peer, SignalKey::Unverified(peer))
+}
+#[test]
+fn exhausted_route_survives_forced_collisions_and_thousands_of_queue_reclamations() {
+    let now = Instant::now();
+    let mut q = Queue::default();
+    q.retired.force_collisions();
+    let (a, ka) = numbered(1);
+    for _ in 0..MAX_SIGNALS_PER_ROUTE {
+        q.push(a, ka, &[1], now).unwrap();
+    }
+    while q.pop(now, false).is_some() {}
+    for n in 1000..11000 {
+        let (peer, key) = numbered(n);
+        q.push(peer, key, &[2], now).unwrap();
+        q.pop(now, false); // May defer when the miss-only budget is exhausted.
+        q.revoke(peer, now);
+        assert!(q.routes.len() <= MAX_QUEUED_SIGNALS);
+        assert!(q.retired.len() <= MAX_RETIRED_RATES);
+        assert_eq!((q.count, q.bytes), (0, 0));
+    }
+    assert_eq!(q.push(a, ka, &[1], now), Err(TransportError::Backpressure));
+    let (b, kb) = numbered(2);
+    for i in 0..MAX_SIGNALS_PER_ROUTE {
+        q.push(b, kb, &[i as u8], now).unwrap();
+    }
+    assert!(q.pop(now, false).is_none());
+    assert_eq!(q.count, MAX_SIGNALS_PER_ROUTE);
+    for i in 0..MAX_SIGNALS_PER_ROUTE {
+        assert_eq!(
+            q.pop(now + Duration::from_secs(1), false)
+                .unwrap()
+                .1
+                .payload,
+            vec![i as u8]
+        );
+    }
+    assert_eq!((q.count, q.bytes), (0, 0));
+}
+#[test]
+fn colliding_route_does_not_inherit_credit_and_revoke_does_not_refund_it() {
+    let now = Instant::now();
+    let mut q = Queue::default();
+    q.retired.force_collisions();
+    for _ in 0..MAX_SIGNALS_PER_ROUTE {
+        q.push(peer(1), key(1), &[1], now).unwrap();
+    }
+    q.revoke(peer(1), now);
+    assert_eq!(
+        q.push(peer(1), key(1), &[1], now),
+        Err(TransportError::Backpressure)
+    );
+    for _ in 0..MAX_SIGNALS_PER_ROUTE {
+        q.push(peer(2), key(2), &[2], now).unwrap();
+    }
+    assert_eq!(q.count, MAX_SIGNALS_PER_ROUTE);
+    assert!(!q.retired.get_mut(key(1)).unwrap().bucket.take(1, now));
+}
+#[test]
+fn fallback_defers_fairly_preserves_fifo_bytes_and_does_not_block_remembered_routes() {
+    let now = Instant::now();
+    let mut q = Queue::default();
+    q.push(peer(1), key(1), &[1], now).unwrap();
+    q.pop(now, false).unwrap();
+    q.untracked_until = Some(now + RATE_REFILL);
+    q.untracked = Bucket::per_second(1, 1, now);
+    for p in [peer(2), peer(3)] {
+        let key = SignalKey::Unverified(p);
+        q.push(p, key, &[20], now).unwrap();
+        q.push(p, key, &[21], now).unwrap();
+    }
+    assert_eq!(q.pop(now, false).unwrap().1.peer, peer(2));
+    let count = q.count;
+    let bytes = q.bytes;
+    assert!(q.pop(now, false).is_none());
+    assert_eq!((q.count, q.bytes), (count, bytes));
+    q.push(peer(1), key(1), &[10], now).unwrap();
+    assert_eq!(q.pop(now, false).unwrap().1.peer, peer(1));
+    let later = now + Duration::from_secs(1);
+    assert_eq!(q.pop(later, false).unwrap().1.peer, peer(3));
+    assert_eq!(
+        q.pop(later + Duration::from_secs(1), false)
+            .unwrap()
+            .1
+            .payload,
+        vec![21]
+    );
+    assert_eq!(
+        q.pop(later + Duration::from_secs(2), false)
+            .unwrap()
+            .1
+            .payload,
+        vec![21]
+    );
+    assert_eq!((q.count, q.bytes), (0, 0));
+}
+#[test]
+fn freed_history_slot_does_not_bypass_recently_lost_rate_debt() {
+    let now = Instant::now();
+    let mut q = Queue::default();
+    for n in 0..MAX_RETIRED_RATES as u32 {
+        let (p, k) = numbered(n);
+        q.push(p, k, &[1], now).unwrap();
+        q.pop(now, false).unwrap();
+    }
+    let (lost, klost) = numbered(999);
+    q.push(lost, klost, &[1], now).unwrap();
+    q.pop(now, false).unwrap();
+    // Restoring a remembered route frees a retired slot, without elapsed time.
+    let (known, kknown) = numbered(0);
+    q.push(known, kknown, &[1], now).unwrap();
+    q.push(lost, klost, &[1], now).unwrap();
+    assert!(q.routes[&klost].untracked);
+    assert!(!q.routes[&kknown].untracked);
+}
+
+#[test]
+fn repeated_refill_churn_and_revoke_stay_within_previous_memory_ceiling() {
+    #[allow(dead_code)]
+    struct OldRouteQueue {
+        messages: VecDeque<OutboundSignal>,
+        bytes: usize,
+        rate: Bucket,
+        touched: Instant,
+    }
+    let key_size = std::mem::size_of::<SignalKey>();
+    let new_metadata = MAX_QUEUED_SIGNALS * (key_size + std::mem::size_of::<RouteQueue>())
+        + MAX_RETIRED_RATES * std::mem::size_of::<(u64, SignalKey, RateHistory)>()
+        + std::mem::size_of::<HistoryCache<SignalKey, RateHistory>>()
+        + std::mem::size_of::<Bucket>()
+        + std::mem::size_of::<Option<Instant>>();
+    assert!(new_metadata <= MAX_ORIGINS * (key_size + std::mem::size_of::<OldRouteQueue>()));
+    let start = Instant::now();
+    let mut q = Queue::default();
+    for round in 0..1000u32 {
+        let now = start + Duration::from_secs(round as u64);
+        for n in 0..10 {
+            let (p, k) = numbered(round * 10 + n);
+            q.push(p, k, &[1, 2], now).unwrap();
+            if n % 2 == 0 {
+                q.revoke(p, now);
+            } else {
+                q.pop(now, false).unwrap();
+            }
+        }
+        assert!(q.retired.len() <= MAX_RETIRED_RATES);
+        assert!(q.routes.len() <= MAX_QUEUED_SIGNALS);
+        assert_eq!((q.count, q.bytes), (0, 0));
+        assert!(q.active.is_empty());
+    }
 }
