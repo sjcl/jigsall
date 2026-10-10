@@ -117,10 +117,8 @@ fn byte_count_size_and_history_bounds_hold_under_many_identities() {
         q.pop(now, false).unwrap();
     }
     let extra = SignalKey::Route(route(42));
-    assert_eq!(
-        q.push(peer(42), extra, &[1], now),
-        Err(TransportError::Backpressure)
-    );
+    q.push(peer(42), extra, &[1], now).unwrap();
+    assert_eq!(q.routes.len(), MAX_ORIGINS);
     q.push(peer(42), extra, &[1], now + ORIGIN_TTL).unwrap();
 }
 #[test]
@@ -192,4 +190,24 @@ fn one_account_cannot_fill_the_authorized_peer_table() {
     q.authorize_peer(peer(100), route(2)).unwrap();
     q.revoke_peer(peer(0));
     q.authorize_peer(peer(99), route(1)).unwrap();
+}
+
+#[test]
+fn history_reclamation_preserves_queued_signals_and_shared_abuse_keys_keep_separate_routes() {
+    let now = Instant::now();
+    let mut q = Queue::default();
+    for n in 0..MAX_ORIGINS {
+        q.push(peer(n as u8), key(n as u8), &[1], now).unwrap();
+        q.pop(now, false).unwrap();
+    }
+    q.push(peer(7), key(7), &[77], now).unwrap();
+    let a = route(1).with_abuse_key([9; 16]);
+    let b = route(2).with_abuse_key([9; 16]);
+    q.push(peer(10), SignalKey::Route(a), &[10], now).unwrap();
+    q.push(peer(11), SignalKey::Route(b), &[11], now).unwrap();
+    assert_eq!(q.routes.len(), MAX_ORIGINS);
+    assert!(q.routes.contains_key(&key(7)));
+    assert_eq!(q.pop(now, false).unwrap().1.payload, vec![77]);
+    assert_eq!(q.pop(now, false).unwrap().1.peer, peer(10));
+    assert_eq!(q.pop(now, false).unwrap().1.peer, peer(11));
 }

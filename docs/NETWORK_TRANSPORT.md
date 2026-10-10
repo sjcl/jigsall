@@ -164,7 +164,10 @@ Incoming requests must match the envelope identity and listening virtual port.
 
 P2P caps total connections at 64, Connecting at 16 and not-Ready at 32. A global
 start bucket permits a burst of 8 and one new connection/s, including outgoing
-starts. Connection messages use the shared pre-auth policy, handshake barrier,
+starts. Unknown-peer signals wait in a 32-item, 256-KiB round-robin queue with
+at most four items per AbuseKey and a 10-second deadline. Native continuations
+bypass this start queue; deferred peers retain their rendezvous binding until
+processed, expired or revoked. Connection messages use the shared pre-auth policy, handshake barrier,
 post-auth rate policy, secure record limits, 512-message/frame round robin drain,
 and reliable/Bulk queue ceilings. `new_unverified_for_test()` is the unverified local foundation and
 returns no Origin. For a trusted rendezvous adapter, `new_routed()` requires
@@ -175,13 +178,20 @@ It must validate each inbound message's sender against that server-side binding
 before calling receive; an attacker-provided sender field is insufficient.
 The connection snapshots this `Origin::Route` for backend and shared sync abuse
 accounting: at most 4 not-Ready connections per origin, shared start history,
-and the existing 30-second cooldown after 3 qualifying failures. Peer ID rotation
+and progressive 30–240-second backoff after 3 qualifying failures. Failure
+history remains live for 120 seconds after its cooldown ends, so a quiet retry
+at the deadline cannot reset the ladder. Compressed overflow collisions may
+conservatively restrict unrelated origins; successful authentication clears
+an origin's exact history and its unambiguous compressed copy. Peer ID rotation
 and reconnects retain the same history. `revoke_peer` purges queued signals and
 closes affected connections on the next poll. Only a new native connect request
 spends admission credit; duplicate/continuation signaling does not. Server-side
 authentication and admission belong to the control service/adapter. Rendezvous v1
-binds an anonymous server-issued MemberId in the account field, and complements
-client route limits with bounded server/IP admission; this is not complete Sybil
+binds a server-issued MemberId for routing and a room-scoped HMAC AbuseKey for
+admission. The latter remains stable across MemberId/PeerId reissue within the
+same verified IPv4 /32 or IPv6 /64. Distinct routes retain independent signaling
+queues even when their AbuseKeys match. Empty queue histories can be reclaimed
+under table pressure; queued messages remain pinned. This is not complete Sybil
 resistance or Steam account authentication. A bound route does not install keys or grant Ready.
 
 Signaling servers are never game authentication authorities. Signaling delivery,
@@ -288,15 +298,16 @@ gameplay is decoded once by the existing router. The existing
 `player(connection) == None` router/broadcast guard remains in place. No regular
 gameplay broadcasts go to an authenticated or syncing peer.
 
-Host-global start and failed-attempt token buckets each allow 4 attempts/s with a
-burst of 8; an empty failure bucket also blocks new starts. Pending authentication
-is capped at 32 with a 10-second timeout, starting at Connected and never extended
-by packets. Call `expire` once per polling frame on both endpoints, even with no
-messages. Exceeding a limit immediately rejects the connection. This is separate
-from the backend's per-connection inbound byte limiter, uses no sleep/cooldown,
-and performs no crypto or piece scans for established peers. Authentication failures
-expose only a generic failure/close; client `failure()` can report password
-authentication failed. OS RNG failure aborts nonce generation; pakery's infallible
+Host crypto starts retain a shared 4/s budget with burst 8. Authentication
+failures belong to per-origin Admission history: after three failures, backoff
+increases through 30/60/120/240 seconds, with finite expiry and reset on verified
+password success. Local capacity/backend failures and normal disconnects are not
+password failures; the owning layer counts a failure once. At most 32 pending
+authentications, four per origin, wait in a bounded origin round robin for crypto
+credit. Waiting expires after 10 seconds as HostCapacityTimeout; active PAKE has
+its own fixed 10-second timeout. Call expire once per polling frame. Established
+peers require no cryptographic work or new history maintenance on ordinary frames.
+Authentication failures expose only a generic failure/close. OS RNG failure aborts nonce generation; pakery's infallible
 RNG interface uses its documented SysRng/UnwrapErr adapter (fail-stop on RNG error).
 
 The verified PAKE key is consumed by the secure-channel key derivation described
@@ -1041,7 +1052,7 @@ invariant keeps it smaller than backend connection capacity.
 | Catch-up retention | Existing bounded CPU catch-up limits, only after baseline slot | One outstanding event; matching advancing CatchUpAck within 12 s, or join removed |
 | Finalization candidate | One bounded scalar drag set per join | Matching FinalizeAck within 12 s, or join removed; host retries cannot extend outstanding wait |
 | Reliable outbound queue | 512 KiB/connection; new Bulk blocked above 240 KiB incl. reservation | Native pending + sent-unacknowledged backlog, not just enqueue success; close drops queued data |
-| Admission history | 256 origins per guard, 120 s TTL | Entries expire; full tables refuse unseen origins instead of evicting cooldowns |
+| Admission history | 256 origins per guard, 120 s TTL | Active histories are pinned; inactive LRU eviction preserves credit/backoff in 512 fixed, keyed overflow slots |
 
 Session -> ImageAvailability and cached-image availability -> ImageReady also have
 12-second deadlines. Host-side AwaitingImageSlot/AwaitingBaselineSlot do not have
@@ -1051,12 +1062,17 @@ Syncing is owned by the coordinator/runtime, never by bootstrap. Ready lifetime
 uses normal GNS transport disconnect/liveness.
 
 Connecting admission has an IP bucket (burst 8, one start/s). Authentication keeps
-its existing independent global start/failure buckets (burst 8, four/s). Successful
+a global crypto-start budget (burst 8, four/s), with per-origin failure backoff
+and bounded fair waiting. P2P also defers native starts before the callback when
+its shared credit is exhausted: 32 signals / 256 KiB, four per origin, 10 s TTL. Successful
 authentication does not grant expensive join admission: joins have a global burst
 of 12 with one token per 2 s, and per-origin burst 4 with one token per 5 s.
 Closing/reconnecting never replenishes these guards. Three authentication, protocol
-or sync-stall failures cause a 30-second origin cooldown. Each guard uses bounded
-history with TTL. Canonical IP ignores port and normalizes mapped IPv4; it is an
+or sync-stall failures start a 30-second origin backoff, capped at 240 seconds.
+Each guard uses pinned active entries, inactive TTL/LRU recovery and conservative
+fixed overflow history; churn cannot erase live penalties or replenish credit.
+Overflow hash collisions may temporarily restrict unrelated sources under churn.
+Canonical IP ignores port, uses IPv4 /32 and IPv6 /64, and normalizes mapped IPv4; it is an
 abuse-accounting key, not a PlayerId/authentication identity. Four pending users
 behind a NAT can join together; Ready peers no longer consume that pending quota.
 `Origin` can later gain stronger platform keys without changing gameplay identity.

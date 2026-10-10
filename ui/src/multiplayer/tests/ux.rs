@@ -74,7 +74,12 @@ fn empty_connection_fields_show_no_validation_warnings() {
                 });
                 let text = labels(&output);
                 assert!(text.is_empty());
-                assert!(!draft.valid(host));
+                // A host's empty password is the automatic generation option;
+                // an Internet host also receives its room target from the server.
+                assert_eq!(
+                    draft.valid(host),
+                    host && method == RuntimeConnectionMethod::Internet
+                );
                 output.drop_without_applying_deltas();
             }
         }

@@ -10,7 +10,7 @@ use super::{
 };
 use crate::network::{
     lifecycle::{
-        self, Admission, Bucket, CONNECTING_TIMEOUT, CONNECTION_START_BURST,
+        self, Admission, Bucket, FairQueue, CONNECTING_TIMEOUT, CONNECTION_START_BURST,
         CONNECTION_START_INTERVAL,
     },
     rate_limit::DEFAULT_INBOUND_POLICY,
@@ -78,6 +78,8 @@ pub struct GnsP2p {
     pending: Vec<TransportEvent>,
     starts: Bucket,
     admission: Admission,
+    waiting_signals: FairQueue<signaling::InboundSignal>,
+    waiting_bytes: usize,
     next_receive: Option<ConnectionId>,
     turn_addresses: Vec<String>,
     pending_turn: Option<TurnUpdate>,
@@ -118,6 +120,8 @@ impl GnsP2p {
                 Instant::now(),
             ),
             admission: Admission::connections(),
+            waiting_signals: FairQueue::default(),
+            waiting_bytes: 0,
             next_receive: None,
             turn_addresses: Vec::new(),
             pending_turn: None,
@@ -135,8 +139,12 @@ impl GnsP2p {
     pub fn remote_peer(&self, connection: ConnectionId) -> Option<PeerId> {
         self.connections.get(&connection).map(|c| c.peer)
     }
-    /// Includes owned native Connecting handles, before any Connected event.
+    /// Includes native Connecting handles and bounded deferred admission signals.
+    /// The rendezvous owner must retain their route until admission completes.
     pub fn has_peer(&self, peer: PeerId) -> bool {
+        self.has_native_peer(peer) || self.waiting_signals.any(|s| s.peer == peer)
+    }
+    fn has_native_peer(&self, peer: PeerId) -> bool {
         self.connections
             .values()
             .any(|connection| connection.peer == peer)
@@ -170,6 +178,12 @@ impl GnsP2p {
         let now = Instant::now();
         let origin = self.mailbox.origin(peer)?;
         let pending = self.origin_pending(origin);
+        self.admission.protect(
+            self.connections
+                .values()
+                .map(|c| c.origin)
+                .chain(self.waiting_signals.origins()),
+        );
         if !self.has_connection_capacity()
             || !self.starts.available(1, now)
             || self.admission.admit(origin, pending, now).is_err()
@@ -235,7 +249,11 @@ impl GnsP2p {
     fn origin_pending(&self, origin: Option<Origin>) -> usize {
         self.connections
             .values()
-            .filter(|c| !c.state.ready && origin.is_some() && c.origin == origin)
+            .filter(|c| {
+                !c.state.ready
+                    && origin.is_some()
+                    && c.origin.map(Origin::normalized) == origin.map(Origin::normalized)
+            })
             .count()
     }
     fn insert(
@@ -263,17 +281,73 @@ impl GnsP2p {
         events: &mut Vec<TransportEvent>,
         now: Instant,
     ) {
+        self.retire(id, reason, events, now, true);
+    }
+    fn retire(
+        &mut self,
+        id: ConnectionId,
+        reason: DisconnectReason,
+        events: &mut Vec<TransportEvent>,
+        now: Instant,
+        native_failure: bool,
+    ) {
         if let Some(mut c) = self.connections.remove(&id) {
             #[cfg(feature = "rendezvous")]
             if self.retired_peers.len() < lifecycle::MAX_CONNECTIONS {
                 self.retired_peers.insert(c.peer);
             }
-            if lifecycle::is_abuse(reason) {
+            if native_failure && lifecycle::is_transport_abuse(reason) {
                 self.admission.penalize(c.origin, now);
             }
             c.native.close(close_code(reason) as i32);
             events.push(termination_event(id, c.state.connected, reason));
         }
+    }
+    fn receive_signal(
+        &mut self,
+        signal: signaling::InboundSignal,
+        now: Instant,
+        allow_new: bool,
+    ) -> Result<(), TransportError> {
+        if signal.peer == self.peer {
+            return Ok(());
+        }
+        let Ok(origin) = self.mailbox.origin(signal.peer) else {
+            return Ok(());
+        };
+        // Do not charge a stale queued envelope to a newly authorized route.
+        if origin != signal.origin {
+            return Ok(());
+        }
+        self.admission.protect(
+            self.connections
+                .values()
+                .map(|c| c.origin)
+                .chain(self.waiting_signals.origins()),
+        );
+        let origin_pending = self.origin_pending(origin);
+        // Admission is sampled before GNS; the callback only accepts within
+        // that capacity. GNS discards requests for which it returns null.
+        // Only new requests spend start credit; stale/duplicate signals do not.
+        let allow = allow_new && self.pending_turn.is_none() && self.has_connection_capacity();
+        let admission = native::IncomingAdmission {
+            allow,
+            origin,
+            pending: origin_pending,
+            gate: &mut self.admission,
+            starts: &mut self.starts,
+            now,
+        };
+        if let Some(native) = self.listener.receive(
+            signal.peer,
+            &signal.payload,
+            admission,
+            self.mailbox.clone(),
+        ) {
+            let id = ConnectionId::new(token()?);
+            self.insert(id, native, signal.peer, origin);
+        }
+        Ok(())
     }
     fn maintain(&mut self, now: Instant, events: &mut Vec<TransportEvent>) {
         let ids: Vec<_> = self.connections.keys().copied().collect();
@@ -327,7 +401,9 @@ impl Transport for GnsP2p {
         c.state
             .activate_secure_channel(&DEFAULT_INBOUND_POLICY, || {
                 c.native.configure_authenticated_send_rate()
-            })
+            })?;
+        self.admission.succeed(c.origin);
+        Ok(())
     }
     fn mark_ready(&mut self, id: ConnectionId) -> Result<(), TransportError> {
         self.connections
@@ -342,42 +418,46 @@ impl Transport for GnsP2p {
         events.append(&mut self.pending);
         let now = Instant::now();
         self.maintain(now, events);
+        let mut discarded_bytes = 0;
+        self.waiting_signals.retain(|s, at| {
+            let keep = now.saturating_duration_since(at) < CONNECTING_TIMEOUT
+                && self.mailbox.origin(s.peer).ok() == Some(s.origin);
+            if !keep {
+                discarded_bytes += s.payload.len();
+            }
+            keep
+        });
+        self.waiting_bytes -= discarded_bytes;
         for _ in 0..signaling::MAX_QUEUED_SIGNALS {
             let Some(signal) = self.mailbox.pop_inbound() else {
                 break;
             };
-            if signal.peer == self.peer {
-                continue;
+            if self.has_native_peer(signal.peer) {
+                // Continuations must progress without spending start credit.
+                // A new request masquerading as a continuation cannot jump the
+                // fair queue by reusing an already owned routing identity.
+                self.receive_signal(signal, now, false)?;
+            } else if self.waiting_bytes + signal.payload.len() <= signaling::MAX_SIGNAL_QUEUE_BYTES
+            {
+                let bytes = signal.payload.len();
+                if self
+                    .waiting_signals
+                    .push(signal.origin, signal, now)
+                    .is_ok()
+                {
+                    self.waiting_bytes += bytes;
+                }
             }
-            let Ok(origin) = self.mailbox.origin(signal.peer) else {
-                continue;
+        }
+        for _ in 0..lifecycle::MAX_PENDING_CONNECTIONS {
+            if !self.starts.available(1, now) {
+                break;
+            }
+            let Some(signal) = self.waiting_signals.pop() else {
+                break;
             };
-            // Do not charge a stale queued envelope to a newly authorized route.
-            if origin != signal.origin {
-                continue;
-            }
-            let origin_pending = self.origin_pending(origin);
-            // Admission is sampled before GNS; the callback only accepts within
-            // that capacity. GNS discards requests for which it returns null.
-            // Only new requests spend start credit; stale/duplicate signals do not.
-            let allow = self.pending_turn.is_none() && self.has_connection_capacity();
-            let admission = native::IncomingAdmission {
-                allow,
-                origin,
-                pending: origin_pending,
-                gate: &mut self.admission,
-                starts: &mut self.starts,
-                now,
-            };
-            if let Some(native) = self.listener.receive(
-                signal.peer,
-                &signal.payload,
-                admission,
-                self.mailbox.clone(),
-            ) {
-                let id = ConnectionId::new(token()?);
-                self.insert(id, native, signal.peer, origin);
-            }
+            self.waiting_bytes -= signal.payload.len();
+            self.receive_signal(signal, now, true)?;
         }
         super::global()?.poll_callbacks();
         self.maintain(now, events);
@@ -477,7 +557,7 @@ impl Transport for GnsP2p {
             return Err(TransportError::UnknownConnection);
         }
         let mut events = Vec::new();
-        self.terminate(id, reason, &mut events, Instant::now());
+        self.retire(id, reason, &mut events, Instant::now(), false);
         self.pending.extend(events);
         Ok(())
     }

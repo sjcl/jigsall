@@ -1602,3 +1602,154 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
     process_actions(&mut world);
     assert!(!world.contains_non_send::<jigsall_game::network::runtime::NetworkSession>());
 }
+
+#[test]
+fn default_host_generates_a_memory_only_password_and_cancel_wipes_invitation() {
+    let mut state = MultiplayerUi::default();
+    assert!(state.host.password.is_empty());
+    assert!(state.host.valid(true));
+    assert!(!state.join.valid(false));
+    state.submit_host();
+    assert!(state.submitted);
+    let secret = state.invite_secret.as_ref().unwrap();
+    assert_eq!(secret.len(), 32);
+    assert!(secret.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert!(state.host.password.is_empty());
+    state.cancel();
+    assert!(state.invite_secret.is_none());
+}
+#[test]
+fn complete_invitations_populate_both_join_methods_and_wipe_pasted_secrets() {
+    for (method, target, expected) in [
+        ("internet", "ABCDEFGHJK", RuntimeConnectionMethod::Internet),
+        (
+            "direct",
+            "[2001:db8::1]:43576",
+            RuntimeConnectionMethod::DirectIp,
+        ),
+    ] {
+        let mut draft = ConnectionDraft::new("");
+        *draft.invitation =
+            format!("jigsall-invite-v1|{method}|{target}|correct password|with separator");
+        assert!(draft.import_invitation());
+        assert_eq!(draft.method, expected);
+        assert!(draft.valid(false));
+        assert_eq!(draft.password.as_str(), "correct password|with separator");
+        assert!(draft.invitation.is_empty());
+        draft.clear_password();
+        assert!(draft.password.is_empty());
+    }
+    let mut draft = ConnectionDraft::new("");
+    *draft.invitation = "jigsall-invite-v1|internet|BAD|password".into();
+    assert!(!draft.import_invitation());
+    assert!(draft.password.is_empty());
+    draft.clear_password();
+    assert!(draft.invitation.is_empty());
+}
+
+#[test]
+fn full_invitation_copy_and_masked_paste_round_trip_both_methods() {
+    let i18n = crate::localization::tests::english();
+    for (method, target) in [
+        (RuntimeConnectionMethod::Internet, "ABCDEFGHJK"),
+        (RuntimeConnectionMethod::DirectIp, "192.0.2.10:43576"),
+    ] {
+        let secret = SessionPassword::generate().unwrap().invitation_secret();
+        let status = NetworkStatus {
+            connection_method: Some(method),
+            room_code: (method == RuntimeConnectionMethod::Internet).then(|| target.into()),
+            address: (method == RuntimeConnectionMethod::DirectIp).then(|| target.parse().unwrap()),
+            ..default()
+        };
+        let ctx = egui::Context::default();
+        let mut open = true;
+        let mut address = String::new();
+        let mut render = |events| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1280.0, 800.0),
+                    )),
+                    events,
+                    ..default()
+                },
+                |_| {
+                    paint_invite_panel(&ctx, &mut open, &status, &i18n, Some(&secret), &mut address)
+                },
+            )
+        };
+        render(vec![]).drop_without_applying_deltas();
+        let output = render(vec![]);
+        assert!(!labels(&output)
+            .iter()
+            .any(|text| text.contains(secret.as_str())));
+        let point = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text)
+                    if text.galley.job.text == i18n.text("multiplayer-copy-invite") =>
+                {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap();
+        output.drop_without_applying_deltas();
+        let pointer = |pressed| {
+            vec![
+                egui::Event::PointerMoved(point),
+                egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: default(),
+                },
+            ]
+        };
+        render(pointer(true)).drop_without_applying_deltas();
+        let output = render(pointer(false));
+        let invitation = Zeroizing::new(
+            output
+                .platform_output
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .unwrap(),
+        );
+        output.drop_without_applying_deltas();
+        let join_ctx = egui::Context::default();
+        let mut draft = ConnectionDraft::new("127.0.0.1:43576");
+        let mut profile = PlayerSettingsState::load(None);
+        let mut paste = |events| {
+            join_ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..default()
+                },
+                |ui| {
+                    let id = egui::Id::new("multiplayer-invitation");
+                    join_ctx.memory_mut(|memory| memory.request_focus(id));
+                    paint_connection_fields(ui, &mut draft, false, &mut profile, &i18n);
+                },
+            )
+        };
+        paste(vec![]).drop_without_applying_deltas();
+        paste(vec![egui::Event::Paste(invitation.to_string())]).drop_without_applying_deltas();
+        assert_eq!(draft.method, method);
+        assert_eq!(draft.password.as_str(), secret.as_str());
+        assert!(draft.invitation.is_empty());
+        assert_eq!(
+            if method == RuntimeConnectionMethod::Internet {
+                &draft.room_code
+            } else {
+                &draft.address
+            },
+            target
+        );
+    }
+}

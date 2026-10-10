@@ -7,7 +7,9 @@ use super::{
     GnsP2p, IceConfig,
 };
 use crate::network::transport::{RouteOrigin, TransportError};
-use protocol::{AuthorityId, ClientMessage, JoinId, MemberId, RoomCode, RoomId, ServerMessage};
+use protocol::{
+    AbuseKey, AuthorityId, ClientMessage, JoinId, MemberId, RoomCode, RoomId, ServerMessage,
+};
 use std::{collections::BTreeMap, fmt, net::IpAddr};
 
 pub use super::P2P_VIRTUAL_PORT;
@@ -321,6 +323,7 @@ impl RendezvousAdapter {
         member: MemberId,
         room: RoomBinding,
         pending: Option<JoinId>,
+        abuse: AbuseKey,
     ) -> Result<(), RendezvousError> {
         if id == self.local
             || member == room.member
@@ -335,14 +338,13 @@ impl RendezvousAdapter {
         if self.routes.len() >= MAX_ROUTES {
             return Err(TransportError::Capacity.into());
         }
-        // `account` in RouteOrigin is a server-issued anonymous membership, not
-        // Steam/account authentication or Sybil resistance. Future authenticated
-        // account support must replace this binding via a versioned protocol.
+        // Route incarnation and IP-prefix abuse accounting remain independent.
         let origin = RouteOrigin::from_authenticated_route(
             self.authority.ok_or(RendezvousError::ProtocolViolation)?.0,
             room.room.0,
             member.0,
-        );
+        )
+        .with_abuse_key(abuse.0);
         self.signaling.authorize_peer(id, origin)?;
         self.routes.insert(
             id,
@@ -439,6 +441,7 @@ impl RendezvousAdapter {
                 join_id,
                 peer_id,
                 member_id,
+                abuse_key,
             } => {
                 let Phase::Host(room) = self.phase else {
                     return Err(RendezvousError::ProtocolViolation);
@@ -469,7 +472,7 @@ impl RendezvousAdapter {
                 let bind = if shortage {
                     Err(TransportError::Capacity.into())
                 } else {
-                    self.bind(id, member_id, room, Some(join_id))
+                    self.bind(id, member_id, room, Some(join_id), abuse_key)
                 };
                 if matches!(
                     bind,
@@ -492,12 +495,19 @@ impl RendezvousAdapter {
                 self_member_id,
                 host_peer_id,
                 host_member_id,
+                host_abuse_key,
             } if matches!(self.phase, Phase::Joining) => {
                 let room = RoomBinding {
                     room: room_id,
                     member: self_member_id,
                 };
-                self.bind(peer(host_peer_id), host_member_id, room, None)?;
+                self.bind(
+                    peer(host_peer_id),
+                    host_member_id,
+                    room,
+                    None,
+                    host_abuse_key,
+                )?;
                 self.phase = Phase::Joined(room);
                 events.push(RendezvousEvent::HostReady {
                     peer_id: peer(host_peer_id),

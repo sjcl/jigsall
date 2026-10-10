@@ -184,7 +184,7 @@ impl GnsDirectIp {
         now: Instant,
     ) {
         if let Some(connection) = self.connections.get(&id) {
-            if lifecycle::is_abuse(reason) {
+            if lifecycle::is_transport_abuse(reason) {
                 self.admission.penalize(Some(connection.origin), now);
             }
             events.push(termination_event(id, connection.state.connected, reason));
@@ -206,12 +206,14 @@ impl GnsDirectIp {
         if info.state() == State::k_ESteamNetworkingConnectionState_Connecting && id.is_none() {
             if let Some(Socket::Server(socket)) = self.sockets.get(&endpoint) {
                 let now = Instant::now();
-                let origin = Origin::Ip(info.remote_address().to_canonical());
+                let origin = Origin::ip(info.remote_address());
                 let origin_pending = self
                     .connections
                     .values()
                     .filter(|c| !c.state.ready && c.origin == origin)
                     .count();
+                self.admission
+                    .protect(self.connections.values().map(|c| Some(c.origin)));
                 let refusal = if !self.has_connection_capacity() {
                     Some(DisconnectReason::JoinCapacity)
                 } else {
@@ -346,7 +348,9 @@ impl Transport for GnsDirectIp {
             .state
             .activate_secure_channel(self.rate_policy, || {
                 super::configure_authenticated_send_rate(connection.native)
-            })
+            })?;
+        self.admission.succeed(Some(connection.origin));
+        Ok(())
     }
     fn poll(&mut self, events: &mut Vec<TransportEvent>) -> Result<(), TransportError> {
         events.append(&mut self.pending);
@@ -490,9 +494,8 @@ impl Transport for GnsDirectIp {
         Ok(())
     }
     fn close(&mut self, id: ConnectionId, reason: DisconnectReason) -> Result<(), TransportError> {
-        if lifecycle::is_abuse(reason) {
-            self.admission.penalize(self.origin(id), Instant::now());
-        }
+        // The calling application layer owns this failure's accounting. Native
+        // receive/establishment failures are counted by terminate_at only.
         let connection = self
             .connections
             .get(&id)
@@ -600,7 +603,7 @@ impl DirectIpTransport for GnsDirectIp {
                 native,
                 endpoint,
                 state: ConnectionState::new(Instant::now()),
-                origin: Origin::Ip(address.ip().to_canonical()),
+                origin: Origin::ip(address.ip()),
             },
         );
         self.native_ids.insert(native, id);

@@ -337,3 +337,9 @@ save-host-departure-warning = You are the host. Leaving will close the room and 
 game-player-list-toggle = Click to show or hide the player list
 game-player-you = You
 game-player-host = Host
+
+multiplayer-auto-password = Leave empty to generate a random password. A manual password is optional.
+multiplayer-generate-password = Generate password
+multiplayer-paste-invite = Paste invitation
+multiplayer-copy-invite = Copy invitation with password
+multiplayer-invite-open = Invite

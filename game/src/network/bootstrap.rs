@@ -2,7 +2,7 @@
 //! here BEFORE routing; `Syncing` and `Gameplay` have separate routers.
 use super::{
     auth::{ClientHandshake, ServerHandshake, SessionPassword},
-    lifecycle::AUTHENTICATED_HANDOFF_TIMEOUT,
+    lifecycle::{Admission, Bucket, FairQueue, AUTHENTICATED_HANDOFF_TIMEOUT},
     secure::{ChannelRole, SecureTransport},
     session::{SessionConnectionError, SessionConnections},
     session_control::*,
@@ -45,42 +45,9 @@ pub enum BootstrapError {
     Registration(SessionConnectionError),
 }
 
-/// Integer token bucket; shared by all host connections, with explicit test time.
-struct AttemptBucket {
-    credit: u128,
-    updated: Instant,
-}
-impl AttemptBucket {
-    const UNIT: u128 = 1_000_000_000;
-    fn new(now: Instant) -> Self {
-        Self {
-            credit: AUTH_ATTEMPT_BURST as u128 * Self::UNIT,
-            updated: now,
-        }
-    }
-    fn refill(&mut self, now: Instant) {
-        let elapsed = now.saturating_duration_since(self.updated).as_nanos();
-        self.updated = self.updated.max(now);
-        self.credit = self
-            .credit
-            .saturating_add(elapsed.saturating_mul(AUTH_ATTEMPTS_PER_SECOND as u128))
-            .min(AUTH_ATTEMPT_BURST as u128 * Self::UNIT);
-    }
-    fn available(&mut self, now: Instant) -> bool {
-        self.refill(now);
-        self.credit >= Self::UNIT
-    }
-    fn take(&mut self, now: Instant) -> bool {
-        if !self.available(now) {
-            return false;
-        }
-        self.credit -= Self::UNIT;
-        true
-    }
-}
-
 struct HostPeer {
     state: ConnectionState,
+    origin: Option<Origin>,
     hello: ServerHello,
     started: Instant,
     authenticated_at: Option<Instant>,
@@ -95,8 +62,10 @@ pub struct HostBootstrap {
     peers: BTreeMap<ConnectionId, HostPeer>,
     reserved: HashSet<PlayerId>,
     next_player: Option<u64>,
-    starts: AttemptBucket,
-    failures: AttemptBucket,
+    starts: Bucket,
+    admission: Admission,
+    waiting: BTreeMap<ConnectionId, (Option<Origin>, Instant)>,
+    queue: FairQueue<ConnectionId>,
 }
 impl HostBootstrap {
     pub fn new(
@@ -113,8 +82,14 @@ impl HostBootstrap {
             peers: BTreeMap::new(),
             reserved,
             next_player: Some(0),
-            starts: AttemptBucket::new(now),
-            failures: AttemptBucket::new(now),
+            starts: Bucket::per_second(
+                AUTH_ATTEMPT_BURST.into(),
+                AUTH_ATTEMPTS_PER_SECOND.into(),
+                now,
+            ),
+            admission: Admission::authentication(),
+            waiting: BTreeMap::new(),
+            queue: FairQueue::default(),
         }
     }
     /// Future hellos advertise the current cursor; in-flight contexts are immutable.
@@ -122,7 +97,14 @@ impl HostBootstrap {
         self.metadata.cursor = cursor;
     }
     pub fn state(&self, connection: ConnectionId) -> Option<ConnectionState> {
-        self.peers.get(&connection).map(|peer| peer.state)
+        self.peers
+            .get(&connection)
+            .map(|peer| peer.state)
+            .or_else(|| {
+                self.waiting
+                    .contains_key(&connection)
+                    .then_some(ConnectionState::TransportConnected)
+            })
     }
     pub fn assigned_player(&self, connection: ConnectionId) -> Option<PlayerId> {
         self.peers
@@ -160,11 +142,34 @@ impl HostBootstrap {
         connections: &mut SessionConnections,
     ) -> BootstrapError {
         self.peers.remove(&connection);
+        self.waiting.remove(&connection);
+        self.queue.retain(|id, _| *id != connection);
         disconnect_mapping(connections, connection, reason);
         match transport.close(connection, reason) {
             Ok(()) => BootstrapError::Rejected(reason),
             Err(error) => BootstrapError::Transport(error),
         }
+    }
+    fn reject_at(
+        &mut self,
+        connection: ConnectionId,
+        reason: DisconnectReason,
+        transport: &mut SecureTransport<impl Transport>,
+        connections: &mut SessionConnections,
+        now: Instant,
+    ) -> BootstrapError {
+        if super::lifecycle::is_abuse(reason) {
+            let origin = self
+                .peers
+                .get(&connection)
+                .map(|p| p.origin)
+                .or_else(|| self.waiting.get(&connection).map(|p| p.0));
+            // Taking owned state in reject makes duplicate notifications harmless.
+            if let Some(origin) = origin {
+                self.admission.penalize(origin, now);
+            }
+        }
+        self.reject(connection, reason, transport, connections)
     }
     pub fn process(
         &mut self,
@@ -175,7 +180,9 @@ impl HostBootstrap {
     ) -> Result<BootstrapOutcome, BootstrapError> {
         match event {
             TransportEvent::Connected { connection } => {
-                if self.peers.contains_key(connection) {
+                if self.peers.contains_key(connection) || self.waiting.contains_key(connection) {
+                    // A duplicate native lifecycle token is a backend fault,
+                    // not an additional remote password attempt.
                     return Err(self.reject(
                         *connection,
                         DisconnectReason::ProtocolViolation,
@@ -187,75 +194,72 @@ impl HostBootstrap {
                 disconnect_mapping(connections, *connection, DisconnectReason::Requested);
                 transport.start_connection(*connection);
                 connections.observe(event);
-                if self
+                let origin = transport.origin(*connection).map(Origin::normalized);
+                self.admission.protect(
+                    self.peers
+                        .values()
+                        .map(|p| p.origin)
+                        .chain(self.waiting.values().map(|p| p.0)),
+                );
+                let pending = self
                     .peers
                     .values()
                     .filter(|p| {
-                        matches!(
-                            p.state,
-                            ConnectionState::Authenticating | ConnectionState::Securing
-                        )
+                        p.origin == origin
+                            && matches!(
+                                p.state,
+                                ConnectionState::Authenticating | ConnectionState::Securing
+                            )
                     })
                     .count()
+                    + self.waiting.values().filter(|p| p.0 == origin).count();
+                let refusal = if self.waiting.len()
+                    + self
+                        .peers
+                        .values()
+                        .filter(|p| {
+                            matches!(
+                                p.state,
+                                ConnectionState::Authenticating | ConnectionState::Securing
+                            )
+                        })
+                        .count()
                     >= MAX_PENDING_AUTH
-                    || !self.failures.available(now)
-                    || !self.starts.take(now)
                 {
-                    return Err(self.reject(
-                        *connection,
-                        DisconnectReason::RateLimited,
-                        transport,
-                        connections,
-                    ));
+                    Some(DisconnectReason::JoinCapacity)
+                } else {
+                    self.admission.admit(origin, pending, now).err()
+                };
+                if let Some(reason) = refusal {
+                    return Err(self.reject_at(*connection, reason, transport, connections, now));
                 }
-                let Some(player) = self.allocate(connections) else {
-                    return Err(self.reject(
-                        *connection,
-                        DisconnectReason::BackendFailure,
-                        transport,
-                        connections,
-                    ));
-                };
-                let Ok((handshake, hello)) =
-                    ServerHandshake::start(&self.password, self.metadata, player)
-                else {
-                    return Err(self.reject(
-                        *connection,
-                        DisconnectReason::AuthenticationFailed,
-                        transport,
-                        connections,
-                    ));
-                };
-                self.peers.insert(
-                    *connection,
-                    HostPeer {
-                        state: ConnectionState::TransportConnected,
-                        hello,
-                        started: now,
-                        authenticated_at: None,
-                        handshake: Some(handshake),
-                    },
-                );
-                if let Err(error) = send_control(
-                    transport,
-                    *connection,
-                    SessionControlMessage::ServerHello(hello),
-                ) {
-                    let _ = self.reject(
-                        *connection,
-                        DisconnectReason::BackendFailure,
-                        transport,
-                        connections,
-                    );
+                if let Err(reason) = self.queue.push(origin, *connection, now) {
+                    return Err(self.reject_at(*connection, reason, transport, connections, now));
+                }
+                self.waiting.insert(*connection, (origin, now));
+                let errors = self.pump(transport, connections, now);
+                if let Some((_, error)) = errors.into_iter().find(|(id, _)| id == connection) {
                     return Err(error);
                 }
-                self.peers.get_mut(connection).expect("inserted").state =
-                    ConnectionState::Authenticating;
                 Ok(BootstrapOutcome::Consumed)
             }
             TransportEvent::Disconnected { connection, .. }
             | TransportEvent::ConnectionFailed { connection, .. } => {
+                if let Some(reason) = transport.take_local_failure(*connection) {
+                    if super::lifecycle::is_abuse(reason) {
+                        let origin = self
+                            .peers
+                            .get(connection)
+                            .map(|p| p.origin)
+                            .or_else(|| self.waiting.get(connection).map(|p| p.0));
+                        if let Some(origin) = origin {
+                            self.admission.penalize(origin, now);
+                        }
+                    }
+                }
                 self.peers.remove(connection);
+                self.waiting.remove(connection);
+                self.queue.retain(|id, _| id != connection);
                 transport.forget_connection(*connection);
                 connections.observe(event);
                 Ok(BootstrapOutcome::Consumed)
@@ -266,11 +270,12 @@ impl HostBootstrap {
                 payload,
             } => {
                 let Some(peer) = self.peers.get_mut(connection) else {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
+                        now,
                     ));
                 };
                 if matches!(
@@ -278,19 +283,21 @@ impl HostBootstrap {
                     ConnectionState::Authenticating | ConnectionState::Securing
                 ) && now.saturating_duration_since(peer.started) >= AUTH_TIMEOUT
                 {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::AuthenticationTimeout,
                         transport,
                         connections,
+                        now,
                     ));
                 }
                 let Ok(route) = wire::frame_route_for_class(payload, *class) else {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
+                        now,
                     ));
                 };
                 if peer.state == ConnectionState::Ready && route == wire::FrameRoute::Gameplay {
@@ -303,19 +310,21 @@ impl HostBootstrap {
                     return Ok(BootstrapOutcome::Syncing);
                 }
                 if route != wire::FrameRoute::Authentication {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
+                        now,
                     ));
                 }
                 let Ok(message) = wire::decode_for_class(payload, *class) else {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
+                        now,
                     ));
                 };
                 if peer.state == ConnectionState::Securing
@@ -329,30 +338,33 @@ impl HostBootstrap {
                 let WireMessage::SessionControl(SessionControlMessage::ClientProof(proof)) =
                     message
                 else {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
+                        now,
                     ));
                 };
                 let Some(handshake) = peer.handshake.take() else {
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::ProtocolViolation,
                         transport,
                         connections,
+                        now,
                     ));
                 };
                 let Ok((confirmation, secret)) = handshake.finish(proof) else {
-                    self.failures.take(now);
-                    return Err(self.reject(
+                    return Err(self.reject_at(
                         *connection,
                         DisconnectReason::AuthenticationFailed,
                         transport,
                         connections,
+                        now,
                     ));
                 };
+                self.admission.succeed(peer.origin);
                 let accepted = AuthAccepted {
                     player: peer.hello.reserved_player,
                     confirmation,
@@ -362,21 +374,23 @@ impl HostBootstrap {
                     *connection,
                     SessionControlMessage::AuthAccepted(accepted),
                 ) {
-                    let _ = self.reject(
+                    let _ = self.reject_at(
                         *connection,
                         DisconnectReason::BackendFailure,
                         transport,
                         connections,
+                        now,
                     );
                     return Err(error);
                 }
                 // AuthAccepted must be queued in plaintext before installation.
                 if let Err(error) = transport.install(*connection, secret, ChannelRole::Host) {
-                    let _ = self.reject(
+                    let _ = self.reject_at(
                         *connection,
-                        DisconnectReason::ProtocolViolation,
+                        DisconnectReason::BackendFailure,
                         transport,
                         connections,
+                        now,
                     );
                     return Err(BootstrapError::Transport(error));
                 }
@@ -385,6 +399,80 @@ impl HostBootstrap {
                 Ok(BootstrapOutcome::Consumed)
             }
         }
+    }
+    fn pump(
+        &mut self,
+        transport: &mut SecureTransport<impl Transport>,
+        connections: &mut SessionConnections,
+        now: Instant,
+    ) -> Vec<(ConnectionId, BootstrapError)> {
+        let mut errors = Vec::new();
+        while self.queue.len() != 0 && self.starts.take(1, now) {
+            let connection = self.queue.pop().expect("waiting item");
+            let (origin, _) = self
+                .waiting
+                .remove(&connection)
+                .expect("waiting connection");
+            if let Err(error) = self.start_auth(connection, origin, transport, connections, now) {
+                errors.push((connection, error));
+            }
+        }
+        errors
+    }
+    fn start_auth(
+        &mut self,
+        connection: ConnectionId,
+        origin: Option<Origin>,
+        transport: &mut SecureTransport<impl Transport>,
+        connections: &mut SessionConnections,
+        now: Instant,
+    ) -> Result<(), BootstrapError> {
+        let Some(player) = self.allocate(connections) else {
+            return Err(self.reject_at(
+                connection,
+                DisconnectReason::BackendFailure,
+                transport,
+                connections,
+                now,
+            ));
+        };
+        let Ok((handshake, hello)) = ServerHandshake::start(&self.password, self.metadata, player)
+        else {
+            return Err(self.reject_at(
+                connection,
+                DisconnectReason::BackendFailure,
+                transport,
+                connections,
+                now,
+            ));
+        };
+        self.peers.insert(
+            connection,
+            HostPeer {
+                state: ConnectionState::TransportConnected,
+                origin,
+                hello,
+                started: now,
+                authenticated_at: None,
+                handshake: Some(handshake),
+            },
+        );
+        if let Err(error) = send_control(
+            transport,
+            connection,
+            SessionControlMessage::ServerHello(hello),
+        ) {
+            let _ = self.reject_at(
+                connection,
+                DisconnectReason::BackendFailure,
+                transport,
+                connections,
+                now,
+            );
+            return Err(error);
+        }
+        self.peers.get_mut(&connection).expect("inserted").state = ConnectionState::Authenticating;
+        Ok(())
     }
     /// Nonblocking timer maintenance; no crypto or piece work for stable peers.
     pub fn expire(
@@ -416,10 +504,30 @@ impl HostBootstrap {
                 }
             })
             .collect();
-        expired
-            .into_iter()
-            .map(|(id, reason)| (id, self.reject(id, reason, transport, connections)))
-            .collect()
+        let mut errors = Vec::new();
+        for (id, reason) in expired {
+            errors.push((id, self.reject_at(id, reason, transport, connections, now)));
+        }
+        let expired_waiting: Vec<_> = self
+            .waiting
+            .iter()
+            .filter(|(_, (_, at))| now.saturating_duration_since(*at) >= AUTH_TIMEOUT)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in expired_waiting {
+            errors.push((
+                id,
+                self.reject_at(
+                    id,
+                    DisconnectReason::HostCapacityTimeout,
+                    transport,
+                    connections,
+                    now,
+                ),
+            ));
+        }
+        errors.extend(self.pump(transport, connections, now));
+        errors
     }
     pub fn begin_sync(&mut self, connection: ConnectionId) -> Result<(), BootstrapError> {
         let peer = self

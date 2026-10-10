@@ -646,7 +646,7 @@ fn pending_capacity_is_separate_from_global_attempt_rate() {
             &mut p.host_connections,
             p.now + Duration::from_secs(8)
         ),
-        Err(BootstrapError::Rejected(DisconnectReason::RateLimited))
+        Err(BootstrapError::Rejected(DisconnectReason::JoinCapacity))
     );
     assert_eq!(p.host_connections.peers().count(), MAX_PENDING_AUTH);
     p.host
@@ -672,87 +672,167 @@ fn pending_capacity_is_separate_from_global_attempt_rate() {
         .unwrap();
 }
 #[test]
-fn host_global_start_and_failure_buckets_refill() {
-    for fail in [false, true] {
-        let mut p = Pair::new("correct password");
-        let mut proofs = Vec::new();
-        for n in 0..AUTH_ATTEMPT_BURST {
-            let id = ConnectionId::new(n as u64);
-            p.host
-                .process(
-                    &TransportEvent::Connected { connection: id },
-                    &mut p.ht,
-                    &mut p.host_connections,
-                    p.now,
-                )
-                .unwrap();
-            if fail {
-                // Valid point but invalid confirmation: consumes a failed attempt.
-                let WireMessage::SessionControl(SessionControlMessage::ServerHello(h)) =
-                    wire::decode(match p.ht.backend_mut().sent.last().unwrap() {
-                        TransportEvent::Message { payload, .. } => payload,
-                        _ => unreachable!(),
-                    })
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-                let (_, mut proof) =
-                    ClientHandshake::start(&password("incorrect password"), &h).unwrap();
-                proof.confirmation = [0; 32];
-                proofs.push((id, proof));
-            }
-        }
-        // Let the start bucket refill before draining the failure bucket,
-        // proving that failures block starts independently of start credit.
-        let now = p.now
-            + if fail {
-                Duration::from_secs(2)
-            } else {
-                Duration::ZERO
-            };
-        for (id, proof) in proofs {
-            assert!(p
-                .host
-                .process(
-                    &message_event(
-                        id,
-                        &WireMessage::SessionControl(SessionControlMessage::ClientProof(proof))
-                    ),
-                    &mut p.ht,
-                    &mut p.host_connections,
-                    now
-                )
-                .is_err());
-        }
-        let id = ConnectionId::new(999);
-        assert_eq!(
-            p.host.process(
-                &TransportEvent::Connected { connection: id },
-                &mut p.ht,
-                &mut p.host_connections,
-                now
-            ),
-            Err(BootstrapError::Rejected(DisconnectReason::RateLimited))
-        );
-        assert!(p
-            .host
-            .process(
-                &TransportEvent::Connected { connection: id },
-                &mut p.ht,
-                &mut p.host_connections,
-                now + Duration::from_millis(249)
-            )
-            .is_err());
+fn failed_origin_backoff_survives_reconnect_without_blocking_correct_password_peer() {
+    let mut p = Pair::new("correct password");
+    let bad = Origin::ip("192.0.2.1".parse().unwrap());
+    let good = Origin::ip("192.0.2.2".parse().unwrap());
+    p.ht.backend_mut().origin = Some(bad);
+    for n in 0..3 {
+        let id = ConnectionId::new(n);
         p.host
             .process(
                 &TransportEvent::Connected { connection: id },
                 &mut p.ht,
                 &mut p.host_connections,
-                now + Duration::from_millis(250),
+                p.now,
+            )
+            .unwrap();
+        let hello = match p.ht.backend_mut().sent.pop().unwrap() {
+            TransportEvent::Message { payload, .. } => match wire::decode(&payload).unwrap() {
+                WireMessage::SessionControl(SessionControlMessage::ServerHello(hello)) => hello,
+                _ => panic!("hello"),
+            },
+            _ => panic!("message"),
+        };
+        let (_, proof) = ClientHandshake::start(&password("wrong password"), &hello).unwrap();
+        let event = message_event(
+            id,
+            &WireMessage::SessionControl(SessionControlMessage::ClientProof(proof)),
+        );
+        assert_eq!(
+            p.host
+                .process(&event, &mut p.ht, &mut p.host_connections, p.now),
+            Err(BootstrapError::Rejected(
+                DisconnectReason::AuthenticationFailed
+            ))
+        );
+        // Duplicate proof and delayed disconnect must not add another failure.
+        let _ = p
+            .host
+            .process(&event, &mut p.ht, &mut p.host_connections, p.now);
+        p.host
+            .process(
+                &TransportEvent::Disconnected {
+                    connection: id,
+                    reason: DisconnectReason::AuthenticationFailed,
+                },
+                &mut p.ht,
+                &mut p.host_connections,
+                p.now,
             )
             .unwrap();
     }
+    let reconnect = ConnectionId::new(999);
+    assert_eq!(
+        p.host.process(
+            &TransportEvent::Connected {
+                connection: reconnect
+            },
+            &mut p.ht,
+            &mut p.host_connections,
+            p.now
+        ),
+        Err(BootstrapError::Rejected(DisconnectReason::RateLimited))
+    );
+    p.ht.backend_mut().origin = Some(good);
+    let mut retired = Vec::new();
+    p.ht.poll(&mut retired).unwrap();
+    p.authenticate();
+    assert_eq!(p.host.state(HA), Some(ConnectionState::Authenticated));
+    p.ht.backend_mut().origin = Some(bad);
+    let now = p.now + Duration::from_secs(30);
+    p.host
+        .process(
+            &TransportEvent::Connected {
+                connection: reconnect,
+            },
+            &mut p.ht,
+            &mut p.host_connections,
+            now,
+        )
+        .unwrap();
+    // Exactly the first (30-second) penalty was applied despite duplicate events.
+    assert_eq!(
+        p.host.state(reconnect),
+        Some(ConnectionState::Authenticating)
+    );
+}
+#[test]
+fn exhausted_shared_crypto_credit_waits_fairly_and_disconnections_clear_waiters() {
+    let mut p = Pair::new("correct password");
+    for n in 0..AUTH_ATTEMPT_BURST {
+        p.ht.backend_mut().origin = Some(Origin::ip(
+            std::net::Ipv4Addr::new(10, 0, 0, n as u8).into(),
+        ));
+        p.host
+            .process(
+                &TransportEvent::Connected {
+                    connection: ConnectionId::new(n.into()),
+                },
+                &mut p.ht,
+                &mut p.host_connections,
+                p.now,
+            )
+            .unwrap();
+    }
+    let a = Origin::ip("192.0.2.1".parse().unwrap());
+    let b = Origin::ip("192.0.2.2".parse().unwrap());
+    for (id, origin) in [(100, a), (101, a), (102, a), (200, b)] {
+        p.ht.backend_mut().origin = Some(origin);
+        p.host
+            .process(
+                &TransportEvent::Connected {
+                    connection: ConnectionId::new(id),
+                },
+                &mut p.ht,
+                &mut p.host_connections,
+                p.now,
+            )
+            .unwrap();
+        assert_eq!(
+            p.host.state(ConnectionId::new(id)),
+            Some(ConnectionState::TransportConnected)
+        );
+    }
+    assert!(p
+        .host
+        .expire(
+            &mut p.ht,
+            &mut p.host_connections,
+            p.now + Duration::from_millis(250)
+        )
+        .is_empty());
+    assert_eq!(
+        p.host.state(ConnectionId::new(100)),
+        Some(ConnectionState::Authenticating)
+    );
+    assert!(p
+        .host
+        .expire(
+            &mut p.ht,
+            &mut p.host_connections,
+            p.now + Duration::from_millis(500)
+        )
+        .is_empty());
+    assert_eq!(
+        p.host.state(ConnectionId::new(200)),
+        Some(ConnectionState::Authenticating)
+    );
+    p.host
+        .process(
+            &TransportEvent::Disconnected {
+                connection: ConnectionId::new(101),
+                reason: DisconnectReason::RemoteClosed,
+            },
+            &mut p.ht,
+            &mut p.host_connections,
+            p.now,
+        )
+        .unwrap();
+    p.host
+        .expire(&mut p.ht, &mut p.host_connections, p.now + AUTH_TIMEOUT);
+    assert_eq!(p.host.state(ConnectionId::new(101)), None);
+    assert_eq!(p.host.state(ConnectionId::new(102)), None);
 }
 #[test]
 fn malformed_and_oversized_session_control_rejected_before_deserialize() {
@@ -1130,7 +1210,7 @@ fn securing_connections_still_count_towards_pending_capacity() {
             &mut p.host_connections,
             p.now + Duration::from_secs(8)
         ),
-        Err(BootstrapError::Rejected(DisconnectReason::RateLimited))
+        Err(BootstrapError::Rejected(DisconnectReason::JoinCapacity))
     );
 }
 
@@ -1175,4 +1255,98 @@ fn tampered_channel_close_routed_through_bootstrap_notifies_exactly_once() {
     assert!(events.is_empty());
     assert!(!p.ht.has_channel(HA));
     assert_eq!(p.host.state(HA), None);
+}
+
+#[test]
+fn generated_passwords_are_128_bit_hex_secrets_and_authenticate_normally() {
+    let a = SessionPassword::generate().unwrap();
+    let b = SessionPassword::generate().unwrap();
+    assert_eq!(a.invitation_secret().len(), 32);
+    assert_ne!(a.invitation_secret(), b.invitation_secret());
+    assert_eq!(format!("{a:?}"), "SessionPassword([REDACTED])");
+    let (server, hello) = ServerHandshake::start(&a, metadata(), A).unwrap();
+    let (client, proof) = ClientHandshake::start(
+        &SessionPassword::new(a.invitation_secret().to_string()).unwrap(),
+        &hello,
+    )
+    .unwrap();
+    let (confirmation, secret) = server.finish(proof).unwrap();
+    let (_, other) = client
+        .finish(AuthAccepted {
+            player: A,
+            confirmation,
+        })
+        .unwrap();
+    assert_eq!(secret.as_bytes(), other.as_bytes());
+}
+
+#[test]
+fn malformed_bootstrap_and_secure_records_count_once_per_owned_connection() {
+    for secure_rejection in [false, true] {
+        let mut p = Pair::new("correct password");
+        p.ht.backend_mut().origin = Some(Origin::ip("192.0.2.1".parse().unwrap()));
+        for n in 0..3 {
+            let id = ConnectionId::new(n);
+            p.host
+                .process(
+                    &TransportEvent::Connected { connection: id },
+                    &mut p.ht,
+                    &mut p.host_connections,
+                    p.now,
+                )
+                .unwrap();
+            let event = TransportEvent::Message {
+                connection: id,
+                class: MessageClass::Control,
+                payload: vec![0],
+            };
+            if secure_rejection {
+                p.ht.backend_mut().inbox.push(event);
+                let mut events = Vec::new();
+                p.ht.poll(&mut events).unwrap();
+                assert!(events.iter().any(|e| matches!(e, TransportEvent::Disconnected { connection, reason: DisconnectReason::ProtocolViolation } if *connection == id)));
+                for event in &events {
+                    p.host
+                        .process(event, &mut p.ht, &mut p.host_connections, p.now)
+                        .unwrap();
+                }
+            } else {
+                assert_eq!(
+                    p.host
+                        .process(&event, &mut p.ht, &mut p.host_connections, p.now),
+                    Err(BootstrapError::Rejected(
+                        DisconnectReason::ProtocolViolation
+                    ))
+                );
+                let _ = p
+                    .host
+                    .process(&event, &mut p.ht, &mut p.host_connections, p.now);
+            }
+            let duplicate = TransportEvent::Disconnected {
+                connection: id,
+                reason: DisconnectReason::ProtocolViolation,
+            };
+            p.host
+                .process(&duplicate, &mut p.ht, &mut p.host_connections, p.now)
+                .unwrap();
+        }
+        let id = ConnectionId::new(900);
+        assert_eq!(
+            p.host.process(
+                &TransportEvent::Connected { connection: id },
+                &mut p.ht,
+                &mut p.host_connections,
+                p.now
+            ),
+            Err(BootstrapError::Rejected(DisconnectReason::RateLimited))
+        );
+        p.host
+            .process(
+                &TransportEvent::Connected { connection: id },
+                &mut p.ht,
+                &mut p.host_connections,
+                p.now + Duration::from_secs(30),
+            )
+            .unwrap();
+    }
 }

@@ -118,6 +118,7 @@ pub(crate) struct ConnectionDraft {
     player_name_draft: Option<String>,
     // No serialization, Debug, or Clone; dropping/replacing a draft wipes its buffer.
     pub password: Zeroizing<String>,
+    invitation: Zeroizing<String>,
 }
 impl ConnectionDraft {
     fn new(address: &str) -> Self {
@@ -127,13 +128,15 @@ impl ConnectionDraft {
             method: RuntimeConnectionMethod::DirectIp,
             player_name_draft: None,
             password: Zeroizing::new(String::with_capacity(PASSWORD_DRAFT_CAPACITY)),
+            invitation: Zeroizing::new(String::with_capacity(PASSWORD_DRAFT_CAPACITY + 512)),
         }
     }
     pub fn valid(&self, host: bool) -> bool {
         (match self.method {
             RuntimeConnectionMethod::DirectIp => valid_address(&self.address, host),
             RuntimeConnectionMethod::Internet => host || valid_room_code(&self.room_code),
-        }) && SessionPassword::validate(&self.password).is_ok()
+        }) && ((host && self.password.is_empty())
+            || SessionPassword::validate(&self.password).is_ok())
     }
     fn take_password(&mut self) -> Result<SessionPassword, UiError> {
         SessionPassword::new(std::mem::replace(
@@ -143,12 +146,48 @@ impl ConnectionDraft {
         .map_err(|_| UiError::Password)
     }
     pub fn clear_password(&mut self) {
+        self.invitation.zeroize();
         if self.password.capacity() == PASSWORD_DRAFT_CAPACITY {
             self.password.zeroize();
         } else {
             // Release oversized raw drafts on navigation/settings changes.
             self.password = Zeroizing::new(String::with_capacity(PASSWORD_DRAFT_CAPACITY));
         }
+    }
+    fn import_invitation(&mut self) -> bool {
+        let mut parts = self.invitation.splitn(4, '|');
+        if parts.next() != Some("jigsall-invite-v1") {
+            return false;
+        }
+        let method = match parts.next() {
+            Some("internet") => RuntimeConnectionMethod::Internet,
+            Some("direct") => RuntimeConnectionMethod::DirectIp,
+            _ => return false,
+        };
+        let Some(target) = parts.next() else {
+            return false;
+        };
+        let Some(secret) = parts.next() else {
+            return false;
+        };
+        if SessionPassword::validate(secret).is_err()
+            || !(match method {
+                RuntimeConnectionMethod::Internet => valid_room_code(target),
+                RuntimeConnectionMethod::DirectIp => valid_address(target, false),
+            })
+        {
+            return false;
+        }
+        let target = target.to_owned();
+        let secret = Zeroizing::new(secret.to_owned());
+        self.clear_password();
+        self.password.push_str(&secret);
+        self.method = method;
+        match method {
+            RuntimeConnectionMethod::Internet => self.room_code = target.to_ascii_uppercase(),
+            RuntimeConnectionMethod::DirectIp => self.address = target,
+        }
+        true
     }
 }
 
@@ -257,6 +296,8 @@ pub(crate) struct MultiplayerUi {
     password_cleared: bool,
     invite_shown: bool,
     invite_open: bool,
+    invite_secret: Option<Zeroizing<String>>,
+    invite_address: String,
     disconnected_save_opened: bool,
     connecting: bool,
     owns_session: bool,
@@ -284,6 +325,8 @@ impl Default for MultiplayerUi {
             password_cleared: false,
             invite_shown: false,
             invite_open: false,
+            invite_secret: None,
+            invite_address: String::new(),
             disconnected_save_opened: false,
             connecting: false,
             owns_session: false,
@@ -298,6 +341,12 @@ impl Default for MultiplayerUi {
     }
 }
 impl MultiplayerUi {
+    pub(crate) fn paint_invite_button(&mut self, ui: &mut egui::Ui, i18n: &Localization) {
+        if self.invite_secret.is_some() && ui.button(i18n.text("multiplayer-invite-open")).clicked()
+        {
+            self.invite_open = true;
+        }
+    }
     pub fn configure_connection_methods(&mut self, available: bool) {
         self.internet_available = available && cfg!(feature = "rendezvous");
         let method = if !self.internet_available {
@@ -333,6 +382,8 @@ impl MultiplayerUi {
             && (self.host.method == RuntimeConnectionMethod::DirectIp || self.internet_available)
     }
     pub fn navigate(&mut self, screen: MenuScreen) {
+        self.invite_secret = None;
+        self.invite_address.clear();
         self.host.clear_password();
         self.join.clear_password();
         self.host.player_name_draft = None;
@@ -355,6 +406,15 @@ impl MultiplayerUi {
         if self.submitted {
             return;
         }
+        if self.host.password.is_empty() {
+            match SessionPassword::generate() {
+                Ok(password) => self.host.password.push_str(&password.invitation_secret()),
+                Err(_) => {
+                    self.error = Some(UiError::Password);
+                    return;
+                }
+            }
+        }
         if self.host.method == RuntimeConnectionMethod::Internet
             && (!cfg!(feature = "rendezvous") || !self.internet_available)
         {
@@ -369,6 +429,7 @@ impl MultiplayerUi {
             }
             match self.host.take_password() {
                 Ok(password) => {
+                    self.invite_secret = Some(password.invitation_secret());
                     self.submitted = true;
                     self.connecting = true;
                     self.owns_session = true;
@@ -385,6 +446,7 @@ impl MultiplayerUi {
                 .map(|password| (address, password))
         }) {
             Ok((address, password)) => {
+                self.invite_secret = Some(password.invitation_secret());
                 self.submitted = true;
                 self.connecting = true;
                 self.owns_session = true;
@@ -479,6 +541,8 @@ impl MultiplayerUi {
         }
     }
     pub fn cancel(&mut self) {
+        self.invite_secret = None;
+        self.invite_address.clear();
         self.host.clear_password();
         self.join.clear_password();
         self.pending_host = None;
@@ -831,6 +895,8 @@ pub(crate) fn reset_on_menu(mut ui: ResMut<MultiplayerUi>, status: Res<NetworkSt
     if !ui.connecting {
         ui.submitted = false;
         ui.owns_session = false;
+        ui.invite_secret = None;
+        ui.invite_address.clear();
         ui.selected_save = None;
         if !matches!(ui.screen, MenuScreen::Multiplayer | MenuScreen::Join) {
             ui.screen = MenuScreen::Title;
@@ -905,6 +971,17 @@ pub(crate) fn paint_connection_fields(
     profile: &mut PlayerSettingsState,
     i18n: &Localization,
 ) {
+    if !host {
+        ui.label(i18n.text("multiplayer-paste-invite"));
+        let mut field = egui::TextEdit::singleline(&mut PasswordBuffer(&mut draft.invitation))
+            .id(egui::Id::new("multiplayer-invitation"))
+            .password(true)
+            .desired_width(f32::INFINITY)
+            .show(ui);
+        field.state.clear_undoer();
+        field.state.store(ui.ctx(), field.response.id);
+        draft.import_invitation();
+    }
     theme::section(
         ui,
         i18n.text(if host {
@@ -963,6 +1040,18 @@ pub(crate) fn paint_connection_fields(
         }
     }
     ui.label(i18n.text("multiplayer-password"));
+    if host {
+        theme::hint(ui, i18n.text("multiplayer-auto-password"));
+        if ui
+            .button(i18n.text("multiplayer-generate-password"))
+            .clicked()
+        {
+            if let Ok(password) = SessionPassword::generate() {
+                draft.clear_password();
+                draft.password.push_str(&password.invitation_secret());
+            }
+        }
+    }
     // Keep the full draft, including decomposed input and IME composition. A raw
     // char_limit would truncate passwords before the shared NFC length check.
     let mut password = egui::TextEdit::singleline(&mut PasswordBuffer(&mut draft.password))
@@ -1215,7 +1304,15 @@ pub(crate) fn draw_connection_ui(
                 state.invite_shown = true;
             }
             if let Ok(ctx) = contexts.ctx_mut() {
-                paint_invite_panel(ctx, &mut state.invite_open, &status, &i18n);
+                let state = &mut *state;
+                paint_invite_panel(
+                    ctx,
+                    &mut state.invite_open,
+                    &status,
+                    &i18n,
+                    state.invite_secret.as_deref().map(|s| s.as_str()),
+                    &mut state.invite_address,
+                );
             }
         }
         return;
@@ -1480,6 +1577,8 @@ fn paint_invite_panel(
     open: &mut bool,
     status: &NetworkStatus,
     i18n: &Localization,
+    secret: Option<&str>,
+    address: &mut String,
 ) {
     let mut dismissed = false;
     egui::Window::new(i18n.text("multiplayer-invite-title"))
@@ -1493,6 +1592,36 @@ fn paint_invite_panel(
             paint_host_status(ui, status, i18n);
             if status.connection_method == Some(RuntimeConnectionMethod::Internet) {
                 paint_room_code(ui, status, i18n);
+            }
+            if let Some(secret) = secret {
+                let target = if status.connection_method == Some(RuntimeConnectionMethod::Internet)
+                {
+                    status.room_code.as_deref()
+                } else {
+                    if address.is_empty() {
+                        if let Some(bound) = status.address.filter(|a| !a.ip().is_unspecified()) {
+                            *address = bound.to_string();
+                        }
+                    }
+                    ui.label(i18n.text("multiplayer-server-address"));
+                    ui.text_edit_singleline(address);
+                    valid_address(address, false).then_some(address.as_str())
+                };
+                if let Some(target) = target {
+                    if ui.button(i18n.text("multiplayer-copy-invite")).clicked() {
+                        let method = if status.connection_method
+                            == Some(RuntimeConnectionMethod::Internet)
+                        {
+                            "internet"
+                        } else {
+                            "direct"
+                        };
+                        // Clipboard ownership is an explicit user action. No other
+                        // secret copy enters status, logs, persistence or undo.
+                        ui.ctx()
+                            .copy_text(format!("jigsall-invite-v1|{method}|{target}|{secret}"));
+                    }
+                }
             }
             theme::hint(ui, i18n.text("multiplayer-invite-playing"));
             dismissed = ui.button(i18n.text("common-close")).clicked();

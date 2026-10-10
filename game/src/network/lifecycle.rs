@@ -2,7 +2,8 @@
 //! never authenticated player identities. All clocks are supplied by the caller.
 use super::transport::{DisconnectReason, Origin};
 use std::{
-    collections::BTreeMap,
+    collections::{hash_map::RandomState, BTreeMap, BTreeSet, VecDeque},
+    hash::BuildHasher,
     time::{Duration, Instant},
 };
 
@@ -21,6 +22,8 @@ pub const BULK_BYTES_PER_SECOND: u64 = 4 * 1024 * 1024;
 pub const MAX_ORIGINS: usize = 256;
 pub const ORIGIN_TTL: Duration = Duration::from_secs(120);
 pub const ORIGIN_COOLDOWN: Duration = Duration::from_secs(30);
+const MAX_BACKOFF: Duration = Duration::from_secs(240);
+const OVERFLOW_SLOTS: usize = 512;
 pub const CONNECTION_START_BURST: u64 = 8;
 pub const CONNECTION_START_INTERVAL: Duration = Duration::from_secs(1);
 pub const JOIN_ADMISSION_BURST: u64 = 12;
@@ -55,6 +58,7 @@ impl SyncPolicy {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Bucket {
     credit: u128,
     updated: Instant,
@@ -98,16 +102,25 @@ impl Bucket {
         true
     }
 }
+#[derive(Clone)]
 struct OriginState {
     bucket: Bucket,
     touched: Instant,
     failures: u8,
     cooldown: Option<Instant>,
 }
+struct CompressedState {
+    // None means histories from distinct origins collided; keep them conservative.
+    owner: Option<Origin>,
+    state: OriginState,
+}
 pub(crate) struct Admission {
     global: Option<Bucket>,
     global_policy: Option<(u64, Duration)>,
     origins: BTreeMap<Origin, OriginState>,
+    active: BTreeSet<Origin>,
+    overflow: Vec<Option<CompressedState>>,
+    hash: RandomState,
     burst: u64,
     interval: Duration,
 }
@@ -123,28 +136,86 @@ impl Admission {
             Some((JOIN_ADMISSION_BURST, JOIN_ADMISSION_INTERVAL)),
         )
     }
+    pub fn authentication() -> Self {
+        Self::new(ORIGIN_JOIN_BURST, ORIGIN_JOIN_INTERVAL, None)
+    }
     fn new(burst: u64, interval: Duration, global: Option<(u64, Duration)>) -> Self {
         Self {
             global: None,
             global_policy: global,
             origins: BTreeMap::new(),
+            active: BTreeSet::new(),
+            overflow: (0..OVERFLOW_SLOTS).map(|_| None).collect(),
+            hash: RandomState::new(),
             burst,
             interval,
         }
     }
     fn entry(&mut self, origin: Origin, now: Instant) -> Option<&mut OriginState> {
-        // Fail closed on a full table; do not evict a live cooldown to make room.
         self.origins
-            .retain(|_, s| now.saturating_duration_since(s.touched) < ORIGIN_TTL);
+            .retain(|o, s| self.active.contains(o) || Self::live(s, now));
         if !self.origins.contains_key(&origin) && self.origins.len() >= MAX_ORIGINS {
-            return None;
+            let victim = self
+                .origins
+                .iter()
+                .filter(|(o, _)| !self.active.contains(o))
+                .min_by_key(|(_, s)| s.touched)
+                .map(|(&o, _)| o)?;
+            let mut retired = self.origins.remove(&victim)?;
+            let slot = self.slot(victim);
+            let mut owner = Some(victim);
+            if let Some(old) = self.overflow[slot]
+                .take()
+                .filter(|s| Self::live(&s.state, now))
+            {
+                if old.owner != owner {
+                    owner = None;
+                }
+                Self::merge(&mut retired, old.state, now);
+            }
+            self.overflow[slot] = Some(CompressedState {
+                owner,
+                state: retired,
+            });
         }
-        Some(self.origins.entry(origin).or_insert_with(|| OriginState {
-            bucket: Bucket::new(self.burst, self.interval, now),
-            touched: now,
-            failures: 0,
-            cooldown: None,
+        let slot = self.slot(origin);
+        let inherited = self.overflow[slot]
+            .as_ref()
+            .filter(|s| Self::live(&s.state, now))
+            .map(|s| s.state.clone());
+        Some(self.origins.entry(origin).or_insert_with(|| {
+            inherited.unwrap_or_else(|| OriginState {
+                bucket: Bucket::new(self.burst, self.interval, now),
+                touched: now,
+                failures: 0,
+                cooldown: None,
+            })
         }))
+    }
+    fn slot(&self, origin: Origin) -> usize {
+        self.hash.hash_one(origin) as usize % OVERFLOW_SLOTS
+    }
+    fn live(s: &OriginState, now: Instant) -> bool {
+        now.saturating_duration_since(s.touched) < ORIGIN_TTL
+            || s.cooldown
+                .is_some_and(|until| now.saturating_duration_since(until) < ORIGIN_TTL)
+    }
+    // Conservative compressed history. Hash collisions can restrict admission,
+    // but churn never replenishes credit or shortens a live penalty.
+    fn merge(a: &mut OriginState, mut b: OriginState, now: Instant) {
+        a.bucket.available(0, now);
+        b.bucket.available(0, now);
+        a.bucket.credit = a.bucket.credit.min(b.bucket.credit);
+        a.touched = a.touched.max(b.touched);
+        a.failures = a.failures.max(b.failures);
+        a.cooldown = a.cooldown.max(b.cooldown);
+    }
+    pub fn protect(&mut self, origins: impl IntoIterator<Item = Option<Origin>>) {
+        self.active = origins
+            .into_iter()
+            .flatten()
+            .map(Origin::normalized)
+            .collect();
     }
     pub fn admit(
         &mut self,
@@ -152,6 +223,7 @@ impl Admission {
         pending: usize,
         now: Instant,
     ) -> Result<(), DisconnectReason> {
+        let origin = origin.map(Origin::normalized);
         if let Some(origin) = origin {
             if pending >= MAX_PENDING_PER_ORIGIN {
                 return Err(DisconnectReason::JoinCapacity);
@@ -181,14 +253,98 @@ impl Admission {
         Ok(())
     }
     pub fn penalize(&mut self, origin: Option<Origin>, now: Instant) {
-        if let Some(s) = origin.and_then(|o| self.entry(o, now)) {
+        if let Some(s) = origin
+            .map(Origin::normalized)
+            .and_then(|o| self.entry(o, now))
+        {
             s.touched = now;
             s.failures = s.failures.saturating_add(1);
             if s.failures >= COOLDOWN_FAILURES {
-                s.cooldown = Some(now + ORIGIN_COOLDOWN);
-                s.failures = 0;
+                let seconds = ORIGIN_COOLDOWN
+                    .as_secs()
+                    .saturating_mul(1u64 << (s.failures - COOLDOWN_FAILURES).min(3));
+                s.cooldown = Some(now + Duration::from_secs(seconds).min(MAX_BACKOFF));
             }
         }
+    }
+    pub fn succeed(&mut self, origin: Option<Origin>) {
+        let Some(origin) = origin.map(Origin::normalized) else {
+            return;
+        };
+        if let Some(s) = self.origins.get_mut(&origin) {
+            s.failures = 0;
+            s.cooldown = None;
+        }
+        let slot = self.slot(origin);
+        if let Some(history) = self.overflow[slot]
+            .as_mut()
+            .filter(|s| s.owner == Some(origin))
+        {
+            // Do not let a stale compressed copy undo a proven authentication.
+            // Preserve spent credit, and never clear another origin's penalty.
+            history.state.failures = 0;
+            history.state.cooldown = None;
+        }
+    }
+}
+
+/// Bounded frame-driven round robin. One source has at most four waiting items;
+/// each waiting source gets one turn before a source gets its next turn.
+pub(crate) struct FairQueue<T> {
+    items: VecDeque<(Option<Origin>, T, Instant)>,
+    active: VecDeque<Option<Origin>>,
+}
+impl<T> Default for FairQueue<T> {
+    fn default() -> Self {
+        Self {
+            items: VecDeque::new(),
+            active: VecDeque::new(),
+        }
+    }
+}
+impl<T> FairQueue<T> {
+    pub fn push(
+        &mut self,
+        origin: Option<Origin>,
+        item: T,
+        now: Instant,
+    ) -> Result<(), DisconnectReason> {
+        let origin = origin.map(Origin::normalized);
+        if self.items.len() >= MAX_PENDING_CONNECTIONS
+            || self.items.iter().filter(|(o, _, _)| *o == origin).count() >= MAX_PENDING_PER_ORIGIN
+        {
+            return Err(DisconnectReason::JoinCapacity);
+        }
+        if !self.active.contains(&origin) {
+            self.active.push_back(origin);
+        }
+        self.items.push_back((origin, item, now));
+        Ok(())
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        let origin = self.active.pop_front()?;
+        let index = self.items.iter().position(|(o, _, _)| *o == origin)?;
+        let (origin, item, _) = self.items.remove(index)?;
+        if self.items.iter().any(|(o, _, _)| *o == origin) {
+            self.active.push_back(origin);
+        }
+        Some(item)
+    }
+    pub fn retain(&mut self, mut keep: impl FnMut(&T, Instant) -> bool) {
+        self.items.retain(|(_, item, at)| keep(item, *at));
+        self.active
+            .retain(|origin| self.items.iter().any(|(o, _, _)| o == origin));
+    }
+    #[cfg(feature = "gns")]
+    pub fn any(&self, mut predicate: impl FnMut(&T) -> bool) -> bool {
+        self.items.iter().any(|(_, item, _)| predicate(item))
+    }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    #[cfg(feature = "gns")]
+    pub fn origins(&self) -> impl Iterator<Item = Option<Origin>> + '_ {
+        self.active.iter().copied()
     }
 }
 
@@ -205,6 +361,17 @@ pub(crate) fn is_abuse(reason: DisconnectReason) -> bool {
             | DisconnectReason::InvalidMessage
             | DisconnectReason::ProtocolViolation
     )
+}
+
+// Bootstrap owns PAKE failures/timeouts. Native transport accounts only its own
+// malformed traffic and establishment failures, once before removal.
+#[cfg_attr(not(feature = "gns"), allow(dead_code))]
+pub(crate) fn is_transport_abuse(reason: DisconnectReason) -> bool {
+    is_abuse(reason)
+        && !matches!(
+            reason,
+            DisconnectReason::AuthenticationFailed | DisconnectReason::AuthenticationTimeout
+        )
 }
 
 #[cfg(test)]
@@ -295,11 +462,166 @@ mod tests {
         }
         assert_eq!(gate.origins.len(), MAX_ORIGINS);
         let extra = Origin::Ip("192.0.2.1".parse().unwrap());
-        assert_eq!(
-            gate.admit(Some(extra), 0, now),
-            Err(DisconnectReason::RateLimited)
-        );
+        gate.admit(Some(extra), 0, now).unwrap();
+        assert_eq!(gate.origins.len(), MAX_ORIGINS);
         gate.admit(Some(extra), 0, now + ORIGIN_TTL).unwrap();
         assert_eq!(gate.origins.len(), 1);
+    }
+    #[test]
+    fn evicted_penalties_and_credit_survive_churn_and_active_history_is_pinned() {
+        let now = Instant::now();
+        let mut gate = Admission::connections();
+        let bad = origin(1);
+        let active = origin(2);
+        gate.admit(Some(active), 0, now).unwrap();
+        gate.protect([Some(active)]);
+        for _ in 0..COOLDOWN_FAILURES {
+            gate.penalize(Some(bad), now);
+        }
+        let spent = origin(3);
+        for _ in 0..CONNECTION_START_BURST {
+            gate.admit(Some(spent), 0, now).unwrap();
+        }
+        for n in 0..MAX_ORIGINS * 4 {
+            let ip = Origin::ip(std::net::Ipv4Addr::new(172, 16, (n / 256) as u8, n as u8).into());
+            gate.entry(ip, now).unwrap();
+        }
+        assert!(gate.origins.contains_key(&active));
+        assert_eq!(
+            gate.admit(Some(bad), 0, now),
+            Err(DisconnectReason::RateLimited)
+        );
+        assert_eq!(
+            gate.admit(Some(spent), 0, now),
+            Err(DisconnectReason::RateLimited)
+        );
+        assert_eq!(gate.origins.len(), MAX_ORIGINS);
+        assert_eq!(gate.overflow.len(), OVERFLOW_SLOTS);
+        gate.entry(origin(4), now + ORIGIN_TTL).unwrap();
+        assert!(gate.origins.contains_key(&active));
+    }
+    #[test]
+    fn successful_authentication_clears_its_evicted_penalty_without_restoring_credit() {
+        let now = Instant::now();
+        let mut gate = Admission::authentication();
+        let bad = origin(1);
+        for _ in 0..COOLDOWN_FAILURES {
+            gate.penalize(Some(bad), now);
+        }
+        let slot = gate.slot(bad);
+        let churn: Vec<_> = (0..4096)
+            .map(|n| Origin::ip(std::net::Ipv4Addr::new(172, 16, (n / 256) as u8, n as u8).into()))
+            .filter(|o| gate.slot(*o) != slot)
+            .take(MAX_ORIGINS)
+            .collect();
+        for o in &churn {
+            gate.entry(*o, now).unwrap();
+        }
+        assert!(!gate.origins.contains_key(&bad));
+        let at = now + ORIGIN_COOLDOWN;
+        gate.admit(Some(bad), 0, at).unwrap();
+        gate.succeed(Some(bad));
+        for o in &churn {
+            gate.entry(*o, at).unwrap().touched = at;
+        }
+        // Force another eviction of the now successful, inactive origin.
+        gate.entry(origin(250), at).unwrap();
+        gate.penalize(Some(bad), at);
+        assert_eq!(gate.origins[&bad].failures, 1);
+        assert!(gate.origins[&bad].cooldown.is_none());
+    }
+    #[test]
+    fn backoff_is_per_origin_progressive_bounded_and_success_resets_failures() {
+        let now = Instant::now();
+        let mut gate = Admission::authentication();
+        let mut at = now;
+        for failures in 1..=8 {
+            gate.penalize(Some(origin(1)), at);
+            if failures >= COOLDOWN_FAILURES {
+                let wait = Duration::from_secs(30 * (1 << (failures - COOLDOWN_FAILURES).min(3)));
+                // No probe before expiry: reconnecting exactly at the deadline
+                // must retain the preceding failure count even for 120/240 s.
+                assert!(gate.origins[&origin(1)]
+                    .cooldown
+                    .is_some_and(|until| until == at + wait));
+                gate.admit(Some(origin(2)), 0, at + wait).unwrap();
+                at += wait;
+                gate.admit(Some(origin(1)), 0, at).unwrap();
+            }
+        }
+        gate.succeed(Some(origin(1)));
+        gate.penalize(Some(origin(1)), at);
+        assert_eq!(gate.origins[&origin(1)].failures, 1);
+        assert!(gate.origins[&origin(1)].cooldown.is_none());
+    }
+    #[test]
+    fn ip_prefixes_and_reissued_routes_share_only_abuse_history() {
+        let now = Instant::now();
+        let mut gate = Admission::authentication();
+        for (a, b) in [
+            ("2001:db8:1:2::1", "2001:db8:1:2::ffff"),
+            ("192.0.2.1", "::ffff:192.0.2.1"),
+        ] {
+            let a = Origin::Ip(a.parse().unwrap());
+            let b = Origin::Ip(b.parse().unwrap());
+            for _ in 0..COOLDOWN_FAILURES {
+                gate.penalize(Some(a), now);
+            }
+            assert_eq!(
+                gate.admit(Some(b), 0, now),
+                Err(DisconnectReason::RateLimited)
+            );
+        }
+        use super::super::transport::RouteOrigin;
+        let a = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [3; 16])
+            .with_abuse_key([7; 16]);
+        let b = RouteOrigin::from_authenticated_route([1; 16], [2; 16], [4; 16])
+            .with_abuse_key([7; 16]);
+        assert_ne!(a, b);
+        for _ in 0..COOLDOWN_FAILURES {
+            gate.penalize(Some(Origin::Route(a)), now);
+        }
+        assert_eq!(
+            gate.admit(Some(Origin::Route(b)), 0, now),
+            Err(DisconnectReason::RateLimited)
+        );
+    }
+    #[test]
+    fn fair_queue_serves_every_origin_before_repeating_any_origin() {
+        let now = Instant::now();
+        let mut queue = FairQueue::default();
+        for o in 1..=3 {
+            for n in 0..3 {
+                queue.push(Some(origin(o)), (o, n), now).unwrap();
+            }
+        }
+        for n in 0..3 {
+            for o in 1..=3 {
+                assert_eq!(queue.pop(), Some((o, n)));
+            }
+        }
+        assert!(queue.pop().is_none());
+    }
+    #[test]
+    fn waiting_sources_alternate_and_cleanup_preserves_bounds() {
+        let now = Instant::now();
+        let mut queue = FairQueue::default();
+        for n in 0..4 {
+            queue.push(Some(origin(1)), n, now).unwrap();
+        }
+        assert_eq!(
+            queue.push(Some(origin(1)), 9, now),
+            Err(DisconnectReason::JoinCapacity)
+        );
+        for n in 4..8 {
+            queue.push(Some(origin(2)), n, now).unwrap();
+        }
+        assert_eq!(queue.pop(), Some(0));
+        assert_eq!(queue.pop(), Some(4));
+        assert_eq!(queue.pop(), Some(1));
+        queue.retain(|item, _| *item < 4);
+        assert_eq!(queue.len(), 2);
+        queue.retain(|_, at| now + CONNECTING_TIMEOUT < at + CONNECTING_TIMEOUT);
+        assert_eq!(queue.len(), 0);
     }
 }

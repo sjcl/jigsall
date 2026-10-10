@@ -36,6 +36,7 @@ fn auth(p: u8, m: u8, j: u8) -> ServerMessage {
     ServerMessage::AuthorizePeer {
         peer_id: protocol::PeerId(id(p)),
         member_id: MemberId(id(m)),
+        abuse_key: AbuseKey(id(m)),
         join_id: JoinId(id(j)),
     }
 }
@@ -45,8 +46,14 @@ fn unavailable(p: u8) -> ServerMessage {
     }
 }
 fn bind(a: &mut RendezvousAdapter, p: u8, m: u8) {
-    a.bind(PeerId::from_bytes(id(p)), MemberId(id(m)), room(), None)
-        .unwrap();
+    a.bind(
+        PeerId::from_bytes(id(p)),
+        MemberId(id(m)),
+        room(),
+        None,
+        AbuseKey(id(m)),
+    )
+    .unwrap();
 }
 fn signal(p: u8) -> ClientMessage {
     ClientMessage::Signal {
@@ -154,6 +161,7 @@ fn identity_conflicts_remain_fatal_before_capacity_rejection() {
             MemberId(id(11)),
             room(),
             Some(JoinId(id(20))),
+            AbuseKey(id(11)),
         )
         .unwrap();
         assert_eq!(

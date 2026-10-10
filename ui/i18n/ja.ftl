@@ -336,3 +336,9 @@ save-host-departure-warning = あなたはホストです。離れると部屋�
 game-player-list-toggle = クリックでプレイヤー一覧を開く・閉じる
 game-player-you = 自分
 game-player-host = ホスト
+
+multiplayer-auto-password = 空欄ならランダムなパスワードを生成します。手動指定もできます。
+multiplayer-generate-password = パスワードを生成
+multiplayer-paste-invite = 招待情報を貼り付け
+multiplayer-copy-invite = パスワード付き招待情報をコピー
+multiplayer-invite-open = 招待

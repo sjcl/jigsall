@@ -90,7 +90,14 @@ impl Queue {
             !q.messages.is_empty() || now.saturating_duration_since(q.touched) < ORIGIN_TTL
         });
         if !self.routes.contains_key(&key) && self.routes.len() >= MAX_ORIGINS {
-            return Err(TransportError::Backpressure);
+            let victim = self
+                .routes
+                .iter()
+                .filter(|(_, q)| q.messages.is_empty())
+                .min_by_key(|(_, q)| q.touched)
+                .map(|(&key, _)| key)
+                .ok_or(TransportError::Backpressure)?;
+            self.routes.remove(&victim);
         }
         let q = self.routes.entry(key).or_insert_with(|| RouteQueue {
             messages: VecDeque::new(),
