@@ -326,6 +326,7 @@ mod tests {
             .init_resource::<PlayersOverlayState>()
             .init_resource::<LocalPlayerId>()
             .init_resource::<crate::notifications::Notifications>()
+            .add_message::<jigsall_game::events::GameEvent>()
             .init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(PlayerRoster::host_only(PlayerId(0), None))
             .insert_resource(NetworkStatus {
@@ -339,6 +340,7 @@ mod tests {
             .add_systems(
                 bevy_egui::EguiPrimaryContextPass,
                 (
+                    crate::notifications::collect_events.before(draw_game_ui),
                     draw_game_ui,
                     draw_players_overlay
                         .after(draw_game_ui)
@@ -514,6 +516,51 @@ mod tests {
                 .resource::<crate::notifications::Notifications>()
                 .opened
         );
+    }
+
+    #[test]
+    fn autosave_warning_button_survives_viewing_and_retry_without_capturing_keys() {
+        use jigsall_game::{events::GameEvent, persistence::runtime::PersistenceError};
+        for issue in [
+            GameEvent::AutosaveFailed {
+                error: PersistenceError::WorkerStopped,
+            },
+            GameEvent::AutosaveRotationFailed {
+                error: PersistenceError::WorkerStopped,
+            },
+        ] {
+            for locale in [
+                crate::localization::Locale::EN_US,
+                crate::localization::Locale::JA,
+            ] {
+                let (mut app, ctx) = hud_app();
+                app.world_mut()
+                    .resource_mut::<Localization>()
+                    .set_preference(crate::localization::LanguagePreference::Locale(locale));
+                let history = app
+                    .world()
+                    .resource::<Localization>()
+                    .text("events-history");
+                let warning = format!("⚠ {history}");
+                app.world_mut()
+                    .resource_mut::<Messages<GameEvent>>()
+                    .write(issue.clone());
+                for _ in 0..2 {
+                    click_hud_label(&mut app, &ctx, &warning);
+                    assert!(app.world().resource::<GameUiPointerCapture>().over_hud);
+                    assert!(ctx.memory(|memory| memory.focused().is_none()));
+                    assert!(!ctx.egui_wants_keyboard_input());
+                }
+                app.world_mut()
+                    .resource_mut::<Messages<GameEvent>>()
+                    .write(GameEvent::AutosaveStarted);
+                click_hud_label(&mut app, &ctx, &warning);
+                app.world_mut()
+                    .resource_mut::<Messages<GameEvent>>()
+                    .write(GameEvent::AutosaveSucceeded);
+                click_hud_label(&mut app, &ctx, &history);
+            }
+        }
     }
 
     #[test]

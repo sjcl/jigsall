@@ -144,6 +144,88 @@ fn duplicate_start_does_not_add_history_or_refresh_progress() {
 }
 
 #[test]
+fn autosave_issue_survives_expiry_eviction_and_retry_until_success_or_reset() {
+    let now = Instant::now();
+    for issue in [
+        GameEvent::AutosaveFailed {
+            error: PersistenceError::WorkerStopped,
+        },
+        GameEvent::AutosaveRotationFailed {
+            error: PersistenceError::WorkerStopped,
+        },
+    ] {
+        let mut state = Notifications::default();
+        accept(&mut state, issue.clone(), now);
+        for id in 0..HISTORY_LIMIT {
+            accept(
+                &mut state,
+                GameEvent::PlayerLeft {
+                    player: player(id as u64, None),
+                },
+                now,
+            );
+        }
+        state.expire(now + TOAST_DURATION);
+        assert!(state.visible().is_empty());
+        assert!(state
+            .history
+            .iter()
+            .all(|e| matches!(e.event, GameEvent::PlayerLeft { .. })));
+        assert!(state.autosave_issue.is_some());
+        state.opened = true;
+        accept(&mut state, GameEvent::AutosaveStarted, now);
+        assert!(state.autosave_issue.is_some());
+        accept(&mut state, GameEvent::AutosaveSucceeded, now);
+        assert!(state.autosave_issue.is_none());
+        accept(&mut state, issue, now);
+        assert!(state.autosave_issue.is_some());
+        accept(&mut state, GameEvent::SessionReset, now);
+        assert!(state.autosave_issue.is_none());
+        assert!(state.history.is_empty());
+    }
+}
+
+#[test]
+fn every_join_cancellation_reason_has_localized_user_facing_details() {
+    let mut i18n = crate::localization::tests::english();
+    let reasons = [
+        DisconnectReason::Requested,
+        DisconnectReason::RemoteClosed,
+        DisconnectReason::ConnectionProblem,
+        DisconnectReason::InvalidMessage,
+        DisconnectReason::RateLimited,
+        DisconnectReason::BackendFailure,
+        DisconnectReason::AuthenticationFailed,
+        DisconnectReason::AuthenticationTimeout,
+        DisconnectReason::AuthenticatedHandoffTimeout,
+        DisconnectReason::BackendConnectionTimeout,
+        DisconnectReason::JoinCapacity,
+        DisconnectReason::SyncPhaseTimeout,
+        DisconnectReason::SyncLifetime,
+        DisconnectReason::HostCapacityTimeout,
+        DisconnectReason::BulkStalled,
+        DisconnectReason::ProtocolViolation,
+    ];
+    for locale in [Locale::EN_US, Locale::JA] {
+        i18n.set_preference(LanguagePreference::Locale(locale));
+        for reason in reasons {
+            let text = i18n.text(join_cancel_reason(reason));
+            assert!(!text.is_empty());
+            assert!(!text.starts_with("events-"));
+            assert!(!text.contains(&format!("{reason:?}")));
+        }
+        assert_eq!(
+            i18n.text(join_cancel_reason(DisconnectReason::SyncPhaseTimeout)),
+            if locale == Locale::JA {
+                "パズルの同期がタイムアウトしました。"
+            } else {
+                "Puzzle synchronization timed out."
+            }
+        );
+    }
+}
+
+#[test]
 fn all_events_render_in_both_languages_and_existing_history_relocalizes() {
     let now = Instant::now();
     let mut state = Notifications::default();
@@ -151,10 +233,6 @@ fn all_events_render_in_both_languages_and_existing_history_relocalizes() {
     for event in [
         GameEvent::PlayerJoining {
             connection: ConnectionId(1),
-        },
-        GameEvent::PlayerJoinCancelled {
-            connection: ConnectionId(1),
-            reason: DisconnectReason::RemoteClosed,
         },
         GameEvent::PlayerJoined {
             player: player(1, Some("Alice 🧩")),
@@ -173,6 +251,10 @@ fn all_events_render_in_both_languages_and_existing_history_relocalizes() {
         },
         GameEvent::AutosaveRotationFailed {
             error: PersistenceError::WorkerStopped,
+        },
+        GameEvent::PlayerJoinCancelled {
+            connection: ConnectionId(1),
+            reason: DisconnectReason::RemoteClosed,
         },
     ] {
         accept(&mut state, event, now);
@@ -208,16 +290,22 @@ fn all_events_render_in_both_languages_and_existing_history_relocalizes() {
                 })
                 .collect();
             let name_visible = texts.iter().any(|t| t.contains("Alice 🧩"));
+            let reason_visible = texts.contains(
+                &i18n
+                    .text(join_cancel_reason(DisconnectReason::RemoteClosed))
+                    .as_str(),
+            );
             output.drop_without_applying_deltas();
             if frame == 2 {
                 assert!(name_visible);
+                assert!(reason_visible);
             }
         }
         for entry in &state.history {
             assert!(!message(&entry.event, &i18n).starts_with("events-"));
         }
         assert_eq!(
-            message(&state.history[3].event, &i18n),
+            message(&state.history[2].event, &i18n),
             if locale == Locale::JA {
                 "Alice 🧩 が退出しました"
             } else {
@@ -225,7 +313,7 @@ fn all_events_render_in_both_languages_and_existing_history_relocalizes() {
             }
         );
         assert_eq!(
-            message(&state.history[4].event, &i18n),
+            message(&state.history[3].event, &i18n),
             i18n.format(
                 "events-player-left",
                 &[("player", i18n.text("game-default-player").as_str().into())]

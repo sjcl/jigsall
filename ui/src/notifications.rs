@@ -9,6 +9,7 @@ use bevy_egui::{egui, EguiContexts};
 use chrono::{DateTime, Local};
 use jigsall_game::{
     events::{GameEvent, JoinAttemptId},
+    network::transport::DisconnectReason,
     resources::GameUiPointerCapture,
 };
 
@@ -42,6 +43,8 @@ pub(crate) struct Notifications {
     // Progress remains here even when a burst hides it behind newer toasts.
     ongoing: BTreeMap<Operation, Entry>,
     toasts: VecDeque<Toast>,
+    // Independent of toast expiry and history eviction; a retry isn't recovery.
+    autosave_issue: Option<GameEvent>,
     sequence: u64,
     pub(crate) opened: bool,
     pub(crate) hud_bottom: f32,
@@ -74,6 +77,13 @@ impl Notifications {
         };
         if started.is_some_and(|operation| self.ongoing.contains_key(&operation)) {
             return;
+        }
+        match &event {
+            GameEvent::AutosaveFailed { .. } | GameEvent::AutosaveRotationFailed { .. } => {
+                self.autosave_issue = Some(event.clone());
+            }
+            GameEvent::AutosaveSucceeded => self.autosave_issue = None,
+            _ => {}
         }
         let entry = Entry {
             sequence: self.sequence,
@@ -127,14 +137,28 @@ pub(crate) fn collect_events(
 }
 
 pub(crate) fn history_button(ui: &mut egui::Ui, state: &mut Notifications, i18n: &Localization) {
-    if ui
-        .add(
-            egui::Button::new(i18n.text("events-history"))
-                .selected(state.opened)
-                .sense(egui::Sense::CLICK),
-        )
-        .clicked()
-    {
+    let label = if let Some(event) = &state.autosave_issue {
+        egui::RichText::new(i18n.format(
+            "events-history-autosave-issue",
+            &[("history", i18n.text("events-history").as_str().into())],
+        ))
+        .color(Severity::for_event(event).color())
+    } else {
+        egui::RichText::new(i18n.text("events-history"))
+    };
+    let mut response = ui.add(
+        egui::Button::new(label)
+            .selected(state.opened)
+            .sense(egui::Sense::CLICK),
+    );
+    if let Some(event) = &state.autosave_issue {
+        response = response.on_hover_text(format!(
+            "{}\n\n{}",
+            message(event, i18n),
+            i18n.text("events-autosave-issue-hint")
+        ));
+    }
+    if response.clicked() {
         state.opened = !state.opened;
     }
 }
@@ -211,6 +235,29 @@ fn kind(event: &GameEvent) -> &'static str {
     }
 }
 
+fn join_cancel_reason(reason: DisconnectReason) -> &'static str {
+    match reason {
+        DisconnectReason::Requested => "events-join-reason-cancelled",
+        DisconnectReason::RemoteClosed => "events-join-reason-closed",
+        DisconnectReason::ConnectionProblem => "events-join-reason-connection",
+        DisconnectReason::BackendFailure => "events-join-reason-network",
+        DisconnectReason::AuthenticationFailed => "events-join-reason-authentication",
+        DisconnectReason::AuthenticationTimeout
+        | DisconnectReason::AuthenticatedHandoffTimeout
+        | DisconnectReason::BackendConnectionTimeout => "events-join-reason-connection-timeout",
+        DisconnectReason::SyncPhaseTimeout
+        | DisconnectReason::SyncLifetime
+        | DisconnectReason::BulkStalled => "events-join-reason-sync-timeout",
+        DisconnectReason::JoinCapacity | DisconnectReason::HostCapacityTimeout => {
+            "events-join-reason-capacity"
+        }
+        DisconnectReason::RateLimited => "events-join-reason-rate-limit",
+        DisconnectReason::InvalidMessage | DisconnectReason::ProtocolViolation => {
+            "events-join-reason-data"
+        }
+    }
+}
+
 pub(crate) fn draw_notifications(
     mut contexts: EguiContexts,
     mut state: ResMut<Notifications>,
@@ -260,6 +307,9 @@ fn paint_history(
                             ui.colored_label(severity.color(), i18n.text(severity.key()));
                         });
                         let response = ui.label(message(&entry.event, i18n));
+                        if let GameEvent::PlayerJoinCancelled { reason, .. } = &entry.event {
+                            ui.weak(i18n.text(join_cancel_reason(*reason)));
+                        }
                         if let GameEvent::AutosaveFailed { error }
                         | GameEvent::AutosaveRotationFailed { error } = &entry.event
                         {

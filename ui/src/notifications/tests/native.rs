@@ -68,6 +68,13 @@ fn native_notification_ui_probe() {
                             ),
                         ),
                     },
+                    GameEvent::PlayerJoining {
+                        connection: ConnectionId(3),
+                    },
+                    GameEvent::PlayerJoinCancelled {
+                        connection: ConnectionId(3),
+                        reason: DisconnectReason::SyncPhaseTimeout,
+                    },
                 ]);
             }
             1 => {
@@ -111,6 +118,13 @@ fn native_notification_ui_probe() {
                     .spawn(Screenshot::primary_window())
                     .observe(save_to_disk(path("en-toasts")));
             }
+            8 => {
+                assert!(world.resource::<Notifications>().visible().is_empty());
+                assert!(world.resource::<Notifications>().autosave_issue.is_some());
+                world
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(path("en-persistent")));
+            }
             _ => {
                 world
                     .resource_mut::<Messages<AppExit>>()
@@ -119,7 +133,13 @@ fn native_notification_ui_probe() {
         }
         let mut probe = world.resource_mut::<Probe>();
         probe.phase += 1;
-        probe.next = Instant::now() + Duration::from_millis(800);
+        probe.next = Instant::now()
+            + if phase == 7 {
+                // Verify the HUD warning after real monotonic toast expiry.
+                TOAST_DURATION + Duration::from_millis(800)
+            } else {
+                Duration::from_millis(800)
+            };
     }
     let started = std::time::SystemTime::now();
     let mut preferences = crate::preferences::UiPreferences::load(None);
@@ -163,7 +183,13 @@ fn native_notification_ui_probe() {
         })
         .add_systems(Update, advance)
         .run();
-    for name in ["ja-toasts", "ja-history", "en-history", "en-toasts"] {
+    for name in [
+        "ja-toasts",
+        "ja-history",
+        "en-history",
+        "en-toasts",
+        "en-persistent",
+    ] {
         let metadata = std::fs::metadata(path(name)).unwrap();
         assert!(metadata.len() > 0);
         assert!(metadata.modified().unwrap() >= started);
