@@ -111,4 +111,19 @@ Transientと同様の破棄へ変更していません。
 sequence/cursor進行、Transientの破棄、保持失敗時の一度だけの適用とjoin restart、
 cancel失敗後のRoster削除・pending切断の完了を明示します。既存のDense競合・同期timeout・
 配信失敗・複数ピアのPresence/cancelテストも維持しています。
+追加のエラー方針見直しでは、次の回帰を確認しました。
+
+- 認証初期・Sync Control・Bulk pumpの各送信にBackpressure、NotConnected、Backend失敗を
+  注入し、対象ピアだけが切断され、正常ピアの状態・authority cursorとホストのHostingを維持。
+  ホストのfailure/errorは変更しません。
+- リモート/ローカルcommandでの不正定義、authority cursor枯渇、保持とdrag contextが
+  食い違うbaseline生成はFailed/Internalへ遷移。全Ready接続・listener・Roster・保持を
+  後始末し、失敗したcommandを適用しません。
+- 参加画像の欠落は内部診断を残して参加ピアを閉じ、既存Readyプレイヤーは継続します。
+- masterの通知機能・依存更新を統合後、workspace通常テスト・doctestが成功
+  （game 901件、UI 147件）。既存の参加・退出・参加キャンセル通知の回帰も含みます。
+  default / all-features Clippy、all-featuresアプリビルド、整形も再確認しました。
+- 同じ統合状態でGNS localhostのgame 31件とUI 1件が成功。
+  外部rendezvous binaryを必要とする2件とGPU image joinの1件は、この見直しでは未実行です。
+
 Linux / macOSの実機動作と性能測定は今回実施していません。
