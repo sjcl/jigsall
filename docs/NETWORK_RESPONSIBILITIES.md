@@ -3,6 +3,17 @@
 Wire形式と互換性番号は変更していません。ゲーム状態の正本・sequence tracker・
 authority cursorの所有者も維持しています。
 
+## Runtimeの境界
+
+- `runtime.rs`：transport poll、roleごとの処理呼び出し、画像decode、ローカルcommand、teardown。
+- `runtime/lifecycle.rs`：接続イベントとbootstrap gate、live集合による一度だけの後始末。
+- `runtime/host.rs`：Syncの開始・進行、Gameplayのapply→retain→publish、Presence、切断時cancel。
+- `runtime/client.rs`：Syncの結果適用、replicaと予測状態のreconcile。
+
+送信は全Readyピアへ試行してから失敗した接続を後始末します。切断の連鎖はqueueで
+処理し、cancelの適用やPresenceのrevision更新はlive集合からの削除だけが所有します。
+保持失敗はcatch-upのrestartを進めつつ通常配信を継続し、commandを再適用しません。
+
 ## ホストの処理方針
 
 | 方針を表す型 | 対象 | 処理 |
@@ -30,6 +41,9 @@ Transientと同様の破棄へ変更していません。
   一律ProtocolViolationへ置き換えません。
 - 個別ピアの認証拒否、タイムアウト、プロトコル違反はログへ記録し、ホスト全体の
   `NetworkStatus.failure/error`を上書きしません。ホストの内部障害は診断を残します。
+- Sync/Bootstrapが先に閉じた接続も共通の後始末へ渡します。cancelが内部エラーを
+  返してもRoster削除とpending接続の処理を終えてから返します。安全なcancelを作れない
+  内部状態の修復は自動化していません。
 
 ## 後続で検討する事項
 
