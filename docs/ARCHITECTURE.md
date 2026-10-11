@@ -24,10 +24,11 @@ jigsall
 | `game/src/resources/pieces/snapping.rs` | Release単位の単一snap判定、固定offsetのunion closure・一括配置 |
 | `game/src/interaction.rs` / `systems/piece_interaction.rs` | 非同期選択のgesture、命令発行、矩形overlay |
 | `game/src/systems/game_logic.rs` | 命令適用、Release時のsnap、正本に基づく進捗 |
-| `game/src/network/runtime.rs` / `runtime/` | Direct-IP session lifecycle、local command bridge、World同期、切断とMenu cleanup（[仕様](DIRECT_IP_RUNTIME.md)） |
+| `game/src/network/runtime.rs` / `runtime/` | session orchestration、Host/Client route、共通接続管理、local command bridge、World同期（[責務と失敗方針](NETWORK_RESPONSIBILITIES.md)、[Direct-IP仕様](DIRECT_IP_RUNTIME.md)） |
+| `game/src/network/syncing.rs` / `syncing/` | Host/Client同期の状態所有、共通phase/error・transfer binding・タイマー |
 | `game/src/network/address.rs` | 参加先の構文検証とworkerによるDNS解決、timeout、IPv4 / IPv6 endpoint選択 |
 | `game/src/systems/puzzle_generation.rs` | placement worker、GPU準備待ち、開始・失敗 |
-| `game/src/render/mod.rs` | GPU buffers、Core2d pass、indirect draw、非同期readback |
+| `game/src/render/mod.rs` / `buffers.rs` / `pipelines.rs` / `draw.rs` / `picking.rs` | 単一GPU resource、buffer upload、pipeline cache、Core2d pass、indirect draw、非同期readback |
 | `game/src/render/puzzle_shape.wesl` | main / point / rectangle共通の形状・UV |
 | `game/src/render/puzzle_render.wesl` | shader生成quad、画像・outline、ID / bitset出力 |
 | `game/src/render/visibility.wesl` / `pick_visibility.wesl` | culling、selectable bitset、可視IDの安定圧縮、選択ROI |

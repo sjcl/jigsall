@@ -225,6 +225,7 @@ cargo run --locked --release --features chrome
 | 形状と識別性 | [v4 の付け根修正](ROOT_TRANSITION.md)、[v5 fingerprint](EDGE_FINGERPRINT.md)、[追加評価](EDGE_FINGERPRINT_EVALUATION.md) |
 | 連結・回転 | [connected snapping](CONNECTED_SNAPPING.md)、[回転](ROTATION.md) |
 | 通信・同期 | [transport とビルド依存](NETWORK_TRANSPORT.md)、[Direct-IP runtime](DIRECT_IP_RUNTIME.md)、[rendezvous v1 adapter と実サーバー検証](RENDEZVOUS_V1.md)、[protocol](MULTIPLAYER_PROTOCOL.md) |
+| ネットワークの責務と失敗方針 | [モジュール境界・エラー分類・動作変更](NETWORK_RESPONSIBILITIES.md) |
 | 途中参加・ホスト移行 | [join in progress](JOIN_IN_PROGRESS.md)、[host migration](HOST_MIGRATION.md) |
 | 保存・設定・表示・言語 | [保存](PERSISTENCE.md)、[設定](SETTINGS.md)、[表示](DISPLAY_SETTINGS.md)、[ローカライズ](LOCALIZATION.md) |
 
