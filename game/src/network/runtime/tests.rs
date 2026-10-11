@@ -1061,6 +1061,28 @@ fn failed_publication_still_reaches_other_ready_peers_and_advances_authority_onc
         other.world().resource::<PieceDataStore>().states
     );
     assert_eq!(pair.host.world().resource::<NetworkStatus>().peers.len(), 1);
+    let status = pair.host.world().resource::<NetworkStatus>();
+    assert_eq!(status.phase, RuntimePhase::Hosting);
+    assert_eq!(status.failure, None);
+    assert_eq!(status.error, None);
+    assert!(
+        pair.bus
+            .lock()
+            .unwrap()
+            .inbox
+            .values()
+            .flatten()
+            .any(|event| {
+                matches!(
+                    event,
+                    TransportEvent::Disconnected {
+                        reason: DisconnectReason::BackendFailure,
+                        ..
+                    }
+                )
+            }),
+        "local backend send failure must not blame the peer"
+    );
 }
 
 #[test]

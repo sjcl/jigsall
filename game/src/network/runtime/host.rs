@@ -6,18 +6,15 @@ pub(super) fn publish_presence(
     transport: &mut dyn Transport,
     source: Option<ConnectionId>,
     event: PresenceMessage,
-) -> Result<Vec<ConnectionId>, RuntimeFailure> {
+) -> Result<Vec<(ConnectionId, TransportError)>, RuntimeFailure> {
     let payload = wire::encode(&WireMessage::Presence(event)).map_err(RuntimeFailure::internal)?;
     let mut failures = Vec::new();
     for peer in connections
         .peers()
         .filter(|p| p.player.is_some() && Some(p.connection) != source)
     {
-        if transport
-            .send(peer.connection, MessageClass::Control, &payload)
-            .is_err()
-        {
-            failures.push(peer.connection);
+        if let Err(error) = transport.send(peer.connection, MessageClass::Control, &payload) {
+            failures.push((peer.connection, error));
         }
     }
     Ok(failures)
@@ -73,11 +70,13 @@ impl<T: Transport> Runtime<T> {
                     })
                     .publish_authority_event(&mut self.transport, &cancel.authority_event)
                     {
-                        Ok(failures) => pending.extend(
-                            failures
-                                .into_iter()
-                                .map(|(id, _)| (id, DisconnectReason::ConnectionProblem, None)),
-                        ),
+                        Ok(failures) => pending.extend(failures.into_iter().map(|(id, error)| {
+                            (
+                                id,
+                                HostFailurePolicy::transport(&error).disconnect_reason(),
+                                None,
+                            )
+                        })),
                         Err(error) => {
                             failure = Some(RuntimeFailure::internal(error));
                         }
@@ -97,11 +96,13 @@ impl<T: Transport> Runtime<T> {
                         publish_presence(&self.connections, &mut self.transport, None, left)
                     });
                 match result {
-                    Ok(failures) => pending.extend(
-                        failures
-                            .into_iter()
-                            .map(|id| (id, DisconnectReason::ConnectionProblem, None)),
-                    ),
+                    Ok(failures) => pending.extend(failures.into_iter().map(|(id, error)| {
+                        (
+                            id,
+                            HostFailurePolicy::transport(&error).disconnect_reason(),
+                            None,
+                        )
+                    })),
                     Err(error) => {
                         failure.get_or_insert(error);
                     }
@@ -245,7 +246,13 @@ impl<T: Transport> Runtime<T> {
         self.disconnect_many(
             failures
                 .into_iter()
-                .map(|(id, _)| (id, DisconnectReason::ConnectionProblem, None))
+                .map(|(id, error)| {
+                    (
+                        id,
+                        HostFailurePolicy::transport(&error).disconnect_reason(),
+                        None,
+                    )
+                })
                 .collect(),
             store,
         )
@@ -369,7 +376,13 @@ impl<T: Transport> Runtime<T> {
         self.disconnect_many(
             failures
                 .into_iter()
-                .map(|id| (id, DisconnectReason::ConnectionProblem, None))
+                .map(|(id, error)| {
+                    (
+                        id,
+                        HostFailurePolicy::transport(&error).disconnect_reason(),
+                        None,
+                    )
+                })
                 .collect(),
             store,
         )
