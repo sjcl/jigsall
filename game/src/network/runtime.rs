@@ -394,8 +394,6 @@ impl<T: Transport> Runtime<T> {
         self.status.phase = RuntimePhase::Failed;
         self.active = false;
     }
-    /// Peer refusals are diagnostics, not a failure of the hosting session.
-
     fn start_decode(&mut self, bytes: impl FnOnce() -> Result<Arc<[u8]>, String> + Send + 'static) {
         let Role::Client(client) = &self.role else {
             unreachable!()
@@ -562,7 +560,7 @@ impl<T: Transport> Runtime<T> {
                     pointer,
                     interaction.network_gesture_token(),
                 )
-                .map_err(RuntimeFailure::protocol)?;
+                .map_err(RuntimeFailure::internal)?;
             if let Some(visual) = visual {
                 self.bridge.refresh_prediction(
                     player,
@@ -576,7 +574,7 @@ impl<T: Transport> Runtime<T> {
         while let Some(command) = self
             .bridge
             .next(self.session.as_ref().unwrap(), player, store)
-            .map_err(RuntimeFailure::protocol)?
+            .map_err(RuntimeFailure::internal)?
         {
             self.bridge.present_release(interaction, store);
             self.send_local(command, store, interaction)?;
@@ -585,7 +583,7 @@ impl<T: Transport> Runtime<T> {
         if let Some(command) = self
             .bridge
             .drag_update(self.session.as_ref().unwrap(), player, store)
-            .map_err(RuntimeFailure::protocol)?
+            .map_err(RuntimeFailure::internal)?
         {
             self.send_local(command, store, interaction)?;
         }
@@ -668,7 +666,7 @@ impl<T: Transport> Runtime<T> {
                         if let Some(event) = &outcome.authority_event {
                             self.bridge
                                 .reconcile(player, &event.event, interaction, store)
-                                .map_err(RuntimeFailure::protocol)?;
+                                .map_err(RuntimeFailure::internal)?;
                         }
                         self.publish(None, &outcome, store)?;
                     }

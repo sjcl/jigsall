@@ -258,7 +258,7 @@ fn missed_retention_restarts_join_but_publishes_the_applied_command_once_to_read
         PlayerId(0),
         &cancel.authority_event.event,
         None,
-        &mut host.store,
+        &host.store,
     );
     let failures = (HostRouter {
         local_player: PlayerId(0),

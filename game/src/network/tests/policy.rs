@@ -49,6 +49,7 @@ fn unsafe_and_reliable_command_errors_disconnect_while_local_faults_are_internal
     }
     for error in [
         SyncError::HostImageUnavailable,
+        SyncError::HostWrongPhase,
         SyncError::BaselineEncoding,
         SyncError::Encoding(WireError::WrongClass),
         SyncError::FinalizationExhausted,

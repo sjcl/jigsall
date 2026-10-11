@@ -96,6 +96,8 @@ pub enum SyncError {
     WrongConnection,
     WrongDirection,
     WrongPhase,
+    /// A host API was called in an incompatible local sync phase.
+    HostWrongPhase,
     WrongIdentity,
     WrongGeneration,
     WrongFinalization,
@@ -157,6 +159,7 @@ impl SyncError {
                 BootstrapError::InvalidTransition | BootstrapError::Registration(_),
             )
             | Self::HostImageUnavailable
+            | Self::HostWrongPhase
             | Self::HostRoster(_)
             | Self::FinalizationExhausted
             | Self::HostFinalDrag(_)

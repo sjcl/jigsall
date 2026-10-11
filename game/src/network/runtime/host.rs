@@ -394,6 +394,10 @@ impl<T: Transport> Runtime<T> {
         // budget even at low frame rates, without pre-generating chunks.
         for (pass, id) in (0..4).flat_map(|pass| joining.iter().copied().map(move |id| (pass, id)))
         {
+            // A prior publication failure may have closed another queued join.
+            if !self.live.contains(&id) {
+                continue;
+            }
             let Role::Host(host) = &mut self.role else {
                 unreachable!()
             };

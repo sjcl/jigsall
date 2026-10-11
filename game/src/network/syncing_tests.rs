@@ -3057,3 +3057,19 @@ fn missed_retention_hook_preserves_applied_outcome_for_ready_publication() {
     assert_eq!(h.s.host.session.cursor(), AuthorityCursor::new(3, 3));
     assert_eq!(h.host.phase(HA), Some(SyncPhase::RestartRequired));
 }
+
+#[test]
+fn host_restart_in_the_wrong_local_phase_is_internal_not_a_peer_violation() {
+    let mut h = Harness::new(true, CatchUpLimits::default());
+    let error = h
+        .host
+        .restart(&h.p.host, HA, &mut h.p.ht, &authority(&h.s), h.p.now)
+        .unwrap_err();
+    assert_eq!(error, SyncError::HostWrongPhase);
+    assert_eq!(
+        error.host_policy(),
+        crate::network::policy::HostFailurePolicy::InternalFailure(
+            DisconnectReason::BackendFailure
+        )
+    );
+}

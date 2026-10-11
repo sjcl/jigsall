@@ -907,7 +907,7 @@ impl HostSyncCoordinator {
             || peer.phase != SyncPhase::RestartRequired
             || !peer.image_ready
         {
-            return Err(SyncError::WrongPhase);
+            return Err(SyncError::HostWrongPhase);
         }
         // PAKE's immutable session/host/epoch binding needs fresh authentication if
         // it changes. A same-session store restore can reuse the verified image.
