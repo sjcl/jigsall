@@ -15,6 +15,16 @@ impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::settings::DisplaySettingsPlugin);
         app.add_plugins(crate::network::runtime::NetworkRuntimePlugin);
+        app.add_systems(
+            OnEnter(AppState::Menu),
+            crate::events::reset_history.after(cleanup_game),
+        )
+        .add_systems(
+            OnEnter(AppState::InGame),
+            crate::events::reset_history
+                .before(initialize_game)
+                .run_if(crate::network::runtime::world_offline),
+        );
         app.add_plugins(crate::selection::PuzzleSelectionPlugin)
             .init_resource::<crate::keybindings::KeyBindingsState>()
             .init_resource::<crate::image_settings::ImageSettingsState>()

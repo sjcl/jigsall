@@ -45,6 +45,7 @@ use super::{
     wire::{self, WireMessage},
 };
 use crate::{
+    events::GameEvent,
     interaction::PieceInteraction,
     multiplayer::{
         protocol::{HostCommandOutcome, ProtocolDragContexts},
@@ -231,6 +232,7 @@ struct DecodedImage {
     encoded: Arc<[u8]>,
 }
 struct Runtime<T> {
+    events: Vec<GameEvent>,
     roster: PlayerRoster,
     transport: SecureTransport<T>,
     connections: SessionConnections,
@@ -313,6 +315,7 @@ impl<T: Transport> Runtime<T> {
         };
         Self {
             transport,
+            events: default(),
             roster: PlayerRoster::host_only(options.host, options.display_name),
             connections: Default::default(),
             live: Default::default(),
@@ -358,6 +361,7 @@ impl<T: Transport> Runtime<T> {
         let transport = SecureTransport::new(backend);
         Self {
             transport,
+            events: default(),
             roster: PlayerRoster::default(),
             connections: Default::default(),
             live: BTreeSet::from([connection]),
@@ -389,6 +393,7 @@ impl<T: Transport> Runtime<T> {
         }
     }
     fn fail(&mut self, error: RuntimeFailure) {
+        self.cancel_join_notifications(DisconnectReason::BackendFailure);
         self.status.failure = Some(self.status.classify_failure(error.kind));
         self.status.error = Some(error.diagnostic);
         self.status.phase = RuntimePhase::Failed;
@@ -700,6 +705,7 @@ impl<T: Transport> Runtime<T> {
         Ok(())
     }
     fn teardown(&mut self, store: &mut PieceDataStore) {
+        self.cancel_join_notifications(DisconnectReason::Requested);
         self.cursors.reset();
         self.roster.clear();
         for connection in std::mem::take(&mut self.live) {

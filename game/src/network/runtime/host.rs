@@ -34,7 +34,16 @@ impl<T: Transport> Runtime<T> {
         let Role::Host(host) = &mut self.role else {
             unreachable!()
         };
-        host.joining.remove(&connection);
+        if host.joining.remove(&connection) {
+            let reason = match event {
+                TransportEvent::Disconnected { reason, .. } => *reason,
+                _ => DisconnectReason::Requested,
+            };
+            self.events.push(GameEvent::PlayerJoinCancelled {
+                connection: connection.into(),
+                reason,
+            });
+        }
         host.sync.disconnect(connection);
         let _ = host.bootstrap.process(
             event,
@@ -88,11 +97,19 @@ impl<T: Transport> Runtime<T> {
                 }
             }
             if self.roster.get(player).is_some() {
+                let info = self.roster.get(player).unwrap();
+                let notification = GameEvent::PlayerLeft {
+                    player: RosterPlayer {
+                        player,
+                        display_name: info.display_name.clone(),
+                    },
+                };
                 let result = self
                     .roster
                     .remove_ready(player)
                     .map_err(RuntimeFailure::internal)
                     .and_then(|left| {
+                        self.events.push(notification);
                         publish_presence(&self.connections, &mut self.transport, None, left)
                     });
                 match result {
@@ -290,7 +307,11 @@ impl<T: Transport> Runtime<T> {
                 now,
             )
         } else if host.bootstrap.state(connection) == Some(ConnectionState::Authenticated) {
-            host.joining.insert(connection);
+            if host.joining.insert(connection) {
+                self.events.push(GameEvent::PlayerJoining {
+                    connection: connection.into(),
+                });
+            }
             host.sync.start(
                 &mut host.bootstrap,
                 connection,
@@ -367,6 +388,13 @@ impl<T: Transport> Runtime<T> {
                 display_name: info.display_name.clone(),
             },
         };
+        self.events.push(GameEvent::PlayerJoined {
+            player: RosterPlayer {
+                player,
+                display_name: info.display_name.clone(),
+            },
+            connection: Some(connection.into()),
+        });
         let failures = publish_presence(
             &self.connections,
             &mut self.transport,
@@ -459,5 +487,17 @@ impl<T: Transport> Runtime<T> {
             })
             .collect();
         Ok(())
+    }
+
+    /// A whole-runtime failure/teardown also ends each pending operation once.
+    pub(super) fn cancel_join_notifications(&mut self, reason: DisconnectReason) {
+        if let Role::Host(host) = &mut self.role {
+            for connection in std::mem::take(&mut host.joining) {
+                self.events.push(GameEvent::PlayerJoinCancelled {
+                    connection: connection.into(),
+                    reason,
+                });
+            }
+        }
     }
 }

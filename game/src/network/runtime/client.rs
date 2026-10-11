@@ -109,6 +109,9 @@ impl<T: Transport> Runtime<T> {
             }
             .route(event)
             .map_err(RuntimeFailure::protocol)?;
+            if let super::super::client::ClientRouteOutcome::Presence(notification) = &routed {
+                self.events.push(notification.clone());
+            }
             if let TransportEvent::Message { class, payload, .. } = event {
                 match wire::decode_for_class(payload, *class).map_err(RuntimeFailure::protocol)? {
                     WireMessage::AuthorityEvent(envelope) => {

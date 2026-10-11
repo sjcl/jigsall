@@ -54,6 +54,8 @@ Alpha など prerelease suffix のある version は GitHub pre-release の Draf
 
 ## 構成と責務
 
+ゲーム内の型付き通知イベント・履歴・発行タイミングは [ゲーム内通知](EVENT_NOTIFICATIONS.md)を参照してください。
+
 Bevy 0.20.0 / bevy_egui 0.43.1 / wgpu 30 を使用します。依存バージョンはルートの `Cargo.toml` に集約しています。独自 renderer の import を持つ shader と共有 library は WESL、import のない shader は WGSL です。Bevy 0.20 の render schedule は weak ordering を使うため、独自 GPU buffer の準備を描画より前、readback mapping を描画の submit より後に明示的に順序付けています。
 
 | package / ディレクトリ | 責務 |

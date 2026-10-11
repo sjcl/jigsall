@@ -5,6 +5,7 @@ use jigsall_core::PlayerDisplayName;
 #[path = "cursor_tests.rs"]
 mod cursor_tests;
 mod error_policy_tests;
+mod notification_tests;
 
 struct Endpoint {
     runtime: DirectIpDriver<Fake>,

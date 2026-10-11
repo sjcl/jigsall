@@ -2,7 +2,7 @@
 //! or be dispatched to an external storage owner's event loop.
 use super::repository::SaveOutcome;
 use super::*;
-use crate::{checkpoint::PuzzleCheckpoint, resources::*};
+use crate::{checkpoint::PuzzleCheckpoint, events::GameEvent, resources::*};
 use bevy::prelude::*;
 use jigsall_core::PuzzleDefinition;
 use std::{num::NonZeroU32, sync::Arc};
@@ -334,11 +334,15 @@ pub(crate) fn capture_requested_save(
     store: Res<PieceDataStore>,
     definition: Option<Res<PuzzleDefinition>>,
     original: Option<Res<OriginalPuzzleImage>>,
+    mut events: MessageWriter<GameEvent>,
 ) {
     let Some(capture) = state.capture.take() else {
         return;
     };
     let is_autosave = capture.autosave_limit.is_some();
+    if is_autosave {
+        events.write(GameEvent::AutosaveStarted);
+    }
     state.busy = false;
     state.autosaving = false;
     let (Some(definition), Some(original)) = (definition, original) else {
@@ -347,6 +351,11 @@ pub(crate) fn capture_requested_save(
             is_autosave,
             PersistenceError::DefinitionUnavailable,
         );
+        if is_autosave {
+            events.write(GameEvent::AutosaveFailed {
+                error: PersistenceError::DefinitionUnavailable,
+            });
+        }
         return;
     };
     match PuzzleCheckpoint::capture(&store, &definition, original.hash) {
@@ -359,6 +368,14 @@ pub(crate) fn capture_requested_save(
             original.image_lease.clone(),
         ),
         Err(error) => save_error(&mut state, is_autosave, PersistenceError::Checkpoint(error)),
+    }
+    // Capture and worker submission can fail before any worker reply exists.
+    if is_autosave {
+        if let Some(error) = &state.autosave_error {
+            events.write(GameEvent::AutosaveFailed {
+                error: error.clone(),
+            });
+        }
     }
 }
 fn save_error(state: &mut PersistenceState, is_autosave: bool, error: PersistenceError) {
@@ -481,9 +498,28 @@ pub(crate) fn poll_results(
     mut images: ResMut<Assets<Image>>,
     app_state: Res<State<AppState>>,
     mut next: ResMut<NextState<AppState>>,
+    mut events: MessageWriter<GameEvent>,
 ) {
     let mut original = original;
-    while let Ok((generation, reply)) = service.rx.try_recv() {
+    loop {
+        let (generation, reply) = match service.rx.try_recv() {
+            Ok(reply) => reply,
+            Err(crossbeam::channel::TryRecvError::Empty) => break,
+            Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                if state.busy && state.capture.is_none() {
+                    let automatic = state.autosaving;
+                    state.busy = false;
+                    state.autosaving = false;
+                    save_error(&mut state, automatic, PersistenceError::WorkerStopped);
+                    if automatic {
+                        events.write(GameEvent::AutosaveFailed {
+                            error: PersistenceError::WorkerStopped,
+                        });
+                    }
+                }
+                break;
+            }
+        };
         if generation != state.generation {
             continue;
         }
@@ -525,6 +561,13 @@ pub(crate) fn poll_results(
                         state.current_autosave = Some(metadata);
                         state.autosave_error =
                             rotation_error.map(PersistenceError::AutosaveRotation);
+                        if let Some(error) = &state.autosave_error {
+                            events.write(GameEvent::AutosaveRotationFailed {
+                                error: error.clone(),
+                            });
+                        } else {
+                            events.write(GameEvent::AutosaveSucceeded);
+                        }
                     } else {
                         state.current_save = Some(metadata);
                         state.title_dialog_open = false;
@@ -539,7 +582,15 @@ pub(crate) fn poll_results(
                         }
                     }
                 }
-                Err(error) => save_error(&mut state, is_autosave, PersistenceError::Save(error)),
+                Err(error) => {
+                    let error = PersistenceError::Save(error);
+                    if is_autosave {
+                        events.write(GameEvent::AutosaveFailed {
+                            error: error.clone(),
+                        });
+                    }
+                    save_error(&mut state, is_autosave, error);
+                }
             }
             continue;
         }
@@ -589,6 +640,7 @@ pub(crate) fn poll_results(
 
 #[cfg(test)]
 mod tests {
+    mod notification_tests;
     use super::*;
     use crate::persistence::autosave::AutosaveSettingsState;
     use executor::{StorageOperation, StorageValue};
@@ -636,6 +688,7 @@ mod tests {
         let (service, _storage) = PersistenceService::with_storage_requests();
         let mut app = App::new();
         app.insert_resource(service)
+            .add_message::<GameEvent>()
             .init_resource::<PersistenceState>()
             .init_resource::<Assets<Image>>()
             .insert_resource(State::new(AppState::Menu))
@@ -764,6 +817,7 @@ mod tests {
         );
         let mut app = App::new();
         app.insert_resource(PersistenceService::for_test(root))
+            .add_message::<GameEvent>()
             .init_resource::<PersistenceState>()
             .insert_resource(AutosaveSettingsState::load(None))
             .insert_resource(definition)

@@ -90,6 +90,10 @@ pub struct ReliableEgress {
 pub struct ConnectionId(u64);
 
 impl ConnectionId {
+    /// Used only to correlate local presentation operations, never for routing.
+    pub(crate) const fn local_token(self) -> u64 {
+        self.0
+    }
     // Token issuance is unused in default builds without an opt-in backend.
     #[cfg_attr(not(feature = "gns"), allow(dead_code))]
     pub(crate) const fn new(token: u64) -> Self {

@@ -3,7 +3,6 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use jigsall_core::PlayerId;
 use jigsall_game::keybindings::{KeyAction, KeyBindingsState};
-use jigsall_game::persistence::runtime::PersistenceState;
 use jigsall_game::resources::*;
 
 /// Click-to-pin is independent of the momentary ShowPlayers key binding.
@@ -31,7 +30,7 @@ pub(crate) fn draw_game_ui(
     mut players_overlay: ResMut<PlayersOverlayState>,
     bindings: Res<KeyBindingsState>,
     mut capture: ResMut<GameUiPointerCapture>,
-    persistence: Res<PersistenceState>,
+    mut notifications: ResMut<crate::notifications::Notifications>,
     network: Res<jigsall_game::network::runtime::NetworkStatus>,
     mut multiplayer: Option<ResMut<crate::multiplayer::MultiplayerUi>>,
     sub_state: Res<State<GameSubState>>,
@@ -85,9 +84,9 @@ pub(crate) fn draw_game_ui(
                 _ => {}
             }
             crate::multiplayer::paint_control_warning(ui, &network, &i18n);
-            paint_autosave_status(ui, &persistence, &i18n);
 
             ui.separator();
+            crate::notifications::history_button(ui, &mut notifications, &i18n);
             // HUD buttons must not capture Tab or block gameplay key bindings.
             egui::containers::menu::MenuButton::from_button(
                 egui::Button::new(i18n.text("game-controls")).sense(egui::Sense::CLICK),
@@ -114,6 +113,7 @@ pub(crate) fn draw_game_ui(
     capture.over_hud = ctx
         .pointer_interact_pos()
         .is_some_and(|point| panel.response.rect.contains(point));
+    notifications.hud_bottom = panel.response.rect.bottom();
 }
 
 fn paint_controls(
@@ -160,26 +160,6 @@ fn paint_controls(
             binding_label(KeyAction::ShowPlayers).as_str().into(),
         )],
     ));
-}
-
-fn paint_autosave_status(ui: &mut egui::Ui, state: &PersistenceState, i18n: &Localization) {
-    if state.autosaving {
-        ui.separator();
-        ui.spinner();
-        ui.label(i18n.text("game-autosaving"));
-    } else if let Some(error) = &state.autosave_error {
-        ui.separator();
-        let key = if matches!(
-            error,
-            jigsall_game::persistence::runtime::PersistenceError::AutosaveRotation(_)
-        ) {
-            "game-autosave-rotation-failed"
-        } else {
-            "game-autosave-failed"
-        };
-        ui.colored_label(crate::theme::DANGER, i18n.text(key))
-            .on_hover_text(i18n.persistence_error(error));
-    }
 }
 
 /// プレイヤー一覧オーバーレイ（割り当てキーの長押し、または人数のクリックで表示）
@@ -345,7 +325,7 @@ mod tests {
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<PlayersOverlayState>()
             .init_resource::<LocalPlayerId>()
-            .init_resource::<PersistenceState>()
+            .init_resource::<crate::notifications::Notifications>()
             .init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(PlayerRoster::host_only(PlayerId(0), None))
             .insert_resource(NetworkStatus {
@@ -363,6 +343,7 @@ mod tests {
                     draw_players_overlay
                         .after(draw_game_ui)
                         .run_if(players_overlay_pinned.or_else(crate::players_key_pressed)),
+                    crate::notifications::draw_notifications.after(draw_game_ui),
                 ),
             );
         (app, ctx)
@@ -504,6 +485,35 @@ mod tests {
             .resource_mut::<ButtonInput<KeyCode>>()
             .release(KeyCode::Tab);
         assert_roster_visible(&mut app, &ctx, false);
+    }
+
+    #[test]
+    fn history_hud_button_toggles_panel_without_stealing_gameplay_keys() {
+        let (mut app, ctx) = hud_app();
+        click_hud_label(&mut app, &ctx, "History");
+        assert!(
+            app.world()
+                .resource::<crate::notifications::Notifications>()
+                .opened
+        );
+        assert!(app.world().resource::<GameUiPointerCapture>().over_hud);
+        assert!(ctx.memory(|memory| memory.focused().is_none()));
+        assert!(!ctx.egui_wants_keyboard_input());
+        render_hud(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        let output = render_hud(&mut app, &ctx, vec![]);
+        let empty_visible = output.shapes.iter().any(|shape| {
+            matches!(
+                &shape.shape, egui::Shape::Text(text) if text.galley.job.text == "No events yet"
+            )
+        });
+        output.drop_without_applying_deltas();
+        assert!(empty_visible);
+        click_hud_label(&mut app, &ctx, "History");
+        assert!(
+            !app.world()
+                .resource::<crate::notifications::Notifications>()
+                .opened
+        );
     }
 
     #[test]
@@ -675,43 +685,5 @@ mod tests {
             3
         );
         output.drop_without_applying_deltas();
-    }
-
-    #[test]
-    fn autosave_status_shows_work_and_failure_and_hides_after_completion() {
-        for locale in [
-            crate::localization::Locale::EN_US,
-            crate::localization::Locale::JA,
-        ] {
-            let mut i18n = crate::localization::tests::english();
-            i18n.set_preference(crate::localization::LanguagePreference::Locale(locale));
-            for (saving, failed) in [(true, false), (false, true), (false, false)] {
-                let mut state = PersistenceState::default();
-                state.autosaving = saving;
-                state.autosave_error = failed
-                    .then_some(jigsall_game::persistence::runtime::PersistenceError::WorkerStopped);
-                let ctx = egui::Context::default();
-                let output = ctx.run_ui(default(), |ui| {
-                    ui.horizontal(|ui| paint_autosave_status(ui, &state, &i18n));
-                });
-                let text: Vec<_> = output
-                    .shapes
-                    .iter()
-                    .filter_map(|shape| match &shape.shape {
-                        egui::Shape::Text(text) => Some(text.galley.job.text.as_str()),
-                        _ => None,
-                    })
-                    .collect();
-                assert_eq!(
-                    text.contains(&i18n.text("game-autosaving").as_str()),
-                    saving
-                );
-                assert_eq!(
-                    text.contains(&i18n.text("game-autosave-failed").as_str()),
-                    failed
-                );
-                output.drop_without_applying_deltas();
-            }
-        }
     }
 }
