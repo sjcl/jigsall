@@ -8,6 +8,7 @@ pub enum NetworkFailureKind {
     Timeout,
     Capacity,
     Protocol,
+    Internal,
     Image,
     Connection,
     RoomNotFound,
@@ -53,7 +54,7 @@ impl NetworkFailureKind {
         match error {
             BootstrapError::Rejected(reason) => Self::disconnect(*reason),
             BootstrapError::Transport(error) => Self::transport(error),
-            _ => Self::Protocol,
+            BootstrapError::InvalidTransition | BootstrapError::Registration(_) => Self::Internal,
         }
     }
     pub fn sync(error: &SyncError) -> Self {
@@ -61,7 +62,12 @@ impl NetworkFailureKind {
             SyncError::HostImageUnavailable | SyncError::ImageHashMismatch => Self::Image,
             SyncError::Bootstrap(error) => Self::bootstrap(error),
             SyncError::Transport(error) => Self::transport(error),
-            _ => Self::disconnect(error.disconnect_reason()),
+            _ => match error.host_policy() {
+                crate::network::policy::HostFailurePolicy::InternalFailure(_) => Self::Internal,
+                crate::network::policy::HostFailurePolicy::Disconnect(reason) => {
+                    Self::disconnect(reason)
+                }
+            },
         }
     }
 }
@@ -80,6 +86,9 @@ impl RuntimeFailure {
     }
     pub fn protocol(error: impl std::fmt::Debug) -> Self {
         Self::new(NetworkFailureKind::Protocol, error)
+    }
+    pub fn internal(error: impl std::fmt::Debug) -> Self {
+        Self::new(NetworkFailureKind::Internal, error)
     }
     pub fn transport(error: TransportError) -> Self {
         Self::new(NetworkFailureKind::transport(&error), error)
@@ -102,7 +111,7 @@ impl RuntimeFailure {
 }
 impl From<&str> for RuntimeFailure {
     fn from(error: &str) -> Self {
-        Self::protocol(error)
+        Self::internal(error)
     }
 }
 

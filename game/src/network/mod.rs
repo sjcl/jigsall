@@ -11,6 +11,7 @@ pub mod cursor;
 pub mod gns;
 pub mod host;
 pub mod lifecycle;
+pub mod policy;
 pub mod rate_limit;
 pub mod runtime;
 pub mod secure;

@@ -7,6 +7,7 @@ use super::{
     wire::{self, WireError, WireMessage},
 };
 mod bootstrap;
+mod policy;
 mod transient;
 use crate::{
     multiplayer::{

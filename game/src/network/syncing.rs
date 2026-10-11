@@ -224,6 +224,20 @@ pub enum SyncError {
     Transport(TransportError),
 }
 impl SyncError {
+    pub fn host_policy(&self) -> super::policy::HostFailurePolicy {
+        use super::policy::HostFailurePolicy;
+        match self {
+            Self::Transport(error) | Self::Bootstrap(BootstrapError::Transport(error)) => {
+                HostFailurePolicy::transport(error)
+            }
+            _ => match self.disconnect_reason() {
+                DisconnectReason::BackendFailure | DisconnectReason::ConnectionProblem => {
+                    HostFailurePolicy::InternalFailure(self.disconnect_reason())
+                }
+                reason => HostFailurePolicy::Disconnect(reason),
+            },
+        }
+    }
     pub fn disconnect_reason(&self) -> DisconnectReason {
         match self {
             Self::TooManyJoins
@@ -237,19 +251,7 @@ impl SyncError {
             Self::CapacityWaitTimeout => DisconnectReason::HostCapacityTimeout,
             Self::BulkStalled => DisconnectReason::BulkStalled,
             Self::Transport(error) | Self::Bootstrap(BootstrapError::Transport(error)) => {
-                match error {
-                    TransportError::UnknownConnection
-                    | TransportError::NotConnected
-                    | TransportError::Backpressure => DisconnectReason::ConnectionProblem,
-                    TransportError::Capacity => DisconnectReason::JoinCapacity,
-                    // These Transport errors arise from local sends/telemetry.
-                    // Peer protocol validation has its own SyncError variants.
-                    TransportError::UnknownListener
-                    | TransportError::PayloadTooLarge
-                    | TransportError::ProtocolViolation
-                    | TransportError::Backend(_)
-                    | TransportError::EgressUnavailable => DisconnectReason::BackendFailure,
-                }
+                super::policy::HostFailurePolicy::transport(error).disconnect_reason()
             }
             Self::NotSyncing | Self::AuthorityChanged => DisconnectReason::ConnectionProblem,
             Self::Bootstrap(

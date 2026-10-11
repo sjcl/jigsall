@@ -110,12 +110,9 @@ fn runtime_session_nonresponse_expires_and_cleans_all_layers_with_explicit_time(
         AuthorityCursor::new(0, 0)
     );
     assert!(host.active);
-    assert!(host
-        .status
-        .error
-        .as_ref()
-        .unwrap()
-        .contains("ImageAvailability"));
+    assert_eq!(host.status.phase, RuntimePhase::Hosting);
+    assert_eq!(host.status.failure, None);
+    assert_eq!(host.status.error, None);
     assert!(bus.lock().unwrap().routes.is_empty());
 }
 impl Transport for Fake {

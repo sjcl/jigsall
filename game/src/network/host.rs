@@ -1,11 +1,14 @@
 use super::{
+    policy::HostFailurePolicy,
     session::SessionConnections,
     transient::{command_drop, TransientDrop},
-    transport::{ConnectionId, Transport, TransportError, TransportEvent},
+    transport::{ConnectionId, DisconnectReason, Transport, TransportError, TransportEvent},
     wire::{self, WireError, WireMessage},
 };
 use crate::{
-    multiplayer::protocol::{HostCommandOutcome, ProtocolCommandError, ProtocolDragContexts},
+    multiplayer::protocol::{
+        HostCommandOutcome, ProtocolCommandError, ProtocolCommandResult, ProtocolDragContexts,
+    },
     resources::PieceDataStore,
 };
 use jigsall_core::{
@@ -22,9 +25,67 @@ pub enum HostRouteError {
     Command(ProtocolCommandError),
 }
 
+impl HostRouteError {
+    pub fn policy(&self) -> HostFailurePolicy {
+        match self {
+            Self::NotMessage => {
+                HostFailurePolicy::InternalFailure(DisconnectReason::BackendFailure)
+            }
+            Self::Unauthenticated | Self::HostConnection | Self::WrongDirection | Self::Wire(_) => {
+                HostFailurePolicy::Disconnect(DisconnectReason::ProtocolViolation)
+            }
+            Self::Command(error) => command_failure_policy(error),
+        }
+    }
+}
+
+/// Only unhandled command errors reach this classifier. Benign Transient lane
+/// reorder is handled by command_drop; safe refusals already carry normal ACKs.
+pub(crate) fn command_failure_policy(error: &ProtocolCommandError) -> HostFailurePolicy {
+    use jigsall_core::session::ProtocolError;
+    use ProtocolCommandError::*;
+    match error {
+        InvalidDefinition
+        | InconsistentDragTarget
+        | Sequence(
+            ProtocolError::Frozen
+            | ProtocolError::InvalidTransition
+            | ProtocolError::CounterExhausted,
+        ) => HostFailurePolicy::InternalFailure(DisconnectReason::BackendFailure),
+        WrongPlayer
+        | Target(_)
+        | InvalidDelta
+        | ActiveDragExists
+        | NoActiveDrag
+        | WrongDragContext
+        | RotationDisabled
+        | InvalidRebaseTick
+        | Sequence(
+            ProtocolError::WrongSession
+            | ProtocolError::WrongEpoch
+            | ProtocolError::WrongHost
+            | ProtocolError::DuplicateCommand
+            | ProtocolError::StaleCommand
+            | ProtocolError::WrongCommandStream
+            | ProtocolError::ControlGap { .. }
+            | ProtocolError::ControlNotProcessed { .. }
+            | ProtocolError::StaleMoveContext
+            | ProtocolError::StaleEvent
+            | ProtocolError::EventGap { .. }
+            | ProtocolError::WrongSnapshotCursor
+            | ProtocolError::MissingAcknowledgement,
+        ) => {
+            // Reliable errors have no safe acknowledgement in the current protocol.
+            HostFailurePolicy::Disconnect(DisconnectReason::ProtocolViolation)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum HostRouteOutcome {
     Applied(Box<HostCommandOutcome>),
+    /// A normal empty ACK/result, retained and published exactly like an apply.
+    Rejected(Box<HostCommandOutcome>),
     DroppedTransient(TransientDrop),
 }
 
@@ -83,7 +144,29 @@ impl HostRouter<'_> {
                     self.definition,
                     self.local_player,
                 ) {
-                    Ok(outcome) => Ok(HostRouteOutcome::Applied(Box::new(outcome))),
+                    Ok(outcome) => {
+                        let rejected = match &outcome.result {
+                            ProtocolCommandResult::Grabbed { applied, .. } => applied.grabbed == 0,
+                            ProtocolCommandResult::Rotated { commit, .. } => match &commit.accepted
+                            {
+                                jigsall_core::protocol::PieceTarget::Component(_) => false,
+                                jigsall_core::protocol::PieceTarget::Components(refs) => {
+                                    refs.is_empty()
+                                }
+                                jigsall_core::protocol::PieceTarget::Dense(dense) => {
+                                    dense.members.is_empty()
+                                }
+                            },
+                            ProtocolCommandResult::DragUpdated { .. }
+                            | ProtocolCommandResult::Released { .. }
+                            | ProtocolCommandResult::DragRotated { .. } => false,
+                        };
+                        Ok(if rejected {
+                            HostRouteOutcome::Rejected(Box::new(outcome))
+                        } else {
+                            HostRouteOutcome::Applied(Box::new(outcome))
+                        })
+                    }
                     Err(error) => {
                         if transient {
                             if let Some(reason) = command_drop(&error) {
@@ -107,7 +190,7 @@ impl HostRouter<'_> {
     ) -> Result<HostSyncRouteOutcome, HostRouteError> {
         let gameplay = self.route(event)?;
         let retention = match &gameplay {
-            HostRouteOutcome::Applied(outcome) => {
+            HostRouteOutcome::Applied(outcome) | HostRouteOutcome::Rejected(outcome) => {
                 sync.record_command_outcome(self.session, self.store, outcome)
             }
             HostRouteOutcome::DroppedTransient(_) => Ok(()),

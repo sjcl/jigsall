@@ -30,6 +30,7 @@ use super::{
     bootstrap::{BootstrapOutcome, ClientBootstrap, ConnectionState, HostBootstrap},
     client::ClientRouter,
     host::{HostRouteOutcome, HostRouter},
+    policy::HostFailurePolicy,
     secure::SecureTransport,
     session::SessionConnections,
     session_control::SessionMetadata,
@@ -252,7 +253,7 @@ fn publish_presence(
     source: Option<ConnectionId>,
     event: PresenceMessage,
 ) -> Result<Vec<ConnectionId>, RuntimeFailure> {
-    let payload = wire::encode(&WireMessage::Presence(event)).map_err(RuntimeFailure::protocol)?;
+    let payload = wire::encode(&WireMessage::Presence(event)).map_err(RuntimeFailure::internal)?;
     let mut failures = Vec::new();
     for peer in connections
         .peers()
@@ -412,6 +413,17 @@ impl<T: Transport> Runtime<T> {
         self.status.phase = RuntimePhase::Failed;
         self.active = false;
     }
+    /// Peer refusals are diagnostics, not a failure of the hosting session.
+    fn note_host_failure(&mut self, policy: HostFailurePolicy, error: impl std::fmt::Debug) {
+        match policy {
+            HostFailurePolicy::Disconnect(reason) => {
+                warn!(?reason, ?error, "host disconnected peer")
+            }
+            HostFailurePolicy::InternalFailure(_) => {
+                self.status.set_failure(NetworkFailureKind::Internal, error);
+            }
+        }
+    }
     fn start_decode(&mut self, bytes: impl FnOnce() -> Result<Arc<[u8]>, String> + Send + 'static) {
         let Role::Client(client) = &self.role else {
             unreachable!()
@@ -467,7 +479,7 @@ impl<T: Transport> Runtime<T> {
                 definition: self.definition.as_ref(),
             }
             .publish(&mut self.transport, source, outcome)
-            .map_err(RuntimeFailure::protocol)?
+            .map_err(RuntimeFailure::internal)?
         };
         for (connection, _) in failures {
             self.disconnect(connection, DisconnectReason::ConnectionProblem, None, store)?;
@@ -509,7 +521,7 @@ impl<T: Transport> Runtime<T> {
                         if let Some(cancel) = host
                             .contexts
                             .cancel_replicated(session, store, player)
-                            .map_err(RuntimeFailure::protocol)?
+                            .map_err(RuntimeFailure::internal)?
                         {
                             self.presentation.event(
                                 self.status.local_player.unwrap(),
@@ -523,7 +535,7 @@ impl<T: Transport> Runtime<T> {
                                 store,
                                 &cancel.authority_event,
                             ) {
-                                self.status.set_failure(NetworkFailureKind::Protocol, &e);
+                                self.status.set_failure(NetworkFailureKind::Internal, &e);
                             }
                             let failures = HostRouter {
                                 local_player: self.status.local_player.unwrap(),
@@ -534,7 +546,7 @@ impl<T: Transport> Runtime<T> {
                                 definition: self.definition.as_ref(),
                             }
                             .publish_authority_event(&mut self.transport, &cancel.authority_event)
-                            .map_err(RuntimeFailure::protocol)?;
+                            .map_err(RuntimeFailure::internal)?;
                             pending.extend(
                                 failures
                                     .into_iter()
@@ -545,7 +557,7 @@ impl<T: Transport> Runtime<T> {
                             let left = self
                                 .roster
                                 .remove_ready(player)
-                                .map_err(RuntimeFailure::protocol)?;
+                                .map_err(RuntimeFailure::internal)?;
                             let failures = publish_presence(
                                 &self.connections,
                                 &mut self.transport,
@@ -627,7 +639,9 @@ impl<T: Transport> Runtime<T> {
             if let TransportEvent::Disconnected { reason, .. }
             | TransportEvent::ConnectionFailed { reason, .. } = event
             {
-                if reason == DisconnectReason::BackendConnectionTimeout {
+                if reason == DisconnectReason::BackendConnectionTimeout
+                    && matches!(self.role, Role::Client(_))
+                {
                     self.status
                         .set_failure(NetworkFailureKind::disconnect(reason), reason);
                 }
@@ -658,14 +672,14 @@ impl<T: Transport> Runtime<T> {
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    self.status
-                        .set_failure(NetworkFailureKind::bootstrap(&error), &error);
-                    self.disconnect(
-                        connection,
-                        DisconnectReason::ProtocolViolation,
-                        retained,
-                        store,
-                    )?;
+                    let policy = HostFailurePolicy::bootstrap(&error);
+                    if matches!(self.role, Role::Host(_)) {
+                        self.note_host_failure(policy, &error);
+                    } else {
+                        self.status
+                            .set_failure(NetworkFailureKind::bootstrap(&error), &error);
+                    }
+                    self.disconnect(connection, policy.disconnect_reason(), retained, store)?;
                     continue;
                 }
             };
@@ -675,8 +689,15 @@ impl<T: Transport> Runtime<T> {
                 && matches!(&event, TransportEvent::Message { payload, .. } if matches!(payload.get(6), Some(9 | 10)))
             {
                 if let Err(error) = self.route_cursor(&event, now) {
-                    self.status
-                        .set_failure(NetworkFailureKind::Protocol, &error);
+                    if matches!(self.role, Role::Host(_)) {
+                        self.note_host_failure(
+                            HostFailurePolicy::Disconnect(DisconnectReason::ProtocolViolation),
+                            &error,
+                        );
+                    } else {
+                        self.status
+                            .set_failure(NetworkFailureKind::Protocol, &error);
+                    }
                     self.disconnect(
                         connection,
                         DisconnectReason::ProtocolViolation,
@@ -724,8 +745,14 @@ impl<T: Transport> Runtime<T> {
                     };
                     if let Err(error) = result {
                         let reason = error.disconnect_reason();
-                        self.status
-                            .set_failure(NetworkFailureKind::sync(&error), &error);
+                        match error.host_policy() {
+                            HostFailurePolicy::Disconnect(_) => {
+                                warn!(?connection, ?error, "host sync disconnected peer")
+                            }
+                            HostFailurePolicy::InternalFailure(_) => self
+                                .status
+                                .set_failure(NetworkFailureKind::Internal, &error),
+                        }
                         if super::lifecycle::is_abuse(reason)
                             && host.sync.phase(connection).is_some()
                         {
@@ -753,18 +780,22 @@ impl<T: Transport> Runtime<T> {
                             Ok(routed) => {
                                 if let Err(error) = routed.retention {
                                     self.status
-                                        .set_failure(NetworkFailureKind::Protocol, &error);
+                                        .set_failure(NetworkFailureKind::Internal, &error);
                                 }
-                                if let HostRouteOutcome::Applied(outcome) = routed.gameplay {
-                                    self.publish(Some(connection), &outcome, store)?;
+                                match routed.gameplay {
+                                    HostRouteOutcome::Applied(outcome)
+                                    | HostRouteOutcome::Rejected(outcome) => {
+                                        self.publish(Some(connection), &outcome, store)?;
+                                    }
+                                    HostRouteOutcome::DroppedTransient(_) => {}
                                 }
                             }
                             Err(error) => {
-                                self.status
-                                    .set_failure(NetworkFailureKind::Protocol, &error);
+                                let policy = error.policy();
+                                self.note_host_failure(policy, &error);
                                 self.disconnect(
                                     connection,
-                                    DisconnectReason::ProtocolViolation,
+                                    policy.disconnect_reason(),
                                     retained,
                                     store,
                                 )?;
@@ -969,8 +1000,14 @@ impl<T: Transport> Runtime<T> {
                     host.sync.disconnect(id);
                     host.joining.remove(&id);
                     self.live.remove(&id);
-                    self.status
-                        .set_failure(NetworkFailureKind::bootstrap(&error), &error);
+                    match HostFailurePolicy::bootstrap(&error) {
+                        HostFailurePolicy::Disconnect(_) => {
+                            warn!(?id, ?error, "host bootstrap expired peer")
+                        }
+                        HostFailurePolicy::InternalFailure(_) => self
+                            .status
+                            .set_failure(NetworkFailureKind::Internal, &error),
+                    }
                 }
                 for (id, error) in host.sync.expire(
                     &mut SyncHost {
@@ -983,8 +1020,14 @@ impl<T: Transport> Runtime<T> {
                 ) {
                     host.joining.remove(&id);
                     self.live.remove(&id);
-                    self.status
-                        .set_failure(NetworkFailureKind::sync(&error), &error);
+                    match error.host_policy() {
+                        HostFailurePolicy::Disconnect(_) => {
+                            warn!(?id, ?error, "host sync expired peer")
+                        }
+                        HostFailurePolicy::InternalFailure(_) => self
+                            .status
+                            .set_failure(NetworkFailureKind::Internal, &error),
+                    }
                 }
                 let mut joining: Vec<_> = host.joining.iter().copied().collect();
                 if let Some(next) = host.next_pump {
@@ -1039,8 +1082,7 @@ impl<T: Transport> Runtime<T> {
                         if super::lifecycle::is_abuse(reason) {
                             host.sync.penalize(self.transport.origin(id), now);
                         }
-                        self.status
-                            .set_failure(NetworkFailureKind::sync(&error), &error);
+                        self.note_host_failure(error.host_policy(), &error);
                         self.disconnect(id, reason, None, store)?;
                     }
                 }
@@ -1229,7 +1271,7 @@ impl<T: Transport> Runtime<T> {
                             host.sync.record_command_outcome(session, store, &outcome)
                         {
                             self.status
-                                .set_failure(NetworkFailureKind::Protocol, &error);
+                                .set_failure(NetworkFailureKind::Internal, &error);
                         }
                         if let Some(event) = &outcome.authority_event {
                             self.bridge
@@ -1241,12 +1283,12 @@ impl<T: Transport> Runtime<T> {
                     Err(error) => {
                         self.bridge.reject(interaction, store);
                         self.status
-                            .set_failure(NetworkFailureKind::Protocol, &error);
+                            .set_failure(NetworkFailureKind::Internal, &error);
                         if matches!(
                             error,
                             crate::multiplayer::protocol::ProtocolCommandError::Sequence(_)
                         ) {
-                            return Err(RuntimeFailure::protocol(error));
+                            return Err(RuntimeFailure::internal(error));
                         }
                     }
                 }

@@ -1312,6 +1312,7 @@ fn typed_network_failures_map_to_readable_error_categories() {
         (NetworkFailureKind::Connection, UiError::ConnectionFailed),
         (NetworkFailureKind::ConnectionLost, UiError::ConnectionLost),
         (NetworkFailureKind::Protocol, UiError::ProtocolMismatch),
+        (NetworkFailureKind::Internal, UiError::ConnectionFailed),
         (NetworkFailureKind::Image, UiError::ImageUnavailable),
     ] {
         assert_eq!(UiError::failure(kind), category);

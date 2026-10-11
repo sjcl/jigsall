@@ -88,7 +88,7 @@ impl UiError {
             NetworkFailureKind::Protocol => Self::ProtocolMismatch,
             NetworkFailureKind::Image => Self::ImageUnavailable,
             NetworkFailureKind::RoomNotFound => Self::RoomNotFound,
-            NetworkFailureKind::Connection => Self::ConnectionFailed,
+            NetworkFailureKind::Connection | NetworkFailureKind::Internal => Self::ConnectionFailed,
             NetworkFailureKind::ConnectionLost => Self::ConnectionLost,
         }
     }
