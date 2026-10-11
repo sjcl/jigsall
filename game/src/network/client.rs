@@ -28,7 +28,7 @@ pub enum ClientRouteError {
 #[derive(Debug)]
 pub enum ClientRouteOutcome {
     Authority(AppliedCommand),
-    Presence,
+    Presence(crate::events::GameEvent),
     Drag(CommandSequenceStatus),
     DroppedTransient(TransientDrop),
 }
@@ -99,11 +99,13 @@ impl ClientRouter<'_> {
                     },
                 }
             }
-            WireMessage::Presence(event) => self
-                .roster
-                .apply_presence(event)
-                .map(|()| ClientRouteOutcome::Presence)
-                .map_err(ClientRouteError::Roster),
+            WireMessage::Presence(event) => {
+                let notification = crate::events::GameEvent::presence(self.roster, &event);
+                self.roster
+                    .apply_presence(event)
+                    .map(|()| ClientRouteOutcome::Presence(notification))
+                    .map_err(ClientRouteError::Roster)
+            }
             _ => Err(ClientRouteError::WrongDirection),
         }
     }

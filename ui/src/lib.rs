@@ -9,6 +9,7 @@ pub mod localization;
 mod menu;
 mod messages;
 mod multiplayer;
+mod notifications;
 mod overlays;
 mod performance;
 mod persistence;
@@ -41,6 +42,7 @@ impl Plugin for GameUiPlugin {
             .init_resource::<persistence::thumbnails::SaveThumbnails>()
             .init_resource::<settings::SettingsDialog>()
             .init_resource::<multiplayer::MultiplayerUi>()
+            .init_resource::<notifications::Notifications>()
             .init_resource::<jigsall_game::resources::LocalGameplayBlocked>()
             .add_systems(PreUpdate, window_close::handle_close_requests)
             .add_systems(First, multiplayer::start_prepared_host)
@@ -67,7 +69,9 @@ impl Plugin for GameUiPlugin {
 }
 
 fn register_screens(app: &mut App) {
-    app.init_resource::<game_play::PlayersOverlayState>()
+    app.init_resource::<notifications::Notifications>()
+        .add_message::<jigsall_game::events::GameEvent>()
+        .init_resource::<game_play::PlayersOverlayState>()
         .add_systems(OnEnter(AppState::Menu), game_play::reset_players_overlay)
         .add_systems(OnEnter(AppState::InGame), game_play::reset_players_overlay);
     app.configure_sets(
@@ -83,6 +87,22 @@ fn register_screens(app: &mut App) {
                 .or_else(window_close::exit_dialog_pending)
                 .or_else(multiplayer::disconnected_game_available),
         ),
+    )
+    .add_systems(
+        EguiPrimaryContextPass,
+        notifications::collect_events
+            .before(game_play::draw_game_ui)
+            .before(completion::draw_completed_puzzle_ui)
+            .before(notifications::draw_notifications),
+    )
+    .add_systems(
+        EguiPrimaryContextPass,
+        notifications::draw_notifications
+            .in_set(GameplayUi)
+            .after(game_play::draw_game_ui)
+            .after(game_play::draw_players_overlay)
+            .after(completion::draw_completed_puzzle_ui)
+            .run_if(in_state(AppState::InGame).or_else(in_state(AppState::GameComplete))),
     )
     .add_systems(
         EguiPrimaryContextPass,

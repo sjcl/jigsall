@@ -163,6 +163,7 @@ pub fn draw_completed_puzzle_ui(
     mut contexts: EguiContexts,
     mut capture: ResMut<GameUiPointerCapture>,
     mut next: ResMut<NextState<GameCompleteSubState>>,
+    mut notifications: ResMut<crate::notifications::Notifications>,
 ) {
     capture.over_hud = false;
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -192,6 +193,7 @@ pub fn draw_completed_puzzle_ui(
                     if ui.button(i18n.text("completion-menu")).clicked() {
                         next.set(GameCompleteSubState::Paused);
                     }
+                    crate::notifications::history_button(ui, &mut notifications, &i18n);
                     if ui.available_width() >= 240.0 {
                         ui.label(
                             egui::RichText::new(i18n.text("completion-navigation"))
@@ -205,4 +207,5 @@ pub fn draw_completed_puzzle_ui(
     capture.over_hud = ctx
         .pointer_interact_pos()
         .is_some_and(|point| panel.response.rect.contains(point));
+    notifications.hud_bottom = panel.response.rect.bottom();
 }

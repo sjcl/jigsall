@@ -35,6 +35,7 @@ pub struct NetworkRuntimePlugin;
 impl Plugin for NetworkRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStatus>()
+            .add_message::<GameEvent>()
             .init_resource::<remote_cursor::RemoteCursorPresentation>()
             .init_resource::<remote_drag::RemoteDragPresentation>()
             .init_resource::<PlayerRoster>()
@@ -79,6 +80,7 @@ pub(super) fn install_driver(
     status: NetworkStatus,
     roster: PlayerRoster,
 ) {
+    crate::events::reset_world_history(world);
     world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
@@ -320,6 +322,7 @@ fn teardown_session(world: &mut World) {
             driver.teardown(world);
         }
     }
+    crate::events::reset_world_history(world);
     if let Some(mut messages) = world.get_resource_mut::<Messages<ClientCommand>>() {
         messages.clear();
     }
@@ -463,6 +466,7 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
             cursor_revision,
         );
         world.insert_resource(self.status.clone());
+        self.flush_events(world);
     }
     fn commands(&mut self, world: &mut World, commands: Vec<ClientCommand>) {
         let cursor_position = cursors::local_cursor(world);
@@ -495,6 +499,7 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
             cursor_revision,
         );
         world.insert_resource(self.status.clone());
+        self.flush_events(world);
     }
     fn teardown(&mut self, world: &mut World) {
         world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
@@ -509,6 +514,7 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
         self.teardown(&mut store);
         presentation.reset(store.epoch, store.len());
         world.insert_resource(presentation);
+        self.flush_events(world);
     }
     fn active(&self) -> bool {
         self.active
@@ -531,6 +537,13 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
     }
 }
 impl<T: Transport> Runtime<T> {
+    fn flush_events(&mut self, world: &mut World) {
+        if let Some(mut events) = world.get_resource_mut::<Messages<GameEvent>>() {
+            events.write_batch(self.events.drain(..));
+        } else {
+            self.events.clear();
+        }
+    }
     fn install_world(&mut self, world: &mut World) {
         if self.status.role == Some(RuntimeRole::Host) {
             self.status.image = if !world.contains_resource::<PuzzleImage>() {

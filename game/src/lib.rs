@@ -4,6 +4,7 @@ pub mod build_info;
 pub mod checkpoint;
 mod components;
 pub mod diagnostics;
+pub mod events;
 mod game;
 mod gpu_memory;
 pub mod image_settings;
