@@ -62,7 +62,7 @@ impl<T: Transport> Runtime<T> {
             Err(error) => {
                 let policy = HostFailurePolicy::bootstrap(&error);
                 if matches!(self.role, Role::Host(_)) {
-                    self.note_host_failure(policy, &error);
+                    self.note_host_failure(policy, connection, &error)?;
                 } else {
                     self.status
                         .set_failure(NetworkFailureKind::bootstrap(&error), &error);

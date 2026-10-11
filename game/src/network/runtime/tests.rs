@@ -27,6 +27,7 @@ pub(super) struct Bus {
     pub(super) hold_authority_control: bool,
     pub(super) delayed: Vec<(u64, TransportEvent)>,
     pub(super) fail: BTreeSet<ConnectionId>,
+    pub(super) send_errors: BTreeMap<ConnectionId, TransportError>,
     pub(super) sent: Vec<(ConnectionId, MessageClass, Vec<u8>)>,
     pub(super) closed: Vec<ConnectionId>,
 }
@@ -155,6 +156,9 @@ impl Transport for Fake {
         payload: &[u8],
     ) -> Result<(), TransportError> {
         let mut bus = self.bus.lock().unwrap();
+        if let Some(error) = bus.send_errors.get(&connection) {
+            return Err(error.clone());
+        }
         if bus.fail.contains(&connection) {
             return Err(TransportError::Backend("injected send failure".into()));
         }

@@ -126,14 +126,61 @@ pub enum SyncError {
 }
 impl SyncError {
     pub fn host_policy(&self) -> super::policy::HostFailurePolicy {
-        use super::policy::HostFailurePolicy;
+        use super::policy::{HostFailurePolicy, HostInternalRecovery};
         match self {
             Self::Transport(error) | Self::Bootstrap(BootstrapError::Transport(error)) => {
                 HostFailurePolicy::transport(error)
             }
-            _ => match self.disconnect_reason() {
+            Self::Bootstrap(error) => HostFailurePolicy::bootstrap(error),
+            Self::BaselineEncoding
+            | Self::Encoding(_)
+            | Self::HostFinalDrag(_)
+            | Self::HostCatchUp(CatchUpError::Baseline(_) | CatchUpError::GenerationExhausted)
+            | Self::HostRoster(
+                RosterError::NoncanonicalPlayers
+                | RosterError::MissingHost
+                | RosterError::MissingLocalPlayer
+                | RosterError::InvalidRevision
+                | RosterError::RevisionExhausted
+                | RosterError::DuplicatePlayer
+                | RosterError::UnknownPlayer
+                | RosterError::HostLeft,
+            ) => HostFailurePolicy::InternalFailure(HostInternalRecovery::StopSession),
+            Self::NotSyncing
+            | Self::TooManyJoins
+            | Self::Admission(_)
+            | Self::PhaseTimeout(_)
+            | Self::LifetimeTimeout
+            | Self::CapacityWaitTimeout
+            | Self::BulkStalled
+            | Self::WrongConnection
+            | Self::WrongDirection
+            | Self::WrongPhase
+            | Self::HostWrongPhase
+            | Self::WrongIdentity
+            | Self::WrongGeneration
+            | Self::WrongFinalization
+            | Self::AuthorityChanged
+            | Self::HostImageUnavailable
+            | Self::Roster(_)
+            | Self::HostRoster(RosterError::TooManyPlayers)
+            | Self::FinalizationExhausted
+            | Self::FinalDrag(_)
+            | Self::UnofferedTransfer
+            | Self::TransferMismatch
+            | Self::ImageHashMismatch
+            | Self::MalformedBaseline
+            | Self::Baseline(_)
+            | Self::CatchUp(_)
+            | Self::HostCatchUp(_)
+            | Self::Replication(_)
+            | Self::Bulk(_)
+            | Self::HostBulk(_)
+            | Self::Wire(_) => match self.disconnect_reason() {
                 DisconnectReason::BackendFailure | DisconnectReason::ConnectionProblem => {
-                    HostFailurePolicy::InternalFailure(self.disconnect_reason())
+                    HostFailurePolicy::InternalFailure(HostInternalRecovery::DisconnectPeer(
+                        self.disconnect_reason(),
+                    ))
                 }
                 reason => HostFailurePolicy::Disconnect(reason),
             },

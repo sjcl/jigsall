@@ -134,40 +134,217 @@ fn malformed_identity_numeric_and_reliable_gap_disconnect_only_the_offending_pee
     }
 }
 
+fn host_app(mut host: Endpoint) -> App {
+    let mut app = app();
+    let status = host.runtime.runtime.status.clone();
+    let roster = std::mem::take(&mut host.runtime.runtime.roster);
+    app.world_mut().insert_resource(host.store);
+    world::install_driver(app.world_mut(), Box::new(host.runtime), status, roster);
+    app
+}
+
 #[test]
-fn invalid_host_definition_uses_backend_failure_and_preserves_other_peer() {
+fn fatal_authority_failures_stop_the_session_close_every_peer_and_release_holds() {
+    // Remote command, local command and sync capture must all stop a broken host.
+    for case in 0..4 {
+        let bus = Arc::new(Mutex::new(Bus::default()));
+        let mut host = Endpoint::host(&bus);
+        let mut a = Endpoint::client(&bus, 1);
+        let mut b = Endpoint::client(&bus, 2);
+        join(&mut host, &mut [&mut a, &mut b]);
+        a.poll();
+        b.poll();
+        let ready_ids: Vec<_> = host.runtime.runtime.live.iter().copied().collect();
+        let command = grab(&b);
+        send_command(&mut b, command);
+        host.poll();
+        a.poll();
+        let z = host.store.next_z_order;
+        match case {
+            0 | 2 => host.runtime.runtime.definition.as_mut().unwrap().grid_size = UVec2::ZERO,
+            1 => {
+                let session = host.runtime.runtime.session.as_ref().unwrap();
+                host.runtime.runtime.session = Some(AuthoritySession::new(
+                    session.session_definition(),
+                    session.host(),
+                    AuthorityCursor::new(session.cursor().epoch.0, u64::MAX),
+                ));
+            }
+            3 => {
+                let Role::Host(state) = &mut host.runtime.runtime.role else {
+                    unreachable!()
+                };
+                state.contexts = default(); // The authoritative holds have lost their contexts.
+            }
+            _ => unreachable!(),
+        }
+        if case < 2 {
+            let command = grab(&a);
+            send_command(&mut a, command);
+        }
+        let mut app = host_app(host);
+        let mut joining = (case == 3).then(|| Endpoint::client(&bus, 3));
+        if case == 2 {
+            send(&mut app, PieceCommand::Grab(PieceId(1)));
+        }
+        for _ in 0..200 {
+            app.update();
+            if app.world().resource::<NetworkStatus>().phase == RuntimePhase::Failed {
+                break;
+            }
+            if let Some(peer) = &mut joining {
+                peer.poll();
+            }
+        }
+        let status = app.world().resource::<NetworkStatus>();
+        assert_eq!(status.phase, RuntimePhase::Failed, "fatal case {case}");
+        assert_eq!(status.failure, Some(NetworkFailureKind::Internal));
+        assert!(app
+            .world()
+            .get_non_send::<NetworkSession>()
+            .is_none_or(|session| session.authority().is_none()));
+        let store = app.world().resource::<PieceDataStore>();
+        assert_eq!(store.next_z_order, z, "failed command was not applied");
+        assert!(store.held_by.is_empty());
+        assert!(app
+            .world()
+            .resource::<crate::players::PlayerRoster>()
+            .is_empty());
+        let bus = bus.lock().unwrap();
+        assert!(bus.routes.is_empty());
+        assert_eq!(bus.closed_listeners, 1);
+        for id in ready_ids {
+            assert_eq!(bus.closed.iter().filter(|&&closed| closed == id).count(), 1);
+        }
+        for id in [1, 2] {
+            assert!(bus.inbox[&id].iter().any(|event| matches!(
+                event,
+                TransportEvent::Disconnected {
+                    reason: DisconnectReason::BackendFailure,
+                    ..
+                }
+            )));
+        }
+    }
+}
+
+#[test]
+fn sync_send_failures_close_only_the_joining_peer_without_host_failure() {
+    for fault in [
+        TransportError::Backpressure,
+        TransportError::NotConnected,
+        TransportError::Backend("peer send failed".into()),
+    ] {
+        for phase in [
+            None,
+            Some(SyncPhase::ImageNegotiation),
+            Some(SyncPhase::BaselineTransfer),
+        ] {
+            let bus = Arc::new(Mutex::new(Bus::default()));
+            let mut host = Endpoint::host(&bus);
+            let mut b = Endpoint::client(&bus, 2);
+            join(&mut host, &mut [&mut b]);
+            b.poll();
+            let bid = host.connection(b.runtime.runtime.status.local_player.unwrap());
+            let before = host.runtime.runtime.session.as_ref().unwrap().cursor();
+            let mut a = Endpoint::client(&bus, 1);
+            let aid = *bus
+                .lock()
+                .unwrap()
+                .routes
+                .iter()
+                .find(|(_, (peer, _))| *peer == 1)
+                .unwrap()
+                .0;
+            if let Some(phase) = phase {
+                let mut reached = false;
+                for _ in 0..200 {
+                    host.poll();
+                    let Role::Host(state) = &host.runtime.runtime.role else {
+                        unreachable!()
+                    };
+                    if state.sync.phase(aid) == Some(phase) {
+                        reached = true;
+                        break;
+                    }
+                    a.poll();
+                }
+                assert!(reached, "sync send phase {phase:?}");
+            }
+            bus.lock().unwrap().send_errors.insert(aid, fault.clone());
+            if phase.is_some() {
+                a.poll();
+            }
+            host.poll();
+            b.poll();
+            assert!(!host.runtime.runtime.live.contains(&aid));
+            assert!(host.runtime.runtime.live.contains(&bid));
+            let Role::Host(state) = &host.runtime.runtime.role else {
+                unreachable!()
+            };
+            assert_eq!(state.sync.phase(aid), None);
+            assert!(!state.joining.contains(&aid));
+            assert_eq!(host.runtime.runtime.status.phase, RuntimePhase::Hosting);
+            assert_eq!(
+                host.runtime.runtime.status.failure, None,
+                "{phase:?}: {fault:?}"
+            );
+            assert_eq!(host.runtime.runtime.status.error, None);
+            assert!(host.runtime.runtime.active);
+            assert_eq!(host.roster(), b.roster());
+            assert_eq!(host.store.states, b.store.states);
+            assert_eq!(
+                host.runtime.runtime.session.as_ref().unwrap().cursor(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn unavailable_join_image_is_recoverable_without_stopping_ready_players() {
     let bus = Arc::new(Mutex::new(Bus::default()));
     let mut host = Endpoint::host(&bus);
-    let mut a = Endpoint::client(&bus, 1);
     let mut b = Endpoint::client(&bus, 2);
-    join(&mut host, &mut [&mut a, &mut b]);
-    a.poll();
+    join(&mut host, &mut [&mut b]);
     b.poll();
     let bid = host.connection(b.runtime.runtime.status.local_player.unwrap());
-    host.runtime.runtime.definition.as_mut().unwrap().grid_size = UVec2::ZERO;
-    let command = grab(&a);
-    send_command(&mut a, command);
-    host.poll();
+    host.runtime.runtime.image = None;
+    let Role::Host(state) = &mut host.runtime.runtime.role else {
+        unreachable!()
+    };
+    state.sync = default();
+    let mut a = Endpoint::client(&bus, 1);
+    let Role::Client(client) = &mut a.runtime.runtime.role else {
+        unreachable!()
+    };
+    client.cached_image = None;
+    let aid = *bus
+        .lock()
+        .unwrap()
+        .routes
+        .iter()
+        .find(|(_, (peer, _))| *peer == 1)
+        .unwrap()
+        .0;
+    for _ in 0..200 {
+        host.poll();
+        if host.runtime.runtime.status.failure.is_some() {
+            break;
+        }
+        a.poll();
+    }
+    b.poll();
     assert_eq!(
         host.runtime.runtime.status.failure,
         Some(NetworkFailureKind::Internal)
     );
     assert_eq!(host.runtime.runtime.status.phase, RuntimePhase::Hosting);
+    assert!(host.runtime.runtime.active);
+    assert!(!host.runtime.runtime.live.contains(&aid));
     assert!(host.runtime.runtime.live.contains(&bid));
-    assert!(bus
-        .lock()
-        .unwrap()
-        .inbox
-        .get(&1)
-        .unwrap()
-        .iter()
-        .any(|event| matches!(
-            event,
-            TransportEvent::Disconnected {
-                reason: DisconnectReason::BackendFailure,
-                ..
-            }
-        )));
+    assert_eq!(host.roster(), b.roster());
+    assert_eq!(host.store.states, b.store.states);
 }
 
 #[test]

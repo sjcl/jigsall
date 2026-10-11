@@ -1,5 +1,8 @@
 use super::*;
-use crate::network::{policy::HostFailurePolicy, syncing::SyncError};
+use crate::network::{
+    policy::{HostFailurePolicy, HostInternalRecovery},
+    syncing::SyncError,
+};
 
 #[test]
 fn unsafe_and_reliable_command_errors_disconnect_while_local_faults_are_internal() {
@@ -33,7 +36,7 @@ fn unsafe_and_reliable_command_errors_disconnect_while_local_faults_are_internal
     ] {
         assert_eq!(
             HostRouteError::Command(error).policy(),
-            HostFailurePolicy::InternalFailure(DisconnectReason::BackendFailure)
+            HostFailurePolicy::InternalFailure(HostInternalRecovery::StopSession)
         );
     }
     for error in [
@@ -48,16 +51,27 @@ fn unsafe_and_reliable_command_errors_disconnect_while_local_faults_are_internal
         );
     }
     for error in [
-        SyncError::HostImageUnavailable,
-        SyncError::HostWrongPhase,
         SyncError::BaselineEncoding,
         SyncError::Encoding(WireError::WrongClass),
-        SyncError::FinalizationExhausted,
         SyncError::Transport(TransportError::ProtocolViolation),
+        SyncError::HostFinalDrag(crate::multiplayer::finalization::FinalDragError::ContextMismatch),
+        SyncError::HostRoster(crate::players::RosterError::RevisionExhausted),
     ] {
         assert_eq!(
             error.host_policy(),
-            HostFailurePolicy::InternalFailure(DisconnectReason::BackendFailure)
+            HostFailurePolicy::InternalFailure(HostInternalRecovery::StopSession)
+        );
+    }
+    for error in [
+        SyncError::HostImageUnavailable,
+        SyncError::HostWrongPhase,
+        SyncError::FinalizationExhausted,
+    ] {
+        assert_eq!(
+            error.host_policy(),
+            HostFailurePolicy::InternalFailure(HostInternalRecovery::DisconnectPeer(
+                DisconnectReason::BackendFailure
+            ))
         );
     }
     for error in [

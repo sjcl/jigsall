@@ -64,7 +64,8 @@ impl NetworkFailureKind {
             SyncError::Transport(error) => Self::transport(error),
             _ => match error.host_policy() {
                 crate::network::policy::HostFailurePolicy::InternalFailure(_) => Self::Internal,
-                crate::network::policy::HostFailurePolicy::Disconnect(reason) => {
+                crate::network::policy::HostFailurePolicy::Disconnect(reason)
+                | crate::network::policy::HostFailurePolicy::PeerCommunication(reason) => {
                     Self::disconnect(reason)
                 }
             },

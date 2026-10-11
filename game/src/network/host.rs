@@ -1,5 +1,5 @@
 use super::{
-    policy::HostFailurePolicy,
+    policy::{HostFailurePolicy, HostInternalRecovery},
     session::SessionConnections,
     transient::{command_drop, TransientDrop},
     transport::{ConnectionId, DisconnectReason, Transport, TransportError, TransportEvent},
@@ -28,9 +28,9 @@ pub enum HostRouteError {
 impl HostRouteError {
     pub fn policy(&self) -> HostFailurePolicy {
         match self {
-            Self::NotMessage => {
-                HostFailurePolicy::InternalFailure(DisconnectReason::BackendFailure)
-            }
+            Self::NotMessage => HostFailurePolicy::InternalFailure(
+                HostInternalRecovery::DisconnectPeer(DisconnectReason::BackendFailure),
+            ),
             Self::Unauthenticated | Self::HostConnection | Self::WrongDirection | Self::Wire(_) => {
                 HostFailurePolicy::Disconnect(DisconnectReason::ProtocolViolation)
             }
@@ -51,7 +51,7 @@ pub(crate) fn command_failure_policy(error: &ProtocolCommandError) -> HostFailur
             ProtocolError::Frozen
             | ProtocolError::InvalidTransition
             | ProtocolError::CounterExhausted,
-        ) => HostFailurePolicy::InternalFailure(DisconnectReason::BackendFailure),
+        ) => HostFailurePolicy::InternalFailure(HostInternalRecovery::StopSession),
         WrongPlayer
         | Target(_)
         | InvalidDelta

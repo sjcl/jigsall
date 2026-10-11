@@ -70,13 +70,10 @@ impl<T: Transport> Runtime<T> {
                     })
                     .publish_authority_event(&mut self.transport, &cancel.authority_event)
                     {
-                        Ok(failures) => pending.extend(failures.into_iter().map(|(id, error)| {
-                            (
-                                id,
-                                HostFailurePolicy::transport(&error).disconnect_reason(),
-                                None,
-                            )
-                        })),
+                        Ok(failures) => match self.publication_disconnects(failures) {
+                            Ok(disconnects) => pending.extend(disconnects),
+                            Err(error) => failure = Some(error),
+                        },
                         Err(error) => {
                             failure = Some(RuntimeFailure::internal(error));
                         }
@@ -96,13 +93,12 @@ impl<T: Transport> Runtime<T> {
                         publish_presence(&self.connections, &mut self.transport, None, left)
                     });
                 match result {
-                    Ok(failures) => pending.extend(failures.into_iter().map(|(id, error)| {
-                        (
-                            id,
-                            HostFailurePolicy::transport(&error).disconnect_reason(),
-                            None,
-                        )
-                    })),
+                    Ok(failures) => match self.publication_disconnects(failures) {
+                        Ok(disconnects) => pending.extend(disconnects),
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                        }
+                    },
                     Err(error) => {
                         failure.get_or_insert(error);
                     }
@@ -134,7 +130,7 @@ impl<T: Transport> Runtime<T> {
                 {
                     host.sync.penalize(self.transport.origin(connection), now);
                 }
-                self.note_host_failure(policy, &error);
+                self.note_host_failure(policy, connection, &error)?;
                 return self.disconnect(connection, reason, retained, store);
             }
         };
@@ -168,7 +164,7 @@ impl<T: Transport> Runtime<T> {
         let mut pending = Vec::new();
         for (id, error) in expired {
             let policy = HostFailurePolicy::bootstrap(&error);
-            self.note_host_failure(policy, &error);
+            self.note_host_failure(policy, id, &error)?;
             pending.push((id, policy.disconnect_reason(), retained.get(&id).copied()));
         }
         self.disconnect_many(pending, store)?;
@@ -187,7 +183,7 @@ impl<T: Transport> Runtime<T> {
         let mut pending = Vec::new();
         for (id, error) in expired {
             let policy = error.host_policy();
-            self.note_host_failure(policy, &error);
+            self.note_host_failure(policy, id, &error)?;
             pending.push((id, policy.disconnect_reason(), retained.get(&id).copied()));
         }
         self.disconnect_many(pending, store)?;
@@ -196,16 +192,36 @@ impl<T: Transport> Runtime<T> {
     pub(super) fn note_host_failure(
         &mut self,
         policy: HostFailurePolicy,
+        connection: ConnectionId,
         error: impl std::fmt::Debug,
-    ) {
+    ) -> Result<(), RuntimeFailure> {
         match policy {
             HostFailurePolicy::Disconnect(reason) => {
-                warn!(?reason, ?error, "host disconnected peer")
+                warn!(?connection, ?reason, ?error, "host disconnected peer")
             }
-            HostFailurePolicy::InternalFailure(_) => {
+            HostFailurePolicy::PeerCommunication(reason) => {
+                warn!(?connection, ?reason, ?error, "peer communication failed")
+            }
+            HostFailurePolicy::InternalFailure(HostInternalRecovery::DisconnectPeer(_)) => {
                 self.status.set_failure(NetworkFailureKind::Internal, error);
             }
+            HostFailurePolicy::InternalFailure(HostInternalRecovery::StopSession) => {
+                return Err(RuntimeFailure::internal(error));
+            }
         }
+        Ok(())
+    }
+    fn publication_disconnects(
+        &mut self,
+        failures: Vec<(ConnectionId, TransportError)>,
+    ) -> Result<Vec<lifecycle::PendingDisconnect>, RuntimeFailure> {
+        let mut pending = Vec::new();
+        for (id, error) in failures {
+            let policy = HostFailurePolicy::transport(&error);
+            self.note_host_failure(policy, id, &error)?;
+            pending.push((id, policy.disconnect_reason(), None));
+        }
+        Ok(pending)
     }
     pub(super) fn publish(
         &mut self,
@@ -243,19 +259,8 @@ impl<T: Transport> Runtime<T> {
             .publish(&mut self.transport, source, outcome)
             .map_err(RuntimeFailure::internal)?
         };
-        self.disconnect_many(
-            failures
-                .into_iter()
-                .map(|(id, error)| {
-                    (
-                        id,
-                        HostFailurePolicy::transport(&error).disconnect_reason(),
-                        None,
-                    )
-                })
-                .collect(),
-            store,
-        )
+        let pending = self.publication_disconnects(failures)?;
+        self.disconnect_many(pending, store)
     }
 
     fn host_sync_event(
@@ -346,7 +351,7 @@ impl<T: Transport> Runtime<T> {
             }
             Err(error) => {
                 let policy = error.policy();
-                self.note_host_failure(policy, &error);
+                self.note_host_failure(policy, connection, &error)?;
                 self.disconnect(connection, policy.disconnect_reason(), retained, store)?;
             }
         }
@@ -373,19 +378,8 @@ impl<T: Transport> Runtime<T> {
             Some(connection),
             joined,
         )?;
-        self.disconnect_many(
-            failures
-                .into_iter()
-                .map(|(id, error)| {
-                    (
-                        id,
-                        HostFailurePolicy::transport(&error).disconnect_reason(),
-                        None,
-                    )
-                })
-                .collect(),
-            store,
-        )
+        let pending = self.publication_disconnects(failures)?;
+        self.disconnect_many(pending, store)
     }
 
     fn pump_host_joins(
@@ -442,7 +436,7 @@ impl<T: Transport> Runtime<T> {
                 if super::super::lifecycle::is_abuse(reason) {
                     host.sync.penalize(self.transport.origin(id), now);
                 }
-                self.note_host_failure(error.host_policy(), &error);
+                self.note_host_failure(error.host_policy(), id, &error)?;
                 self.disconnect(id, reason, None, store)?;
             }
         }

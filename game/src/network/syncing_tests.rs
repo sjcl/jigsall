@@ -3069,7 +3069,9 @@ fn host_restart_in_the_wrong_local_phase_is_internal_not_a_peer_violation() {
     assert_eq!(
         error.host_policy(),
         crate::network::policy::HostFailurePolicy::InternalFailure(
-            DisconnectReason::BackendFailure
+            crate::network::policy::HostInternalRecovery::DisconnectPeer(
+                DisconnectReason::BackendFailure
+            )
         )
     );
 }

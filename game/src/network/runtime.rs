@@ -33,7 +33,7 @@ use super::{
     bootstrap::{BootstrapOutcome, ClientBootstrap, ConnectionState, HostBootstrap},
     client::ClientRouter,
     host::{HostRouteOutcome, HostRouter},
-    policy::HostFailurePolicy,
+    policy::{HostFailurePolicy, HostInternalRecovery},
     secure::SecureTransport,
     session::SessionConnections,
     session_control::SessionMetadata,
@@ -459,8 +459,9 @@ impl<T: Transport> Runtime<T> {
                     if matches!(self.role, Role::Host(_)) {
                         self.note_host_failure(
                             HostFailurePolicy::Disconnect(DisconnectReason::ProtocolViolation),
+                            connection,
                             &error,
-                        );
+                        )?;
                     } else {
                         self.status
                             .set_failure(NetworkFailureKind::Protocol, &error);
@@ -675,6 +676,9 @@ impl<T: Transport> Runtime<T> {
                         self.status
                             .set_failure(NetworkFailureKind::Internal, &error);
                         if matches!(
+                            super::host::command_failure_policy(&error),
+                            HostFailurePolicy::InternalFailure(HostInternalRecovery::StopSession)
+                        ) || matches!(
                             error,
                             crate::multiplayer::protocol::ProtocolCommandError::Sequence(_)
                         ) {
@@ -702,10 +706,16 @@ impl<T: Transport> Runtime<T> {
     fn teardown(&mut self, store: &mut PieceDataStore) {
         self.cursors.reset();
         self.roster.clear();
+        let reason = if matches!(self.role, Role::Host(_))
+            && self.status.phase == RuntimePhase::Failed
+            && self.status.failure == Some(NetworkFailureKind::Internal)
+        {
+            DisconnectReason::BackendFailure
+        } else {
+            DisconnectReason::Requested
+        };
         for connection in std::mem::take(&mut self.live) {
-            let _ = self
-                .transport
-                .close(connection, DisconnectReason::Requested);
+            let _ = self.transport.close(connection, reason);
         }
         // An outgoing connect may not have emitted Connected yet.
         if let Role::Client(client) = &self.role {
