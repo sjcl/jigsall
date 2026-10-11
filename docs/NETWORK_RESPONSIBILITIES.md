@@ -44,7 +44,9 @@ Direct-IPの実装は625行で、既存inbound/outbound/policyを使う一つの
 | `HostFailurePolicy::Disconnect` | 不正Wire・方向・PlayerId・危険なdelta、Reliableの重複・gap・context不整合 | 対象接続を切断し、後始末を実行 |
 | `HostRouteOutcome::Rejected` | Dense StaleTopology、選択可能な対象のないGrab/Rotate | 既存の空ACK・回転結果を保持してReliable配信。control sequenceとauthority cursorを通常どおり進める |
 | `HostRouteOutcome::DroppedTransient` | 古いdrag basis、重複・古いtick、まだ到着していない/終了したdrag | `command_drop()`で分類。authority eventを生成しない |
-| `HostFailurePolicy::InternalFailure` | 不正なホスト定義、dragの内部不整合、counter枯渇、同期の保持・生成・送信失敗 | ピアを違反として扱わず、対象接続をBackendFailure等で閉じて回復。保持失敗は通常配信を継続。安全に継続できない内部状態はRuntimeFailureとして返す |
+| `HostFailurePolicy::PeerCommunication` | ピアへの送信・egress参照のBackpressure、接続消失、backend失敗 | 対象ピアだけを閉じ、接続ID・理由・原因をログへ記録。ホストのfailure/errorを上書きしない |
+| `InternalFailure(HostInternalRecovery::DisconnectPeer)` | 参加画像の欠落、ピアの同期phase・transfer・finalizationのローカル状態異常 | 内部診断を記録し、対象ピアの状態を破棄して再参加可能にする |
+| `InternalFailure(HostInternalRecovery::StopSession)` | 不正なホスト定義、authority/dragの不整合・counter枯渇、生成baseline・final drag・Rosterの不整合、送信データの契約違反 | RuntimeFailure::internalを返し、WorldがFailedへ遷移して全接続・listener・同期状態・保持を後始末する |
 
 部分的に受理したGrab/Rotateは`Applied`です。拒否した部分も既存の結果に含めます。
 `SyncError::disconnect_reason()`は同期の切断理由の正本であり、`host_policy()`はその
@@ -59,12 +61,14 @@ Transientと同様の破棄へ変更していません。
 ## 意図的な動作変更
 
 - ホストのローカル状態・保持・エンコードの失敗をProtocol診断からInternalへ変更。
-  内部command失敗ではProtocolViolationの代わりにBackendFailureで対象接続を閉じます。
+  正本の定義・drag・authorityが壊れている内部command失敗はホストを停止し、
+  ProtocolViolationの代わりにBackendFailureで全接続を閉じます。
 - Bootstrapの切断理由は元の認証拒否・transport失敗の型から選択し、Runtimeで
   一律ProtocolViolationへ置き換えません。
 - Gameplay・cancel・Presenceの送信失敗も`HostFailurePolicy::transport()`で切断理由を
   選択します。接続消失やbackpressureはConnectionProblem、ローカルbackendや
-  不正な送信サイズなどはBackendFailureで閉じます。従来はすべてConnectionProblemでした。
+  egress参照の失敗などはBackendFailureで対象ピアを閉じます。従来はすべてConnectionProblemでした。
+  不正な送信サイズ・送信APIの契約違反は生成データの問題としてホストを停止します。
   いずれもピアのabuse penaltyを増やさず、ReadyクライアントのConnectionLost表示は維持します。
   個別の配信失敗ではホストのfailure/errorを上書きしません。
 - 個別ピアの認証拒否、タイムアウト、プロトコル違反はログへ記録し、ホスト全体の
@@ -76,6 +80,7 @@ Transientと同様の破棄へ変更していません。
   内部障害は`RuntimeFailure::internal`を返します。World側は従来の失敗・teardown経路を使い、
   正本の未配信変更を再適用したり、未複製の修復を行ってホストを継続したりしません。
 - ホストAPIから誤ったphaseでrestartする失敗は`HostWrongPhase`として内部障害へ分類。
+  この場合は対象ピアの同期状態を破棄すれば回復可能とし、ホストを継続します。
   ピアからの誤ったphaseのメッセージは従来どおり`WrongPhase`で切断します。
   配信失敗で既に閉じた参加者は、同frameのpump候補から除外します。
 
@@ -83,7 +88,8 @@ Transientと同様の破棄へ変更していません。
 
 安全なReliable拒否結果のない操作への新しい応答はWire設計の変更になるため対象外です。
 内部状態不整合の自動修復、送信失敗に対する保持済みeventの再送キューも追加していません。
-現在の方針は対象ピアを切断して再同期させ、適用済みcommandを再適用しないことです。
+ピア単位で回復できる障害は切断・再同期し、正本の回復不能な障害はホストを停止します。
+適用済みcommandは再適用しません。保持失敗でcatch-upをrestartできる場合は通常配信を継続します。
 
 ## 検証記録
 
