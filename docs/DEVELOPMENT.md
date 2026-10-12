@@ -42,8 +42,8 @@ GitHub Variables に準備してください。未設定の endpoint で配布�
 ```sh
 git switch master
 git pull --ff-only origin master
-git tag v0.1.0-alpha.1
-git push origin v0.1.0-alpha.1
+git tag v0.1.0-alpha.2
+git push origin v0.1.0-alpha.2
 ```
 
 master に含まれないコミットのタグとタグの削除はスキップします。過去の master のコミットも対象です。

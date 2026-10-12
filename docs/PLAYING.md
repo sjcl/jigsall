@@ -138,7 +138,7 @@ Esc は固定で、入力待ちではキャンセル、それ以外では戻る�
 
 ## Alpha build の不具合を報告する
 
-タイトル画面の右下に `Jigsall 0.1.0-alpha.1 (commit SHA)` を表示します。
+タイトル画面の右下に `Jigsall 0.1.0-alpha.2 (commit SHA)` を表示します。
 配布物の `BUILD_INFO.txt` には完全な commit SHA と主要 feature が入ります。
 Git 情報のない source archive からの build は commit を `unknown` と表示します。
 

@@ -1,4 +1,4 @@
-# Jigsall 0.1.0-alpha.1
+# Jigsall 0.1.0-alpha.2
 
 This is an experimental Alpha build for external testing, distributed through
 GitHub. It is not the Steam release.
