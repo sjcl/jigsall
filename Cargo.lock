@@ -5281,9 +5281,9 @@ dependencies = [
 
 [[package]]
 name = "pakery-spake2"
-version = "0.6.0"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "603ef7cf56edd376040134d9017af3b05d616bcd155013a5df8e8b3d50bd0603"
+checksum = "14293cbc3d11d4d9af91f246ff7193d6104e6a49c66e97696759e26587cb77d4"
 dependencies = [
  "pakery-core",
  "rand_core",
