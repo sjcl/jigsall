@@ -557,9 +557,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_app"
-version = "0.20.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2489da2972d57cccd19060d7faa44c4c4cfb296a657c84ee6ab8bde2b1c0115"
+checksum = "2549c23ffdf3d3a49483c6716a3502b386f1f9fa523435630b733a77fa414e4f"
 dependencies = [
  "bevy_derive",
  "bevy_ecs",
@@ -756,9 +756,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_derive"
-version = "0.20.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd59e9e600d792e60df17b4d52719b28c288bf047884ac89ad29d9c7a6592d2c"
+checksum = "b7be8813fd429ff1237bcc5391d1abf4e88ca360302217125d76a1c3cb131b18"
 dependencies = [
  "bevy_macro_utils",
  "quote",
@@ -1233,9 +1233,9 @@ dependencies = [
 
 [[package]]
 name = "bevy_log"
-version = "0.20.0"
+version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a87d5152292b0e581a589cffb6b7e83e0afe345279d4126545ce7b786bd8a47a"
+checksum = "00742ce2ead8eb76bce32d6049f0ff4b8b60dc8da51a7bc764c69bcc4b32a061"
 dependencies = [
  "android_log-sys",
  "bevy_app",
