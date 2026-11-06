@@ -9,7 +9,7 @@ use super::{
 };
 use chacha20poly1305::{aead::AeadInOut, ChaCha20Poly1305, KeyInit, Nonce, Tag};
 use hkdf::Hkdf;
-use sha2_channel::Sha256;
+use sha2::Sha256;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     net::SocketAddr,
