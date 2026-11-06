@@ -378,8 +378,8 @@ Zeroization reduces owned-buffer lifetime; it is not a guarantee about compiler,
 register/stack copies, OS memory, or every dependency's internal KDF temporary.
 
 Standard RustCrypto `chacha20poly1305` 0.11.0 provides the RFC 8439 algorithm and
-16-byte tag. `hkdf` 0.13.0 and `sha2` 0.11.0 are direct dependencies (the latter is
-aliased for this layer, keeping existing SHA-256 callers on their current version).
+16-byte tag. `hkdf` 0.13.0 and `sha2` 0.11.1 are direct dependencies. SHA-256
+callers and this layer share the workspace's pinned `sha2` dependency.
 Their Rust 1.85 minimum is compatible with the workspace's Rust 1.99. No cipher or
 MAC primitive is implemented here. RustCrypto describes an audit of an earlier
 ChaCha20Poly1305 implementation; that does not certify these versions, pakery,
