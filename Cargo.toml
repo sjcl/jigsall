@@ -43,7 +43,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 fast_image_resize = { version = "6.1", default-features = false, features = ["std", "only_u8x4"] }
 rand = "0.10"
 rand_chacha = "0.10"
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 crossbeam = "0.8"
 base64 = "0.23"
 tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
