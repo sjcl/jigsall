@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn clock_updates_require_authenticated_host_and_ignore_duplicate_ticks_without_advancing_cursors() {
+fn ordered_clock_updates_require_authenticated_host_and_scope_without_advancing_cursors() {
     let mut store = PieceDataStore::default();
     store.initialize(vec![Vec2::ZERO]);
     let mut session = AuthoritySession::new(SESSION, HOST, AuthorityCursor::new(3, 0));
@@ -9,7 +9,6 @@ fn clock_updates_require_authenticated_host_and_ignore_duplicate_ticks_without_a
     let update = GameClockUpdate {
         session: SESSION.id,
         authority_epoch: AuthorityEpoch(3),
-        tick: 10,
         elapsed_millis: 12_345,
     };
     let cursor = session.cursor();
@@ -36,12 +35,11 @@ fn clock_updates_require_authenticated_host_and_ignore_duplicate_ticks_without_a
         .unwrap();
     assert_eq!(
         store.elapsed_play_time,
-        std::time::Duration::from_millis(12_345)
+        std::time::Duration::from_millis(99_999)
     );
     assert_eq!(session.cursor(), cursor);
     let wrong_session = GameClockUpdate {
         session: SessionId(999),
-        tick: 11,
         ..update.clone()
     };
     assert_eq!(
@@ -52,7 +50,6 @@ fn clock_updates_require_authenticated_host_and_ignore_duplicate_ticks_without_a
     );
     let wrong_epoch = GameClockUpdate {
         authority_epoch: AuthorityEpoch(4),
-        tick: 11,
         ..update.clone()
     };
     assert_eq!(
@@ -79,6 +76,6 @@ fn clock_updates_require_authenticated_host_and_ignore_duplicate_ticks_without_a
     );
     assert_eq!(
         host.store.elapsed_play_time,
-        std::time::Duration::from_millis(12_345)
+        std::time::Duration::from_millis(99_999)
     );
 }

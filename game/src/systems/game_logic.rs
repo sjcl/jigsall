@@ -99,20 +99,14 @@ pub fn update_game_progress(
 pub fn tick_offline_game_clock(
     time: Res<Time<Real>>,
     state: Option<Res<State<GameSubState>>>,
-    pause: Res<GameplayPause>,
     blocked: Res<LocalGameplayBlocked>,
     mut store: ResMut<PieceDataStore>,
-    mut previous: Local<(u64, bool)>,
+    mut clock: Local<crate::resources::game_clock::GameClock>,
 ) {
     let running = state.is_some_and(|state| *state.get() == GameSubState::Playing)
-        && !pause.paused
         && !blocked.0
         && !store.is_empty()
         && store.placed_count < store.len();
-    // A frame's delta belongs to the preceding interval. Never charge a
-    // paused/loading interval when the first resumed frame has a large delta.
-    if running && previous.0 == store.epoch && previous.1 {
-        store.elapsed_play_time = store.elapsed_play_time.saturating_add(time.delta());
-    }
-    *previous = (store.epoch, running);
+    store.elapsed_play_time =
+        clock.advance(store.epoch, store.elapsed_play_time, running, time.delta());
 }

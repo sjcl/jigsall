@@ -1208,10 +1208,10 @@ Wire v3 gates this schema before deserialization; snapshot/save schema is unchan
 ## Shared game clock
 
 Wire v3 is retained for this same-release addition. Kind 11 is a Reliable Control
-`GameClockUpdate` containing SessionId, AuthorityEpoch, u64 tick, and u64 elapsed
-milliseconds. Only an authenticated host may send it. Duplicated/older clock ticks
-are ignored and session/epoch/host claims are checked before mutation. Clock ticks
-do not consume authority cursors or invalidate join finalization. The host sends
+`GameClockUpdate` containing SessionId, AuthorityEpoch, and u64 elapsed milliseconds.
+Only an authenticated host may send it; session/epoch/host claims are checked before
+mutation. Updates follow the single host's ordered Control lane and do not need a
+separate tick. They do not consume authority cursors or invalidate join finalization. The host sends
 at most one periodic update per displayed second, and sends the exact boundary
 time before PauseChanged, at completion, and after Ready admission. Join baselines
 carry the time through GameSnapshot; clients display confirmed host time and do

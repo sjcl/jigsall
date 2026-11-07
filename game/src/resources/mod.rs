@@ -2,6 +2,7 @@
 pub mod app;
 pub mod config;
 pub(crate) mod drag_elevation;
+pub(crate) mod game_clock;
 pub mod generation;
 pub mod images;
 pub mod input;

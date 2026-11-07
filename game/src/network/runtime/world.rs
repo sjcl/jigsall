@@ -490,29 +490,27 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
             .and_then(|input| input.mouse_position);
         // Only the authority advances shared time. A local ESC menu does not
         // pause other players; global pause and completion stop this counter.
-        let clock_eligible = self.active
-            && world
-                .get_resource::<State<AppState>>()
-                .is_some_and(|state| *state.get() == AppState::InGame)
-            && world
-                .get_resource::<State<GameSubState>>()
-                .is_some_and(|state| *state.get() != GameSubState::Initializing)
-            && !store.is_empty()
-            && store.placed_count < store.len();
-        let clock_running = clock_eligible
-            && self
-                .session
-                .as_ref()
-                .is_some_and(|session| !session.gameplay_paused());
         if let Role::Host(host) = &mut self.role {
-            if clock_running && host.clock_running {
-                let delta = world
-                    .get_resource::<Time<Real>>()
-                    .map(|time| time.delta())
-                    .unwrap_or_default();
-                store.elapsed_play_time = store.elapsed_play_time.saturating_add(delta);
-            }
-            host.clock_running = clock_running;
+            let running = self.active
+                && world
+                    .get_resource::<State<AppState>>()
+                    .is_some_and(|state| *state.get() == AppState::InGame)
+                && world
+                    .get_resource::<State<GameSubState>>()
+                    .is_some_and(|state| *state.get() != GameSubState::Initializing)
+                && !store.is_empty()
+                && store.placed_count < store.len()
+                && self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| !session.gameplay_paused());
+            let delta = world
+                .get_resource::<Time<Real>>()
+                .map(|time| time.delta())
+                .unwrap_or_default();
+            store.elapsed_play_time =
+                host.clock
+                    .advance(store.epoch, store.elapsed_play_time, running, delta);
         }
         if let Some(paused) = world.resource_mut::<GameplayPause>().requested.take() {
             // Local-only API: a client cannot change the authority's pause state.
@@ -524,15 +522,6 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
         }
         if let Err(error) = self.local_frame(commands, &mut store, &mut interaction, pointer) {
             self.fail(error);
-        }
-        if let Role::Host(host) = &mut self.role {
-            host.clock_running = self.active
-                && clock_eligible
-                && store.placed_count < store.len()
-                && self
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| !session.gameplay_paused());
         }
         if self.active {
             if let Err(error) = self.publish_game_clock(&mut store, false) {

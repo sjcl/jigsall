@@ -597,9 +597,8 @@ fn wire_v3_game_clock_golden_uses_independent_reliable_kind() {
         WireMessage::GameClock(GameClockUpdate {
             session: SessionId(0x1234),
             authority_epoch: AuthorityEpoch(5),
-            tick: 129,
             elapsed_millis: 1000,
         }),
-        "50 5a 4c 41 03 00 0b 00 07 00 00 00 b4 24 05 81 01 e8 07",
+        "50 5a 4c 41 03 00 0b 00 05 00 00 00 b4 24 05 e8 07",
     );
 }

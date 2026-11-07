@@ -34,7 +34,6 @@ pub type RemoteDrag = jigsall_core::protocol::ActiveDrag;
 
 #[derive(Default, Debug)]
 pub struct PeerReplicationState {
-    clock_tick: Option<u64>,
     scope: Option<(SessionId, AuthorityEpoch, u64)>,
     remote_drags: HashMap<PlayerId, RemoteDrag>,
     diverged: bool,
@@ -61,10 +60,6 @@ impl PeerReplicationState {
             return Err(ReplicationError::Protocol(ProtocolError::WrongEpoch));
         }
         self.synchronize(session, store);
-        if self.clock_tick.is_some_and(|tick| update.tick <= tick) {
-            return Ok(());
-        }
-        self.clock_tick = Some(update.tick);
         store.elapsed_play_time = std::time::Duration::from_millis(update.elapsed_millis);
         Ok(())
     }
@@ -117,7 +112,6 @@ impl PeerReplicationState {
     fn synchronize(&mut self, session: &AuthoritySession, store: &PieceDataStore) {
         let scope = Self::scope(session, store);
         if self.scope != Some(scope) {
-            self.clock_tick = None;
             self.remote_drags.clear();
             self.diverged = false;
             self.scope = Some(scope);
@@ -492,7 +486,6 @@ impl PeerReplicationState {
             expected.cursor,
         );
         self.remote_drags = prepared.drags.into_iter().collect();
-        self.clock_tick = None;
         session.set_gameplay_paused(baseline.gameplay_paused);
         self.diverged = false;
         self.scope = Some(Self::scope(session, store));

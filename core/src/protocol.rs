@@ -356,7 +356,6 @@ pub struct RemoteDragUpdate {
 pub struct GameClockUpdate {
     pub session: crate::session::SessionId,
     pub authority_epoch: crate::session::AuthorityEpoch,
-    pub tick: u64,
     pub elapsed_millis: u64,
 }
 

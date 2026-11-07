@@ -524,4 +524,4 @@ GPUは描画と選択の補助で、placed・所有権・snapを決めません�
 
 `PieceDataStore.elapsed_play_time` は GPU state と独立した CPU 側のゲームメタデータです。offline は Playing 中だけ `Time<Real>` の delta を加算します。network は Host driver だけが加算し、ローカルメニュー中も進み、global pause・初期化・完成後は停止します。加算は O(1)、ピース state の dirty range は増やしません。HUD と完成画面は時分秒を表示し、save / snapshot はミリ秒で引き継ぎます。
 
-ホストの時計は独立した Reliable kind 11 / tick で同期します。authority cursor は進めず、時計の更新で join の最終 barrier をやり直しません。client は受信したホストの時間だけを表示し、ローカル時計の変更やメニュー操作で共有の経過時間を変更できません。通信・snapshot の番号は同一リリース内の変更として維持します。
+ホストの時計は独立した Reliable kind 11 で同期します。単一ホストからのControl laneの順序を使い、session・epoch・認証済みhostを照合して適用します。authority cursor は進めず、時計の更新で join の最終 barrier をやり直しません。client は受信したホストの時間だけを表示し、ローカル時計の変更やメニュー操作で共有の経過時間を変更できません。offlineとhostは共通の時計処理で、同じパズルが前フレームから進行中の場合だけdeltaを加算します。通信番号は同一リリース内の変更としてv3を維持します。

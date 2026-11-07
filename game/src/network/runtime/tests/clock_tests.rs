@@ -140,6 +140,8 @@ fn shared_clock_ignores_local_menus_freezes_at_host_pause_and_syncs_late_join() 
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
             Duration::from_secs(1),
         ));
+    pair.frame(); // First active frame starts the next interval.
+    assert_eq!(elapsed(&pair.host), frozen);
     pair.frame();
     late.update();
     assert!(elapsed(&pair.host) > frozen);
