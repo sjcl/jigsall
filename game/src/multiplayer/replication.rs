@@ -158,6 +158,9 @@ impl PeerReplicationState {
         }
         match self.apply_gameplay(store, &envelope.event, definition, local_player) {
             Ok(applied) => {
+                if let ProtocolAuthorityEvent::PauseChanged { paused } = envelope.event {
+                    session.set_gameplay_paused(paused);
+                }
                 session
                     .record_applied_event(envelope)
                     .map_err(ReplicationError::Protocol)?;
@@ -178,6 +181,16 @@ impl PeerReplicationState {
         local_player: PlayerId,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
+            ProtocolAuthorityEvent::PauseChanged { paused } => {
+                if *paused {
+                    for player in self.remote_drags.keys() {
+                        store.clear_player_holds(*player);
+                    }
+                    self.remote_drags.clear();
+                }
+                Ok(AppliedCommand::default())
+            }
+            ProtocolAuthorityEvent::CommandRejected { .. } => Ok(AppliedCommand::default()),
             ProtocolAuthorityEvent::DragCancelled(cancel) => {
                 let drag = self
                     .remote_drags
@@ -448,6 +461,7 @@ impl PeerReplicationState {
             expected.cursor,
         );
         self.remote_drags = prepared.drags.into_iter().collect();
+        session.set_gameplay_paused(baseline.gameplay_paused);
         self.diverged = false;
         self.scope = Some(Self::scope(session, store));
         Ok(())

@@ -7,6 +7,7 @@ use super::{
     wire::{self, WireError, WireMessage},
 };
 mod bootstrap;
+mod pause;
 mod policy;
 mod transient;
 use crate::{
@@ -384,7 +385,7 @@ fn wire_rejects_untrusted_headers_and_payloads() {
     bytes[0] = 0;
     assert_eq!(wire::decode(&bytes), Err(WireError::BadMagic));
     bytes = valid.clone();
-    for version in [0u16, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, u16::MAX] {
+    for version in [0u16, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, u16::MAX] {
         bytes[4..6].copy_from_slice(&version.to_le_bytes());
         assert_eq!(
             wire::decode(&bytes),
@@ -500,7 +501,7 @@ fn wire_bounded_sparse_and_million_piece_dense_decode() {
 fn malformed_binary_corpus_never_panics() {
     let mut seed = 0x73c1_a209u32;
     for len in 0..512 {
-        let mut frame = Vec::from(&b"PZLA\x02\x00\x01\x00"[..]);
+        let mut frame = Vec::from(&b"PZLA\x03\x00\x01\x00"[..]);
         frame.extend_from_slice(&(len as u32).to_le_bytes());
         for _ in 0..len {
             seed ^= seed << 13;

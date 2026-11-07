@@ -1,6 +1,6 @@
 # Join baseline, bounded catch-up and Ready handoff
 
-`JoinBaseline` schema **1** combines the existing `GameSnapshot` schema **1**
+`JoinBaseline` schema **2** combines the existing `GameSnapshot` schema **1**
 with at most **64** `BaselineDrag` records. This is a transport-independent CPU
 API. `network::syncing` now connects it to authenticated runtime routing and
 generation-bound Bulk transfer, authoritative drag reconciliation and Ready handoff.
@@ -8,6 +8,7 @@ generation-bound Bulk transfer, authoritative drag reconciliation and Ready hand
 ```rust
 pub struct JoinBaseline {
     pub schema_version: u16,
+    pub gameplay_paused: bool,
     pub snapshot: GameSnapshot,
     pub active_drags: Vec<BaselineDrag>,
 }
@@ -25,7 +26,10 @@ pub struct BaselineDrag {
 records become internal `ActiveDrag` instances only after complete validation.
 The drag vector decoder caps allocation independently of `size_hint`, stops at
 64 entries, and rejects any extra entry. Direct Rust callers are checked too.
-Existing sparse ref and dense bitset decoding limits also apply.
+Existing sparse ref and dense bitset decoding limits also apply. The baseline
+carries the authoritative gameplay pause flag; a paused baseline with active
+drags is rejected. Pause transitions after capture replay as Reliable catch-up
+events and clear retained drag bases and transient overlays.
 
 `GameSnapshot.pieces` is bounded during deserialization to `jigsall_core::MAX_PIECES`,
 including when nested inside `JoinBaseline`. The decoder starts with zero capacity
@@ -292,7 +296,7 @@ It detects unrecorded authority gameplay and is **not** a Ready decision.
 `latest_drag_updates` returns latest presentation in ascending PlayerId order;
 the caller must deliver it after the corresponding reliable basis.
 
-Runtime lifecycle (`network::syncing`, wire v2):
+Runtime lifecycle (`network::syncing`, wire v3):
 
 ```text
 Authenticated
@@ -523,7 +527,7 @@ registration cleanup. The actual localhost GNS join test runs SPAKE2, missing-im
 negotiation/verification, baseline, catch-up, reconciliation, final ACK and production
 Ready promotion, then sends and replicates a normal Grab over encrypted Control.
 
-## Bounded Bulk substrate (wire v2, framing retained from pre-release v6)
+## Bounded Bulk substrate (wire v3, framing retained from pre-release v6)
 
 `network::bulk` provides `BulkTransferKind::{JoinBaseline, PuzzleImage}`,
 monotonic `TransferId(u64)` and typed Start/Chunk/Finish/Abort under outer wire

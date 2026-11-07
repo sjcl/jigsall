@@ -35,6 +35,7 @@ pub enum ProtocolCommandError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProtocolCommandResult {
+    Paused,
     Grabbed {
         applied: AppliedCommand,
         ack: GrabAccepted,
@@ -86,6 +87,37 @@ pub struct ProtocolDragContexts {
 }
 
 impl ProtocolDragContexts {
+    /// Only the local host can call this control path; it is never a client command.
+    pub fn set_paused(
+        &mut self,
+        session: &mut AuthoritySession,
+        store: &mut PieceDataStore,
+        paused: bool,
+    ) -> Result<Option<ProtocolAuthorityEventEnvelope>, ProtocolError> {
+        if !session.is_active() {
+            return Err(ProtocolError::Frozen);
+        }
+        if session.gameplay_paused() == paused {
+            return Ok(None);
+        }
+        let cursor = session.advance_authority()?;
+        if paused {
+            let players: std::collections::HashSet<_> =
+                store.held_by.iter().map(|(_, &player)| player).collect();
+            for player in players {
+                store.clear_player_holds(player);
+            }
+            self.players.clear();
+            self.validation.clear();
+        }
+        session.set_gameplay_paused(paused);
+        Ok(Some(ProtocolAuthorityEventEnvelope {
+            session: session.session_id(),
+            host: session.host(),
+            cursor,
+            event: ProtocolAuthorityEvent::PauseChanged { paused },
+        }))
+    }
     /// Use this entrypoint consistently for a replicated authority session.
     /// Reliable outcomes advance the cursor; transient presentation never does.
     pub fn apply_replicated(
@@ -114,6 +146,15 @@ impl ProtocolDragContexts {
             local_player,
         )?;
         let event = match &result {
+            ProtocolCommandResult::Paused => match envelope.sequence {
+                ClientCommandSequence::Control(sequence) => {
+                    Some(ProtocolAuthorityEvent::CommandRejected {
+                        player: authenticated_player,
+                        sequence,
+                    })
+                }
+                ClientCommandSequence::Move { .. } => None,
+            },
             ProtocolCommandResult::Grabbed { ack, .. } => {
                 Some(ProtocolAuthorityEvent::GrabAccepted(ack.clone()))
             }
@@ -170,7 +211,10 @@ impl ProtocolDragContexts {
                 .expect("preflighted active cursor"),
             event,
         });
-        let drag_update = if let ProtocolPieceCommand::DragUpdate { delta } = envelope.command {
+        let drag_update = if matches!(result, ProtocolCommandResult::DragUpdated { .. }) {
+            let ProtocolPieceCommand::DragUpdate { delta } = envelope.command else {
+                unreachable!()
+            };
             let ClientCommandSequence::Move {
                 after_control_sequence,
                 tick,
@@ -309,6 +353,11 @@ impl ProtocolDragContexts {
         session
             .accept_command(envelope)
             .map_err(ProtocolCommandError::Sequence)?;
+        // Consume reliable sequence numbers even when refusing gameplay, so
+        // commands racing pause get a normal rejection and resume has no gap.
+        if session.gameplay_paused() {
+            return Ok(ProtocolCommandResult::Paused);
+        }
         let player = authenticated_player;
         if matches!(
             envelope.command,

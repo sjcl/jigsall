@@ -45,6 +45,27 @@ pub struct GameUiPointerCapture {
 #[derive(Resource, Default)]
 pub struct LocalGameplayBlocked(pub bool);
 
+/// Authoritative puzzle pause, independent of the local ESC menu and camera.
+#[derive(Resource, Default)]
+pub struct GameplayPause {
+    pub paused: bool,
+    pub(crate) requested: Option<bool>,
+}
+
+impl GameplayPause {
+    pub fn requested(&self) -> Option<bool> {
+        self.requested
+    }
+
+    pub fn request(&mut self, paused: bool) {
+        self.requested = Some(paused);
+    }
+}
+
+pub fn piece_gameplay_enabled(pause: Option<Res<GameplayPause>>) -> bool {
+    pause.is_none_or(|pause| !pause.paused)
+}
+
 pub fn local_gameplay_enabled(
     blocked: Res<LocalGameplayBlocked>,
     next: Res<NextState<super::AppState>>,

@@ -5,7 +5,7 @@ layout, and generator v1 preserves the pre-release v5 algorithm. References belo
 to snapshot schemas 3/4 describe development history; pre-release compatibility is
 not provided. See [ARCHITECTURE.md](ARCHITECTURE.md) for the current format.
 
-## Display metadata and session roster (wire v2)
+## Display metadata and session roster (wire v3)
 
 PlayerId is the protocol/ownership identity. PlayerDisplayName is a validated,
 optional display string; duplicate names are valid. Platform account identity is
@@ -693,3 +693,14 @@ JoinBaseline at C followed by DragCancelled at C+1 is normal catch-up without
 replaying GrabAccepted. Migration still discards drags in a new epoch and does not
 require DragCancelled. Direct-IP runtime now coordinates cancellation, catch-up
 retention, PlayerLeft and the roster HUD; this layer adds no scheduled piece scans.
+
+## Host gameplay pause
+
+The local host issues `PauseChanged { paused }` on the Reliable authority stream.
+This is not a client command. Pausing cancels holds and active drag contexts without
+translation or snap; camera navigation remains local and available. Commands still
+pass authenticated identity and session/epoch/sequence checks while paused. Reliable
+commands consume their control sequence and produce `CommandRejected { player,
+sequence }`; transient updates have no effect or publication. Clients retire pending
+controls on rejection and discard unsent drag/rotation intent when pause arrives.
+JoinBaseline schema 2 includes the pause flag; later pause transitions use catch-up.

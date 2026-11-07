@@ -262,7 +262,13 @@ impl PendingJoin {
                 self.latest_updates.remove(&cancel.player.0);
                 self.drag_bases.remove(&cancel.player.0);
             }
-            ProtocolAuthorityEvent::RotationCommitted(_) => {}
+            ProtocolAuthorityEvent::PauseChanged { paused: true } => {
+                self.latest_updates.clear();
+                self.drag_bases.clear();
+            }
+            ProtocolAuthorityEvent::RotationCommitted(_)
+            | ProtocolAuthorityEvent::PauseChanged { paused: false }
+            | ProtocolAuthorityEvent::CommandRejected { .. } => {}
         }
     }
 }
@@ -721,7 +727,9 @@ fn logical_retained_bytes(event: &ProtocolAuthorityEventEnvelope) -> usize {
         ProtocolAuthorityEvent::RotationCommitted(commit) => target_dynamic_bytes(&commit.accepted),
         ProtocolAuthorityEvent::ReleaseCommitted(_)
         | ProtocolAuthorityEvent::DragRotationCommitted(_)
-        | ProtocolAuthorityEvent::DragCancelled(_) => 0,
+        | ProtocolAuthorityEvent::DragCancelled(_)
+        | ProtocolAuthorityEvent::PauseChanged { .. }
+        | ProtocolAuthorityEvent::CommandRejected { .. } => 0,
     };
     size_of::<ProtocolAuthorityEventEnvelope>().saturating_add(dynamic)
 }

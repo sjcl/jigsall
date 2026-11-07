@@ -35,6 +35,7 @@ pub(crate) fn draw_game_ui(
     mut multiplayer: Option<ResMut<crate::multiplayer::MultiplayerUi>>,
     sub_state: Res<State<GameSubState>>,
     mut next_sub_state: ResMut<NextState<GameSubState>>,
+    pause: Res<GameplayPause>,
 ) {
     let _span = info_span!("draw_game_ui").entered();
 
@@ -51,6 +52,11 @@ pub(crate) fn draw_game_ui(
     );
     let panel = egui::Panel::top("game_info").show(&mut viewport_ui, |ui| {
         ui.horizontal_wrapped(|ui| {
+            if pause.paused {
+                ui.strong(i18n.text("pause-session-status"));
+                ui.label(i18n.text("pause-viewing-hint"));
+                ui.separator();
+            }
             ui.label(
                 i18n.format(
                     "game-progress",
@@ -322,6 +328,7 @@ mod tests {
             .insert_resource(crate::localization::tests::english())
             .insert_resource(KeyBindingsState::load(None))
             .init_resource::<GameData>()
+            .init_resource::<GameplayPause>()
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<PlayersOverlayState>()
             .init_resource::<LocalPlayerId>()

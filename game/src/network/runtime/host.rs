@@ -21,6 +21,51 @@ pub(super) fn publish_presence(
 }
 
 impl<T: Transport> Runtime<T> {
+    pub(super) fn pause_gameplay(
+        &mut self,
+        paused: bool,
+        store: &mut PieceDataStore,
+        interaction: &mut PieceInteraction,
+    ) -> Result<(), RuntimeFailure> {
+        let Role::Host(host) = &mut self.role else {
+            return Ok(());
+        };
+        let session = self.session.as_mut().ok_or("missing authority")?;
+        let Some(event) = host
+            .contexts
+            .set_paused(session, store, paused)
+            .map_err(RuntimeFailure::internal)?
+        else {
+            return Ok(());
+        };
+        if let Err(error) = host.sync.record_authority_event(session, store, &event) {
+            self.status
+                .set_failure(NetworkFailureKind::Internal, &error);
+        }
+        self.presentation
+            .event(self.status.local_player.unwrap(), &event.event, None, store);
+        self.bridge
+            .reconcile(
+                self.status.local_player.unwrap(),
+                &event.event,
+                interaction,
+                store,
+            )
+            .map_err(RuntimeFailure::internal)?;
+        let failures = HostRouter {
+            local_player: self.status.local_player.unwrap(),
+            connections: &self.connections,
+            contexts: &mut host.contexts,
+            session,
+            store,
+            definition: self.definition.as_ref(),
+        }
+        .publish_authority_event(&mut self.transport, &event)
+        .map_err(RuntimeFailure::internal)?;
+        let pending = self.publication_disconnects(failures)?;
+        self.disconnect_many(pending, store)
+    }
+
     /// Cancellation applies once, then retention/publication cannot re-enter it.
     /// Even an internal cancellation/encoding fault must finish roster cleanup.
     pub(super) fn host_disconnected(
@@ -250,11 +295,10 @@ impl<T: Transport> Runtime<T> {
             let Role::Host(host) = &self.role else {
                 unreachable!()
             };
-            let drag = host.contexts.active_drag(
-                self.session.as_ref().unwrap(),
-                store,
-                presentation::event_player(&event.event),
-            );
+            let drag = presentation::event_player(&event.event).and_then(|event_player| {
+                host.contexts
+                    .active_drag(self.session.as_ref().unwrap(), store, event_player)
+            });
             self.presentation
                 .event(self.status.local_player.unwrap(), &event.event, drag, store);
         }

@@ -548,6 +548,14 @@ impl<T: Transport> Runtime<T> {
         ) {
             return Ok(());
         }
+        if self
+            .session
+            .as_ref()
+            .is_some_and(AuthoritySession::gameplay_paused)
+        {
+            self.bridge.suspend(interaction, store);
+            return Ok(());
+        }
         self.bridge.prediction_enabled = matches!(self.role, Role::Client(_));
         for request in commands {
             if request.player != player {

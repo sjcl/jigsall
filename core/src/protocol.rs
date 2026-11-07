@@ -358,6 +358,15 @@ pub enum ProtocolAuthorityEvent {
     RotationCommitted(RotationCommitted),
     DragRotationCommitted(DragRotationCommitted),
     DragCancelled(DragCancelled),
+    /// Host-only control; pausing cancels all holds without moving or snapping.
+    PauseChanged {
+        paused: bool,
+    },
+    /// Consumes an in-flight reliable command during pause without changing pieces.
+    CommandRejected {
+        player: PlayerId,
+        sequence: u64,
+    },
 }
 
 pub type ProtocolAuthorityEventEnvelope =

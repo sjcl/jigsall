@@ -46,7 +46,7 @@ pub enum GameSubState {
     #[default]
     Initializing, // パズル生成中
     Playing, // プレイ中
-    Paused,  // ポーズ中（ESCメニュー）
+    Paused,  // ESCメニュー表示中（全員の停止はGameplayPauseで管理）
 }
 
 /// Completion keeps the existing session alive while showing its result or canvas.

@@ -77,7 +77,7 @@ cursorの通常処理は最大64 remote playersのsmoothing / instance描画で�
 component・piece GPU upload・dirty revisionへ接点を持ちません。authority cursor、gameplay protocol、
 snapshot / checkpoint / JoinBaseline / catch-up / save / autosaveから完全に分離します。
 disconnect / PlayerLeftは即削除、session / epoch / baseline / Ready replacementとteardownは
-全resetです。wire v2の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
+全resetです。wire v3の最大snapshotは1,210 bytes、Transient上限は1,280 bytesです。
 詳細は[runtime](DIRECT_IP_RUNTIME.md#remote-cursor-presence)と
 [transport](NETWORK_TRANSPORT.md#world-space-remote-cursors)を参照してください。
 
@@ -170,8 +170,8 @@ uploadします。既存state bufferをmain / far / visibility / point / rectang
 64 queued controls + 1 in-flight controlに制限され、各controlはO(k)のplanner処理です。
 1M対象なら一時pose map / plan / uploadも対象数に比例しますが、1piece操作でcanonicalの
 16MBをCOW copyしません。ordinary pointer/camera、pending ACK idle frameはpose mapを
-走査/再構築せず、state/membership uploadは0 bytesです。wire 1、snapshot schema 1、
-JoinBaseline schema 1、GpuPieceState 16 bytesを維持します。
+走査/再構築せず、state/membership uploadは0 bytesです。wire 3、snapshot schema 1、
+JoinBaseline schema 2、GpuPieceState 16 bytesを維持します。
 
 Last scheduleで選択maskのArcを共有し、Render側はそのidentityが変わった場合だけmaskをuploadします。selected outlineはfragmentで専用bitsetを参照し、dense stateのflagsとdirty rangeを変更しません。初回state uploadはCPU正本と同じArcを共有し、stateをコピーしません。次のLast / ExtractScheduleで初回snapshotを解放した後、通常の編集は同じ領域を更新します。共有中の例外的な早期編集はcopy-on-writeでsnapshotを保護します。dirty bitsetのset bitsをID順にiterateして連続rangeへまとめ、ID Vecの展開・sortは不要です。ExtractScheduleはArcと小さな定義をcloneし、Render側がrangeをqueue.write_bufferします。idle frameのstate / selected / membership uploadは0 bytes、1ピース移動は16 bytesです。通常frameにCPUの全件走査はありません。
 
@@ -482,7 +482,7 @@ target / displayed / smoothing ageと64-bit active maskはmappingから独立し
 
 client ReadyではJoinBaseline / catch-up / FinalDragSet reconciliationが完了した**current** replica contextからmembershipを構築し、displayed == target == reconciled deltaへ即時初期化します。初回Transientを待たず、過去のdragをzeroからanimationさせず、final scalar rollbackもそのまま表示します。store epoch / authority scopeの変更、join baseline / new session、snapshot / new puzzle、Menu / session stop / host lossでmapping・membership・dirty ranges・両delta・smoothing stateをresetし、GPU revisionを進めます。renderer bufferはpiece epochとともに作り直し、remote mapping / deltaのrevisionが一致した後に描画・RenderReadyを進めます。
 
-`presentation.wesl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v2、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 1は変更しません。
+`presentation.wesl::presentation_pose`はmain visibility、pick ROI visibility、normal / far-splat vertexに共通です。その内部の`presentation_position`がdrag translationを合成します。point / rectangleは同じvertexを使います。canonical HELDを前提にlocal membershipを優先し、remote translationを重ねて二重移動させません。wire v3、`GpuPieceState` 16 bytes、snapshot schema 1、join baseline schema 2を使用します。
 
 接続componentのselection / preview outlineは、dense stateのflags bit 5–8にあるtop / right / bottom / leftの接続cacheを使って内部辺を除外します。cacheはDSUの派生情報で、既存snap closureのneighbor探索内で両側をincrementalに更新し、変化したpieceだけdirtyにします。16-byte stateを維持し、snapshot schema 1のinstallでは復元DSUからcacheを再構成します。fragmentは4辺SDFを一度だけ計算し、coverage / pickingは全辺、黄 / 青outlineは共通の未接続境界を使います。全4辺が接続した内部pieceにoutlineはありません。
 
@@ -513,3 +513,9 @@ transport向けにはcore/protocolのComponentRef / PieceTarget / ProtocolPieceC
 snapshot schema 1は16-byte stateのflagsへPLACED / CONNECTED_RIGHT / CONNECTED_DOWN / rotation（bit 9–10）を保存します。root IDはprotocolへ保存せず、install時に隣接edgeからDSUを再構成します。schemaの番号が1以外、境界外edge、placedの誤座標、component内のrotation / rigid transform / placed不一致は変更前に拒否します。初期のschema 1を含め、開発中のlayoutとの互換decoderはありません。restoreはpositions / Z / connectivity / placedを保ち、holds / selection / dragをresetします。disconnectはcomponent全体のholdだけを解放し、位置とsnapを変更しません。
 
 GPUは描画と選択の補助で、placed・所有権・snapを決めません。cullingはO(N)、半透明sortは可視数に比例します。選択保持・drag pointer・rectangle previewのCPU処理はO(1)ですが、final selectionの再検証、grab時のZ順保持、release時のsnapとstate commitには明示的な大量処理が残ります。極端な重なりではrasterとpickingの負荷が増えます。異OS/GPU、通常windowの全手動操作は今後の確認対象です。
+
+## ホストによるパズルの一時停止
+
+`GameSubState::Paused` は従来どおりローカル ESC メニューを表します。全員のピース操作を止める状態は `AuthoritySession::gameplay_paused` が管理し、`GameplayPause` resource は UI と入力制御へその値を反映します。ホストだけが ESC メニューから停止・再開を要求でき、client の要求は runtime が無視します。メニューを閉じた `Playing` 中は停止状態でも camera の pan / zoom と入力座標の更新を継続し、piece input と autosave の active-play timer を止めます。
+
+停止・再開は wire v3 の Reliable authority event `PauseChanged` として順序付きで配信します。停止時は全員の hold / drag context を移動・snap せずに解放し、selection request と local / remote drag presentation、未確定の rotation prediction を破棄します。authority は停止中も認証済み player、session、epoch、sequence を検証し、Reliable 操作は連番を消費して `CommandRejected` を返します。Transient 操作は正本を変更せず、転送もしません。client 由来の authority event は拒否します。JoinBaseline schema 2 に停止状態を含め、baseline 後の変更は catch-up で適用します。保存用 snapshot schema 1 と GPU state の構造は変わりません。

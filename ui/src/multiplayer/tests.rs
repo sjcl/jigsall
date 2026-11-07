@@ -157,6 +157,7 @@ fn scheduled_screens() -> (App, egui::Context) {
     world.init_resource::<NextState<GameSubState>>();
     world.init_resource::<NextState<GameCompleteSubState>>();
     world.init_resource::<LocalGameplayBlocked>();
+    world.init_resource::<GameplayPause>();
     world.init_resource::<GameData>();
     world.init_resource::<GameUiPointerCapture>();
     world.init_resource::<crate::game_play::PlayersOverlayState>();

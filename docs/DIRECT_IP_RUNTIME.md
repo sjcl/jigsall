@@ -385,7 +385,7 @@ Offline release continues to use immediate local authority without ACK state.
 Pending idle frames share the same 125,000-byte bitset for 1M members and update
 only scalar/Arc presentation state. They do not inspect canonical pieces, rebuild
 membership or request canonical uploads. Wire version 1, snapshot schema 1,
-JoinBaseline schema 1 and the 16-byte GpuPieceState are unchanged.
+JoinBaseline schema 2 carries the gameplay pause flag; the 16-byte GpuPieceState is unchanged.
 
 ## Joining World and image lifecycle
 

@@ -263,6 +263,7 @@ pub struct AuthoritySession {
     cursor: AuthorityCursor,
     migration: MigrationState,
     commands: CommandSequenceTracker,
+    gameplay_paused: bool,
 }
 impl AuthoritySession {
     pub fn new(definition: SessionDefinition, host: PlayerId, cursor: AuthorityCursor) -> Self {
@@ -272,6 +273,7 @@ impl AuthoritySession {
             cursor,
             migration: MigrationState::Active,
             commands: CommandSequenceTracker::new(definition.id, cursor.epoch),
+            gameplay_paused: false,
         }
     }
     pub fn session_id(&self) -> SessionId {
@@ -294,6 +296,14 @@ impl AuthoritySession {
     }
     pub fn is_active(&self) -> bool {
         self.migration == MigrationState::Active
+    }
+    pub fn gameplay_paused(&self) -> bool {
+        self.gameplay_paused
+    }
+    /// Authority control and authenticated event/baseline replay only.
+    /// Reliable sequencing and session lifecycle stay active during gameplay pause.
+    pub fn set_gameplay_paused(&mut self, paused: bool) {
+        self.gameplay_paused = paused;
     }
     fn require_active(&self) -> Result<(), ProtocolError> {
         if self.is_active() {

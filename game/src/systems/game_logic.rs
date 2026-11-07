@@ -36,6 +36,7 @@ pub fn toggle_completed_puzzle_menu(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Explicit authority, pause and input resources.
 pub fn apply_piece_commands(
     local_player: Res<LocalPlayerId>,
     mut commands: MessageReader<ClientCommand>,
@@ -44,9 +45,13 @@ pub fn apply_piece_commands(
     mut interaction: Option<ResMut<crate::interaction::PieceInteraction>>,
     input: Option<Res<InputState>>,
     mut perf: ResMut<PerformanceMonitor>,
+    pause: Option<Res<GameplayPause>>,
 ) {
     let start = perf.start_system_timing("apply_piece_commands");
     for request in commands.read() {
+        if pause.as_ref().is_some_and(|pause| pause.paused) {
+            continue;
+        }
         let visual = store.capture_rotation_command(&request.command, definition.as_deref());
         let applied = store.apply_command(
             request.player,
@@ -65,6 +70,30 @@ pub fn apply_piece_commands(
         }
     }
     perf.end_system_timing("apply_piece_commands", start);
+}
+
+pub fn apply_offline_pause(
+    mut pause: ResMut<GameplayPause>,
+    mut store: ResMut<PieceDataStore>,
+    mut interaction: ResMut<crate::interaction::PieceInteraction>,
+    mut selection: ResMut<crate::selection::PuzzleSelection>,
+) {
+    let Some(paused) = pause.requested.take() else {
+        return;
+    };
+    pause.paused = paused;
+    if paused {
+        let players: std::collections::HashSet<_> =
+            store.held_by.iter().map(|(_, &player)| player).collect();
+        for player in players {
+            store.clear_player_holds(player);
+        }
+        *interaction = default();
+        selection.cancel();
+        store.drag = default();
+        store.clear_local_rotation();
+        store.clear_rotation_visual();
+    }
 }
 
 pub fn update_game_progress(

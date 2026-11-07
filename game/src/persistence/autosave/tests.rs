@@ -40,6 +40,15 @@ fn autosave_counts_only_host_play_time_and_suspends_during_pause() {
     advance(&mut app, 600);
     assert!(!app.world().resource::<PersistenceState>().busy);
     app.insert_resource(State::new(GameSubState::Playing));
+    app.init_resource::<crate::resources::GameplayPause>();
+    app.world_mut()
+        .resource_mut::<crate::resources::GameplayPause>()
+        .paused = true;
+    advance(&mut app, 600);
+    assert!(!app.world().resource::<PersistenceState>().busy);
+    app.world_mut()
+        .resource_mut::<crate::resources::GameplayPause>()
+        .paused = false;
     advance(&mut app, 1);
     let state = app.world().resource::<PersistenceState>();
     assert!(state.autosaving && state.busy && state.capture.is_some());

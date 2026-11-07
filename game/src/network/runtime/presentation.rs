@@ -80,7 +80,14 @@ impl RemotePresentationBridge {
             }
             ProtocolAuthorityEvent::ReleaseCommitted(commit) => self.release(commit.player),
             ProtocolAuthorityEvent::DragCancelled(cancel) => self.release(cancel.player),
-            ProtocolAuthorityEvent::RotationCommitted(_) => {}
+            ProtocolAuthorityEvent::PauseChanged { paused: true } => {
+                for (_, slot) in self.slots.drain() {
+                    self.state.release(slot);
+                }
+            }
+            ProtocolAuthorityEvent::RotationCommitted(_)
+            | ProtocolAuthorityEvent::PauseChanged { paused: false }
+            | ProtocolAuthorityEvent::CommandRejected { .. } => {}
         }
     }
     pub fn delta(&mut self, player: PlayerId, delta: Vec2) {
@@ -95,14 +102,16 @@ impl RemotePresentationBridge {
     }
 }
 
-pub(super) fn event_player(event: &ProtocolAuthorityEvent) -> PlayerId {
-    match event {
+pub(super) fn event_player(event: &ProtocolAuthorityEvent) -> Option<PlayerId> {
+    Some(match event {
         ProtocolAuthorityEvent::GrabAccepted(e) => e.player,
         ProtocolAuthorityEvent::ReleaseCommitted(e) => e.player,
         ProtocolAuthorityEvent::DragRotationCommitted(e) => e.player,
         ProtocolAuthorityEvent::DragCancelled(e) => e.player,
         ProtocolAuthorityEvent::RotationCommitted(e) => e.player,
-    }
+        ProtocolAuthorityEvent::CommandRejected { player, .. } => *player,
+        ProtocolAuthorityEvent::PauseChanged { .. } => return None,
+    })
 }
 
 #[cfg(test)]

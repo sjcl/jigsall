@@ -44,6 +44,7 @@ impl Plugin for GameUiPlugin {
             .init_resource::<multiplayer::MultiplayerUi>()
             .init_resource::<notifications::Notifications>()
             .init_resource::<jigsall_game::resources::LocalGameplayBlocked>()
+            .init_resource::<jigsall_game::resources::GameplayPause>()
             .add_systems(PreUpdate, window_close::handle_close_requests)
             .add_systems(First, multiplayer::start_prepared_host)
             .add_systems(

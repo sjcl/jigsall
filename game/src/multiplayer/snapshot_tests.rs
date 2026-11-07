@@ -229,6 +229,7 @@ fn postcard_snapshot_piece_limit_also_applies_through_join_baseline() {
 
     let mut baseline = JoinBaseline {
         schema_version: JOIN_BASELINE_SCHEMA_VERSION,
+        gameplay_paused: false,
         snapshot: snapshot(),
         active_drags: Vec::new(),
     };

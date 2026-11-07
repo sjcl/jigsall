@@ -35,6 +35,7 @@ pub struct NetworkRuntimePlugin;
 impl Plugin for NetworkRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStatus>()
+            .init_resource::<GameplayPause>()
             .add_message::<GameEvent>()
             .init_resource::<remote_cursor::RemoteCursorPresentation>()
             .init_resource::<remote_drag::RemoteDragPresentation>()
@@ -81,6 +82,7 @@ pub(super) fn install_driver(
     roster: PlayerRoster,
 ) {
     crate::events::reset_world_history(world);
+    world.insert_resource(GameplayPause::default());
     world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
@@ -485,6 +487,17 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
         let pointer = world
             .get_resource::<InputState>()
             .and_then(|input| input.mouse_position);
+        if let Some(paused) = world
+            .get_resource_mut::<GameplayPause>()
+            .and_then(|mut pause| pause.requested.take())
+        {
+            // Local-only API: a client cannot change the authority's pause state.
+            if matches!(self.role, Role::Host(_)) {
+                if let Err(error) = self.pause_gameplay(paused, &mut store, &mut interaction) {
+                    self.fail(error);
+                }
+            }
+        }
         if let Err(error) = self.local_frame(commands, &mut store, &mut interaction, pointer) {
             self.fail(error);
         }
@@ -499,6 +512,7 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
             cursor_revision,
         );
         world.insert_resource(self.status.clone());
+        self.install_pause(world);
         self.flush_events(world);
     }
     fn teardown(&mut self, world: &mut World) {
@@ -537,6 +551,24 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
     }
 }
 impl<T: Transport> Runtime<T> {
+    fn install_pause(&self, world: &mut World) {
+        let paused = self
+            .session
+            .as_ref()
+            .is_some_and(AuthoritySession::gameplay_paused);
+        world.init_resource::<GameplayPause>();
+        if world.resource::<GameplayPause>().paused != paused {
+            world.resource_mut::<GameplayPause>().paused = paused;
+            if paused {
+                if let Some(mut selection) =
+                    world.get_resource_mut::<crate::selection::PuzzleSelection>()
+                {
+                    selection.cancel();
+                }
+            }
+        }
+    }
+
     fn flush_events(&mut self, world: &mut World) {
         if let Some(mut events) = world.get_resource_mut::<Messages<GameEvent>>() {
             events.write_batch(self.events.drain(..));
@@ -545,6 +577,7 @@ impl<T: Transport> Runtime<T> {
         }
     }
     fn install_world(&mut self, world: &mut World) {
+        self.install_pause(world);
         if self.status.role == Some(RuntimeRole::Host) {
             self.status.image = if !world.contains_resource::<PuzzleImage>() {
                 ImageReadiness::Unavailable

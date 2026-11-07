@@ -158,6 +158,68 @@ fn multiplayer_menu_explains_local_pause_and_distinguishes_host_and_client_depar
 }
 
 #[test]
+fn only_host_menu_can_pause_and_resume_puzzle_while_clients_can_return_to_view() {
+    for locale in [Locale::EN_US, Locale::JA] {
+        for role in [None, Some(RuntimeRole::Host), Some(RuntimeRole::Client)] {
+            for paused in [false, true] {
+                let (mut app, ctx) = paused_game(role, false);
+                app.world_mut().resource_mut::<GameplayPause>().paused = paused;
+                app.world_mut()
+                    .resource_mut::<Localization>()
+                    .set_preference(LanguagePreference::Locale(locale));
+                for _ in 0..3 {
+                    render_schedule(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+                }
+                let output = render_schedule(&mut app, &ctx, vec![]);
+                let key = if paused {
+                    "pause-session-resume"
+                } else {
+                    "pause-session-stop"
+                };
+                let label = app.world().resource::<Localization>().text(key);
+                assert_eq!(
+                    labels(&output).contains(&label.as_str()),
+                    role != Some(RuntimeRole::Client)
+                );
+                if paused {
+                    let hint = app
+                        .world()
+                        .resource::<Localization>()
+                        .text("pause-viewing-hint");
+                    assert!(labels(&output).contains(&hint.as_str()));
+                    let old_hint = app
+                        .world()
+                        .resource::<Localization>()
+                        .text("pause-multiplayer-hint");
+                    assert!(!labels(&output).contains(&old_hint.as_str()));
+                }
+                output.drop_without_applying_deltas();
+                if role != Some(RuntimeRole::Client) {
+                    click_label(&mut app, &ctx, &label);
+                    assert!(matches!(
+                        app.world().resource::<NextState<GameSubState>>(),
+                        NextState::Pending(GameSubState::Playing)
+                    ));
+                    // The game layer applies the request; the UI cannot mutate authority state.
+                    assert_eq!(app.world().resource::<GameplayPause>().paused, paused);
+                    assert_eq!(
+                        app.world().resource::<GameplayPause>().requested(),
+                        Some(!paused)
+                    );
+                } else {
+                    let back = app
+                        .world()
+                        .resource::<Localization>()
+                        .text("pause-back-puzzle");
+                    click_label(&mut app, &ctx, &back);
+                    assert_eq!(app.world().resource::<GameplayPause>().paused, paused);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn pause_settings_close_and_escape_return_to_the_same_menu_without_resuming() {
     for role in [None, Some(RuntimeRole::Host), Some(RuntimeRole::Client)] {
         for completed in [false, true] {

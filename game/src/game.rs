@@ -11,6 +11,9 @@ use crate::persistence::runtime::{
 };
 
 pub struct GamePlugin;
+#[cfg(test)]
+#[path = "gameplay_pause_tests.rs"]
+mod gameplay_pause_tests;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::settings::DisplaySettingsPlugin);
@@ -62,6 +65,12 @@ impl Plugin for GamePlugin {
             .init_resource::<InputState>()
             .init_resource::<GameUiPointerCapture>()
             .init_resource::<LocalGameplayBlocked>()
+            .init_resource::<GameplayPause>()
+            .add_systems(OnEnter(AppState::Menu), reset_gameplay_pause)
+            .add_systems(
+                OnEnter(AppState::InGame),
+                reset_gameplay_pause.run_if(crate::network::runtime::world_offline),
+            )
             .init_resource::<crate::interaction::PieceInteraction>()
             .init_resource::<PieceGenerationProgress>()
             .init_resource::<PerformanceMonitor>()
@@ -136,7 +145,7 @@ impl Plugin for GamePlugin {
                 (
                     handle_edge_scrolling,
                     update_input_state,
-                    handle_piece_input,
+                    handle_piece_input.run_if(piece_gameplay_enabled),
                 )
                     .chain()
                     .after(EguiPostUpdateSet::EndPass)
@@ -144,6 +153,14 @@ impl Plugin for GamePlugin {
                     .before(apply_piece_commands)
                     .run_if(in_state(GameSubState::Playing))
                     .run_if(local_gameplay_enabled),
+            )
+            .add_systems(
+                PostUpdate,
+                apply_offline_pause
+                    .after(EguiPostUpdateSet::EndPass)
+                    .before(handle_piece_input)
+                    .before(apply_piece_commands)
+                    .run_if(crate::network::runtime::world_offline),
             )
             .add_systems(
                 PostUpdate,
@@ -197,6 +214,10 @@ impl Plugin for GamePlugin {
             .add_systems(Last, crate::resources::pieces::prepare_piece_upload);
     }
 }
+fn reset_gameplay_pause(mut pause: ResMut<GameplayPause>) {
+    *pause = default();
+}
+
 fn setup_game(mut commands: Commands, settings: Res<crate::settings::DisplaySettingsState>) {
     // Single-sample normal rendering and picking share pixel coverage at edges.
     commands.spawn((
