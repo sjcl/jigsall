@@ -20,6 +20,49 @@ fn assert_paused(app: &App, paused: bool) {
 }
 
 #[test]
+fn paused_host_disconnect_clears_pause_and_keeps_retained_game_blocked() {
+    for state in [AppState::InGame, AppState::GameComplete] {
+        let mut pair = Pair::new();
+        pair.ready();
+        request(&mut pair.host, true);
+        pair.converge();
+        assert_paused(&pair.client, true);
+        pair.client.insert_resource(State::new(state));
+        let states = pair
+            .client
+            .world()
+            .resource::<PieceDataStore>()
+            .states
+            .clone();
+        // A pending local request must not outlive the disconnected session.
+        request(&mut pair.client, false);
+        stop_session(pair.host.world_mut());
+        pair.client.update();
+        pair.client.update();
+
+        let pause = pair.client.world().resource::<GameplayPause>();
+        assert!(!pause.paused);
+        assert_eq!(pause.requested(), None);
+        assert!(pair
+            .client
+            .world()
+            .resource::<NetworkStatus>()
+            .has_disconnected_game());
+        assert_eq!(
+            *pair.client.world().resource::<State<AppState>>().get(),
+            state
+        );
+        assert!(pair.client.world().resource::<LocalGameplayBlocked>().0);
+        // Clearing the session pause must not enable offline piece commands.
+        send(&mut pair.client, PieceCommand::Grab(PieceId(0)));
+        pair.client.update();
+        let store = pair.client.world().resource::<PieceDataStore>();
+        assert!(store.held_by.is_empty());
+        assert_eq!(store.states, states);
+    }
+}
+
+#[test]
 fn host_pause_cancels_active_drags_syncs_late_join_and_only_host_can_resume() {
     let mut pair = Pair::new();
     pair.ready();

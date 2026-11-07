@@ -405,6 +405,7 @@ fn drive(world: &mut World, commands: bool) {
             if retain_game {
                 // Keep the confirmed store and original image for an explicit save.
                 // The empty NetworkSession still gates offline authority.
+                *world.resource_mut::<GameplayPause>() = default();
                 world.init_resource::<LocalGameplayBlocked>();
                 world.resource_mut::<LocalGameplayBlocked>().0 = true;
             } else if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
