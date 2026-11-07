@@ -8,8 +8,8 @@ use crate::{
 use bevy::math::Vec2;
 use jigsall_core::{
     protocol::{
-        ActiveDragTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope, RemoteDragUpdate,
-        ResolvedPieceTarget,
+        ActiveDragTarget, PauseChanged, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope,
+        RemoteDragUpdate, ResolvedPieceTarget,
     },
     session::{AuthorityEpoch, AuthoritySession, CommandSequenceStatus, ProtocolError, SessionId},
     PlayerId, PuzzleDefinition,
@@ -40,6 +40,29 @@ pub struct PeerReplicationState {
 }
 
 impl PeerReplicationState {
+    pub fn apply_clock_update(
+        &mut self,
+        session: &AuthoritySession,
+        store: &mut PieceDataStore,
+        authenticated_host: PlayerId,
+        update: &jigsall_core::protocol::GameClockUpdate,
+    ) -> Result<(), ReplicationError> {
+        if !session.is_active() {
+            return Err(ReplicationError::Protocol(ProtocolError::Frozen));
+        }
+        if authenticated_host != session.host() {
+            return Err(ReplicationError::Protocol(ProtocolError::WrongHost));
+        }
+        if update.session != session.session_id() {
+            return Err(ReplicationError::Protocol(ProtocolError::WrongSession));
+        }
+        if update.authority_epoch != session.cursor().epoch {
+            return Err(ReplicationError::Protocol(ProtocolError::WrongEpoch));
+        }
+        self.synchronize(session, store);
+        store.elapsed_play_time = std::time::Duration::from_millis(update.elapsed_millis);
+        Ok(())
+    }
     /// Transactional full-set comparison, followed by authoritative scalar reset.
     /// This deliberately permits tick/delta rollback; normal Transient monotonic
     /// semantics remain in apply_drag_update. Never invent or replace a target.
@@ -158,6 +181,11 @@ impl PeerReplicationState {
         }
         match self.apply_gameplay(store, &envelope.event, definition, local_player) {
             Ok(applied) => {
+                if let ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }) =
+                    envelope.event
+                {
+                    session.set_gameplay_paused(paused);
+                }
                 session
                     .record_applied_event(envelope)
                     .map_err(ReplicationError::Protocol)?;
@@ -178,6 +206,16 @@ impl PeerReplicationState {
         local_player: PlayerId,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
+            ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }) => {
+                if *paused {
+                    for player in self.remote_drags.keys() {
+                        store.clear_player_holds(*player);
+                    }
+                    self.remote_drags.clear();
+                }
+                Ok(AppliedCommand::default())
+            }
+            ProtocolAuthorityEvent::CommandRejected(_) => Ok(AppliedCommand::default()),
             ProtocolAuthorityEvent::DragCancelled(cancel) => {
                 let drag = self
                     .remote_drags
@@ -448,6 +486,7 @@ impl PeerReplicationState {
             expected.cursor,
         );
         self.remote_drags = prepared.drags.into_iter().collect();
+        session.set_gameplay_paused(baseline.gameplay_paused);
         self.diverged = false;
         self.scope = Some(Self::scope(session, store));
         Ok(())

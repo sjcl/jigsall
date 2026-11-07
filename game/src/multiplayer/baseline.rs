@@ -18,7 +18,7 @@ use jigsall_core::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-pub const JOIN_BASELINE_SCHEMA_VERSION: u16 = 1;
+pub const JOIN_BASELINE_SCHEMA_VERSION: u16 = 2;
 /// Matches the current session/transport connection cap. Checked while decoding
 /// and again for direct Rust callers, before allocating validation scratch.
 pub const MAX_BASELINE_DRAGS: usize = 64;
@@ -26,6 +26,7 @@ pub const MAX_BASELINE_DRAGS: usize = 64;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JoinBaseline {
     pub schema_version: u16,
+    pub gameplay_paused: bool,
     pub snapshot: GameSnapshot,
     #[serde(deserialize_with = "deserialize_drags")]
     pub active_drags: Vec<BaselineDrag>,
@@ -44,6 +45,7 @@ pub struct BaselineDrag {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinBaselineError {
+    PausedWithActiveDrags,
     UnsupportedSchema(u16),
     Protocol(ProtocolError),
     Snapshot(SnapshotError),
@@ -175,6 +177,7 @@ impl JoinBaseline {
         }
         Ok(Self {
             schema_version: JOIN_BASELINE_SCHEMA_VERSION,
+            gameplay_paused: session.gameplay_paused(),
             snapshot,
             active_drags,
         })
@@ -189,6 +192,9 @@ impl JoinBaseline {
         }
         if self.active_drags.len() > MAX_BASELINE_DRAGS {
             return Err(JoinBaselineError::TooManyActiveDrags);
+        }
+        if self.gameplay_paused && !self.active_drags.is_empty() {
+            return Err(JoinBaselineError::PausedWithActiveDrags);
         }
         // One DSU, kept through overlay validation and moved into the store at commit.
         let connectivity = self

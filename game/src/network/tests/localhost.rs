@@ -476,7 +476,8 @@ impl Live {
                                 self.drags[index] += 1;
                             }
                             ClientRouteOutcome::DroppedTransient(_)
-                            | ClientRouteOutcome::Presence(_) => {}
+                            | ClientRouteOutcome::Presence(_)
+                            | ClientRouteOutcome::Clock => {}
                         }
                     }
                     TransportEvent::ConnectionFailed { .. } => {

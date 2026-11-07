@@ -1,6 +1,6 @@
 # Network transport
 
-The multiplayer CPU layer provides `JoinBaseline` schema 1 for same-epoch join:
+The multiplayer CPU layer provides `JoinBaseline` schema 2 for same-epoch join:
 GameSnapshot plus up to 64 active drag overlays captured in stable PlayerId order.
 Its transactional install can continue existing authority events without a new
 Grab. The opt-in Syncing runtime connects image preparation, generation-bound
@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 offline authority path. The game runtime and UI provide Direct IP and optional
 Internet Room Code entrypoints; migration orchestration remains separate.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v2 and snapshot schema 1. `core` has no transport/native dependency.
+wire v3 and snapshot schema 2. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)
@@ -624,7 +624,7 @@ secure record/native message, with no stream reassembly:
 | Bytes | Field |
 | --- | --- |
 | 0..4 | ASCII `PZLA` |
-| 4..6 | u16 wire version, little-endian, currently 2 |
+| 4..6 | u16 wire version, little-endian, currently 3 |
 | 6 | Kind: 1 ClientControl, 2 AuthorityEvent, 3 RemoteDragUpdate, 4 ClientDrag, 5 BulkTransfer, 6 SessionControl, 7 SyncControl, 8 Presence, 9 CursorUpdate, 10 CursorSnapshot |
 | 7 | Reserved zero byte |
 | 8..12 | u32 payload length, little-endian |
@@ -637,7 +637,7 @@ bytes are rejected. Unsupported versions, unknown kinds, reserved bits, truncate
 frames, malformed enums/varints/masks and excess lengths return `WireError`.
 No gameplay wire uses JSON.
 
-The v2 Postcard field order and enum representation are part of the wire contract.
+The v3 Postcard field order and enum representation are part of the wire contract.
 A breaking type/codec change requires a new `WIRE_VERSION`; adding handshake,
 snapshot or image chunk kinds can be done at this boundary. A future backend uses
 these exact bytes and requires no protocol or replication change.
@@ -668,13 +668,14 @@ For the first release, the existing pre-release v11 schema is numbered v1.
 Version 2 appends a bounded FinalDragSet after the roster in ReadyCommit, carrying
 the latest authoritative tick/delta at FinalizeAck validation. Reliable drag
 structure must match the candidate; Transient movement alone needs no retry.
-Only version 2 is decoded; other version numbers are rejected. Earlier builds,
-including wire v1, are not supported; no compatibility decoder
-is provided. WIRE_VERSION also binds PAKE context, HKDF application keys and secure
-record AAD to v2. Gameplay payload layouts and the cryptographic design are unchanged.
-Fixed v2 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
+Version 3 appends PauseChanged and CommandRejected authority events and adds the
+pause flag to JoinBaseline schema 2. Only version 3 is decoded; earlier builds are
+not supported and no compatibility decoder is provided. WIRE_VERSION also binds
+PAKE context, HKDF application keys and secure record AAD to v3. The cryptographic
+design is unchanged.
+Fixed v3 golden frames cover Client Grab, Client Drag, Rotate, RotateDrag (with and
 without prior ticks), GrabAccepted (including a rejected reference), ReleaseCommitted,
-RotationCommitted, DragRotationCommitted, DragCancelled, RemoteDragUpdate,
+RotationCommitted, DragRotationCommitted, DragCancelled, PauseChanged, CommandRejected, RemoteDragUpdate,
 AuthAccepted, SecureChannelReady, all four Bulk variants and SyncControl, including
 empty/active Finalize, FinalizeAck, ReadyCommit, ClientProfile and Presence. Each checks encoding
 against literal bytes and decodes those same bytes; field/variant order changes
@@ -1189,3 +1190,29 @@ Pre-room/pre-HostReady failures terminate setup. Only actual game close releases
 active routes. Cancel/Leave stop control worker, explicitly close game connections,
 then destroy secure/bootstrap/sync/password/backend state. See
 [RENDEZVOUS_V1.md](RENDEZVOUS_V1.md) for configuration, UI and two-process runtime smoke.
+
+## Host gameplay pause
+
+The host ESC menu can pause/resume the puzzle independently of each local menu.
+`PauseChanged` is an authenticated, Reliable authority event with a contiguous
+cursor. Pause cancels all accepted drags without translating or snapping pieces;
+clients clear pending selection, drag presentation and rotation prediction. Pan
+and zoom remain available after closing the menu. JoinBaseline schema 2 carries
+the pause flag; catch-up applies later transitions and clears retained drag bases.
+While paused, the authority validates identity/session/epoch/sequence, consumes
+reliable controls and returns `CommandRejected` with the player/control sequence.
+Transient updates make no change and are not forwarded. Clients cannot send
+pause controls; authority events from a client are a wrong-direction violation.
+Wire v3 gates this schema before deserialization; snapshot/save schema is unchanged.
+
+## Shared game clock
+
+Wire v3 is retained for this same-release addition. Kind 11 is a Reliable Control
+`GameClockUpdate` containing SessionId, AuthorityEpoch, and u64 elapsed milliseconds.
+Only an authenticated host may send it; session/epoch/host claims are checked before
+mutation. Updates follow the single host's ordered Control lane and do not need a
+separate tick. They do not consume authority cursors or invalidate join finalization. The host sends
+at most one periodic update per displayed second, and sends the exact boundary
+time before PauseChanged, at completion, and after Ready admission. Join baselines
+carry the time through GameSnapshot; clients display confirmed host time and do
+not advance their own counter. Snapshots/checkpoints retain elapsed milliseconds.

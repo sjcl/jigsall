@@ -28,7 +28,7 @@ Settings の一般タブで有効・無効、間隔（1–60分）、ゲーム�
 PieceDataStore + PuzzleDefinition + ImageHash
                 ↓ 明示的 capture（committed canonical state のみ）
         PuzzleCheckpoint
-          ├── GameSnapshot（session / cursor、schema 1）
+          ├── GameSnapshot（session / cursor、schema 2）
           └── PuzzleSave（SaveMetadata）
                   ↓ SaveCodec / PuzImage
                  bytes
@@ -37,7 +37,7 @@ PieceDataStore + PuzzleDefinition + ImageHash
               FilesystemStorage
 ```
 
-`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、schema versionは1です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
+`game/src/checkpoint.rs` が capture、validation、DSU 再構築、transactional install を所有します。`GameSnapshot` は borrowed view で同じ処理を使い、definitionにrotation_enabledを含め、16-byte piece layoutを維持し、経過時間を追加したschema version 2です。位置・Z・placed・右/下の接続・flags bit 9–10のrotationを保存し、root IDs、GPU 接続 cache、selection、hover、hold、drag delta、box selection を保存しません。接続 component のrotation / rigid transform / placed 一貫性、境界外接続、rotation == 0かつ正確な placed 座標、非有限座標、Z、flags、個数を共通で検証します。
 
 通常 Save と multiplayer snapshot は、active local / remote drag の有無に関係なく、その時点までに確定済みの canonical state を保存します。capture は `states.position` を読み、表示用の `drag.delta` を加算せず、現在の Drag を cancel / Release しません。restore では hold / holder identity / drag membership / transient delta を破棄します。`RotateDrag` で既に commit / rebase 済みの位置と回転、および Grab で更新済みの Z は保存し、rebase 後の未確定移動だけを破棄します。Grab 開始時の state に巻き戻す履歴は持ちません。migration / recovery も Drag の終了を待ちません。
 
@@ -45,11 +45,11 @@ PieceDataStore + PuzzleDefinition + ImageHash
 
 ## バイナリ形式
 
-初回リリース向けにgeneratorとsnapshot schemaも5→1に整理しました。generator v1は開発時v5と同じ形状・配置を生成し、snapshot schema 1は開発時schema 5のlayoutを維持します。旧番号の定義・snapshotは拒否し、開発中のlayoutへの互換decoderは提供しません。
+初回リリース向けにgeneratorとsnapshot schemaを5→1に整理しました。generator v1は開発時v5と同じ形状・配置を生成します。経過時間の追加に伴い、現在はsave formatとsnapshot schemaをそれぞれ2に更新しています。saveは公開済みv1も明示的に読み込みます。network snapshotは現行schemaのみを受け付け、開発中のlayoutへの互換decoderは提供しません。
 
 全整数・f32 bits は little endian。Rust の memory layout を書き出しません。未知 format version はそれぞれ拒否します。`GENERATOR_VERSION` は形状の互換性であり、save/container version や multiplayer schema と独立です。generator migration は未実装で、対応外 generator は専用エラーになります。将来の migration は codec での definition 読み取りと共通 validation の間に追加できます。
 
-### `.puzsave` version 1
+### `.puzsave` version 2
 
 | 順序 | フィールド | 幅 |
 | --- | --- | --- |
@@ -63,18 +63,19 @@ PieceDataStore + PuzzleDefinition + ImageHash
 | 8 | grid width / height / image width / height | 各 u32 |
 | 9 | snap_distance | f32 bits |
 | 10 | next_z_order / piece count / placed_count cache | 各 u32 |
-| 11 | is_autosave（0=手動、1=自動、他の値は拒否） | u8 |
-| 12 | GameId | u128 |
-| 13 | rotation_enabled（0=回転なし、1=回転あり、他の値は拒否） | u8 |
-| 14 | SHA-256 of all preceding header bytes | 32 bytes |
-| 15 | row-major piece states | 各 16 bytes |
-| 16 | SHA-256 of all preceding file bytes | 32 bytes |
+| 11 | elapsed_millis | u64 |
+| 12 | is_autosave（0=手動、1=自動、他の値は拒否） | u8 |
+| 13 | GameId | u128 |
+| 14 | rotation_enabled（0=回転なし、1=回転あり、他の値は拒否） | u8 |
+| 15 | SHA-256 of all preceding header bytes | 32 bytes |
+| 16 | row-major piece states | 各 16 bytes |
+| 17 | SHA-256 of all preceding file bytes | 32 bytes |
 
-piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は placed=1、connected right=2、connected down=4、bit 9–10はrotationです。回転なしのゲームでは非ゼロrotationも拒否します。他の bits は拒否します。header 長は `190 + title UTF-8 bytes`、ファイル長は `222 + title UTF-8 bytes + 16 × N` です。100万ピースで state は 16,000,000 bytes。header は最大510 bytesです。
+piece state は x f32 bits、y f32 bits、z_order u32、flags u32。flags は placed=1、connected right=2、connected down=4、bit 9–10はrotationです。回転なしのゲームでは非ゼロrotationも拒否します。他の bits は拒否します。header 長は `198 + title UTF-8 bytes`、ファイル長は `230 + title UTF-8 bytes + 16 × N` です。100万ピースで state は 16,000,000 bytes。header は最大518 bytesです。
 
 `placed_count` は一覧用の非 authority cache です。encode 時に state から計算し、完全 decode 時に state から再計算して cache と一致を確認します。progress / completion / GameData は従来どおり install 時に state から再構築します。
 
-一覧と更新元 metadata の取得は `read_range(key, 0, 510)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大25,500 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
+一覧と更新元 metadata の取得は `read_range(key, 0, 518)` と `len(key)` だけを使います。header checksum、宣言された長さと実ファイル長、metadata、generator、definition、count と cache の範囲を検証します。piece state の読み込み・確保・DSU 再構築は行いません。50個の100万ピース save でも prefix の転送は最大25,900 bytesです（backend のプロトコル overhead は含みません）。画像は存在確認だけを行います。
 
 Load Game の各カードには元画像のサムネイルを表示します。一覧の header から ImageHash を取得し、画像枠がスクロールの表示領域に入ったときだけ専用 worker に読み込みを要求します。サムネイルは保存・一覧・ロードの request queue と worker を共有しません。通常の filesystem 経路では同じ保存先の独立した storage handle を使い、元画像の読み込み・SHA-256検証・フルサイズ decode・縮小をサムネイル worker 上で行います。縦横比を保って最大224×224 pixelsに縮小したRGBAだけをUIへ返します。初回とcache eviction後には元画像全体の処理が必要ですが、この処理の完了待ちをロードや保存のworkerに持ち込みません。
 
@@ -143,3 +144,9 @@ Steam Cloud / Steam Remote Storage、Steamworks crate、Steam feature flag は�
 `PuzzleCheckpoint`、SaveRepository、SaveCodec、PuzImage format、gameplay restore、保存メニューは共通で使います。bytes に local / steam といった backend identity は入れません。期待 revision の照合は「backend から読み取れた save が、session の読み込んだものから更新されている」場合を検出します。header 読み取りと write は atomic な compare-and-swap ではなく、同じ revision から分岐した端末や照合後の同時更新までは保証しません。[Steam Cloud](https://partner.steamgames.com/doc/features/cloud) は session 前後に同期するため、将来の integration では Steam の同期競合と競合解決も扱う必要があります。
 
 remote の容量、atomic publish / conditional write、conflict resolution / retry、callback cancellation / shutdown は backend / executor で設計します。[Steam Cloud の現在の file size 制限](https://partner.steamgames.com/doc/features/cloud) には FileWrite / FileWriteStreamWriteChunk の1回100MB上限と、256MBでの非最適な endpoint 選択の可能性が記載されています。local container の512 MiB上限をそのまま remote API に適用せず、chunk / stream 経路や backend ごとの上限を実装時に確認してください。
+
+## 経過時間の保存
+
+CPU 正本の `PieceDataStore.elapsed_play_time` を `PuzzleCheckpoint.elapsed_millis` と `GameSnapshot.elapsed_millis` に保存します。保存・復元時の精度はミリ秒です。restore は state の置き換え後に時間も復元し、worker からの新しいゲーム生成では 0 に戻します。セーブファイルは little-endian u64 の経過ミリ秒を placed-count と autosave flag の間に追加し、header checksum と全体 checksum で保護します。
+
+`SAVE_FORMAT_VERSION = 2` で書き込み、decoder はversionフィールドに従ってv1・v2を読み込みます。v2の固定header部は198 bytes、経過時間を持たないv1は190 bytes（いずれもタイトルbytesを除く）です。v1の時間は0として読み込み、次回保存時にv2へ更新します。未知の版は `UnsupportedSaveFormat` で拒否します。最大header prefix / 保存容量の上限も8 bytes分拡張しています。

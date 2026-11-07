@@ -36,6 +36,7 @@ pub fn toggle_completed_puzzle_menu(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Explicit authority, pause and input resources.
 pub fn apply_piece_commands(
     local_player: Res<LocalPlayerId>,
     mut commands: MessageReader<ClientCommand>,
@@ -44,9 +45,13 @@ pub fn apply_piece_commands(
     mut interaction: Option<ResMut<crate::interaction::PieceInteraction>>,
     input: Option<Res<InputState>>,
     mut perf: ResMut<PerformanceMonitor>,
+    pause: Res<GameplayPause>,
 ) {
     let start = perf.start_system_timing("apply_piece_commands");
     for request in commands.read() {
+        if pause.paused {
+            continue;
+        }
         let visual = store.capture_rotation_command(&request.command, definition.as_deref());
         let applied = store.apply_command(
             request.player,
@@ -75,6 +80,7 @@ pub fn update_game_progress(
     mut perf: ResMut<PerformanceMonitor>,
 ) {
     let start = perf.start_system_timing("update_game_progress");
+    game.elapsed_play_time = store.elapsed_play_time;
     // Cached placed_count changes only on authority commits: O(1) even for 1M.
     if !store.is_empty() {
         game.puzzle_progress = store.placed_count as f32 / store.len() as f32;
@@ -88,4 +94,19 @@ pub fn update_game_progress(
         }
     }
     perf.end_system_timing("update_game_progress", start);
+}
+
+pub fn tick_offline_game_clock(
+    time: Res<Time<Real>>,
+    state: Option<Res<State<GameSubState>>>,
+    blocked: Res<LocalGameplayBlocked>,
+    mut store: ResMut<PieceDataStore>,
+    mut clock: Local<crate::resources::game_clock::GameClock>,
+) {
+    let running = state.is_some_and(|state| *state.get() == GameSubState::Playing)
+        && !blocked.0
+        && !store.is_empty()
+        && store.placed_count < store.len();
+    store.elapsed_play_time =
+        clock.advance(store.epoch, store.elapsed_play_time, running, time.delta());
 }

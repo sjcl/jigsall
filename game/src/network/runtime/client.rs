@@ -115,11 +115,14 @@ impl<T: Transport> Runtime<T> {
             if let TransportEvent::Message { class, payload, .. } = event {
                 match wire::decode_for_class(payload, *class).map_err(RuntimeFailure::protocol)? {
                     WireMessage::AuthorityEvent(envelope) => {
-                        let drag = client.replica.remote_drag(
-                            self.session.as_ref().unwrap(),
-                            store,
-                            presentation::event_player(&envelope.event),
-                        );
+                        let drag =
+                            presentation::event_player(&envelope.event).and_then(|event_player| {
+                                client.replica.remote_drag(
+                                    self.session.as_ref().unwrap(),
+                                    store,
+                                    event_player,
+                                )
+                            });
                         self.presentation
                             .event(player, &envelope.event, drag, store);
                         self.bridge

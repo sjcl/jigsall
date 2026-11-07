@@ -286,15 +286,16 @@ fn cursor_snapshot_overtakes_ready_commit_then_next_periodic_snapshot_recovers()
     }
     assert_eq!(host.runtime.runtime.roster.len(), 2);
     assert!(!client.ready());
-    // ReadyCommit is already encrypted and queued. Deliver Transient before it.
+    // ReadyCommit and the initial clock are already encrypted and queued.
+    // Delay that ordered Control tail while delivering Transient before Ready.
     let commit = bus
         .lock()
         .unwrap()
         .inbox
         .get_mut(&1)
         .unwrap()
-        .pop_back()
-        .unwrap();
+        .drain(..)
+        .collect::<Vec<_>>();
     let now = Instant::now();
     host.runtime.cursor_frame(Some(Vec2::splat(42.)), now);
     client.poll();
@@ -313,7 +314,7 @@ fn cursor_snapshot_overtakes_ready_commit_then_next_periodic_snapshot_recovers()
         .inbox
         .entry(1)
         .or_default()
-        .push_back(commit);
+        .extend(commit);
     client.poll();
     assert!(client.ready());
     host.runtime

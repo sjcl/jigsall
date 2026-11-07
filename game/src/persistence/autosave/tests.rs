@@ -10,6 +10,7 @@ fn timer_app() -> App {
         .insert_resource(State::new(GameSubState::Playing))
         .init_resource::<LocalPlayerId>()
         .init_resource::<SessionHostId>()
+        .init_resource::<crate::resources::GameplayPause>()
         .init_resource::<AutosaveTimer>()
         .init_resource::<PersistenceState>()
         .add_systems(Update, tick_autosave);
@@ -40,6 +41,14 @@ fn autosave_counts_only_host_play_time_and_suspends_during_pause() {
     advance(&mut app, 600);
     assert!(!app.world().resource::<PersistenceState>().busy);
     app.insert_resource(State::new(GameSubState::Playing));
+    app.world_mut()
+        .resource_mut::<crate::resources::GameplayPause>()
+        .paused = true;
+    advance(&mut app, 600);
+    assert!(!app.world().resource::<PersistenceState>().busy);
+    app.world_mut()
+        .resource_mut::<crate::resources::GameplayPause>()
+        .paused = false;
     advance(&mut app, 1);
     let state = app.world().resource::<PersistenceState>();
     assert!(state.autosaving && state.busy && state.capture.is_some());

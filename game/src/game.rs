@@ -11,6 +11,9 @@ use crate::persistence::runtime::{
 };
 
 pub struct GamePlugin;
+#[cfg(test)]
+#[path = "game_clock_tests.rs"]
+mod game_clock_tests;
 impl Plugin for GamePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(crate::settings::DisplaySettingsPlugin);
@@ -136,7 +139,7 @@ impl Plugin for GamePlugin {
                 (
                     handle_edge_scrolling,
                     update_input_state,
-                    handle_piece_input,
+                    handle_piece_input.run_if(piece_gameplay_enabled),
                 )
                     .chain()
                     .after(EguiPostUpdateSet::EndPass)
@@ -144,6 +147,13 @@ impl Plugin for GamePlugin {
                     .before(apply_piece_commands)
                     .run_if(in_state(GameSubState::Playing))
                     .run_if(local_gameplay_enabled),
+            )
+            .add_systems(
+                PostUpdate,
+                tick_offline_game_clock
+                    .after(EguiPostUpdateSet::EndPass)
+                    .before(apply_piece_commands)
+                    .run_if(crate::network::runtime::world_offline),
             )
             .add_systems(
                 PostUpdate,
@@ -240,6 +250,7 @@ fn initialize_game(
     if let Some(mut pending) = pending {
         if let Some(restored) = pending.0.take() {
             *store = restored.store;
+            game.elapsed_play_time = store.elapsed_play_time;
             game.puzzle_progress = store.placed_count as f32 / store.len() as f32;
             game.puzzle_completed = store.placed_count == store.len();
             progress.is_generating = true;
@@ -800,6 +811,7 @@ mod tests {
                 })
                 .collect();
             let checkpoint = PuzzleCheckpoint {
+                elapsed_millis: 3_723_456,
                 definition: definition.clone(),
                 image_hash: image_hash(&encoded),
                 next_z_order: 4,
@@ -869,6 +881,14 @@ mod tests {
                 checkpoint
             );
             assert_eq!(store.placed_count, if complete { 4 } else { 1 });
+            assert_eq!(
+                store.elapsed_play_time,
+                std::time::Duration::from_millis(3_723_456)
+            );
+            assert_eq!(
+                app.world().resource::<GameData>().elapsed_play_time,
+                store.elapsed_play_time
+            );
             assert_eq!(
                 app.world().resource::<GameData>().puzzle_progress,
                 if complete { 1.0 } else { 0.25 }

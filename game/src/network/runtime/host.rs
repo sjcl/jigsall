@@ -21,6 +21,98 @@ pub(super) fn publish_presence(
 }
 
 impl<T: Transport> Runtime<T> {
+    pub(super) fn publish_game_clock(
+        &mut self,
+        store: &mut PieceDataStore,
+        force: bool,
+    ) -> Result<(), RuntimeFailure> {
+        let Role::Host(host) = &mut self.role else {
+            return Ok(());
+        };
+        let summary = (
+            store.elapsed_play_time.as_secs(),
+            !store.is_empty() && store.placed_count == store.len(),
+        );
+        if !force && host.last_clock == Some(summary) {
+            return Ok(());
+        }
+        let session = self.session.as_ref().ok_or("missing authority")?;
+        let message = WireMessage::GameClock(GameClockUpdate {
+            session: session.session_id(),
+            authority_epoch: session.cursor().epoch,
+            elapsed_millis: store.elapsed_play_time.as_millis().min(u64::MAX as u128) as u64,
+        });
+        let payload = wire::encode(&message).map_err(RuntimeFailure::internal)?;
+        host.last_clock = Some(summary);
+        let failures = self
+            .connections
+            .peers()
+            .filter(|peer| peer.player.is_some())
+            .filter_map(|peer| {
+                self.transport
+                    .send(peer.connection, MessageClass::Control, &payload)
+                    .err()
+                    .map(|error| (peer.connection, error))
+            })
+            .collect();
+        let pending = self.publication_disconnects(failures)?;
+        self.disconnect_many(pending, store)
+    }
+
+    pub(super) fn pause_gameplay(
+        &mut self,
+        paused: bool,
+        store: &mut PieceDataStore,
+        interaction: &mut PieceInteraction,
+    ) -> Result<(), RuntimeFailure> {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.gameplay_paused() != paused)
+        {
+            // Same Reliable lane: everyone receives the exact boundary time
+            // before the corresponding PauseChanged event.
+            self.publish_game_clock(store, true)?;
+        }
+        let Role::Host(host) = &mut self.role else {
+            return Ok(());
+        };
+        let session = self.session.as_mut().ok_or("missing authority")?;
+        let Some(event) = host
+            .contexts
+            .set_paused(session, store, paused)
+            .map_err(RuntimeFailure::internal)?
+        else {
+            return Ok(());
+        };
+        if let Err(error) = host.sync.record_authority_event(session, store, &event) {
+            self.status
+                .set_failure(NetworkFailureKind::Internal, &error);
+        }
+        self.presentation
+            .event(self.status.local_player.unwrap(), &event.event, None, store);
+        self.bridge
+            .reconcile(
+                self.status.local_player.unwrap(),
+                &event.event,
+                interaction,
+                store,
+            )
+            .map_err(RuntimeFailure::internal)?;
+        let failures = HostRouter {
+            local_player: self.status.local_player.unwrap(),
+            connections: &self.connections,
+            contexts: &mut host.contexts,
+            session,
+            store,
+            definition: self.definition.as_ref(),
+        }
+        .publish_authority_event(&mut self.transport, &event)
+        .map_err(RuntimeFailure::internal)?;
+        let pending = self.publication_disconnects(failures)?;
+        self.disconnect_many(pending, store)
+    }
+
     /// Cancellation applies once, then retention/publication cannot re-enter it.
     /// Even an internal cancellation/encoding fault must finish roster cleanup.
     pub(super) fn host_disconnected(
@@ -250,11 +342,10 @@ impl<T: Transport> Runtime<T> {
             let Role::Host(host) = &self.role else {
                 unreachable!()
             };
-            let drag = host.contexts.active_drag(
-                self.session.as_ref().unwrap(),
-                store,
-                presentation::event_player(&event.event),
-            );
+            let drag = presentation::event_player(&event.event).and_then(|event_player| {
+                host.contexts
+                    .active_drag(self.session.as_ref().unwrap(), store, event_player)
+            });
             self.presentation
                 .event(self.status.local_player.unwrap(), &event.event, drag, store);
         }
@@ -407,7 +498,8 @@ impl<T: Transport> Runtime<T> {
             joined,
         )?;
         let pending = self.publication_disconnects(failures)?;
-        self.disconnect_many(pending, store)
+        self.disconnect_many(pending, store)?;
+        self.publish_game_clock(store, true)
     }
 
     fn pump_host_joins(

@@ -146,6 +146,7 @@ impl HostRouter<'_> {
                 ) {
                     Ok(outcome) => {
                         let rejected = match &outcome.result {
+                            ProtocolCommandResult::Paused => true,
                             ProtocolCommandResult::Grabbed { applied, .. } => applied.grabbed == 0,
                             ProtocolCommandResult::Rotated { commit, .. } => match &commit.accepted
                             {

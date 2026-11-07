@@ -483,12 +483,35 @@ impl CommandBridge {
         interaction: &mut PieceInteraction,
         store: &mut PieceDataStore,
     ) -> Result<(), BridgeError> {
+        if let ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }) = event {
+            if *paused {
+                self.suspend(interaction, store);
+            }
+            return Ok(());
+        }
+        if let ProtocolAuthorityEvent::CommandRejected(CommandRejected {
+            player: rejected,
+            sequence,
+        }) = event
+        {
+            if *rejected == player {
+                if let Some(pending) = &self.pending {
+                    if pending.envelope.sequence != ClientCommandSequence::Control(*sequence) {
+                        return Err(BridgeError::UnexpectedAuthorityResult);
+                    }
+                    self.reject(interaction, store);
+                }
+            }
+            return Ok(());
+        }
         let event_player = match event {
             ProtocolAuthorityEvent::GrabAccepted(e) => e.player,
             ProtocolAuthorityEvent::ReleaseCommitted(e) => e.player,
             ProtocolAuthorityEvent::RotationCommitted(e) => e.player,
             ProtocolAuthorityEvent::DragRotationCommitted(e) => e.player,
             ProtocolAuthorityEvent::DragCancelled(e) => e.player,
+            ProtocolAuthorityEvent::PauseChanged(_)
+            | ProtocolAuthorityEvent::CommandRejected(_) => unreachable!(),
         };
         if event_player != player {
             return Ok(());
@@ -638,5 +661,20 @@ impl CommandBridge {
         }
         self.present_release(interaction, store);
         Ok(())
+    }
+
+    /// Keep the in-flight command and its consumed sequence until its rejection
+    /// arrives, but discard unsent intent and all local drag/prediction state.
+    pub fn suspend(&mut self, interaction: &mut PieceInteraction, store: &mut PieceDataStore) {
+        if let Some(pending) = &mut self.pending {
+            pending.predicted = None;
+        }
+        self.queue.clear();
+        self.active = None;
+        self.clear_release(interaction, store);
+        *interaction = PieceInteraction::default();
+        store.drag = Default::default();
+        store.clear_local_rotation();
+        store.clear_rotation_visual();
     }
 }

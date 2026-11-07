@@ -623,8 +623,11 @@ fn invalid_baselines_reject_before_any_store_session_or_replica_changes() {
     };
     let mut cases = Vec::new();
     let mut bad = valid.clone();
-    bad.schema_version = 2;
-    cases.push((bad, JoinBaselineError::UnsupportedSchema(2)));
+    bad.gameplay_paused = true;
+    cases.push((bad, JoinBaselineError::PausedWithActiveDrags));
+    let mut bad = valid.clone();
+    bad.schema_version = 3;
+    cases.push((bad, JoinBaselineError::UnsupportedSchema(3)));
     let mut bad = valid.clone();
     bad.active_drags = vec![bad.active_drags[0].clone(); MAX_BASELINE_DRAGS + 1];
     cases.push((bad, JoinBaselineError::TooManyActiveDrags));

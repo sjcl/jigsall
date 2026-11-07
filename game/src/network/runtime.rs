@@ -208,6 +208,8 @@ impl std::fmt::Display for RuntimeStartError {
 impl std::error::Error for RuntimeStartError {}
 
 struct HostState {
+    clock: crate::resources::game_clock::GameClock,
+    last_clock: Option<(u64, bool)>,
     bootstrap: HostBootstrap,
     sync: HostSyncCoordinator,
     contexts: ProtocolDragContexts,
@@ -320,6 +322,8 @@ impl<T: Transport> Runtime<T> {
             connections: Default::default(),
             live: Default::default(),
             role: Role::Host(Box::new(HostState {
+                clock: default(),
+                last_clock: None,
                 bootstrap: HostBootstrap::new(options.password, metadata, [], now),
                 sync,
                 contexts: Default::default(),
@@ -546,6 +550,14 @@ impl<T: Transport> Runtime<T> {
             self.status.phase,
             RuntimePhase::Hosting | RuntimePhase::Ready
         ) {
+            return Ok(());
+        }
+        if self
+            .session
+            .as_ref()
+            .is_some_and(AuthoritySession::gameplay_paused)
+        {
+            self.bridge.suspend(interaction, store);
             return Ok(());
         }
         self.bridge.prediction_enabled = matches!(self.role, Role::Client(_));

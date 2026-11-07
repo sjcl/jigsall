@@ -266,6 +266,8 @@ struct GrabPlan {
 /// Dense CPU authority: no per-piece definition, transform, handle or entity.
 #[derive(Resource, Default)]
 pub struct PieceDataStore {
+    /// Authority-owned active play time; excluded from GPU piece buffers.
+    pub elapsed_play_time: std::time::Duration,
     pub connectivity: PieceConnectivity,
     pub drag: DragTransform,
     /// Local uncommitted rotation only; excluded from canonical state/capture.

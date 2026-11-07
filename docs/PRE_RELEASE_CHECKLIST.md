@@ -31,12 +31,12 @@ crash、data loss、接続不能、入力不能、著しい描画破綻は公開
 
 | 対象 | 現在 | 判定箇所 / 保護 |
 | --- | --- | --- |
-| `.puz` 保存 | `SAVE_FORMAT_VERSION = 1` | `persistence/codec.rs`、magic・長さ・header/body checksum・定義/状態検証 |
+| `.puz` 保存 | `SAVE_FORMAT_VERSION = 2` | `persistence/codec.rs`、magic・長さ・header/body checksum・定義/状態検証 |
 | `.puzimg` 原画像 | `PUZIMG_FORMAT_VERSION = 1` | 同 codec、長さ・SHA256・storage key 検証 |
 | generator / game definition | `GENERATOR_VERSION = 1` | core `PuzzleDefinition::validate`、保存と snapshot の読込でも要求 |
-| multiplayer wire / Postcard payload | `WIRE_VERSION = 2` | `network/wire.rs`、deserialize 前の header gate。secure channel の鍵導出 / AAD もこの番号に結合 |
-| multiplayer snapshot | `SNAPSHOT_SCHEMA_VERSION = 1` | `multiplayer/snapshot.rs`、install 前の検証 |
-| join baseline | `JOIN_BASELINE_SCHEMA_VERSION = 1` | `multiplayer/baseline.rs`、snapshot と drag の検証 |
+| multiplayer wire / Postcard payload | `WIRE_VERSION = 3` | `network/wire.rs`、deserialize 前の header gate。secure channel の鍵導出 / AAD もこの番号に結合 |
+| multiplayer snapshot | `SNAPSHOT_SCHEMA_VERSION = 2` | `multiplayer/snapshot.rs`、install 前の検証 |
+| join baseline | `JOIN_BASELINE_SCHEMA_VERSION = 2` | `multiplayer/baseline.rs`、snapshot と drag の検証 |
 | rendezvous signaling | JSON `v = 1` | `gns/rendezvous/protocol.rs`、typed parse で異なる version を拒否 |
 | settings JSON | `format_version = 1` | `settings_file.rs`、未知・不正 version は読込と書込を拒否。未指定の開発版は同じ v1 layout として扱う |
 

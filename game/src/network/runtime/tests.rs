@@ -1,7 +1,9 @@
 use super::*;
+mod clock_tests;
 mod dense_conflict_tests;
 mod disconnected_save_tests;
 mod local_rotation_tests;
+mod pause_tests;
 mod pending_release_tests;
 mod presence_tests;
 mod presentation_tests;

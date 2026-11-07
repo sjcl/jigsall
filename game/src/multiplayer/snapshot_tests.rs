@@ -5,6 +5,7 @@ use serde::de::value::{SeqAccessDeserializer, UnitDeserializer};
 
 fn snapshot() -> GameSnapshot {
     GameSnapshot {
+        elapsed_millis: 0,
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         session: SessionId(55),
         image_hash: ImageHash([0x42; 32]),
@@ -38,7 +39,7 @@ fn expected(snapshot: &GameSnapshot) -> SnapshotExpectation<'_> {
 }
 
 #[test]
-fn snapshot_roundtrips_json_and_postcard_with_unchanged_wire_order() {
+fn snapshot_roundtrips_json_and_postcard_with_clock_before_dense_records() {
     let snapshot = snapshot();
     snapshot.validate(expected(&snapshot)).unwrap();
     let json = serde_json::to_vec(&snapshot).unwrap();
@@ -51,17 +52,18 @@ fn snapshot_roundtrips_json_and_postcard_with_unchanged_wire_order() {
         postcard::from_bytes::<GameSnapshot>(&wire).unwrap(),
         snapshot
     );
-    // Postcard structs encode the same sequence of fields as this pre-change order.
-    let original_fields = (
+    // Keep the clock in the snapshot header; dense piece records remain last.
+    let fields = (
         snapshot.schema_version,
         snapshot.session,
         snapshot.image_hash,
         snapshot.cursor,
         &snapshot.definition,
         snapshot.next_z_order,
+        snapshot.elapsed_millis,
         &snapshot.pieces,
     );
-    assert_eq!(wire, postcard::to_allocvec(&original_fields).unwrap());
+    assert_eq!(wire, postcard::to_allocvec(&fields).unwrap());
 }
 
 #[test]
@@ -229,6 +231,7 @@ fn postcard_snapshot_piece_limit_also_applies_through_join_baseline() {
 
     let mut baseline = JoinBaseline {
         schema_version: JOIN_BASELINE_SCHEMA_VERSION,
+        gameplay_paused: false,
         snapshot: snapshot(),
         active_drags: Vec::new(),
     };

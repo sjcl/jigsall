@@ -236,7 +236,7 @@ fn plaintext_session_control_passes_and_installed_channel_encrypts_bulk() {
 
 #[test]
 fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
-    assert_eq!(WIRE_VERSION, 2);
+    assert_eq!(WIRE_VERSION, 3);
     let (mut client, mut host) = channels();
     let secret = secret();
     let hk = Hkdf::<Sha256>::new(Some(b"jigsall-secure-channel-v1"), secret.as_bytes());
@@ -256,7 +256,7 @@ fn opposite_roles_roundtrip_every_direction_and_class_with_independent_keys() {
         }
     }
     for class in CLASSES {
-        assert_eq!(&aad(class, 0)[24..26], &[2, 0]);
+        assert_eq!(&aad(class, 0)[24..26], &[3, 0]);
         let plaintext = frame(class);
         let record = client.seal(class, &plaintext).unwrap();
         assert_eq!(record.len(), plaintext.len() + RECORD_OVERHEAD);
@@ -479,7 +479,7 @@ fn new_pake_produces_unrelated_keys_and_old_record_cannot_cross_sessions() {
         assert_eq!(server_secret.binding(), client_secret.binding());
         assert_eq!(
             &server_secret.binding()[version_offset..version_offset + 2],
-            &[2, 0]
+            &[3, 0]
         );
         (client_secret, server_secret)
     }

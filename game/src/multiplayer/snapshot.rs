@@ -1,4 +1,4 @@
-//! Release schema 1 preserves the pre-release schema 5 layout and 16-byte pieces.
+//! Schema 2 stores elapsed play time alongside canonical 16-byte piece records.
 pub use crate::checkpoint::{
     CheckpointError as SnapshotError, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
     SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED,
@@ -12,7 +12,7 @@ use jigsall_core::{
     PieceConnectivity, PuzzleDefinition, MAX_PIECES,
 };
 use serde::{Deserialize, Serialize};
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameSnapshot {
     pub schema_version: u16,
@@ -21,6 +21,7 @@ pub struct GameSnapshot {
     pub cursor: AuthorityCursor,
     pub definition: PuzzleDefinition,
     pub next_z_order: u32,
+    pub elapsed_millis: u64,
     #[serde(deserialize_with = "deserialize_snapshot_pieces")]
     pub pieces: Vec<SnapshotPieceState>,
 }
@@ -76,6 +77,7 @@ impl GameSnapshot {
     ) -> Result<Self, SnapshotError> {
         let checkpoint = PuzzleCheckpoint::capture(store, definition, session.image_hash)?;
         Ok(Self {
+            elapsed_millis: checkpoint.elapsed_millis,
             schema_version: SNAPSHOT_SCHEMA_VERSION,
             session: session.id,
             image_hash: checkpoint.image_hash,
@@ -127,6 +129,7 @@ impl GameSnapshot {
     }
     fn view(&self) -> CheckpointView<'_> {
         CheckpointView {
+            elapsed_millis: self.elapsed_millis,
             definition: &self.definition,
             next_z_order: self.next_z_order,
             pieces: &self.pieces,
@@ -143,6 +146,7 @@ impl GameSnapshot {
     }
     pub fn into_checkpoint(self) -> PuzzleCheckpoint {
         PuzzleCheckpoint {
+            elapsed_millis: self.elapsed_millis,
             image_hash: self.image_hash,
             definition: self.definition,
             next_z_order: self.next_z_order,

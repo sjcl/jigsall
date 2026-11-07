@@ -17,6 +17,7 @@ pub fn draw_in_game_menu_ui(
     network_status: Res<jigsall_game::network::runtime::NetworkStatus>,
     mut settings_dialog: ResMut<crate::settings::SettingsDialog>,
     display_settings: Res<jigsall_game::settings::DisplaySettingsState>,
+    mut pause: ResMut<GameplayPause>,
 ) {
     if settings_dialog.open || persistence.title_dialog_open || dialogs.departure_pending() {
         return;
@@ -46,7 +47,10 @@ pub fn draw_in_game_menu_ui(
                             i18n.text("pause-title")
                         },
                     );
-                    if multiplayer && !completed {
+                    if pause.paused && !completed {
+                        theme::hint(ui, i18n.text("pause-viewing-hint"));
+                        ui.add_space(8.0);
+                    } else if multiplayer && !completed {
                         theme::hint(ui, i18n.text("pause-multiplayer-hint"));
                         ui.add_space(8.0);
                     }
@@ -54,7 +58,7 @@ pub fn draw_in_game_menu_ui(
                         let width = ui.available_width();
                         if theme::button(
                             ui,
-                            if completed || multiplayer {
+                            if completed || multiplayer || pause.paused {
                                 i18n.text("pause-back-puzzle")
                             } else {
                                 i18n.text("pause-resume")
@@ -69,6 +73,25 @@ pub fn draw_in_game_menu_ui(
                             } else {
                                 next_sub_state.set(GameSubState::Playing);
                             }
+                        }
+                        if !completed
+                            && network_status.role
+                                == Some(jigsall_game::network::runtime::RuntimeRole::Host)
+                            && theme::button(
+                                ui,
+                                i18n.text(if pause.paused {
+                                    "pause-session-resume"
+                                } else {
+                                    "pause-session-stop"
+                                }),
+                                width,
+                                false,
+                            )
+                            .clicked()
+                        {
+                            let paused = !pause.paused;
+                            pause.request(paused);
+                            next_sub_state.set(GameSubState::Playing);
                         }
                         if theme::button(ui, i18n.text("common-save-game"), width, false).clicked()
                         {

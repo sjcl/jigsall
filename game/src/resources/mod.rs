@@ -2,6 +2,7 @@
 pub mod app;
 pub mod config;
 pub(crate) mod drag_elevation;
+pub(crate) mod game_clock;
 pub mod generation;
 pub mod images;
 pub mod input;
@@ -22,7 +23,10 @@ pub use images::{
     PuzzleImageLimits,
 };
 pub(crate) use input::local_gameplay_just_blocked;
-pub use input::{local_gameplay_enabled, GameUiPointerCapture, InputState, LocalGameplayBlocked};
+pub use input::{
+    local_gameplay_enabled, piece_gameplay_enabled, GameUiPointerCapture, GameplayPause,
+    InputState, LocalGameplayBlocked,
+};
 pub use jigsall_core::PieceId;
 pub use performance::{PerformanceDebugLevel, PerformanceMonitor, SystemTiming};
 pub use pieces::{DensePieceStates, GpuPieceState, PieceDataStore, PieceUpload};

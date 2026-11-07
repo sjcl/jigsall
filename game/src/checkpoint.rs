@@ -27,6 +27,7 @@ pub struct SnapshotPieceState {
 const _: () = assert!(std::mem::size_of::<SnapshotPieceState>() == 16);
 #[derive(Clone, Debug, PartialEq)]
 pub struct PuzzleCheckpoint {
+    pub elapsed_millis: u64,
     pub image_hash: ImageHash,
     pub definition: PuzzleDefinition,
     pub next_z_order: u32,
@@ -35,6 +36,7 @@ pub struct PuzzleCheckpoint {
 
 /// A borrowed view lets snapshots reuse the same algorithms without cloning states.
 pub(crate) struct CheckpointView<'a> {
+    pub elapsed_millis: u64,
     pub definition: &'a PuzzleDefinition,
     pub next_z_order: u32,
     pub pieces: &'a [SnapshotPieceState],
@@ -56,6 +58,7 @@ impl PuzzleCheckpoint {
             return Err(CheckpointError::WrongConnectivitySize);
         }
         let snapshot = Self {
+            elapsed_millis: store.elapsed_play_time.as_millis().min(u64::MAX as u128) as u64,
             image_hash,
             definition: definition.clone(),
             next_z_order: store.next_z_order,
@@ -106,6 +109,7 @@ impl PuzzleCheckpoint {
     }
     fn view(&self) -> CheckpointView<'_> {
         CheckpointView {
+            elapsed_millis: self.elapsed_millis,
             definition: &self.definition,
             next_z_order: self.next_z_order,
             pieces: &self.pieces,
@@ -248,6 +252,7 @@ impl CheckpointView<'_> {
             })
             .collect();
         store.replace_snapshot_states(states, self.next_z_order, connectivity);
+        store.elapsed_play_time = std::time::Duration::from_millis(self.elapsed_millis);
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -35,6 +35,7 @@ pub struct NetworkRuntimePlugin;
 impl Plugin for NetworkRuntimePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetworkStatus>()
+            .init_resource::<GameplayPause>()
             .add_message::<GameEvent>()
             .init_resource::<remote_cursor::RemoteCursorPresentation>()
             .init_resource::<remote_drag::RemoteDragPresentation>()
@@ -81,6 +82,7 @@ pub(super) fn install_driver(
     roster: PlayerRoster,
 ) {
     crate::events::reset_world_history(world);
+    world.insert_resource(GameplayPause::default());
     world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
@@ -352,6 +354,7 @@ fn teardown_session(world: &mut World) {
     }
 }
 fn menu_teardown(world: &mut World) {
+    *world.resource_mut::<GameplayPause>() = default();
     if network_active(world) {
         // Already entering Menu: do not schedule another Menu entry that could
         // clear a puzzle/session created after this cleanup.
@@ -402,6 +405,7 @@ fn drive(world: &mut World, commands: bool) {
             if retain_game {
                 // Keep the confirmed store and original image for an explicit save.
                 // The empty NetworkSession still gates offline authority.
+                *world.resource_mut::<GameplayPause>() = default();
                 world.init_resource::<LocalGameplayBlocked>();
                 world.resource_mut::<LocalGameplayBlocked>().0 = true;
             } else if let Some(mut next) = world.get_resource_mut::<NextState<AppState>>() {
@@ -485,8 +489,45 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
         let pointer = world
             .get_resource::<InputState>()
             .and_then(|input| input.mouse_position);
+        // Only the authority advances shared time. A local ESC menu does not
+        // pause other players; global pause and completion stop this counter.
+        if let Role::Host(host) = &mut self.role {
+            let running = self.active
+                && world
+                    .get_resource::<State<AppState>>()
+                    .is_some_and(|state| *state.get() == AppState::InGame)
+                && world
+                    .get_resource::<State<GameSubState>>()
+                    .is_some_and(|state| *state.get() != GameSubState::Initializing)
+                && !store.is_empty()
+                && store.placed_count < store.len()
+                && self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| !session.gameplay_paused());
+            let delta = world
+                .get_resource::<Time<Real>>()
+                .map(|time| time.delta())
+                .unwrap_or_default();
+            store.elapsed_play_time =
+                host.clock
+                    .advance(store.epoch, store.elapsed_play_time, running, delta);
+        }
+        if let Some(paused) = world.resource_mut::<GameplayPause>().requested.take() {
+            // Local-only API: a client cannot change the authority's pause state.
+            if matches!(self.role, Role::Host(_)) {
+                if let Err(error) = self.pause_gameplay(paused, &mut store, &mut interaction) {
+                    self.fail(error);
+                }
+            }
+        }
         if let Err(error) = self.local_frame(commands, &mut store, &mut interaction, pointer) {
             self.fail(error);
+        }
+        if self.active {
+            if let Err(error) = self.publish_game_clock(&mut store, false) {
+                self.fail(error);
+            }
         }
         self.cursor_frame(cursor_position, Instant::now());
         world.insert_resource(store);
@@ -499,6 +540,7 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
             cursor_revision,
         );
         world.insert_resource(self.status.clone());
+        self.install_pause(world);
         self.flush_events(world);
     }
     fn teardown(&mut self, world: &mut World) {
@@ -537,6 +579,23 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
     }
 }
 impl<T: Transport> Runtime<T> {
+    fn install_pause(&self, world: &mut World) {
+        let paused = self
+            .session
+            .as_ref()
+            .is_some_and(AuthoritySession::gameplay_paused);
+        if world.resource::<GameplayPause>().paused != paused {
+            world.resource_mut::<GameplayPause>().paused = paused;
+            if paused {
+                if let Some(mut selection) =
+                    world.get_resource_mut::<crate::selection::PuzzleSelection>()
+                {
+                    selection.cancel();
+                }
+            }
+        }
+    }
+
     fn flush_events(&mut self, world: &mut World) {
         if let Some(mut events) = world.get_resource_mut::<Messages<GameEvent>>() {
             events.write_batch(self.events.drain(..));
@@ -545,6 +604,7 @@ impl<T: Transport> Runtime<T> {
         }
     }
     fn install_world(&mut self, world: &mut World) {
+        self.install_pause(world);
         if self.status.role == Some(RuntimeRole::Host) {
             self.status.image = if !world.contains_resource::<PuzzleImage>() {
                 ImageReadiness::Unavailable
@@ -616,6 +676,7 @@ impl<T: Transport> Runtime<T> {
                 let store = world.resource::<PieceDataStore>();
                 let len = store.len();
                 let placed = store.placed_count;
+                let elapsed_play_time = store.elapsed_play_time;
                 world.insert_resource(PieceGenerationProgress {
                     is_generating: true,
                     total_pieces: len,
@@ -628,6 +689,7 @@ impl<T: Transport> Runtime<T> {
                     ..default()
                 });
                 world.insert_resource(GameData {
+                    elapsed_play_time,
                     puzzle_progress: placed as f32 / len as f32,
                     puzzle_completed: placed == len,
                 });

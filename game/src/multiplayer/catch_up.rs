@@ -10,8 +10,8 @@ use super::{
 use crate::resources::PieceDataStore;
 use jigsall_core::{
     protocol::{
-        ComponentRef, PieceTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope,
-        RejectedComponentRef, RemoteDragUpdate,
+        ComponentRef, PauseChanged, PieceTarget, ProtocolAuthorityEvent,
+        ProtocolAuthorityEventEnvelope, RejectedComponentRef, RemoteDragUpdate,
     },
     session::{AuthorityCursor, AuthorityEpoch, AuthoritySession, SessionId},
     PlayerId, PuzzleDefinition,
@@ -262,7 +262,13 @@ impl PendingJoin {
                 self.latest_updates.remove(&cancel.player.0);
                 self.drag_bases.remove(&cancel.player.0);
             }
-            ProtocolAuthorityEvent::RotationCommitted(_) => {}
+            ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused: true }) => {
+                self.latest_updates.clear();
+                self.drag_bases.clear();
+            }
+            ProtocolAuthorityEvent::RotationCommitted(_)
+            | ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused: false })
+            | ProtocolAuthorityEvent::CommandRejected(_) => {}
         }
     }
 }
@@ -721,7 +727,9 @@ fn logical_retained_bytes(event: &ProtocolAuthorityEventEnvelope) -> usize {
         ProtocolAuthorityEvent::RotationCommitted(commit) => target_dynamic_bytes(&commit.accepted),
         ProtocolAuthorityEvent::ReleaseCommitted(_)
         | ProtocolAuthorityEvent::DragRotationCommitted(_)
-        | ProtocolAuthorityEvent::DragCancelled(_) => 0,
+        | ProtocolAuthorityEvent::DragCancelled(_)
+        | ProtocolAuthorityEvent::PauseChanged(_)
+        | ProtocolAuthorityEvent::CommandRejected(_) => 0,
     };
     size_of::<ProtocolAuthorityEventEnvelope>().saturating_add(dynamic)
 }

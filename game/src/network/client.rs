@@ -27,6 +27,7 @@ pub enum ClientRouteError {
 
 #[derive(Debug)]
 pub enum ClientRouteOutcome {
+    Clock,
     Authority(AppliedCommand),
     Presence(crate::events::GameEvent),
     Drag(CommandSequenceStatus),
@@ -75,6 +76,11 @@ impl ClientRouter<'_> {
             .filter(|player| *player == self.session.host())
             .ok_or(ClientRouteError::UnauthenticatedHost)?;
         match wire::decode_for_class(payload, *class).map_err(ClientRouteError::Wire)? {
+            WireMessage::GameClock(update) => self
+                .replica
+                .apply_clock_update(self.session, self.store, host, &update)
+                .map(|()| ClientRouteOutcome::Clock)
+                .map_err(ClientRouteError::Replication),
             WireMessage::AuthorityEvent(envelope) => self
                 .replica
                 .apply_event(

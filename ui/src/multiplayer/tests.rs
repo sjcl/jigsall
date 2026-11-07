@@ -157,6 +157,7 @@ fn scheduled_screens() -> (App, egui::Context) {
     world.init_resource::<NextState<GameSubState>>();
     world.init_resource::<NextState<GameCompleteSubState>>();
     world.init_resource::<LocalGameplayBlocked>();
+    world.init_resource::<GameplayPause>();
     world.init_resource::<GameData>();
     world.init_resource::<GameUiPointerCapture>();
     world.init_resource::<crate::game_play::PlayersOverlayState>();
@@ -1563,6 +1564,7 @@ fn prepared_host_starts_the_native_listener_once_with_the_committed_name() {
     world.insert_resource(State::new(AppState::InGame));
     world.init_resource::<jigsall_game::render::RenderReady>();
     world.init_resource::<LocalPlayerId>();
+    world.init_resource::<GameplayPause>();
     world.insert_resource(PieceGenerationProgress {
         generation_phase: GenerationPhase::UploadingGpu,
         is_generating: true,

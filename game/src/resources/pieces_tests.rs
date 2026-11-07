@@ -561,6 +561,7 @@ fn bulk_snap_completion_updates_progress_without_per_piece_events() {
         .insert_resource(def)
         .init_resource::<GameData>()
         .init_resource::<crate::resources::LocalPlayerId>()
+        .init_resource::<crate::resources::GameplayPause>()
         .init_resource::<PerformanceMonitor>()
         .add_message::<jigsall_core::ClientCommand>()
         .add_systems(Update, (apply_piece_commands, update_game_progress).chain());
