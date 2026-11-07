@@ -27,6 +27,7 @@ impl Default for SessionHostId {
 pub struct GameData {
     pub puzzle_completed: bool,
     pub puzzle_progress: f32,
+    pub elapsed_play_time: std::time::Duration,
 }
 
 /// メインアプリケーションの状態

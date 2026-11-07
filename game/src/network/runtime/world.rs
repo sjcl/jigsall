@@ -487,6 +487,32 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
         let pointer = world
             .get_resource::<InputState>()
             .and_then(|input| input.mouse_position);
+        // Only the authority advances shared time. A local ESC menu does not
+        // pause other players; global pause and completion stop this counter.
+        let clock_eligible = self.active
+            && world
+                .get_resource::<State<AppState>>()
+                .is_some_and(|state| *state.get() == AppState::InGame)
+            && world
+                .get_resource::<State<GameSubState>>()
+                .is_some_and(|state| *state.get() != GameSubState::Initializing)
+            && !store.is_empty()
+            && store.placed_count < store.len();
+        let clock_running = clock_eligible
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.gameplay_paused());
+        if let Role::Host(host) = &mut self.role {
+            if clock_running && host.clock_running {
+                let delta = world
+                    .get_resource::<Time<Real>>()
+                    .map(|time| time.delta())
+                    .unwrap_or_default();
+                store.elapsed_play_time = store.elapsed_play_time.saturating_add(delta);
+            }
+            host.clock_running = clock_running;
+        }
         if let Some(paused) = world
             .get_resource_mut::<GameplayPause>()
             .and_then(|mut pause| pause.requested.take())
@@ -500,6 +526,20 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
         }
         if let Err(error) = self.local_frame(commands, &mut store, &mut interaction, pointer) {
             self.fail(error);
+        }
+        if let Role::Host(host) = &mut self.role {
+            host.clock_running = self.active
+                && clock_eligible
+                && store.placed_count < store.len()
+                && self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| !session.gameplay_paused());
+        }
+        if self.active {
+            if let Err(error) = self.publish_game_clock(&mut store, false) {
+                self.fail(error);
+            }
         }
         self.cursor_frame(cursor_position, Instant::now());
         world.insert_resource(store);
@@ -649,6 +689,7 @@ impl<T: Transport> Runtime<T> {
                 let store = world.resource::<PieceDataStore>();
                 let len = store.len();
                 let placed = store.placed_count;
+                let elapsed_play_time = store.elapsed_play_time;
                 world.insert_resource(PieceGenerationProgress {
                     is_generating: true,
                     total_pieces: len,
@@ -661,6 +702,7 @@ impl<T: Transport> Runtime<T> {
                     ..default()
                 });
                 world.insert_resource(GameData {
+                    elapsed_play_time,
                     puzzle_progress: placed as f32 / len as f32,
                     puzzle_completed: placed == len,
                 });

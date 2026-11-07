@@ -351,6 +351,15 @@ pub struct RemoteDragUpdate {
     pub delta: Vec2,
 }
 
+/// Authenticated host clock, independent of gameplay cursors and join barriers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameClockUpdate {
+    pub session: crate::session::SessionId,
+    pub authority_epoch: crate::session::AuthorityEpoch,
+    pub tick: u64,
+    pub elapsed_millis: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolAuthorityEvent {
     GrabAccepted(GrabAccepted),

@@ -360,6 +360,7 @@ pause-multiplayer-hint = Other players can keep playing while this menu is open.
 pause-session-stop = Pause Puzzle
 pause-session-resume = Resume Puzzle
 pause-session-status = Puzzle Paused
+game-elapsed-time = Elapsed { $time }
 pause-viewing-hint = You can pan and zoom. Piece controls are paused.
 pause-host-title = Close Room and Return to Title
 pause-host-exit = Close Room and Exit

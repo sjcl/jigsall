@@ -12,6 +12,9 @@ use crate::persistence::runtime::{
 
 pub struct GamePlugin;
 #[cfg(test)]
+#[path = "game_clock_tests.rs"]
+mod game_clock_tests;
+#[cfg(test)]
 #[path = "gameplay_pause_tests.rs"]
 mod gameplay_pause_tests;
 impl Plugin for GamePlugin {
@@ -164,6 +167,13 @@ impl Plugin for GamePlugin {
             )
             .add_systems(
                 PostUpdate,
+                tick_offline_game_clock
+                    .after(apply_offline_pause)
+                    .before(apply_piece_commands)
+                    .run_if(crate::network::runtime::world_offline),
+            )
+            .add_systems(
+                PostUpdate,
                 (
                     apply_piece_commands.run_if(crate::network::runtime::world_offline),
                     update_game_progress,
@@ -261,6 +271,7 @@ fn initialize_game(
     if let Some(mut pending) = pending {
         if let Some(restored) = pending.0.take() {
             *store = restored.store;
+            game.elapsed_play_time = store.elapsed_play_time;
             game.puzzle_progress = store.placed_count as f32 / store.len() as f32;
             game.puzzle_completed = store.placed_count == store.len();
             progress.is_generating = true;
@@ -821,6 +832,7 @@ mod tests {
                 })
                 .collect();
             let checkpoint = PuzzleCheckpoint {
+                elapsed_millis: 3_723_456,
                 definition: definition.clone(),
                 image_hash: image_hash(&encoded),
                 next_z_order: 4,
@@ -890,6 +902,14 @@ mod tests {
                 checkpoint
             );
             assert_eq!(store.placed_count, if complete { 4 } else { 1 });
+            assert_eq!(
+                store.elapsed_play_time,
+                std::time::Duration::from_millis(3_723_456)
+            );
+            assert_eq!(
+                app.world().resource::<GameData>().elapsed_play_time,
+                store.elapsed_play_time
+            );
             assert_eq!(
                 app.world().resource::<GameData>().puzzle_progress,
                 if complete { 1.0 } else { 0.25 }

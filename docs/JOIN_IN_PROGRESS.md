@@ -568,3 +568,8 @@ World installation and disconnect ownership now live in the
 [game runtime](DIRECT_IP_RUNTIME.md).
 See [NETWORK_TRANSPORT.md](NETWORK_TRANSPORT.md#bounded-bulk-transfer-foundation)
 for the generic framing, receiver error semantics and fixed v2 golden contract.
+
+The same-release clock addition stores elapsed milliseconds in the snapshot.
+Once admitted, a peer receives an immediate host clock update on independent
+Reliable kind 11. Periodic clock updates never advance gameplay authority cursors
+or reset the Finalize/Ready barrier, including while the host clock is ticking.

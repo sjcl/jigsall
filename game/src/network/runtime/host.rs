@@ -21,12 +21,65 @@ pub(super) fn publish_presence(
 }
 
 impl<T: Transport> Runtime<T> {
+    pub(super) fn publish_game_clock(
+        &mut self,
+        store: &mut PieceDataStore,
+        force: bool,
+    ) -> Result<(), RuntimeFailure> {
+        let Role::Host(host) = &mut self.role else {
+            return Ok(());
+        };
+        let summary = (
+            store.elapsed_play_time.as_secs(),
+            !store.is_empty() && store.placed_count == store.len(),
+        );
+        if !force && host.last_clock == Some(summary) {
+            return Ok(());
+        }
+        let next_tick = host
+            .clock_tick
+            .checked_add(1)
+            .ok_or("clock counter exhausted")?;
+        let session = self.session.as_ref().ok_or("missing authority")?;
+        let message = WireMessage::GameClock(GameClockUpdate {
+            session: session.session_id(),
+            authority_epoch: session.cursor().epoch,
+            tick: host.clock_tick,
+            elapsed_millis: store.elapsed_play_time.as_millis().min(u64::MAX as u128) as u64,
+        });
+        let payload = wire::encode(&message).map_err(RuntimeFailure::internal)?;
+        host.clock_tick = next_tick;
+        host.last_clock = Some(summary);
+        let failures = self
+            .connections
+            .peers()
+            .filter(|peer| peer.player.is_some())
+            .filter_map(|peer| {
+                self.transport
+                    .send(peer.connection, MessageClass::Control, &payload)
+                    .err()
+                    .map(|error| (peer.connection, error))
+            })
+            .collect();
+        let pending = self.publication_disconnects(failures)?;
+        self.disconnect_many(pending, store)
+    }
+
     pub(super) fn pause_gameplay(
         &mut self,
         paused: bool,
         store: &mut PieceDataStore,
         interaction: &mut PieceInteraction,
     ) -> Result<(), RuntimeFailure> {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.gameplay_paused() != paused)
+        {
+            // Same Reliable lane: everyone receives the exact boundary time
+            // before the corresponding PauseChanged event.
+            self.publish_game_clock(store, true)?;
+        }
         let Role::Host(host) = &mut self.role else {
             return Ok(());
         };
@@ -451,7 +504,8 @@ impl<T: Transport> Runtime<T> {
             joined,
         )?;
         let pending = self.publication_disconnects(failures)?;
-        self.disconnect_many(pending, store)
+        self.disconnect_many(pending, store)?;
+        self.publish_game_clock(store, true)
     }
 
     fn pump_host_joins(

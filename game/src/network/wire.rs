@@ -4,7 +4,8 @@ use super::session_control::SessionControlMessage;
 use super::sync_control::SyncControlMessage;
 use super::transport::MessageClass;
 use jigsall_core::protocol::{
-    ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand, RemoteDragUpdate,
+    GameClockUpdate, ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand,
+    RemoteDragUpdate,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -20,6 +21,7 @@ const MAGIC: &[u8; 4] = b"PZLA";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WireMessage {
+    GameClock(GameClockUpdate),
     ClientCommand(ProtocolCommandEnvelope),
     AuthorityEvent(ProtocolAuthorityEventEnvelope),
     DragUpdate(RemoteDragUpdate),
@@ -39,7 +41,8 @@ impl WireMessage {
             {
                 MessageClass::Transient
             }
-            Self::ClientCommand(_)
+            Self::GameClock(_)
+            | Self::ClientCommand(_)
             | Self::AuthorityEvent(_)
             | Self::SessionControl(_)
             | Self::SyncControl(_)
@@ -52,6 +55,7 @@ impl WireMessage {
     }
     fn kind(&self) -> u8 {
         match self {
+            Self::GameClock(_) => 11,
             Self::ClientCommand(_) if self.class() == MessageClass::Transient => 4,
             Self::ClientCommand(_) => 1,
             Self::AuthorityEvent(_) => 2,
@@ -94,6 +98,7 @@ pub const fn frame_limit(class: MessageClass) -> usize {
 
 pub fn encode(message: &WireMessage) -> Result<Vec<u8>, WireError> {
     let payload = match message {
+        WireMessage::GameClock(v) => binary(v)?,
         WireMessage::ClientCommand(v) => binary(v)?,
         WireMessage::AuthorityEvent(v) => binary(v)?,
         WireMessage::DragUpdate(v) => binary(v)?,
@@ -176,7 +181,7 @@ fn checked_payload(frame: &[u8]) -> Result<(u8, MessageClass, &[u8]), WireError>
         return Err(WireError::UnsupportedVersion(version));
     }
     let class = match frame[6] {
-        1 | 2 | 6 | 7 | 8 => MessageClass::Control,
+        1 | 2 | 6 | 7 | 8 | 11 => MessageClass::Control,
         3 | 4 | 9 | 10 => MessageClass::Transient,
         5 => MessageClass::Bulk,
         kind => return Err(WireError::UnknownKind(kind)),
@@ -237,6 +242,7 @@ pub fn decode(frame: &[u8]) -> Result<WireMessage, WireError> {
         8 => WireMessage::Presence(parse(payload)?),
         9 => WireMessage::CursorUpdate(parse(payload)?),
         10 => WireMessage::CursorSnapshot(parse(payload)?),
+        11 => WireMessage::GameClock(parse(payload)?),
         _ => unreachable!("kind checked above"),
     };
     if message.class() != class {

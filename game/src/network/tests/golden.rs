@@ -587,3 +587,16 @@ fn wire_v3_pause_and_rejection_golden() {
         "50 5a 4c 41 03 00 02 00 0a 00 00 00 b4 24 09 05 87 01 06 07 81 01",
     );
 }
+
+#[test]
+fn wire_v3_game_clock_golden_uses_independent_reliable_kind() {
+    assert_v3_frame(
+        WireMessage::GameClock(GameClockUpdate {
+            session: SessionId(0x1234),
+            authority_epoch: AuthorityEpoch(5),
+            tick: 129,
+            elapsed_millis: 1000,
+        }),
+        "50 5a 4c 41 03 00 0b 00 07 00 00 00 b4 24 05 81 01 e8 07",
+    );
+}

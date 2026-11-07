@@ -174,11 +174,12 @@ fn image_rejects_magic_version_length_hash_and_key_mismatches() {
 }
 #[test]
 fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
-    let save = save();
+    let mut save = save();
+    save.checkpoint.elapsed_millis = 3_723_456;
     let encoded = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         encoded.len(),
-        222 + save.metadata.title.as_str().len() + 16 * 4
+        230 + save.metadata.title.as_str().len() + 16 * 4
     );
     let restored = SaveCodec::decode(&encoded).unwrap();
     assert_eq!(save, restored);
@@ -196,6 +197,53 @@ fn binary_save_round_trip_keeps_metadata_definition_flags_and_float_bits() {
     assert_eq!(restored.checkpoint.pieces[0].flags, SNAPSHOT_PLACED);
     assert_ne!(
         restored.checkpoint.pieces[1].flags & SNAPSHOT_CONNECTED_DOWN,
+        0
+    );
+}
+
+#[test]
+fn elapsed_time_survives_filesystem_reopen_and_legacy_saves_start_at_zero() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = encoded_image(image::ImageFormat::Png);
+    let metadata = {
+        let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+        let mut checkpoint = checkpoint(&bytes);
+        checkpoint.elapsed_millis = 12_345_678;
+        repo.create(SaveTitle::new("Clock").unwrap(), checkpoint, Some(&bytes))
+            .unwrap()
+    };
+    // A fresh repository and store share no in-memory timer state.
+    let repo = SaveRepository::new(FilesystemStorage::new(dir.path()));
+    let restored = repo.load(metadata.id).unwrap().save;
+    let mut store = PieceDataStore::default();
+    restored.checkpoint.install(&mut store).unwrap();
+    assert_eq!(store.elapsed_play_time, Duration::from_millis(12_345_678));
+    let snapshot = crate::multiplayer::GameSnapshot::capture(
+        &store,
+        &restored.checkpoint.definition,
+        jigsall_core::session::SessionDefinition {
+            id: jigsall_core::session::SessionId(1),
+            image_hash: restored.checkpoint.image_hash,
+        },
+        jigsall_core::session::AuthorityCursor::new(0, 0),
+    )
+    .unwrap();
+    assert_eq!(snapshot.into_checkpoint().elapsed_millis, 12_345_678);
+
+    // Construct the previous schema-1 header by removing its new clock field.
+    let mut old = SaveCodec::encode(&save()).unwrap();
+    let header_len = u32::from_le_bytes(old[10..14].try_into().unwrap()) as usize;
+    old.drain(header_len - 58..header_len - 50);
+    old[10..14].copy_from_slice(&((header_len - 8) as u32).to_le_bytes());
+    let old_len = old.len() as u64;
+    old[14..22].copy_from_slice(&old_len.to_le_bytes());
+    resign_header(&mut old);
+    let checksum_offset = old.len() - 32;
+    let checksum = image_hash(&old[..checksum_offset]);
+    old[checksum_offset..].copy_from_slice(&checksum.0);
+    assert_eq!(
+        SaveCodec::decode(&old).unwrap().checkpoint.elapsed_millis,
         0
     );
 }
@@ -257,7 +305,7 @@ fn million_piece_save_keeps_sixteen_byte_records_and_restores_directly() {
     let bytes = SaveCodec::encode(&save).unwrap();
     assert_eq!(
         bytes.len(),
-        16_000_000 + 222 + save.metadata.title.as_str().len()
+        16_000_000 + 230 + save.metadata.title.as_str().len()
     );
     let decoded = SaveCodec::decode(&bytes).unwrap();
     assert_eq!(save, decoded);
@@ -998,6 +1046,7 @@ fn snapshot_serialized_field_order_preserves_dense_records() {
     use jigsall_core::session::{AuthorityCursor, SessionId};
     let c = save().checkpoint;
     let wire = GameSnapshot {
+        elapsed_millis: c.elapsed_millis,
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         session: SessionId(9),
         image_hash: c.image_hash,
@@ -1014,6 +1063,7 @@ fn snapshot_serialized_field_order_preserves_dense_records() {
         "cursor",
         "definition",
         "next_z_order",
+        "elapsed_millis",
         "pieces",
     ];
     let offsets: Vec<_> = fields
@@ -1178,7 +1228,7 @@ fn fifty_million_piece_previews_read_only_bounded_headers() {
     }
     let mut header = SaveCodec::encode(&save()).unwrap();
     let t = save().metadata.title.as_str().len();
-    let header_len = 190 + t;
+    let header_len = 198 + t;
     let length = header_len as u64 + 16_000_000 + 32;
     header.truncate(header_len);
     header[14..22].copy_from_slice(&length.to_le_bytes());

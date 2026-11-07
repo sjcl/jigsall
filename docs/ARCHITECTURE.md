@@ -519,3 +519,9 @@ GPUは描画と選択の補助で、placed・所有権・snapを決めません�
 `GameSubState::Paused` は従来どおりローカル ESC メニューを表します。全員のピース操作を止める状態は `AuthoritySession::gameplay_paused` が管理し、`GameplayPause` resource は UI と入力制御へその値を反映します。ホストだけが ESC メニューから停止・再開を要求でき、client の要求は runtime が無視します。メニューを閉じた `Playing` 中は停止状態でも camera の pan / zoom と入力座標の更新を継続し、piece input と autosave の active-play timer を止めます。
 
 停止・再開は wire v3 の Reliable authority event `PauseChanged` として順序付きで配信します。停止時は全員の hold / drag context を移動・snap せずに解放し、selection request と local / remote drag presentation、未確定の rotation prediction を破棄します。authority は停止中も認証済み player、session、epoch、sequence を検証し、Reliable 操作は連番を消費して `CommandRejected` を返します。Transient 操作は正本を変更せず、転送もしません。client 由来の authority event は拒否します。JoinBaseline schema 2 に停止状態を含め、baseline 後の変更は catch-up で適用します。保存用 snapshot schema 1 と GPU state の構造は変わりません。
+
+## 経過時間
+
+`PieceDataStore.elapsed_play_time` は GPU state と独立した CPU 側のゲームメタデータです。offline は Playing 中だけ `Time<Real>` の delta を加算します。network は Host driver だけが加算し、ローカルメニュー中も進み、global pause・初期化・完成後は停止します。加算は O(1)、ピース state の dirty range は増やしません。HUD と完成画面は時分秒を表示し、save / snapshot はミリ秒で引き継ぎます。
+
+ホストの時計は独立した Reliable kind 11 / tick で同期します。authority cursor は進めず、時計の更新で join の最終 barrier をやり直しません。client は受信したホストの時間だけを表示し、ローカル時計の変更やメニュー操作で共有の経過時間を変更できません。通信・snapshot の番号は同一リリース内の変更として維持します。

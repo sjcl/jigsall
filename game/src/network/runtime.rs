@@ -208,6 +208,9 @@ impl std::fmt::Display for RuntimeStartError {
 impl std::error::Error for RuntimeStartError {}
 
 struct HostState {
+    clock_running: bool,
+    clock_tick: u64,
+    last_clock: Option<(u64, bool)>,
     bootstrap: HostBootstrap,
     sync: HostSyncCoordinator,
     contexts: ProtocolDragContexts,
@@ -320,6 +323,9 @@ impl<T: Transport> Runtime<T> {
             connections: Default::default(),
             live: Default::default(),
             role: Role::Host(Box::new(HostState {
+                clock_running: false,
+                clock_tick: 0,
+                last_clock: None,
                 bootstrap: HostBootstrap::new(options.password, metadata, [], now),
                 sync,
                 contexts: Default::default(),

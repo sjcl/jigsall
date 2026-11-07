@@ -10,8 +10,8 @@ pub const PUZIMG_FORMAT_VERSION: u16 = 1;
 const SAVE_MAGIC: &[u8; 8] = b"PUZSAVE\0";
 const IMAGE_MAGIC: &[u8; 8] = b"PUZIMG\0\0";
 /// Maximum prefix needed for the save header. Independent of piece count.
-pub const MAX_SAVE_HEADER_BYTES: usize = 190 + MAX_SAVE_TITLE_CHARS * 4;
-pub(crate) const MAX_SAVE_BYTES: u64 = 222 + 320 + 16 * 1_000_000;
+pub const MAX_SAVE_HEADER_BYTES: usize = 198 + MAX_SAVE_TITLE_CHARS * 4;
+pub(crate) const MAX_SAVE_BYTES: u64 = 230 + 320 + 16 * 1_000_000;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024 + 50;
 pub fn image_hash(bytes: &[u8]) -> ImageHash {
     ImageHash(Sha256::digest(bytes).into())
@@ -21,6 +21,7 @@ pub fn image_hash(bytes: &[u8]) -> ImageHash {
 /// the non-authoritative placed-count cache are verified only on full decode.
 #[derive(Clone, Debug)]
 pub struct SaveHeader {
+    pub elapsed_millis: u64,
     pub metadata: SaveMetadata,
     pub image_hash: ImageHash,
     pub definition: PuzzleDefinition,
@@ -40,7 +41,7 @@ impl SaveCodec {
         validate_metadata(m)?;
         let c = &save.checkpoint;
         let d = &c.definition;
-        let header_len = 190 + m.title.as_str().len();
+        let header_len = 198 + m.title.as_str().len();
         let total_len = header_len + c.pieces.len() * 16 + 32;
         let mut out = Vec::with_capacity(total_len);
         out.extend_from_slice(SAVE_MAGIC);
@@ -71,6 +72,7 @@ impl SaveCodec {
         ] {
             out.extend_from_slice(&n.to_le_bytes());
         }
+        out.extend_from_slice(&c.elapsed_millis.to_le_bytes());
         out.push(u8::from(m.is_autosave));
         out.extend_from_slice(&m.game_id.0.to_le_bytes());
         out.push(u8::from(d.rotation_enabled));
@@ -148,6 +150,12 @@ impl SaveCodec {
         let next_z_order = r.u32()?;
         let count = r.u32()? as usize;
         let placed_count = r.u32()? as usize;
+        // The schema-1 header length distinguishes older saves without a clock.
+        let elapsed_millis = match r.remaining() {
+            18 => 0,
+            26 => r.u64()?,
+            _ => return Err(bad("Invalid elapsed time field")),
+        };
         metadata.is_autosave = match r.take(1)?[0] {
             0 => false,
             1 => true,
@@ -170,6 +178,7 @@ impl SaveCodec {
             return Err(bad("Invalid piece count, summary or length"));
         }
         Ok(SaveHeader {
+            elapsed_millis,
             metadata,
             image_hash: hash,
             definition,
@@ -209,6 +218,7 @@ impl SaveCodec {
             return Err(bad("Placed count cache mismatch"));
         }
         let checkpoint = PuzzleCheckpoint {
+            elapsed_millis: header.elapsed_millis,
             image_hash: header.image_hash,
             definition: header.definition,
             next_z_order: header.next_z_order,

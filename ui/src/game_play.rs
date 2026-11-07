@@ -68,6 +68,8 @@ pub(crate) fn draw_game_ui(
                     )],
                 ),
             );
+            ui.separator();
+            ui.label(elapsed_label(&i18n, game_state.elapsed_play_time));
             if roster.len() > 1 || network.role.is_some() {
                 ui.separator();
                 paint_player_count(ui, &roster, &i18n, &mut players_overlay);
@@ -120,6 +122,17 @@ pub(crate) fn draw_game_ui(
         .pointer_interact_pos()
         .is_some_and(|point| panel.response.rect.contains(point));
     notifications.hud_bottom = panel.response.rect.bottom();
+}
+
+pub(crate) fn elapsed_label(i18n: &Localization, elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    let value = format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    );
+    i18n.format("game-elapsed-time", &[("time", value.as_str().into())])
 }
 
 fn paint_controls(
@@ -305,6 +318,31 @@ fn paint_players(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn elapsed_time_formats_and_hud_remains_visible_while_paused() {
+        let (mut app, ctx) = hud_app();
+        app.world_mut().resource_mut::<GameData>().elapsed_play_time =
+            std::time::Duration::from_millis(3_723_999);
+        app.world_mut().resource_mut::<GameplayPause>().paused = true;
+        for _ in 0..2 {
+            render_hud(&mut app, &ctx, vec![]).drop_without_applying_deltas();
+        }
+        let output = render_hud(&mut app, &ctx, vec![]);
+        let label = elapsed_label(
+            app.world().resource::<Localization>(),
+            std::time::Duration::from_secs(3_723),
+        );
+        assert!(label.contains("01:02:03"));
+        assert!(output.shapes.iter().any(
+            |shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.job.text == label)
+        ));
+        output.drop_without_applying_deltas();
+        assert!(elapsed_label(
+            app.world().resource::<Localization>(),
+            std::time::Duration::from_secs(100 * 3600)
+        )
+        .contains("100:00:00"));
+    }
     use jigsall_game::network::runtime::{
         NetworkStatus, RendezvousControlStatus, RuntimeConnectionMethod, RuntimePhase, RuntimeRole,
     };

@@ -7,6 +7,7 @@ use super::{
     wire::{self, WireError, WireMessage},
 };
 mod bootstrap;
+mod clock;
 mod pause;
 mod policy;
 mod transient;

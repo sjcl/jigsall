@@ -97,6 +97,11 @@ pub fn draw_completion_ui(
                                     );
                                 });
                             ui.add_space(if compact { 8.0 } else { 16.0 });
+                            ui.label(crate::game_play::elapsed_label(
+                                &i18n,
+                                store.elapsed_play_time,
+                            ));
+                            ui.add_space(8.0);
 
                             if ui
                                 .add_sized(

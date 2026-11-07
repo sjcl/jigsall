@@ -359,6 +359,7 @@ pause-multiplayer-hint = このメニューを開いている間も、ほかの�
 pause-session-stop = パズルを一時停止
 pause-session-resume = パズルを再開
 pause-session-status = パズル一時停止中
+game-elapsed-time = 経過時間 { $time }
 pause-viewing-hint = 視点の移動・拡大縮小ができます。ピースは操作できません。
 pause-host-title = 部屋を閉じてタイトルへ戻る
 pause-host-exit = 部屋を閉じて終了
