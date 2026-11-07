@@ -1,9 +1,9 @@
 # Multiplayer command protocol
 
-For the first release, GameSnapshot uses schema 1 with the pre-release schema 5
-layout, and generator v1 preserves the pre-release v5 algorithm. References below
-to snapshot schemas 3/4 describe development history; pre-release compatibility is
-not provided. See [ARCHITECTURE.md](ARCHITECTURE.md) for the current format.
+GameSnapshot uses schema 2 with elapsed play time and the same 16-byte piece
+records as schema 1. Generator v1 preserves the pre-release v5 algorithm.
+References below to snapshot schemas 3/4 describe development history;
+pre-release compatibility is not provided. See [ARCHITECTURE.md](ARCHITECTURE.md) for the current format.
 
 ## Display metadata and session roster (wire v3)
 

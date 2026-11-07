@@ -231,9 +231,11 @@ fn elapsed_time_survives_filesystem_reopen_and_legacy_saves_start_at_zero() {
     .unwrap();
     assert_eq!(snapshot.into_checkpoint().elapsed_millis, 12_345_678);
 
-    // Construct the previous schema-1 header by removing its new clock field.
+    // Recreate the released v1 layout without elapsed time.
+    // Both the lightweight preview and full load must recognize its version.
     let mut old = SaveCodec::encode(&save()).unwrap();
     let header_len = u32::from_le_bytes(old[10..14].try_into().unwrap()) as usize;
+    old[8..10].copy_from_slice(&1u16.to_le_bytes());
     old.drain(header_len - 58..header_len - 50);
     old[10..14].copy_from_slice(&((header_len - 8) as u32).to_le_bytes());
     let old_len = old.len() as u64;
@@ -242,10 +244,15 @@ fn elapsed_time_survives_filesystem_reopen_and_legacy_saves_start_at_zero() {
     let checksum_offset = old.len() - 32;
     let checksum = image_hash(&old[..checksum_offset]);
     old[checksum_offset..].copy_from_slice(&checksum.0);
-    assert_eq!(
-        SaveCodec::decode(&old).unwrap().checkpoint.elapsed_millis,
-        0
-    );
+    let header = SaveCodec::decode_header(&old, old.len() as u64).unwrap();
+    let legacy = SaveCodec::decode(&old).unwrap();
+    assert_eq!(header.elapsed_millis, 0);
+    assert_eq!(legacy.checkpoint.elapsed_millis, 0);
+    assert_eq!(header.metadata, save().metadata);
+    assert_eq!(legacy, save());
+    let upgraded = SaveCodec::encode(&legacy).unwrap();
+    assert_eq!(&upgraded[8..10], &2u16.to_le_bytes());
+    assert_eq!(SaveCodec::decode(&upgraded).unwrap(), legacy);
 }
 
 #[test]
@@ -1074,7 +1081,7 @@ fn snapshot_serialized_field_order_preserves_dense_records() {
     assert!(!json.contains("checkpoint"));
     assert_eq!(serde_json::from_str::<GameSnapshot>(&json).unwrap(), wire);
     assert_eq!(wire.clone().into_checkpoint(), c);
-    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 1);
+    assert_eq!(SNAPSHOT_SCHEMA_VERSION, 2);
 }
 
 #[test]
@@ -1471,12 +1478,12 @@ fn exhausted_revision_does_not_publish_or_wrap() {
     assert_eq!(storage.blobs.lock().unwrap()[&key], encoded);
 }
 #[test]
-fn save_format_one_is_the_only_supported_layout() {
+fn saves_write_format_two_and_reject_unknown_versions_and_invalid_layouts() {
     let original = SaveCodec::encode(&save()).unwrap();
-    assert_eq!(SAVE_FORMAT_VERSION, 1);
-    assert_eq!(&original[8..10], &1u16.to_le_bytes());
+    assert_eq!(SAVE_FORMAT_VERSION, 2);
+    assert_eq!(&original[8..10], &2u16.to_le_bytes());
     assert_eq!(SaveCodec::decode(&original).unwrap(), save());
-    for version in [0u16, 2, 3, 4, 9] {
+    for version in [0u16, 3, 4, 9] {
         let mut bytes = original.clone();
         bytes[8..10].copy_from_slice(&version.to_le_bytes());
         assert_eq!(

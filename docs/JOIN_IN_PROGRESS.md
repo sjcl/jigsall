@@ -1,6 +1,6 @@
 # Join baseline, bounded catch-up and Ready handoff
 
-`JoinBaseline` schema **2** combines the existing `GameSnapshot` schema **1**
+`JoinBaseline` schema **2** combines the `GameSnapshot` schema **2** (including elapsed time)
 with at most **64** `BaselineDrag` records. This is a transport-independent CPU
 API. `network::syncing` now connects it to authenticated runtime routing and
 generation-bound Bulk transfer, authoritative drag reconciliation and Ready handoff.

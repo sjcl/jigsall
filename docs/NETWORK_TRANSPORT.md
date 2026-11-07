@@ -15,7 +15,7 @@ Networking is opt-in under `game::network`. It does not install systems into the
 offline authority path. The game runtime and UI provide Direct IP and optional
 Internet Room Code entrypoints; migration orchestration remains separate.
 Commands use the core authority, replication, cursor and topology semantics with
-wire v3 and snapshot schema 1. `core` has no transport/native dependency.
+wire v3 and snapshot schema 2. `core` has no transport/native dependency.
 
 ```text
 bootstrap (mandatory session password, authenticated/syncing/ready gate)

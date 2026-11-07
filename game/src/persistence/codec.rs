@@ -5,7 +5,7 @@ use bevy::math::{UVec2, Vec2};
 use jigsall_core::{PuzzleDefinition, GENERATOR_VERSION};
 use sha2::{Digest, Sha256};
 
-pub const SAVE_FORMAT_VERSION: u16 = 1;
+pub const SAVE_FORMAT_VERSION: u16 = 2;
 pub const PUZIMG_FORMAT_VERSION: u16 = 1;
 const SAVE_MAGIC: &[u8; 8] = b"PUZSAVE\0";
 const IMAGE_MAGIC: &[u8; 8] = b"PUZIMG\0\0";
@@ -95,13 +95,16 @@ impl SaveCodec {
     pub fn decode_header(prefix: &[u8], file_len: u64) -> Result<SaveHeader, SaveError> {
         let bad = SaveError::CorruptSave;
         let mut r = Reader::new(&prefix[..prefix.len().min(MAX_SAVE_HEADER_BYTES)], bad);
-        read_save_version(&mut r)?;
-        if !(222..=MAX_SAVE_BYTES).contains(&file_len) {
+        let version = read_save_version(&mut r)?;
+        let fixed_header_len = if version == 1 { 190 } else { 198 };
+        if !((fixed_header_len + 32) as u64..=MAX_SAVE_BYTES).contains(&file_len) {
             return Err(bad("Invalid length"));
         }
         let header_len = r.u32()? as usize;
         let declared_len = r.u64()?;
-        if !(190..=MAX_SAVE_HEADER_BYTES).contains(&header_len) || declared_len != file_len {
+        if !(fixed_header_len..=MAX_SAVE_HEADER_BYTES).contains(&header_len)
+            || declared_len != file_len
+        {
             return Err(bad("Invalid header or file length"));
         }
         let header = prefix
@@ -116,7 +119,7 @@ impl SaveCodec {
         let created_at = r.u64()?;
         let updated_at = r.u64()?;
         let title_len = r.u32()? as usize;
-        if title_len > MAX_SAVE_TITLE_CHARS * 4 {
+        if title_len > MAX_SAVE_TITLE_CHARS * 4 || header_len != fixed_header_len + title_len {
             return Err(bad("Invalid title length"));
         }
         let title =
@@ -150,12 +153,7 @@ impl SaveCodec {
         let next_z_order = r.u32()?;
         let count = r.u32()? as usize;
         let placed_count = r.u32()? as usize;
-        // The schema-1 header length distinguishes older saves without a clock.
-        let elapsed_millis = match r.remaining() {
-            18 => 0,
-            26 => r.u64()?,
-            _ => return Err(bad("Invalid elapsed time field")),
-        };
+        let elapsed_millis = if version == 1 { 0 } else { r.u64()? };
         metadata.is_autosave = match r.take(1)?[0] {
             0 => false,
             1 => true,
@@ -236,7 +234,7 @@ fn read_save_version(r: &mut Reader<'_>) -> Result<u16, SaveError> {
         return Err(SaveError::CorruptSave("Magic mismatch"));
     }
     let version = r.u16()?;
-    if version != SAVE_FORMAT_VERSION {
+    if !matches!(version, 1 | SAVE_FORMAT_VERSION) {
         return Err(SaveError::UnsupportedSaveFormat(version));
     }
     Ok(version)

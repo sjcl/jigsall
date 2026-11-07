@@ -1,4 +1,4 @@
-//! Schema 1 stores elapsed play time alongside canonical 16-byte piece records.
+//! Schema 2 stores elapsed play time alongside canonical 16-byte piece records.
 pub use crate::checkpoint::{
     CheckpointError as SnapshotError, SnapshotPieceState, SNAPSHOT_CONNECTED_DOWN,
     SNAPSHOT_CONNECTED_RIGHT, SNAPSHOT_PLACED,
@@ -12,7 +12,7 @@ use jigsall_core::{
     PieceConnectivity, PuzzleDefinition, MAX_PIECES,
 };
 use serde::{Deserialize, Serialize};
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GameSnapshot {
     pub schema_version: u16,
