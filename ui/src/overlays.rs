@@ -76,7 +76,7 @@ pub fn draw_in_game_menu_ui(
                         }
                         if !completed
                             && network_status.role
-                                != Some(jigsall_game::network::runtime::RuntimeRole::Client)
+                                == Some(jigsall_game::network::runtime::RuntimeRole::Host)
                             && theme::button(
                                 ui,
                                 i18n.text(if pause.paused {

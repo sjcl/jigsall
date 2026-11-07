@@ -162,6 +162,9 @@ fn only_host_menu_can_pause_and_resume_puzzle_while_clients_can_return_to_view()
     for locale in [Locale::EN_US, Locale::JA] {
         for role in [None, Some(RuntimeRole::Host), Some(RuntimeRole::Client)] {
             for paused in [false, true] {
+                if role.is_none() && paused {
+                    continue;
+                }
                 let (mut app, ctx) = paused_game(role, false);
                 app.world_mut().resource_mut::<GameplayPause>().paused = paused;
                 app.world_mut()
@@ -179,7 +182,7 @@ fn only_host_menu_can_pause_and_resume_puzzle_while_clients_can_return_to_view()
                 let label = app.world().resource::<Localization>().text(key);
                 assert_eq!(
                     labels(&output).contains(&label.as_str()),
-                    role != Some(RuntimeRole::Client)
+                    role == Some(RuntimeRole::Host)
                 );
                 if paused {
                     let hint = app
@@ -194,7 +197,7 @@ fn only_host_menu_can_pause_and_resume_puzzle_while_clients_can_return_to_view()
                     assert!(!labels(&output).contains(&old_hint.as_str()));
                 }
                 output.drop_without_applying_deltas();
-                if role != Some(RuntimeRole::Client) {
+                if role == Some(RuntimeRole::Host) {
                     click_label(&mut app, &ctx, &label);
                     assert!(matches!(
                         app.world().resource::<NextState<GameSubState>>(),
@@ -210,7 +213,11 @@ fn only_host_menu_can_pause_and_resume_puzzle_while_clients_can_return_to_view()
                     let back = app
                         .world()
                         .resource::<Localization>()
-                        .text("pause-back-puzzle");
+                        .text(if role.is_some() {
+                            "pause-back-puzzle"
+                        } else {
+                            "pause-resume"
+                        });
                     click_label(&mut app, &ctx, &back);
                     assert_eq!(app.world().resource::<GameplayPause>().paused, paused);
                 }

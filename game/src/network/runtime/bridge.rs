@@ -483,16 +483,16 @@ impl CommandBridge {
         interaction: &mut PieceInteraction,
         store: &mut PieceDataStore,
     ) -> Result<(), BridgeError> {
-        if let ProtocolAuthorityEvent::PauseChanged { paused } = event {
+        if let ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }) = event {
             if *paused {
                 self.suspend(interaction, store);
             }
             return Ok(());
         }
-        if let ProtocolAuthorityEvent::CommandRejected {
+        if let ProtocolAuthorityEvent::CommandRejected(CommandRejected {
             player: rejected,
             sequence,
-        } = event
+        }) = event
         {
             if *rejected == player {
                 if let Some(pending) = &self.pending {
@@ -510,8 +510,8 @@ impl CommandBridge {
             ProtocolAuthorityEvent::RotationCommitted(e) => e.player,
             ProtocolAuthorityEvent::DragRotationCommitted(e) => e.player,
             ProtocolAuthorityEvent::DragCancelled(e) => e.player,
-            ProtocolAuthorityEvent::PauseChanged { .. }
-            | ProtocolAuthorityEvent::CommandRejected { .. } => unreachable!(),
+            ProtocolAuthorityEvent::PauseChanged(_)
+            | ProtocolAuthorityEvent::CommandRejected(_) => unreachable!(),
         };
         if event_player != player {
             return Ok(());

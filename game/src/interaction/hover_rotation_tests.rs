@@ -29,6 +29,7 @@ fn app(connected: bool) -> App {
         .init_resource::<PuzzleSelection>()
         .init_resource::<InputState>()
         .init_resource::<GameUiPointerCapture>()
+        .init_resource::<crate::resources::GameplayPause>()
         .init_resource::<PerformanceMonitor>()
         .init_resource::<ButtonInput<MouseButton>>()
         .init_resource::<ButtonInput<KeyCode>>()

@@ -190,6 +190,7 @@ mod tests {
             .init_resource::<PieceDataStore>()
             .init_resource::<crate::resources::LocalPlayerId>()
             .init_resource::<PerformanceMonitor>()
+            .init_resource::<GameplayPause>()
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<ButtonInput<KeyCode>>()
             .insert_resource(KeyBindingsState::load(None))

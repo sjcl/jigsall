@@ -573,16 +573,19 @@ fn wire_v3_drag_cancelled_golden() {
 fn wire_v3_pause_and_rejection_golden() {
     // Appended event tags 5 and 6. Control header kind 2 and explicit payload sizes.
     assert_v3_frame(
-        authority(134, ProtocolAuthorityEvent::PauseChanged { paused: true }),
+        authority(
+            134,
+            ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused: true }),
+        ),
         "50 5a 4c 41 03 00 02 00 08 00 00 00 b4 24 09 05 86 01 05 01",
     );
     assert_v3_frame(
         authority(
             135,
-            ProtocolAuthorityEvent::CommandRejected {
+            ProtocolAuthorityEvent::CommandRejected(CommandRejected {
                 player: PlayerId(7),
                 sequence: 129,
-            },
+            }),
         ),
         "50 5a 4c 41 03 00 02 00 0a 00 00 00 b4 24 09 05 87 01 06 07 81 01",
     );

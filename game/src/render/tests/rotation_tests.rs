@@ -81,6 +81,7 @@ fn gpu_hover_rotation_uses_frontmost_point_pick_and_rotates_the_connected_compon
         .init_resource::<PieceInteraction>()
         .init_resource::<InputState>()
         .init_resource::<GameUiPointerCapture>()
+        .init_resource::<crate::resources::GameplayPause>()
         .init_resource::<PerformanceMonitor>()
         .init_resource::<bevy_egui::EguiUserTextures>()
         .init_resource::<TestKey>()

@@ -104,7 +104,7 @@ pub(crate) fn tick_autosave(
     mut timer: ResMut<AutosaveTimer>,
     service: Res<PersistenceService>,
     mut state: ResMut<PersistenceState>,
-    pause: Option<Res<crate::resources::GameplayPause>>,
+    pause: Res<crate::resources::GameplayPause>,
 ) {
     let interval = settings.current.interval_minutes;
     if timer.interval != interval || local.0 != host.0 {
@@ -115,9 +115,7 @@ pub(crate) fn tick_autosave(
     let Some(minutes) = interval else {
         return;
     };
-    if playing.is_none_or(|state| *state.get() != GameSubState::Playing)
-        || pause.is_some_and(|pause| pause.paused)
-    {
+    if playing.is_none_or(|state| *state.get() != GameSubState::Playing) || pause.paused {
         return;
     }
     let duration = Duration::from_secs(u64::from(minutes.get()) * 60);

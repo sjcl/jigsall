@@ -3,11 +3,11 @@ use crate::play_area::{DragValidation, PivotEnvelope};
 use crate::resources::{pieces::AppliedCommand, PieceDataStore};
 use jigsall_core::{
     protocol::{
-        ActiveDrag, ActiveDragTarget, DragCancelled, DragRotationCommitted, GrabAccepted,
-        PieceTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope,
-        ProtocolCommandEnvelope, ProtocolPieceCommand, RejectedComponentRef, ReleaseCommitted,
-        ReleaseResultFingerprint, RemoteDragUpdate, ResolvedPieceTarget, RotationCommitted,
-        TargetError,
+        ActiveDrag, ActiveDragTarget, CommandRejected, DragCancelled, DragRotationCommitted,
+        GrabAccepted, PauseChanged, PieceTarget, ProtocolAuthorityEvent,
+        ProtocolAuthorityEventEnvelope, ProtocolCommandEnvelope, ProtocolPieceCommand,
+        RejectedComponentRef, ReleaseCommitted, ReleaseResultFingerprint, RemoteDragUpdate,
+        ResolvedPieceTarget, RotationCommitted, TargetError,
     },
     session::{
         AuthorityEpoch, AuthoritySession, ClientCommandSequence, CommandSequenceStatus,
@@ -115,7 +115,7 @@ impl ProtocolDragContexts {
             session: session.session_id(),
             host: session.host(),
             cursor,
-            event: ProtocolAuthorityEvent::PauseChanged { paused },
+            event: ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }),
         }))
     }
     /// Use this entrypoint consistently for a replicated authority session.
@@ -148,10 +148,10 @@ impl ProtocolDragContexts {
         let event = match &result {
             ProtocolCommandResult::Paused => match envelope.sequence {
                 ClientCommandSequence::Control(sequence) => {
-                    Some(ProtocolAuthorityEvent::CommandRejected {
+                    Some(ProtocolAuthorityEvent::CommandRejected(CommandRejected {
                         player: authenticated_player,
                         sequence,
-                    })
+                    }))
                 }
                 ClientCommandSequence::Move { .. } => None,
             },

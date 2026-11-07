@@ -62,8 +62,8 @@ impl GameplayPause {
     }
 }
 
-pub fn piece_gameplay_enabled(pause: Option<Res<GameplayPause>>) -> bool {
-    pause.is_none_or(|pause| !pause.paused)
+pub fn piece_gameplay_enabled(pause: Res<GameplayPause>) -> bool {
+    !pause.paused
 }
 
 pub fn local_gameplay_enabled(

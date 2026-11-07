@@ -360,6 +360,19 @@ pub struct GameClockUpdate {
     pub elapsed_millis: u64,
 }
 
+/// Host-only control; pausing cancels all holds without moving or snapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseChanged {
+    pub paused: bool,
+}
+
+/// Consumes an in-flight reliable command during pause without changing pieces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandRejected {
+    pub player: PlayerId,
+    pub sequence: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ProtocolAuthorityEvent {
     GrabAccepted(GrabAccepted),
@@ -367,15 +380,8 @@ pub enum ProtocolAuthorityEvent {
     RotationCommitted(RotationCommitted),
     DragRotationCommitted(DragRotationCommitted),
     DragCancelled(DragCancelled),
-    /// Host-only control; pausing cancels all holds without moving or snapping.
-    PauseChanged {
-        paused: bool,
-    },
-    /// Consumes an in-flight reliable command during pause without changing pieces.
-    CommandRejected {
-        player: PlayerId,
-        sequence: u64,
-    },
+    PauseChanged(PauseChanged),
+    CommandRejected(CommandRejected),
 }
 
 pub type ProtocolAuthorityEventEnvelope =

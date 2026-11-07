@@ -82,7 +82,7 @@ pub(super) fn install_driver(
     roster: PlayerRoster,
 ) {
     crate::events::reset_world_history(world);
-    world.insert_resource(GameplayPause::default());
+    *world.resource_mut::<GameplayPause>() = default();
     world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
@@ -354,6 +354,7 @@ fn teardown_session(world: &mut World) {
     }
 }
 fn menu_teardown(world: &mut World) {
+    *world.resource_mut::<GameplayPause>() = default();
     if network_active(world) {
         // Already entering Menu: do not schedule another Menu entry that could
         // clear a puzzle/session created after this cleanup.
@@ -513,10 +514,7 @@ impl<T: Transport + 'static> RuntimeDriver for Runtime<T> {
             }
             host.clock_running = clock_running;
         }
-        if let Some(paused) = world
-            .get_resource_mut::<GameplayPause>()
-            .and_then(|mut pause| pause.requested.take())
-        {
+        if let Some(paused) = world.resource_mut::<GameplayPause>().requested.take() {
             // Local-only API: a client cannot change the authority's pause state.
             if matches!(self.role, Role::Host(_)) {
                 if let Err(error) = self.pause_gameplay(paused, &mut store, &mut interaction) {
@@ -596,7 +594,6 @@ impl<T: Transport> Runtime<T> {
             .session
             .as_ref()
             .is_some_and(AuthoritySession::gameplay_paused);
-        world.init_resource::<GameplayPause>();
         if world.resource::<GameplayPause>().paused != paused {
             world.resource_mut::<GameplayPause>().paused = paused;
             if paused {

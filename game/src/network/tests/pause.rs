@@ -76,7 +76,7 @@ fn paused_authority_refuses_every_wire_operation_and_rejects_client_resume() {
         match sequence {
             ClientCommandSequence::Control(sequence) => {
                 assert!(matches!(outcome.authority_event.unwrap().event,
-                ProtocolAuthorityEvent::CommandRejected { player: A, sequence: rejected } if rejected == sequence))
+                ProtocolAuthorityEvent::CommandRejected(CommandRejected { player: A, sequence: rejected }) if rejected == sequence))
             }
             ClientCommandSequence::Move { .. } => assert!(outcome.authority_event.is_none()),
         }
@@ -93,7 +93,7 @@ fn paused_authority_refuses_every_wire_operation_and_rejects_client_resume() {
         session: SESSION.id,
         host: HOST,
         cursor: host.session.cursor(),
-        event: ProtocolAuthorityEvent::PauseChanged { paused: false },
+        event: ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused: false }),
     };
     assert_eq!(
         host.route(&message_event(

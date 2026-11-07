@@ -8,8 +8,8 @@ use crate::{
 use bevy::math::Vec2;
 use jigsall_core::{
     protocol::{
-        ActiveDragTarget, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope, RemoteDragUpdate,
-        ResolvedPieceTarget,
+        ActiveDragTarget, PauseChanged, ProtocolAuthorityEvent, ProtocolAuthorityEventEnvelope,
+        RemoteDragUpdate, ResolvedPieceTarget,
     },
     session::{AuthorityEpoch, AuthoritySession, CommandSequenceStatus, ProtocolError, SessionId},
     PlayerId, PuzzleDefinition,
@@ -187,7 +187,9 @@ impl PeerReplicationState {
         }
         match self.apply_gameplay(store, &envelope.event, definition, local_player) {
             Ok(applied) => {
-                if let ProtocolAuthorityEvent::PauseChanged { paused } = envelope.event {
+                if let ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }) =
+                    envelope.event
+                {
                     session.set_gameplay_paused(paused);
                 }
                 session
@@ -210,7 +212,7 @@ impl PeerReplicationState {
         local_player: PlayerId,
     ) -> Result<AppliedCommand, ReplicationError> {
         match event {
-            ProtocolAuthorityEvent::PauseChanged { paused } => {
+            ProtocolAuthorityEvent::PauseChanged(PauseChanged { paused }) => {
                 if *paused {
                     for player in self.remote_drags.keys() {
                         store.clear_player_holds(*player);
@@ -219,7 +221,7 @@ impl PeerReplicationState {
                 }
                 Ok(AppliedCommand::default())
             }
-            ProtocolAuthorityEvent::CommandRejected { .. } => Ok(AppliedCommand::default()),
+            ProtocolAuthorityEvent::CommandRejected(_) => Ok(AppliedCommand::default()),
             ProtocolAuthorityEvent::DragCancelled(cancel) => {
                 let drag = self
                     .remote_drags
