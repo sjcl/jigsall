@@ -82,7 +82,7 @@ pub(super) fn install_driver(
     roster: PlayerRoster,
 ) {
     crate::events::reset_world_history(world);
-    *world.resource_mut::<GameplayPause>() = default();
+    world.insert_resource(GameplayPause::default());
     world.insert_resource(remote_cursor::RemoteCursorPresentation::default());
     world.init_resource::<PieceInteraction>();
     *world.resource_mut::<PieceInteraction>() = default();
