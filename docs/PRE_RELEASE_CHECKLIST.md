@@ -8,7 +8,7 @@ crash、data loss、接続不能、入力不能、著しい描画破綻は公開
 
 - [ ] master の最新状態を確認し、対象 commit が master の履歴に含まれる。
 - [ ] workspace と Cargo.lock の全 Jigsall package が同じ version。
-  現在は `0.1.0-alpha.2`、tag は `v0.1.0-alpha.2`。次の Alpha は `alpha.3` など。
+  現在は `0.1.0-alpha.3`、tag は `v0.1.0-alpha.3`。次の Alpha は `alpha.4` など。
   アプリの version と下記の形式番号は独立して管理する。
 - [ ] GitHub repository Variables の `JIGSALL_RENDEZVOUS_WSS_URL` を運用する
   `wss://…/v1/ws` に設定する。既存の実機検証先は
