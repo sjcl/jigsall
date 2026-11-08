@@ -4032,7 +4032,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jigsall"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "bevy",
  "jigsall-game",
@@ -4043,7 +4043,7 @@ dependencies = [
 
 [[package]]
 name = "jigsall-core"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "bevy_ecs",
  "bevy_math",
@@ -4053,7 +4053,7 @@ dependencies = [
 
 [[package]]
 name = "jigsall-game"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "ab_glyph",
  "ash",
@@ -4099,7 +4099,7 @@ dependencies = [
 
 [[package]]
 name = "jigsall-puzzle"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "bevy_log",
  "bevy_math",
@@ -4110,7 +4110,7 @@ dependencies = [
 
 [[package]]
 name = "jigsall-ui"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "ab_glyph",
  "bevy",
